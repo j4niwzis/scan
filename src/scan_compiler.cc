@@ -479,14 +479,17 @@ template <class type, fixed_string format>
   for (;;) {
     std::vector<std::vector<std::uint32_t>> signature(count);
     for (std::size_t state = 0; state < count; ++state) {
+      // The marker for "no transition" inside a signature is the widest value
+      // of what a signature holds, not of what an index is elsewhere.
+      constexpr std::uint32_t no_target = std::numeric_limits<std::uint32_t>::max();
       signature[state].reserve(1 + 2 * class_width);
       signature[state].push_back(classes[state]);
       for (std::size_t index = 0; index < class_width; ++index) {
         const std::size_t symbol = representatives[index];
         const std::size_t transition = owner[state][symbol];
         if (transition == none) {
-          signature[state].push_back(none);
-          signature[state].push_back(none);
+          signature[state].push_back(no_target);
+          signature[state].push_back(no_target);
         } else {
           signature[state].push_back(
               classes[automaton.states[state].transitions[transition].target]);
