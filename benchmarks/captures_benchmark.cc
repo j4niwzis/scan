@@ -154,15 +154,26 @@ void re2c_captures_benchmark(harness::State& state) {
                           bench::csv.size());
 }
 
+// Seven runs of each row, reported as median and spread.
+//
+// One run of each says nothing about a difference of a few per cent. Between
+// two builds of this file with nothing changed in it, the row timing an
+// unmodified library moved by eight per cent, which is more than several of the
+// steps that were worth taking. A median of seven with the spread beside it
+// says which differences are real and which are the machine.
 const int registered = [] {
-  harness::RegisterBenchmark("harness_floor", harness_floor);
-  harness::RegisterBenchmark("harness_floor_strings", harness_floor_strings);
-  harness::RegisterBenchmark("scan_captures_views", scan_captures_views);
-  harness::RegisterBenchmark("scan_captures_views_sentinel",
-                             scan_captures_views_sentinel);
-  harness::RegisterBenchmark("scan_captures_strings", scan_captures_strings);
-  harness::RegisterBenchmark("ctre_captures", ctre_captures);
-  harness::RegisterBenchmark("re2c_captures", re2c_captures_benchmark);
+  const auto row = [](const char* name, void (*body)(harness::State&)) {
+    harness::RegisterBenchmark(name, body)
+        ->Repetitions(7)
+        ->ReportAggregatesOnly(true);
+  };
+  row("harness_floor", harness_floor);
+  row("harness_floor_strings", harness_floor_strings);
+  row("scan_captures_views", scan_captures_views);
+  row("scan_captures_views_sentinel", scan_captures_views_sentinel);
+  row("scan_captures_strings", scan_captures_strings);
+  row("ctre_captures", ctre_captures);
+  row("re2c_captures", re2c_captures_benchmark);
   return 0;
 }();
 
