@@ -328,122 +328,6 @@ run_inlined_sentinel_continuation(const char* cursor) {
   }
 }
 
-template <fixed_string pattern, std::size_t state, std::size_t register_count>
-[[nodiscard]] constexpr bool run_tagged_state_continuation(
-    const char* cursor, const char* end,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position);
-
-template <fixed_string pattern, std::size_t state, std::size_t range,
-          std::size_t register_count>
-SCAN_REGEX_FORCE_INLINE constexpr void execute_static_transition_commands(
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  constexpr const auto& transition =
-      regex_automaton<pattern>.states[state].ranges[range];
-  [&]<std::size_t... index>(std::index_sequence<index...>)
-      SCAN_REGEX_FORCE_INLINE_LAMBDA {
-        const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
-            (transition.commands[index].source == packed_command::no_source
-                 ? tre::negative_tag
-                 : registers[transition.commands[index].source])...};
-        (execute_command(transition.commands[index], source_values[index],
-                         registers, position),
-         ...);
-      }(std::make_index_sequence<transition.command_count>{});
-}
-
-template <fixed_string pattern, std::size_t state, std::size_t register_count>
-SCAN_REGEX_FORCE_INLINE constexpr void execute_static_final_commands(
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  constexpr const auto& packed_state = regex_automaton<pattern>.states[state];
-  [&]<std::size_t... index>(std::index_sequence<index...>)
-      SCAN_REGEX_FORCE_INLINE_LAMBDA {
-        const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
-            (packed_state.final_commands[index].source ==
-                     packed_command::no_source
-                 ? tre::negative_tag
-                 : registers[packed_state.final_commands[index].source])...};
-        (execute_command(packed_state.final_commands[index],
-                         source_values[index], registers, position),
-         ...);
-      }(std::make_index_sequence<packed_state.final_command_count>{});
-}
-
-template <fixed_string pattern, std::size_t state, std::size_t register_count,
-          std::size_t index = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-execute_tagged_self_transition(
-    unsigned char symbol,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  constexpr const auto& packed = regex_automaton<pattern>.states[state];
-  if constexpr (index == packed.range_count) {
-    return false;
-  } else {
-    constexpr const auto& range = packed.ranges[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target != state) return false;
-      execute_static_transition_commands<pattern, state, index>(registers,
-                                                                position);
-      return true;
-    }
-    return execute_tagged_self_transition<pattern, state, register_count,
-                                          index + 1>(symbol, registers,
-                                                     position);
-  }
-}
-
-template <fixed_string pattern, std::size_t state, std::size_t register_count,
-          std::size_t index = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_tagged_transition(
-    unsigned char symbol, const char* cursor, const char* end,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  constexpr const auto& packed = regex_automaton<pattern>.states[state];
-  if constexpr (index == packed.range_count) {
-    return false;
-  } else {
-    constexpr const auto& range = packed.ranges[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target == state) return false;
-      execute_static_transition_commands<pattern, state, index>(registers,
-                                                                position);
-      return run_tagged_state_continuation<pattern, range.target>(
-          cursor, end, registers, position);
-    }
-    return dispatch_tagged_transition<pattern, state, register_count,
-                                      index + 1>(symbol, cursor, end,
-                                                 registers, position);
-  }
-}
-
-template <fixed_string pattern, std::size_t state, std::size_t register_count>
-[[nodiscard]] constexpr bool run_tagged_state_continuation(
-    const char* cursor, const char* end,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  while (cursor != end) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    ++position;
-    if (execute_tagged_self_transition<pattern, state>(symbol, registers,
-                                                        position)) {
-      continue;
-    }
-    return dispatch_tagged_transition<pattern, state>(
-        symbol, cursor, end, registers, position);
-  }
-  if constexpr (regex_automaton<pattern>.states[state].accepting_slot ==
-                packed_state<0, 0, 0>::not_accepting) {
-    return false;
-  } else {
-    execute_static_final_commands<pattern, state>(registers, position);
-    return true;
-  }
-}
-
 template <fixed_string pattern>
 using regex_result_for =
     regex_result<regex_automaton<pattern>.tag_count / 2>;
@@ -465,26 +349,13 @@ regex_match(
     std::ranges::fill(registers, tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, 0);
-    std::size_t state = automaton.initial;
-    for (std::size_t position : std::views::iota(std::size_t{0}, input.size())) {
-          if (state == packed_range<0>::reject) continue;
-          const auto* found = find_range(
-              automaton.states[state],
-              static_cast<unsigned char>(input[position]));
-          if (found == nullptr) {
-            state = packed_range<0>::reject;
-            continue;
-          }
-          execute_commands(found->commands, found->command_count, registers,
-                           static_cast<std::ptrdiff_t>(position + 1));
-          state = found->target;
-        }
-    if (state == packed_range<0>::reject) return {};
-    const std::size_t slot = automaton.states[state].accepting_slot;
-    if (slot == packed_state<0, 0, 0>::not_accepting) return {};
-    execute_commands(automaton.states[state].final_commands,
-                     automaton.states[state].final_command_count, registers,
-                     static_cast<std::ptrdiff_t>(input.size()));
+    // The generated form, as the captureless branch above uses.
+    const char* cursor = input.data();
+    const char* const end = cursor + input.size();
+    if (!run_tagged_state_continuation<automaton, automaton.initial>(
+            cursor, end, registers, 0)) {
+      return {};
+    }
 
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
     for (std::size_t capture : std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {

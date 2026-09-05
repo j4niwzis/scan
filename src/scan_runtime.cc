@@ -47,6 +47,142 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
   }
 }
 
+
+#if defined(_MSC_VER) && !defined(__clang__)
+#define SCAN_FORCE_INLINE_LAMBDA
+#elif defined(__GNUC__) || defined(__clang__)
+#define SCAN_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
+#else
+#define SCAN_FORCE_INLINE_LAMBDA
+#endif
+
+// The generated form of a tagged automaton: a chain of comparisons per state,
+// unrolled by the template recursion, with the register operations of each
+// transition written out.
+//
+// It is parameterised by the automaton rather than by the pattern that made
+// it, so that both users can reach it: `scan::match` over a regular
+// expression, and the format path, which until now walked the same automaton
+// with an interpreter -- a search through ranges and a loop over commands, per
+// character, through pointers.
+
+template <auto& automaton, std::size_t state, std::size_t register_count>
+[[nodiscard]] constexpr bool run_tagged_state_continuation(
+    const char* cursor, const char* end,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position);
+
+template <auto& automaton, std::size_t state, std::size_t range,
+          std::size_t register_count>
+SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  constexpr const auto& transition =
+      automaton.states[state].ranges[range];
+  [&]<std::size_t... index>(std::index_sequence<index...>)
+      SCAN_FORCE_INLINE_LAMBDA {
+        const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
+            (transition.commands[index].source == packed_command::no_source
+                 ? tre::negative_tag
+                 : registers[transition.commands[index].source])...};
+        (execute_command(transition.commands[index], source_values[index],
+                         registers, position),
+         ...);
+      }(std::make_index_sequence<transition.command_count>{});
+}
+
+template <auto& automaton, std::size_t state, std::size_t register_count>
+SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  constexpr const auto& packed_state = automaton.states[state];
+  [&]<std::size_t... index>(std::index_sequence<index...>)
+      SCAN_FORCE_INLINE_LAMBDA {
+        const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
+            (packed_state.final_commands[index].source ==
+                     packed_command::no_source
+                 ? tre::negative_tag
+                 : registers[packed_state.final_commands[index].source])...};
+        (execute_command(packed_state.final_commands[index],
+                         source_values[index], registers, position),
+         ...);
+      }(std::make_index_sequence<packed_state.final_command_count>{});
+}
+
+template <auto& automaton, std::size_t state, std::size_t register_count,
+          std::size_t index = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool
+execute_tagged_self_transition(
+    unsigned char symbol,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  constexpr const auto& packed = automaton.states[state];
+  if constexpr (index == packed.range_count) {
+    return false;
+  } else {
+    constexpr const auto& range = packed.ranges[index];
+    if (symbol >= range.first && symbol <= range.last) {
+      if constexpr (range.target != state) return false;
+      execute_static_transition_commands<automaton, state, index>(registers,
+                                                                position);
+      return true;
+    }
+    return execute_tagged_self_transition<automaton, state, register_count,
+                                          index + 1>(symbol, registers,
+                                                     position);
+  }
+}
+
+template <auto& automaton, std::size_t state, std::size_t register_count,
+          std::size_t index = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool
+dispatch_tagged_transition(
+    unsigned char symbol, const char* cursor, const char* end,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  constexpr const auto& packed = automaton.states[state];
+  if constexpr (index == packed.range_count) {
+    return false;
+  } else {
+    constexpr const auto& range = packed.ranges[index];
+    if (symbol >= range.first && symbol <= range.last) {
+      if constexpr (range.target == state) return false;
+      execute_static_transition_commands<automaton, state, index>(registers,
+                                                                position);
+      return run_tagged_state_continuation<automaton, range.target>(
+          cursor, end, registers, position);
+    }
+    return dispatch_tagged_transition<automaton, state, register_count,
+                                      index + 1>(symbol, cursor, end,
+                                                 registers, position);
+  }
+}
+
+template <auto& automaton, std::size_t state, std::size_t register_count>
+[[nodiscard]] constexpr bool run_tagged_state_continuation(
+    const char* cursor, const char* end,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  while (cursor != end) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
+    ++position;
+    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
+                                                        position)) {
+      continue;
+    }
+    return dispatch_tagged_transition<automaton, state>(
+        symbol, cursor, end, registers, position);
+  }
+  if constexpr (automaton.states[state].accepting_slot ==
+                packed_state<0, 0, 0>::not_accepting) {
+    return false;
+  } else {
+    execute_static_final_commands<automaton, state>(registers, position);
+    return true;
+  }
+}
+
+
 template <class type, fixed_string format, std::size_t... index>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
@@ -72,31 +208,20 @@ template <class type, fixed_string format, std::size_t... index>
     std::ranges::fill(registers, tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                      0);
-    std::size_t state = automaton.initial;
-    for (std::size_t position : std::views::iota(std::size_t{0}, input.size())) {
-          if (state == packed_range<0>::reject) continue;
-          const auto* transition = find_range(
-              automaton.states[state],
-              static_cast<unsigned char>(input[position]));
-          if (transition == nullptr) {
-            state = packed_range<0>::reject;
-            continue;
-          }
-          execute_commands(transition->commands, transition->command_count,
-                           registers,
-                           static_cast<std::ptrdiff_t>(position + 1));
-          state = transition->target;
-        }
-    if (state == packed_range<0>::reject) {
+    // The generated form, not an interpreter.
+    //
+    // This walked the automaton one character at a time: a search through the
+    // ranges of the current state, then a loop over that transition's
+    // commands, both through pointers, and a state index carried in a
+    // variable. The same automaton unrolled into comparisons against
+    // constants is what the captureless path has always used, and it is the
+    // difference between reading a table and running code.
+    const char* cursor = input.data();
+    const char* const end = cursor + input.size();
+    if (!run_tagged_state_continuation<automaton, automaton.initial>(
+            cursor, end, registers, 0)) {
       throw scan_error("input does not match scan expression");
     }
-    const auto slot = automaton.states[state].accepting_slot;
-    if (slot == packed_state<0, 0, 0>::not_accepting) {
-      throw scan_error("input does not match scan expression");
-    }
-    execute_commands(automaton.states[state].final_commands,
-                     automaton.states[state].final_command_count, registers,
-                     static_cast<std::ptrdiff_t>(input.size()));
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto begin = registers[capture_index * 2];
       const auto end = registers[capture_index * 2 + 1];
