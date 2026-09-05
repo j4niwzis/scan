@@ -384,136 +384,172 @@ template <class type, fixed_string format>
                             false);
 }
 
+// Minimisation as Moore's refinement, with the two things that make it cheap:
+// symbols that behave alike everywhere are one class, and a command sequence
+// is compared as the number it was interned to rather than by copying it.
+[[nodiscard]] constexpr bool same_command_list(
+    const std::vector<tre::register_command>& lhs,
+    const std::vector<tre::register_command>& rhs) {
+  if (lhs.size() != rhs.size()) return false;
+  for (std::size_t index = 0; index < lhs.size(); ++index) {
+    if (lhs[index].destination != rhs[index].destination) return false;
+    if (lhs[index].source != rhs[index].source) return false;
+    if (lhs[index].values != rhs[index].values) return false;
+  }
+  return true;
+}
+
 [[nodiscard]] constexpr tre::tdfa minimize_tdfa(tre::tdfa automaton) {
   if (automaton.states.empty()) return automaton;
+  const std::size_t count = automaton.states.size();
+  const std::size_t none = std::numeric_limits<std::size_t>::max();
 
-  const auto same_commands = [](const auto& lhs, const auto& rhs) {
-    return std::ranges::equal(
-        lhs, rhs, {},
-        [](const tre::register_command& command) {
-          return std::tuple(command.destination, command.source,
-                            command.values);
-        },
-        [](const tre::register_command& command) {
-          return std::tuple(command.destination, command.source,
-                            command.values);
-        });
+  // Which transition each symbol takes, per state, once.
+  std::vector<std::array<std::size_t, 256>> owner(count);
+  for (std::size_t state = 0; state < count; ++state) {
+    owner[state].fill(none);
+    const auto& transitions = automaton.states[state].transitions;
+    for (std::size_t index = 0; index < transitions.size(); ++index) {
+      for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+        if (transitions[index].symbols[symbol]) owner[state][symbol] = index;
+      }
+    }
+  }
+
+  // Interned command sequences: equal sequences share a number, so the
+  // refinement compares numbers.
+  std::vector<std::vector<tre::register_command>> pool;
+  const auto intern = [&](const std::vector<tre::register_command>& commands) {
+    for (std::size_t index = 0; index < pool.size(); ++index) {
+      if (same_command_list(pool[index], commands)) return index;
+    }
+    pool.push_back(commands);
+    return pool.size() - 1;
   };
+  std::vector<std::size_t> final_command_id(count);
+  std::vector<std::vector<std::size_t>> command_id(count);
+  for (std::size_t state = 0; state < count; ++state) {
+    final_command_id[state] = intern(automaton.states[state].final_commands);
+    command_id[state].resize(automaton.states[state].transitions.size());
+    for (std::size_t index = 0; index < command_id[state].size(); ++index) {
+      command_id[state][index] =
+          intern(automaton.states[state].transitions[index].commands);
+    }
+  }
 
-  const auto targets =
-      std::views::iota(std::size_t{0}, automaton.states.size()) |
-      std::views::transform([&](std::size_t state) {
-        return std::views::iota(std::size_t{0}, std::size_t{256}) |
-               std::views::transform([&](std::size_t symbol) {
-                 const auto& transitions = automaton.states[state].transitions;
-                 const auto found = std::ranges::find_if(
-                     transitions,
-                     [&](const tre::tdfa_transition& transition) {
-                       return transition.symbols[symbol];
-                     });
-                 return found == transitions.end() ? automaton.states.size()
-                                                   : found->target;
-               }) |
-               views::to_array<256>;
-      }) |
-      std::ranges::to<std::vector>();
+  // Symbols that take the same transition in every state, and carry the same
+  // commands, are one class: the refinement then walks classes, not bytes.
+  std::vector<std::size_t> symbol_class(256, none);
+  std::vector<std::size_t> representatives;
+  for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+    for (std::size_t index = 0; index < representatives.size(); ++index) {
+      const std::size_t other = representatives[index];
+      bool alike = true;
+      for (std::size_t state = 0; state < count && alike; ++state) {
+        const std::size_t lhs = owner[state][symbol];
+        const std::size_t rhs = owner[state][other];
+        if (lhs == none || rhs == none) {
+          alike = lhs == rhs;
+        } else {
+          alike = automaton.states[state].transitions[lhs].target ==
+                      automaton.states[state].transitions[rhs].target &&
+                  command_id[state][lhs] == command_id[state][rhs];
+        }
+      }
+      if (alike) { symbol_class[symbol] = index; break; }
+    }
+    if (symbol_class[symbol] == none) {
+      symbol_class[symbol] = representatives.size();
+      representatives.push_back(symbol);
+    }
+  }
+  const std::size_t class_width = representatives.size();
 
-  std::vector<std::size_t> classes =
-      automaton.states |
-      std::views::transform([](const tre::tdfa_state& state) {
-        return static_cast<std::size_t>(state.accepting_slot.has_value());
-      }) |
-      std::ranges::to<std::vector>();
-
-  bool changed = true;
+  // Moore: refine until the partition stops changing. A state's signature is
+  // its own class and, per symbol class, the class it goes to with which
+  // commands.
+  std::vector<std::size_t> classes(count);
+  for (std::size_t state = 0; state < count; ++state) {
+    classes[state] = automaton.states[state].accepting_slot.has_value()
+                         ? final_command_id[state] + 1
+                         : 0;
+  }
   std::size_t class_count = 0;
-  while (changed) {
-    std::vector<std::size_t> refined(automaton.states.size());
-    class_count = 0;
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, automaton.states.size()),
-        [&](std::size_t state) {
-          const auto candidates = std::views::iota(std::size_t{0}, state);
-          const auto equivalent = std::ranges::find_if(
-              candidates,
-              [&](std::size_t candidate) {
-                if (automaton.states[state].accepting_slot.has_value() !=
-                    automaton.states[candidate].accepting_slot.has_value()) {
-                  return false;
-                }
-                if (!same_commands(automaton.states[state].final_commands,
-                                   automaton.states[candidate]
-                                       .final_commands)) {
-                  return false;
-                }
-                return std::ranges::all_of(
-                    std::views::iota(std::size_t{0}, std::size_t{256}),
-                    [&](std::size_t symbol) {
-                      const std::size_t lhs = targets[state][symbol];
-                      const std::size_t rhs = targets[candidate][symbol];
-                      if (lhs == automaton.states.size() ||
-                          rhs == automaton.states.size()) {
-                        return lhs == rhs;
-                      }
-                      if (classes[lhs] != classes[rhs]) return false;
-                      const auto& lhs_transitions =
-                          automaton.states[state].transitions;
-                      const auto& rhs_transitions =
-                          automaton.states[candidate].transitions;
-                      const auto lhs_transition = std::ranges::find_if(
-                          lhs_transitions, [&](const auto& transition) {
-                            return transition.symbols[symbol];
-                          });
-                      const auto rhs_transition = std::ranges::find_if(
-                          rhs_transitions, [&](const auto& transition) {
-                            return transition.symbols[symbol];
-                          });
-                      return same_commands(lhs_transition->commands,
-                                           rhs_transition->commands);
-                    });
-              });
-          if (equivalent == candidates.end()) {
-            refined[state] = class_count++;
-          } else {
-            refined[state] = refined[*equivalent];
-          }
-        });
-    changed = refined != classes;
+  for (;;) {
+    std::vector<std::vector<std::size_t>> signature(count);
+    for (std::size_t state = 0; state < count; ++state) {
+      signature[state].reserve(1 + 2 * class_width);
+      signature[state].push_back(classes[state]);
+      for (std::size_t index = 0; index < class_width; ++index) {
+        const std::size_t symbol = representatives[index];
+        const std::size_t transition = owner[state][symbol];
+        if (transition == none) {
+          signature[state].push_back(none);
+          signature[state].push_back(none);
+        } else {
+          signature[state].push_back(
+              classes[automaton.states[state].transitions[transition].target]);
+          signature[state].push_back(command_id[state][transition]);
+        }
+      }
+    }
+    // Number the classes by the first state that has them, which is the
+    // numbering the pairwise version produced.
+    std::vector<std::size_t> order(count);
+    for (std::size_t state = 0; state < count; ++state) order[state] = state;
+    std::ranges::sort(order, [&](std::size_t lhs, std::size_t rhs) {
+      if (signature[lhs] != signature[rhs]) return signature[lhs] < signature[rhs];
+      return lhs < rhs;
+    });
+    std::vector<std::size_t> group(count, none);
+    std::vector<std::size_t> first_state;
+    for (std::size_t index = 0; index < count; ++index) {
+      const std::size_t state = order[index];
+      if (index == 0 || signature[state] != signature[order[index - 1]]) {
+        first_state.push_back(state);
+      }
+      group[state] = first_state.size() - 1;
+    }
+    std::vector<std::size_t> group_order(first_state.size());
+    for (std::size_t index = 0; index < first_state.size(); ++index) {
+      group_order[index] = index;
+    }
+    std::ranges::sort(group_order, [&](std::size_t lhs, std::size_t rhs) {
+      return first_state[lhs] < first_state[rhs];
+    });
+    std::vector<std::size_t> renumber(first_state.size());
+    for (std::size_t index = 0; index < group_order.size(); ++index) {
+      renumber[group_order[index]] = index;
+    }
+    std::vector<std::size_t> refined(count);
+    for (std::size_t state = 0; state < count; ++state) {
+      refined[state] = renumber[group[state]];
+    }
+    class_count = first_state.size();
+    if (refined == classes) break;
     classes = std::move(refined);
   }
 
   tre::tdfa minimized{.initial = classes[automaton.initial],
-                       .tag_count = automaton.tag_count,
-                       .register_count = automaton.register_count,
-                       .initialize = std::move(automaton.initialize),
-                       .states = std::vector<tre::tdfa_state>(class_count)};
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, class_count),
-      [&](std::size_t result_class) {
-        const auto representative = std::ranges::find(classes, result_class);
-        const auto& source = automaton.states[representative - classes.begin()];
-        auto& destination = minimized.states[result_class];
-        destination.accepting_slot = source.accepting_slot;
-        destination.final_commands = source.final_commands;
-        std::ranges::for_each(
-            source.transitions, [&](tre::tdfa_transition transition) {
-              transition.target = classes[transition.target];
-              const auto equivalent = std::ranges::find_if(
-                  destination.transitions,
-                  [&](const tre::tdfa_transition& candidate) {
-                    return candidate.target == transition.target &&
-                           same_commands(candidate.commands,
-                                         transition.commands);
-                  });
-              if (equivalent == destination.transitions.end()) {
-                destination.transitions.push_back(std::move(transition));
-              } else {
-                std::ranges::transform(
-                    equivalent->symbols, transition.symbols,
-                    equivalent->symbols.begin(), std::logical_or<>{});
-              }
-            });
-      });
+                      .tag_count = automaton.tag_count,
+                      .register_count = automaton.register_count,
+                      .initialize = std::move(automaton.initialize),
+                      .states = std::vector<tre::tdfa_state>(class_count)};
+  for (std::size_t result_class = 0; result_class < class_count; ++result_class) {
+    const auto representative = std::ranges::find(classes, result_class);
+    const auto& source =
+        automaton.states[static_cast<std::size_t>(representative - classes.begin())];
+    auto& destination = minimized.states[result_class];
+    destination.accepting_slot = source.accepting_slot;
+    destination.final_commands = source.final_commands;
+    destination.nfa_states = source.nfa_states;
+    for (const tre::tdfa_transition& transition : source.transitions) {
+      destination.transitions.push_back(
+          tre::tdfa_transition{.symbols = transition.symbols,
+                               .target = classes[transition.target],
+                               .commands = transition.commands});
+    }
+  }
   return minimized;
 }
 
