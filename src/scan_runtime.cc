@@ -827,24 +827,33 @@ template <class type, std::size_t index>
 using field_type = std::remove_cvref_t<decltype(
     boost::pfr::get<index>(std::declval<type&>()))>;
 
-template <class type, fixed_string format, std::size_t... index>
+// One gathering per value the pattern reads, not one per field of the output.
+//
+// They are the same thing only where every field is one place. A field that is
+// itself a shape is several places, and its own reader would then have to be
+// handed the text and made to find the same boundaries a second time -- with a
+// pattern that is a copy of the one already running. The boundaries are known
+// here: the machine has a group for each of them. So each value is gathered by
+// the reader of the type that value is, and the output is put together from
+// those afterwards, the same way it is put together from pieces of a subject
+// that can be pointed at.
+template <class type, fixed_string format, std::size_t... group>
 [[nodiscard]] constexpr auto make_scanner_state(
-    std::index_sequence<index...>) {
-  constexpr auto parameters =
-      field_parameters<format, boost::pfr::tuple_size_v<type>>();
-  static_assert(
-      (requires {
-        scanner_begin<field_type<type, index>>(parameters[index]);
-      } && ...),
-      "single-pass input requires incremental scan::scanner<T>");
-  return std::tuple{
-      scanner_begin<field_type<type, index>>(parameters[index])...};
+    std::index_sequence<group...>) {
+  static constexpr auto spread = spread_of<type, format>();
+  static_assert((requires {
+                  scanner_begin<leaf_kind<type, group>>(
+                      spread.parameters[group].view());
+                } && ...),
+                "single-pass input requires incremental scan::scanner<T>");
+  return std::tuple{scanner_begin<leaf_kind<type, group>>(
+      spread.parameters[group].view())...};
 }
 
 template <class type, fixed_string format>
 [[nodiscard]] constexpr auto make_scanner_state() {
   return make_scanner_state<type, format>(
-      std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+      std::make_index_sequence<groups_of<type>()>{});
 }
 
 // Following a reading instead of counting on the numbers.
@@ -881,7 +890,7 @@ template <class type, fixed_string format>
 // both said by the automaton. They used to be worked out by dividing a register
 // number by the number of tags, which was true of one way of handing registers
 // out and of nothing else.
-template <std::size_t field, class type, fixed_string format, auto& automaton,
+template <std::size_t group, class type, fixed_string format, auto& automaton,
           class states_type, std::size_t register_count,
           std::size_t command_count>
 constexpr void advance_scanner(
@@ -890,10 +899,10 @@ constexpr void advance_scanner(
     const states_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count) {
-  constexpr auto parameters =
-      field_parameters<format, boost::pfr::tuple_size_v<type>>();
-  constexpr std::size_t opening = field * 2;
-  constexpr std::size_t closing = field * 2 + 1;
+  static constexpr auto spread = spread_of<type, format>();
+  constexpr std::size_t opening = group * 2;
+  constexpr std::size_t closing = group * 2 + 1;
+  using held_type = leaf_kind<type, group>;
   std::size_t command_index = 0;
   std::apply(
       [&](const auto&... command) {
@@ -904,11 +913,11 @@ constexpr void advance_scanner(
           }
           if (command.source != packed_command::no_source &&
               command.value == -2) {
-            std::get<field>(states[command.destination]) =
-                std::get<field>(old_states[command.source]);
+            std::get<group>(states[command.destination]) =
+                std::get<group>(old_states[command.source]);
           } else {
-            std::get<field>(states[command.destination]) =
-                scanner_begin<field_type<type, field>>(parameters[field]);
+            std::get<group>(states[command.destination]) =
+                scanner_begin<held_type>(spread.parameters[group].view());
           }
         }(),
          ...);
@@ -923,19 +932,19 @@ constexpr void advance_scanner(
     if (filled[open]) continue;
     if (registers[open] < 0 || registers[close] >= registers[open]) continue;
     filled[open] = true;
-    scanner_push<field_type<type, field>>(std::get<field>(states[open]), symbol);
+    scanner_push<held_type>(std::get<group>(states[open]), symbol);
   }
 }
 
 template <class type, fixed_string format, auto& automaton,
           std::size_t register_count, class states_type,
-          std::size_t command_count, std::size_t... field>
+          std::size_t command_count, std::size_t... group>
 constexpr void advance_scanners(
     char symbol, std::size_t state,
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, std::index_sequence<field...>) {
+    std::size_t count, std::index_sequence<group...>) {
   // The old gatherings are only needed where a command copies one, and inside a
   // field nothing is copied and nothing is written -- that is what holding the
   // tags back bought. Copying the whole set on every character to be ready for
@@ -951,11 +960,11 @@ constexpr void advance_scanners(
   }
   if (copies) {
     const states_type old_states = states;
-    (advance_scanner<field, type, format, automaton>(
+    (advance_scanner<group, type, format, automaton>(
          symbol, state, registers, old_states, states, commands, count),
      ...);
   } else {
-    (advance_scanner<field, type, format, automaton>(
+    (advance_scanner<group, type, format, automaton>(
          symbol, state, registers, states, states, commands, count),
      ...);
   }
@@ -972,18 +981,33 @@ template <class type, class state_type, std::size_t... index>
   return result;
 }
 
-// Each field taken from the gathering of the register that holds its opening
-// tag in the reading that accepted.
-template <class type, class reading_type, class states_type,
-          std::size_t... index>
-[[nodiscard]] constexpr type finish_reading(const reading_type& reading,
-                                            states_type& states,
-                                            std::index_sequence<index...>) {
-  type result{};
-  ((boost::pfr::get<index>(result) = scanner_finish<field_type<type, index>>(
-        std::move(std::get<index>(states[reading[index * 2]])))),
-   ...);
-  return result;
+// The output put together from the gatherings, walked the same way it is walked
+// when the values are pieces of a subject that can be pointed at: a value asks
+// its own reader to finish, a product asks its parts, a type made by a call
+// makes it. Each value is taken from the gathering of the register that holds
+// its opening tag in the reading that accepted.
+template <class root, class type, std::size_t offset, class reading_type,
+          class states_type>
+[[nodiscard]] constexpr type finish_value(const reading_type& reading,
+                                          states_type& states) {
+  if constexpr (scanned_as_leaf<type>) {
+    return scanner_finish<type>(
+        std::move(std::get<offset>(states[reading[offset * 2]])));
+  } else if constexpr (scanned_from_values<type>) {
+    return [&]<std::size_t... part>(std::index_sequence<part...>) {
+      return scan::scanner<std::remove_cv_t<type>>::parse(
+          finish_value<root, typename parts_of<type>::template at<part>,
+                       offset + groups_before_field<type, part>()>(reading,
+                                                                   states)...);
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  } else {
+    return [&]<std::size_t... part>(std::index_sequence<part...>) {
+      return type{
+          finish_value<root, typename parts_of<type>::template at<part>,
+                       offset + groups_before_field<type, part>()>(reading,
+                                                                   states)...};
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
 }
 
 template <class type, fixed_string format>
@@ -991,8 +1015,7 @@ class stream_state {
  private:
   inline static constexpr const auto& automaton =
       streaming_automaton<type, format>;
-  inline static constexpr std::size_t field_count =
-      boost::pfr::tuple_size_v<type>;
+  inline static constexpr std::size_t field_count = groups_of<type>();
   // One gathering per register, because a gathering follows the register it
   // belongs to and there is no arithmetic that says which registers go
   // together.
@@ -1103,11 +1126,10 @@ class stream_state {
     if (slot == packed_state<0, 0, 0>::not_accepting) {
       throw scan_error("input does not match scan expression");
     }
-    // The reading that accepted says which register holds each field's opening
+    // The reading that accepted says which register holds each value's opening
     // tag, and that register holds its gathering.
-    return finish_reading<type>(
-        automaton.states[state_].readings[slot], scanner_states_,
-        std::make_index_sequence<field_count>{});
+    return finish_value<type, type, 0>(automaton.states[state_].readings[slot],
+                                       scanner_states_);
   }
 
  private:
