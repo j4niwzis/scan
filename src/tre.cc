@@ -505,22 +505,30 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
       if (seen[item.state]) continue;
       seen[item.state] = true;
       output.push_back(item);
-      std::vector<transition> edges;
-      for (const auto& edge : automaton.transitions[item.state]) {
+      // Indices, not copies of the transitions: sorting the transitions
+      // themselves moves their symbol sets about, and a sort assigns an
+      // element to itself -- which the bytecode interpreter reads as a copy
+      // between overlapping regions and refuses.
+      const std::vector<transition>& outgoing = automaton.transitions[item.state];
+      std::vector<std::uint32_t> order;
+      for (std::uint32_t index = 0; index < outgoing.size(); ++index) {
+        const transition& edge = outgoing[index];
         if (edge.kind != transition_kind::symbol &&
             edge.kind != transition_kind::character_class) {
-          edges.push_back(edge);
+          order.push_back(index);
         }
       }
-      std::ranges::sort(edges, [](const auto& a, const auto& b) {
-        return a.priority < b.priority;
+      std::ranges::sort(order, [&](std::uint32_t lhs, std::uint32_t rhs) {
+        return outgoing[lhs].priority < outgoing[rhs].priority;
       });
-      for (auto it = edges.rbegin(); it != edges.rend(); ++it) {
+      for (std::size_t position_in_order = order.size();
+           position_in_order-- > 0;) {
+        const transition& edge = outgoing[order[position_in_order]];
         configuration next = item;
-        next.state = it->target;
-        if (it->kind == transition_kind::tag) {
-          next.tags[it->tag].push_back(it->negative ? negative_tag
-                                                   : position);
+        next.state = edge.target;
+        if (edge.kind == transition_kind::tag) {
+          next.tags[edge.tag].push_back(edge.negative ? negative_tag
+                                                      : position);
         }
         work.push_back(std::move(next));
       }
