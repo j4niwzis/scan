@@ -539,6 +539,27 @@ template <class subject>
 template <class subject, std::size_t index>
 using place_within_kind = typename place_at<subject, index, false>::kind;
 
+// Choosing between the two by a conditional would ask for both, and asking a
+// variant how many places its fields make is asking a variant for fields. Only
+// the one taken may be named.
+template <class subject, bool within>
+[[nodiscard]] consteval std::size_t places_chosen() {
+  if constexpr (within) {
+    return places_within<subject>();
+  } else {
+    return places_of<subject>();
+  }
+}
+
+template <class subject, bool within, std::size_t index>
+struct place_chosen {
+  static constexpr bool stands_alone =
+      within ? false
+             : (scanned_as_leaf<subject> || scanned_by_format<subject> ||
+                scanned_as_variant<subject>);
+  using kind = typename place_at<subject, index, stands_alone>::kind;
+};
+
 template <class subject>
 [[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_holding(
     std::size_t index) {
@@ -727,15 +748,13 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
       copy_until_place(made, text, position);
       if (position == text.size()) throw "format has fewer places than values";
       const std::size_t close = end_of_place(text, position);
-      using kind = std::conditional_t<within, place_within_kind<type, which>,
-                                      place_kind<type, which>>;
+      using kind = typename place_chosen<type, within, which>::kind;
       spread_place<kind>(made,
                          text.substr(position + 1, close - position - 1));
       position = close + 1;
     };
     (one.template operator()<place>(), ...);
-  }(std::make_index_sequence<within ? places_within<type>()
-                                    : places_of<type>()>{});
+  }(std::make_index_sequence<places_chosen<type, within>()>{});
   copy_until_place(made, text, position);
   if (position != text.size()) throw "format has more places than values";
 }
