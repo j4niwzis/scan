@@ -1050,21 +1050,51 @@ constexpr void advance_scanner(
   // A list is gathered and read at its opening throughout. Its elements go on
   // being added to the same list however the readings divide, and where it
   // began is what says which list that is.
+  // Two passes, because a transition can rename a group's opening and write
+  // its closing at once: `r86(t3) <- position` beside `r77(t2) <- r80` is a
+  // field ending and its opening moving house in the same breath. The copy has
+  // to happen first, or the copy taken for the closing is of a register that
+  // has not been given what it holds yet.
   std::size_t command_index = 0;
   std::apply(
       [&](const auto&... command) {
         ([&] {
           if (command_index++ >= count) return;
           const std::uint32_t tag = automaton.register_tag[command.destination];
-          if (tag != opening && tag != closing) return;
-          if (tag == closing && registers[command.destination] == position) {
-            // The group has closed on this step, however the closing came to
-            // be written -- a fresh position, or a copy of a register that is
-            // being written the same instant. Commands take their sources as
-            // they stood before any of them ran, which is right for positions
-            // and wrong for what was gathered: the copy would carry the empty
-            // slot the closing had a moment ago. What the field gathered is in
-            // the opening it was being added to.
+          if (tag == opening) {
+            if (command.source != packed_command::no_source &&
+                command.value == -2) {
+              // A reading that divides carries its gathering with it.
+              std::get<group>(states[command.destination]) =
+                  std::get<group>(old_states[command.source]);
+            } else if constexpr (gathers_a_list) {
+              std::get<group>(states[command.destination]) = held_type{};
+            } else {
+              std::get<group>(states[command.destination]) =
+                  scanner_begin<held_type>(spread.parameters[group].view());
+            }
+          } else if (tag == closing && registers[command.destination] != position &&
+                     command.source != packed_command::no_source &&
+                     command.value == -2) {
+            // A closing already written, only being carried along, keeps what
+            // it holds.
+            std::get<group>(states[command.destination]) =
+                std::get<group>(old_states[command.source]);
+          }
+        }(),
+         ...);
+      },
+      commands);
+  if constexpr (!gathers_a_list) {
+    // The groups that close on this step. What the field gathered is in the
+    // opening it was being added to, whichever register that has become.
+    command_index = 0;
+    std::apply(
+        [&](const auto&... command) {
+          ([&] {
+            if (command_index++ >= count) return;
+            if (automaton.register_tag[command.destination] != closing) return;
+            if (registers[command.destination] != position) return;
             const auto& entered = automaton.states[state];
             for (std::size_t reading = 0; reading < entered.reading_count;
                  ++reading) {
@@ -1075,24 +1105,11 @@ constexpr void advance_scanner(
                   std::get<group>(states[entered.readings[reading][opening]]);
               break;
             }
-          } else if (command.source != packed_command::no_source &&
-                     command.value == -2) {
-            // A reading that divides carries its gathering with it, whichever
-            // of the two registers is being copied.
-            std::get<group>(states[command.destination]) =
-                std::get<group>(old_states[command.source]);
-          } else if (tag == opening) {
-            if constexpr (gathers_a_list) {
-              std::get<group>(states[command.destination]) = held_type{};
-            } else {
-              std::get<group>(states[command.destination]) =
-                  scanner_begin<held_type>(spread.parameters[group].view());
-            }
-          }
-        }(),
-         ...);
-      },
-      commands);
+          }(),
+           ...);
+        },
+        commands);
+  }
   // A list gathers elements, not characters. Written as an early return this
   // would discard nothing: what follows an `if constexpr` is not the branch it
   // did not take.
