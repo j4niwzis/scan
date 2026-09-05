@@ -113,7 +113,15 @@ target_compile_options(scan PUBLIC
 option(SCAN_BYTECODE_CONSTANT_INTERPRETER
        "Evaluate constant expressions with clang's bytecode interpreter" OFF)
 if(SCAN_BYTECODE_CONSTANT_INTERPRETER)
-  target_compile_options(scan PUBLIC
+  # PRIVATE, not PUBLIC: it is a choice about how this library is compiled, and
+  # it cannot be made for whoever uses it. A translation unit that imports this
+  # and also includes a header textually -- a benchmark harness, another
+  # header-only library -- gives the interpreter two views of the same standard
+  # entity, and everything this library evaluates while compiling stops being a
+  # constant expression.
+  target_compile_options(scan PRIVATE
+    $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
+  target_compile_options(tre_tdfa PRIVATE
     $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
 endif()
 
