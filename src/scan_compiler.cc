@@ -365,6 +365,79 @@ template <fixed_string format, std::size_t field_count>
   return result;
 }
 
+// A type is a leaf when something knows how to read it out of text, and a
+// product when it does not and is an aggregate. A leaf takes one group; a
+// product takes as many as its fields take between them, in order, and its
+// fields may be products themselves. Nothing about that needs saying in the
+// format: a structure of structures is written out flat, because that is what
+// it is.
+// The question is whether a scanner has been written for this type, and it has
+// to be asked of the class and not of the call: naming `scanner_parse<type>` is
+// well formed for any type at all, because its declaration says nothing about
+// the body. Only asking for the size of `scanner<type>` makes the compiler
+// decide whether the specialisation is there.
+template <class type>
+concept scanned_as_leaf = requires {
+  sizeof(scan::scanner<std::remove_cv_t<type>>);
+};
+
+template <class type>
+[[nodiscard]] consteval std::size_t groups_of() {
+  if constexpr (scanned_as_leaf<type>) {
+    return 1;
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              groups_of<std::remove_cvref_t<
+                  boost::pfr::tuple_element_t<index, type>>>());
+    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+  }
+}
+
+template <class type, std::size_t field>
+[[nodiscard]] consteval std::size_t groups_before_field() {
+  return []<std::size_t... index>(std::index_sequence<index...>) {
+    return (std::size_t{0} + ... +
+            groups_of<std::remove_cvref_t<
+                boost::pfr::tuple_element_t<index, type>>>());
+  }(std::make_index_sequence<field>{});
+}
+
+// Which field of a product holds the group at this position, and where in that
+// field it falls.
+template <class subject>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_holding(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        groups_of<std::remove_cvref_t<
+            boost::pfr::tuple_element_t<field, subject>>>()...};
+  }(std::make_index_sequence<boost::pfr::tuple_size_v<subject>>{});
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (index < counts[field]) return {field, index};
+    index -= counts[field];
+  }
+  throw "group index past the end of the output type";
+}
+
+template <class subject, std::size_t index, bool = scanned_as_leaf<subject>>
+struct leaf_at;
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, true> {
+  using kind = subject;
+};
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, false> {
+  static constexpr auto where = field_holding<subject>(index);
+  using next =
+      std::remove_cvref_t<boost::pfr::tuple_element_t<where.first, subject>>;
+  using kind = typename leaf_at<next, where.second>::kind;
+};
+
+template <class subject, std::size_t index>
+using leaf_kind = typename leaf_at<subject, index>::kind;
+
 template <class type, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr auto parameterized_patterns(
     const std::array<std::string_view, extent>& parameters,
@@ -377,8 +450,8 @@ template <class type, std::size_t extent, std::size_t... index>
     return result;
   };
   return std::array<pattern_buffer<>, extent>{
-      make_pattern.template operator()<std::remove_cvref_t<decltype(
-          boost::pfr::get<index>(std::declval<type&>()))>>(
+      make_pattern.template operator()<std::remove_cvref_t<
+          leaf_kind<type, index>>>(
           parameters[index])...};
 }
 
@@ -403,7 +476,7 @@ template <class type>
 [[nodiscard]] consteval auto fields_of_each_alternative() {
   return []<std::size_t... index>(std::index_sequence<index...>) {
     return std::array<std::size_t, sizeof...(index)>{
-        boost::pfr::tuple_size_v<std::variant_alternative_t<index, type>>...};
+        groups_of<std::variant_alternative_t<index, type>>()...};
   }(std::make_index_sequence<std::variant_size_v<type>>{});
 }
 
@@ -420,11 +493,10 @@ template <std::size_t index, class... alternatives>
 struct flattened_field;
 template <std::size_t index, class first, class... rest>
 struct flattened_field<index, first, rest...> {
-  static constexpr std::size_t here = boost::pfr::tuple_size_v<first>;
+  static constexpr std::size_t here = groups_of<first>();
   using type = typename std::conditional_t<
       (index < here),
-      std::type_identity<
-          boost::pfr::tuple_element_t<(index < here ? index : 0), first>>,
+      std::type_identity<leaf_kind<first, (index < here ? index : 0)>>,
       flattened_field<(index < here ? 0 : index - here), rest...>>::type;
 };
 
@@ -487,7 +559,7 @@ template <class type, fixed_string format>
 template <class type, fixed_string format>
   requires(!scanned_as_variant<type>)
 [[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
-  constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
+  constexpr std::size_t field_count = groups_of<type>();
   constexpr auto parameters = field_parameters<format, field_count>();
   constexpr auto pattern_storage = parameterized_patterns<type>(
       parameters, std::make_index_sequence<field_count>{});
