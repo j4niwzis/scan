@@ -255,11 +255,19 @@ template <fixed_string pattern, unsigned char sentinel>
 
 template <fixed_string pattern, unsigned char sentinel, std::size_t state>
 [[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor) {
+  // The class first, the sentinel afterwards.
+  //
+  // A sentinel is only accepted here when no state takes it, which
+  // `is_safe_sentinel` has already required -- so it cannot be a symbol that
+  // keeps the automaton where it is, and testing for it before the class only
+  // adds a comparison and a branch to every character of the subject. Tested
+  // after, it costs nothing until the loop ends anyway, and what is left in
+  // the loop is a load, a subtraction, an increment, a comparison and a jump:
+  // what a generated scanner emits.
   while (true) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor);
-    if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
-    ++cursor;
+    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
+    if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
     return dispatch_sentinel_transition<pattern, sentinel, state>(symbol,
                                                                   cursor);
   }
@@ -302,10 +310,9 @@ template <fixed_string pattern, unsigned char sentinel, std::size_t state,
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
 run_inlined_sentinel_continuation(const char* cursor) {
   while (true) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor);
-    if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
-    ++cursor;
+    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
+    if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
     return dispatch_inlined_sentinel_transition<pattern, sentinel, state,
                                                 budget>(symbol, cursor);
   }
