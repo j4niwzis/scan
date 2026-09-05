@@ -841,13 +841,20 @@ template <class type, fixed_string format, std::size_t... group>
 [[nodiscard]] constexpr auto make_scanner_state(
     std::index_sequence<group...>) {
   static constexpr auto spread = spread_of<type, format>();
-  static_assert((requires {
-                  scanner_begin<leaf_kind<type, group>>(
-                      spread.parameters[group].view());
-                } && ...),
-                "single-pass input requires incremental scan::scanner<T>");
-  return std::tuple{scanner_begin<leaf_kind<type, group>>(
-      spread.parameters[group].view())...};
+  // A group that stands for a list gathers the list itself, which needs no
+  // reader: what goes into it are whole elements, put there as each one ends.
+  const auto one = []<std::size_t which>() {
+    using held_type = leaf_kind<type, which>;
+    if constexpr (scanned_as_range<held_type>) {
+      return held_type{};
+    } else {
+      static_assert(requires {
+        scanner_begin<held_type>(spread.parameters[which].view());
+      }, "single-pass input requires incremental scan::scanner<T>");
+      return scanner_begin<held_type>(spread.parameters[which].view());
+    }
+  };
+  return std::tuple{one.template operator()<group>()...};
 }
 
 template <class type, fixed_string format>
@@ -903,6 +910,7 @@ constexpr void advance_scanner(
   constexpr std::size_t opening = group * 2;
   constexpr std::size_t closing = group * 2 + 1;
   using held_type = leaf_kind<type, group>;
+  constexpr bool gathers_a_list = scanned_as_range<held_type>;
   std::size_t command_index = 0;
   std::apply(
       [&](const auto&... command) {
@@ -915,6 +923,8 @@ constexpr void advance_scanner(
               command.value == -2) {
             std::get<group>(states[command.destination]) =
                 std::get<group>(old_states[command.source]);
+          } else if constexpr (gathers_a_list) {
+            std::get<group>(states[command.destination]) = held_type{};
           } else {
             std::get<group>(states[command.destination]) =
                 scanner_begin<held_type>(spread.parameters[group].view());
@@ -923,17 +933,134 @@ constexpr void advance_scanner(
          ...);
       },
       commands);
-  // Once each, however many readings share it: a register is one gathering.
-  std::array<bool, register_count> filled{};
-  const auto& packed = automaton.states[state];
-  for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
-    const std::uint32_t open = packed.readings[reading][opening];
-    const std::uint32_t close = packed.readings[reading][closing];
-    if (filled[open]) continue;
-    if (registers[open] < 0 || registers[close] >= registers[open]) continue;
-    filled[open] = true;
-    scanner_push<held_type>(std::get<group>(states[open]), symbol);
+  // A list gathers elements, not characters. Written as an early return this
+  // would discard nothing: what follows an `if constexpr` is not the branch it
+  // did not take.
+  if constexpr (!gathers_a_list) {
+    // Once each, however many readings share it: a register is one gathering.
+    std::array<bool, register_count> filled{};
+    const auto& packed = automaton.states[state];
+    for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
+      const std::uint32_t open = packed.readings[reading][opening];
+      const std::uint32_t close = packed.readings[reading][closing];
+      if (filled[open]) continue;
+      if (registers[open] < 0 || registers[close] >= registers[open]) continue;
+      filled[open] = true;
+      scanner_push<held_type>(std::get<group>(states[open]), symbol);
+    }
   }
+}
+
+template <class root, class type, std::size_t offset, class reading_type,
+          class states_type, std::size_t register_count>
+[[nodiscard]] constexpr type finish_value(
+    const reading_type& reading, const states_type& states,
+    const std::array<std::ptrdiff_t, register_count>& registers);
+
+// The parts of a product, and the arguments of a call, as named functions
+// rather than as lambdas called where they stand. A lambda holding references
+// and called inside the argument of something that itself holds references is
+// more than the constant evaluator will follow.
+template <class root, class type, std::size_t offset, class reading_type,
+          class states_type, std::size_t register_count, std::size_t... part>
+[[nodiscard]] constexpr type finish_parts(
+    const reading_type& reading, const states_type& states,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    std::index_sequence<part...>) {
+  return type{finish_value<root, typename parts_of<type>::template at<part>,
+                           offset + groups_before_field<type, part>()>(
+      reading, states, registers)...};
+}
+
+template <class root, class type, std::size_t offset, class reading_type,
+          class states_type, std::size_t register_count, std::size_t... part>
+[[nodiscard]] constexpr type finish_by_call(
+    const reading_type& reading, const states_type& states,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    std::index_sequence<part...>) {
+  return scan::scanner<std::remove_cv_t<type>>::parse(
+      finish_value<root, typename parts_of<type>::template at<part>,
+                   offset + groups_before_field<type, part>()>(reading, states,
+                                                                registers)...);
+}
+
+// An element ends where the next one begins, and where that is, is said by a
+// command writing a fresh position into the group the element starts at. The
+// positions still hold the turn that is ending when this runs, which is why it
+// runs before they move.
+// A list is written to with push_back, which is what a range is asked for. It
+// is reached here through insert where the type has it, because libc++ writes
+// vector::emplace_back through a helper taking two capturing lambdas, and
+// clang's constant evaluator refuses those ("captures not currently allowed"):
+// a list of anything but a leaf could not be read while compiling. Appending
+// at the end is the same thing either way.
+template <class list_type, class element_type>
+constexpr void append_to(list_type& list, element_type&& value) {
+  if constexpr (requires { list.insert(list.end(), std::move(value)); }) {
+    list.insert(list.end(), std::move(value));
+  } else {
+    list.push_back(std::move(value));
+  }
+}
+
+template <std::size_t group, class type, fixed_string format, auto& automaton,
+          class states_type, std::size_t register_count,
+          std::size_t command_count>
+constexpr void collect_element(
+    std::size_t state,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    states_type& states,
+    const std::array<packed_command, command_count>& commands,
+    std::size_t count) {
+  if constexpr (group == 0) {
+    return;
+  } else if constexpr (!scanned_as_range<leaf_kind<type, group - 1>>) {
+    return;
+  } else {
+    using list_type = leaf_kind<type, group - 1>;
+    using element = std::remove_cvref_t<std::ranges::range_value_t<list_type>>;
+    constexpr std::size_t list_group = group - 1;
+    // Does this step begin another turn? It does if it writes a fresh position
+    // into a register that holds the place an element starts at.
+    bool going_round = false;
+    for (std::size_t index = 0; index < count; ++index) {
+      const auto& command = commands[index];
+      if (command.value == -2) continue;
+      if (automaton.register_tag[command.destination] == group * 2) {
+        going_round = true;
+        break;
+      }
+    }
+    if (!going_round) return;
+    // The turn that is ending belongs to the state being left, and so do the
+    // positions and the gatherings. Where the list goes next is the business of
+    // the commands, which carry the gathering with the register.
+    const auto& packed = automaton.states[state];
+    std::array<bool, register_count> done{};
+    for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
+      const std::uint32_t open = packed.readings[reading][group * 2];
+      const std::uint32_t into = packed.readings[reading][list_group * 2];
+      if (done[into] || registers[open] < 0) continue;
+      done[into] = true;
+      append_to(std::get<list_group>(states[into]),
+                finish_value<type, element, group>(packed.readings[reading],
+                                                   states, registers));
+    }
+  }
+}
+
+template <class type, fixed_string format, auto& automaton,
+          std::size_t register_count, class states_type,
+          std::size_t command_count, std::size_t... group>
+constexpr void collect_elements(
+    std::size_t state,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    states_type& states,
+    const std::array<packed_command, command_count>& commands,
+    std::size_t count, std::index_sequence<group...>) {
+  (collect_element<group, type, format, automaton>(state, registers, states,
+                                                   commands, count),
+   ...);
 }
 
 template <class type, fixed_string format, auto& automaton,
@@ -987,26 +1114,32 @@ template <class type, class state_type, std::size_t... index>
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
 template <class root, class type, std::size_t offset, class reading_type,
-          class states_type>
-[[nodiscard]] constexpr type finish_value(const reading_type& reading,
-                                          states_type& states) {
+          class states_type, std::size_t register_count>
+[[nodiscard]] constexpr type finish_value(
+    const reading_type& reading, const states_type& states,
+    const std::array<std::ptrdiff_t, register_count>& registers) {
   if constexpr (scanned_as_leaf<type>) {
-    return scanner_finish<type>(
-        std::move(std::get<offset>(states[reading[offset * 2]])));
+    return scanner_finish<type>(std::get<offset>(states[reading[offset * 2]]));
+  } else if constexpr (scanned_as_range<type>) {
+    // What has been put in as each element ended, and then the one that was
+    // still being read when the whole thing ended.
+    using element = std::remove_cvref_t<std::ranges::range_value_t<type>>;
+    type made = std::get<offset>(states[reading[offset * 2]]);
+    // The turn that was still going when the whole thing ended. Where the list
+    // is written to be allowed none at all, there may not have been one.
+    if (registers[reading[(offset + 1) * 2]] >= 0) {
+      append_to(made, finish_value<root, element, offset + 1>(reading, states,
+                                                              registers));
+    }
+    return made;
   } else if constexpr (scanned_from_values<type>) {
-    return [&]<std::size_t... part>(std::index_sequence<part...>) {
-      return scan::scanner<std::remove_cv_t<type>>::parse(
-          finish_value<root, typename parts_of<type>::template at<part>,
-                       offset + groups_before_field<type, part>()>(reading,
-                                                                   states)...);
-    }(std::make_index_sequence<parts_of<type>::count>{});
+    return finish_by_call<root, type, offset>(
+        reading, states, registers,
+        std::make_index_sequence<parts_of<type>::count>{});
   } else {
-    return [&]<std::size_t... part>(std::index_sequence<part...>) {
-      return type{
-          finish_value<root, typename parts_of<type>::template at<part>,
-                       offset + groups_before_field<type, part>()>(reading,
-                                                                   states)...};
-    }(std::make_index_sequence<parts_of<type>::count>{});
+    return finish_parts<root, type, offset>(
+        reading, states, registers,
+        std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
@@ -1042,6 +1175,9 @@ class stream_state {
     if (state_ == packed_range<0>::reject) return false;
     const auto* transition = find_range(automaton.states[state_], static_cast<unsigned char>(symbol));
     if (transition == nullptr) return false;
+    collect_elements<type, format, automaton>(
+        state_, registers_, scanner_states_, transition->commands,
+        transition->command_count, std::make_index_sequence<field_count>{});
     execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
     advance_scanners<type, format, automaton>(
@@ -1129,7 +1265,7 @@ class stream_state {
     // The reading that accepted says which register holds each value's opening
     // tag, and that register holds its gathering.
     return finish_value<type, type, 0>(automaton.states[state_].readings[slot],
-                                       scanner_states_);
+                                       scanner_states_, registers_);
   }
 
  private:

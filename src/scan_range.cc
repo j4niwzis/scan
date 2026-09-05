@@ -42,6 +42,32 @@ template <class type>
   }
 }
 
+// Whether a list stands anywhere inside this output.
+//
+// A list is read by gathering, and it has to be: the positions a match leaves
+// behind hold the last turn round the loop and nothing else, so an output with
+// a list in it cannot be put together by reading them afterwards, however well
+// they can be pointed at. It goes to the machine that gathers as it goes, over
+// the very same characters.
+template <class type>
+[[nodiscard]] consteval bool holds_a_range() {
+  if constexpr (scanned_as_range<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... ||
+              holds_a_range<std::variant_alternative_t<which, type>>());
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_range<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
 // A leaf is read from its one group; a product is built from its fields, each
 // of which takes as many groups as it needs, in order. Nothing about the
 // nesting is written in the format: a structure of structures is spelled out
@@ -119,6 +145,9 @@ class borrowed_result {
                   "a type that declares its own format is read as a field, not "
                   "as the whole of what is scanned into: wrap it in a struct "
                   "with one member and scan into that");
+    if constexpr (holds_a_range<type>()) {
+      return detail::scan_stream<type, format>(input_);
+    } else {
     // A group that took no part is an error, unless somewhere in this output
     // there is a variant, where exactly one branch takes part and the rest do
     // not. Which it is, is known while the pattern is compiled.
@@ -131,6 +160,7 @@ class borrowed_result {
           }
         }();
     return build_value<type, type, format, 0>(fields);
+    }
   }
 
   // The same scan, for a format that says the input may be one of several

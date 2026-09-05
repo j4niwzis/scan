@@ -21,6 +21,7 @@ inline constexpr char format_branch = '\x03';
 inline constexpr char format_mark = '\x04';
 inline constexpr char format_raw_begin = '\x05';
 inline constexpr char format_raw_end = '\x06';
+inline constexpr char format_repeat = '\x07';
 
 // The characters a backslash names. Without these a format can only say a
 // newline by holding one, which means a pattern cannot be written on one line,
@@ -133,6 +134,48 @@ class tre_parser {
     // between two fields, the field somebody else's format has and this output
     // does not want. It captures nothing, so it is no group and no value, and
     // the places on either side of it go on counting as if it were not there.
+    // A group holding one or more of what follows, and holding it as a whole:
+    // the group is where the list is, and the places inside it are where each
+    // of its elements is, written over again on every turn round the loop.
+    if (peek() == format_repeat) {
+      ++position_;
+      const std::size_t capture = capture_count_++;
+      scan::tre::node body = parse_format_sequence();
+      if (peek() != format_group_end) throw "unterminated repeated group";
+      ++position_;
+      std::size_t least = 1;
+      std::size_t most = scan::tre::unbounded;
+      if (peek() == '*') { least = 0; ++position_; }
+      else if (peek() == '+') { ++position_; }
+      else if (peek() == '?') { least = 0; most = 1; ++position_; }
+      else if (peek() == '{') {
+        ++position_;
+        least = 0;
+        while (peek() >= '0' && peek() <= '9') {
+          least = least * 10 + static_cast<std::size_t>(peek() - '0');
+          ++position_;
+        }
+        most = least;
+        if (peek() == ',') {
+          ++position_;
+          if (peek() >= '0' && peek() <= '9') {
+            most = 0;
+            while (peek() >= '0' && peek() <= '9') {
+              most = most * 10 + static_cast<std::size_t>(peek() - '0');
+              ++position_;
+            }
+          } else {
+            most = scan::tre::unbounded;
+          }
+        }
+        if (peek() != '}') throw "unterminated repetition";
+        ++position_;
+      }
+      return scan::tre::cat(
+          {wrap_capture(capture,
+                        scan::tre::repeat(std::move(body), least, most)),
+           parse_format_sequence()});
+    }
     if (peek() == format_raw_begin) {
       ++position_;
       scan::tre::node body = parse_alternative(format_raw_end);
@@ -495,6 +538,21 @@ concept scanned_from_values = scanned_by_format<type> && requires {
   &scan::scanner<std::remove_cv_t<type>>::parse;
 };
 
+// A type that holds as many of something as the input turns out to have.
+//
+// Nothing in the format says how many; the type does, by being a range that can
+// be grown. The place stands for the whole list and its body is the format of
+// one element, read over again for as long as it goes on -- so a separator is
+// written the way anything matched and not kept is written, and the element may
+// be a value, a shape, a variant or another list.
+template <class type>
+concept scanned_as_range =
+    !scanned_as_leaf<type> && !scanned_by_format<type> &&
+    !scanned_as_variant<type> && std::ranges::range<type> &&
+    requires(type& into, std::ranges::range_value_t<type> element) {
+      into.push_back(std::move(element));
+    };
+
 template <class function_type>
 struct call_parameters;
 template <class result_type, class... argument_types>
@@ -509,6 +567,13 @@ struct call_parameters<result_type (*)(argument_types...)> {
 // call that makes it, where there is one, and its fields otherwise.
 template <class type, bool = scanned_from_values<type>>
 struct parts_of;
+template <class type>
+  requires scanned_as_range<type>
+struct parts_of<type, false> {
+  static constexpr std::size_t count = 1;
+  template <std::size_t index>
+  using at = std::remove_cvref_t<std::ranges::range_value_t<type>>;
+};
 template <class type>
 struct parts_of<type, false> {
   static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
@@ -531,7 +596,7 @@ struct parts_of<type, true> {
 template <class type>
 [[nodiscard]] consteval std::size_t places_of() {
   if constexpr (scanned_as_leaf<type> || scanned_by_format<type> ||
-                scanned_as_variant<type>) {
+                scanned_as_variant<type> || scanned_as_range<type>) {
     return 1;
   } else {
     return []<std::size_t... index>(std::index_sequence<index...>) {
@@ -552,6 +617,10 @@ template <class type>
       return (std::size_t{0} + ... +
               (1 + groups_of<std::variant_alternative_t<which, type>>()));
     }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else if constexpr (scanned_as_range<type>) {
+    // One for the list itself, and then whatever one element reads -- written
+    // over again on every turn round the loop.
+    return 1 + groups_of<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
   } else {
     return []<std::size_t... index>(std::index_sequence<index...>) {
       return (std::size_t{0} + ... +
@@ -589,7 +658,7 @@ template <class subject>
 
 template <class subject, std::size_t index,
           bool = scanned_as_leaf<subject> || scanned_by_format<subject> ||
-                 scanned_as_variant<subject>>
+                 scanned_as_variant<subject> || scanned_as_range<subject>>
 struct place_at;
 template <class subject, std::size_t index>
 struct place_at<subject, index, true> {
@@ -637,7 +706,7 @@ struct place_chosen {
   static constexpr bool stands_alone =
       within ? false
              : (scanned_as_leaf<subject> || scanned_by_format<subject> ||
-                scanned_as_variant<subject>);
+                scanned_as_variant<subject> || scanned_as_range<subject>);
   using kind = typename place_at<subject, index, stands_alone>::kind;
 };
 
@@ -656,14 +725,30 @@ template <class subject>
   throw "group index past the end of the output type";
 }
 
-template <class subject, std::size_t index, bool = scanned_as_leaf<subject>>
+template <class held_type>
+struct kind_is {
+  using kind = held_type;
+};
+
+// Which type gathers the value at this group. A list gathers at the group that
+// stands for the list itself -- the first of the ones it takes -- and its
+// element gathers at the ones after it, over and over.
+template <class subject, std::size_t index,
+          int = scanned_as_leaf<subject> ? 0 : (scanned_as_range<subject> ? 1 : 2)>
 struct leaf_at;
 template <class subject, std::size_t index>
-struct leaf_at<subject, index, true> {
+struct leaf_at<subject, index, 0> {
   using kind = subject;
 };
 template <class subject, std::size_t index>
-struct leaf_at<subject, index, false> {
+struct leaf_at<subject, index, 1> {
+  using element = std::remove_cvref_t<std::ranges::range_value_t<subject>>;
+  using kind = typename std::conditional_t<
+      index == 0, kind_is<subject>,
+      leaf_at<element, (index == 0 ? 0 : index - 1)>>::kind;
+};
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 2> {
   static constexpr auto where = field_holding<subject>(index);
   using next = typename parts_of<subject>::template at<where.first>;
   using kind = typename leaf_at<next, where.second>::kind;
@@ -780,9 +865,38 @@ constexpr void copy_until_kept_place(spread_format& made, std::string_view text,
 template <class type, bool within>
 constexpr void spread_into(spread_format& made, std::string_view text);
 
+// How many turns a place is written to take, as it is written: a star, a plus,
+// a question mark or a count in braces. Nothing written at all is one or more,
+// which is what a list of something usually is.
+[[nodiscard]] constexpr std::string_view repetition_after(std::string_view text,
+                                                          std::size_t at) {
+  if (at >= text.size()) return {};
+  const char first = text[at];
+  if (first == '*' || first == '+' || first == '?') return text.substr(at, 1);
+  if (first != '{') return {};
+  if (at + 1 >= text.size() || text[at + 1] < '0' || text[at + 1] > '9') {
+    return {};
+  }
+  std::size_t close = at + 1;
+  while (close < text.size() && text[close] != '}') ++close;
+  if (close == text.size()) throw "unterminated repetition";
+  return text.substr(at, close - at + 1);
+}
+
 template <class kind>
-constexpr void spread_place(spread_format& made, std::string_view body) {
-  if constexpr (scanned_as_variant<kind>) {
+constexpr void spread_place(spread_format& made, std::string_view body,
+                            std::string_view repetition = {}) {
+  if constexpr (scanned_as_range<kind>) {
+    // The body is one element, and it is read for as long as it goes on. The
+    // group around it is the list; the places inside it are the element, and
+    // they are written over again on every turn.
+    made.text.push_back(format_repeat);
+    ++made.leaves;
+    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
+        made, body);
+    made.text.push_back(format_group_end);
+    made.text.append(repetition);
+  } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body
     // of the place says them, one per alternative, separated by a bar. Left
     // empty, each alternative is asked how it reads itself -- which it can
@@ -847,9 +961,13 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
       if (position == text.size()) throw "format has fewer places than values";
       const std::size_t close = end_of_place(text, position);
       using kind = typename place_chosen<type, within, which>::kind;
-      spread_place<kind>(made,
-                         text.substr(position + 1, close - position - 1));
-      position = close + 1;
+      std::string_view repetition;
+      if constexpr (scanned_as_range<kind>) {
+        repetition = repetition_after(text, close + 1);
+      }
+      spread_place<kind>(made, text.substr(position + 1, close - position - 1),
+                         repetition);
+      position = close + 1 + repetition.size();
     };
     (one.template operator()<place>(), ...);
   }(std::make_index_sequence<places_chosen<type, within>()>{});
