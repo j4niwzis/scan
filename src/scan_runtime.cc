@@ -128,20 +128,22 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
       }(std::make_index_sequence<packed_state.final_command_count>{});
 }
 
-// Staying in a state, eight characters at a time.
+// What keeps a state: a handful of ranges of characters, and nothing else.
 //
-// A state that a run of characters keeps returning to is the inside of a field,
-// and the whole point of holding the tags back is that there is nothing to do
-// while the run lasts -- no operation, no register, nothing but the question of
-// whether this character belongs to the class. Asked one character at a time
-// that question costs a load, a subtraction, a comparison and a branch. Asked
-// of eight characters packed in a word it costs about as much for all eight.
-//
-// The trick is the usual one. For bytes below 128 a byte is under `n` exactly
-// when subtracting `n` borrows out of it, and the borrow shows in the high bit
-// that was cleared beforehand; the two halves of a range are two such tests. A
-// byte of 128 or over answers neither and is simply called foreign, which it is
-// whenever the class ends below 128 -- which is the only case this is used for.
+// One range covers a field of letters. Three cover the body of a quoted string,
+// which is everything but the quote and the backslash. Six cover the local part
+// of an address. The test costs one subtraction and one comparison per range
+// per vector, so a class of several ranges is read very nearly as fast as a
+// class of one, and the cases that are not one range are the common ones.
+struct staying_class {
+  std::array<unsigned char, 8> first{};
+  std::array<unsigned char, 8> last{};
+  std::size_t count = 0;
+  // Whether every range ends below a hundred and twenty-eight, which is what
+  // the word step needs and the vectors do not.
+  bool below_the_high_bit = false;
+};
+
 #if defined(__clang__) || defined(__GNUC__)
 #define SCAN_HAS_LANES 1
 template <class lane_type>
@@ -151,6 +153,25 @@ template <class lane_type>
     made[index] = value;
   }
   return made;
+}
+
+// Ones where a character belongs to none of the ranges. A byte is inside a
+// range exactly when subtracting the low end of it, in the arithmetic that
+// wraps, lands at or below the width of it -- which holds for every byte there
+// is, high bit or not.
+template <staying_class klass, class lane_type>
+[[nodiscard]] SCAN_FORCE_INLINE auto outside_of(lane_type letters) {
+  const auto belongs = [&]<std::size_t index>() {
+    constexpr lane_type low = spread_over<lane_type>(klass.first[index]);
+    constexpr lane_type span = spread_over<lane_type>(
+        static_cast<unsigned char>(klass.last[index] - klass.first[index]));
+    return (letters - low) <= span;
+  };
+  return [&]<std::size_t... index>(std::index_sequence<index...>) {
+    auto inside = belongs.template operator()<0>();
+    ((inside = inside | belongs.template operator()<index + 1>()), ...);
+    return ~inside;
+  }(std::make_index_sequence<klass.count - 1>{});
 }
 
 // Did any of them fall out of the class? Not which -- any. The comparison
@@ -168,10 +189,9 @@ template <class lane_type>
   return together != 0;
 #endif
 }
-
 #endif
 
-template <unsigned char first, unsigned char last>
+template <staying_class klass>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
     const char* cursor, const char* limit) {
   // Everything below reads several characters as one number and then asks which
@@ -185,38 +205,33 @@ template <unsigned char first, unsigned char last>
 #if SCAN_HAS_LANES
     // Sixty-four characters to a step and one question at the end of it.
     // Written as a vector of bytes and not as anything named after an
-    // instruction set: on one machine this is four SSE2 comparisons, on another
-    // four NEON ones, and where the compiler has no such register none of it is
-    // compiled. Asking after every thirty-two costs more than the comparison
-    // does -- the question is a branch, and that is a branch too often.
+    // instruction set: on one machine each comparison is an SSE2 operation, on
+    // another a NEON one, and where the compiler has no such register none of
+    // it is compiled. Asking after every thirty-two costs more than the
+    // comparison does -- the question is a branch, and that is a branch too
+    // often.
     {
       using lane [[gnu::vector_size(32)]] = unsigned char;
-      constexpr lane low = spread_over<lane>(first);
-      constexpr lane span =
-          spread_over<lane>(static_cast<unsigned char>(last - first));
       while (limit - cursor >= 64) {
         lane head{}, tail{};
         __builtin_memcpy(&head, cursor, 32);
         __builtin_memcpy(&tail, cursor + 32, 32);
-        if (any_of(((head - low) > span) | ((tail - low) > span))) break;
+        if (any_of(outside_of<klass>(head) | outside_of<klass>(tail))) break;
         cursor += 64;
       }
       while (limit - cursor >= 32) {
         lane letters{};
         __builtin_memcpy(&letters, cursor, 32);
-        if (any_of((letters - low) > span)) break;
+        if (any_of(outside_of<klass>(letters))) break;
         cursor += 32;
       }
     }
     {
       using lane [[gnu::vector_size(16)]] = unsigned char;
-      constexpr lane low = spread_over<lane>(first);
-      constexpr lane span =
-          spread_over<lane>(static_cast<unsigned char>(last - first));
       while (limit - cursor >= 16) {
         lane letters{};
         __builtin_memcpy(&letters, cursor, 16);
-        if (any_of((letters - low) > span)) break;
+        if (any_of(outside_of<klass>(letters))) break;
         cursor += 16;
       }
     }
@@ -225,59 +240,68 @@ template <unsigned char first, unsigned char last>
     // last few characters fall back to in any case. For bytes under a hundred
     // and twenty-eight a byte is below a bound exactly when subtracting the
     // bound borrows out of it, and the borrow shows in a high bit cleared
-    // beforehand; two such tests are the two ends of the class, and a byte with
-    // its high bit already set is foreign, which it is whenever the class ends
-    // below a hundred and twenty-eight.
-    constexpr std::uint64_t ones = 0x0101010101010101ull;
-    constexpr std::uint64_t highs = 0x8080808080808080ull;
-    while (limit - cursor >= 8) {
-      std::uint64_t word = 0;
-      __builtin_memcpy(&word, cursor, 8);
-      const std::uint64_t below = (word - ones * first) & ~word & highs;
-      const std::uint64_t above = (word + ones * (127 - last)) & ~word & highs;
-      const std::uint64_t foreign = below | above | (word & highs);
-      if (foreign != 0) {
-        return cursor +
-               (static_cast<std::size_t>(std::countr_zero(foreign)) >> 3);
+    // beforehand; two such tests are the two ends of a range, a character is
+    // foreign when it is foreign to every range, and one with its high bit
+    // already set is foreign outright -- which it is only because this step is
+    // not used for a class that reaches above the high bit.
+    if constexpr (klass.below_the_high_bit) {
+      constexpr std::uint64_t ones = 0x0101010101010101ull;
+      constexpr std::uint64_t highs = 0x8080808080808080ull;
+      while (limit - cursor >= 8) {
+        std::uint64_t word = 0;
+        __builtin_memcpy(&word, cursor, 8);
+        std::uint64_t foreign = ~std::uint64_t{0};
+        for (std::size_t index = 0; index < klass.count; ++index) {
+          const std::uint64_t below =
+              (word - ones * klass.first[index]) & ~word & highs;
+          const std::uint64_t above =
+              (word + ones * (127 - klass.last[index])) & ~word & highs;
+          foreign &= below | above;
+        }
+        foreign |= word & highs;
+        if (foreign != 0) {
+          return cursor +
+                 (static_cast<std::size_t>(std::countr_zero(foreign)) >> 3);
+        }
+        cursor += 8;
       }
-      cursor += 8;
     }
     return cursor;
   }
 }
 
-// Whether a state is one of those: everything that stays is one range of
-// characters below 128, and staying costs no operation.
+// What keeps this state, if the answer is simple enough to be worth asking:
+// every range that returns to it costs no operation, and there are few enough
+// of them that testing all of them together is still cheaper than reading one
+// character at a time. Ranges that lead elsewhere are not part of it -- they
+// end the run, which is what the caller then handles.
 template <auto& automaton, std::size_t state>
-[[nodiscard]] consteval bool runs_in_place() {
+[[nodiscard]] consteval staying_class staying_of() {
   constexpr const auto& packed = automaton.states[state];
-  std::size_t staying = 0;
+  staying_class answer{};
+  answer.below_the_high_bit = true;
   for (std::size_t index = 0; index < packed.range_count; ++index) {
     const auto& range = packed.ranges[index];
     if (range.target != state) continue;
-    if (range.command_count != 0) return false;
-    if (range.last >= 128) return false;
-    ++staying;
+    if (range.command_count != 0) return staying_class{};
+    if (answer.count == answer.first.size()) return staying_class{};
+    // Ranges arrive in symbol order, so one that begins where the last ended is
+    // the same run written twice and is joined here rather than tested twice.
+    if (answer.count != 0 && answer.last[answer.count - 1] + 1 == range.first) {
+      answer.last[answer.count - 1] = range.last;
+    } else {
+      answer.first[answer.count] = range.first;
+      answer.last[answer.count] = range.last;
+      ++answer.count;
+    }
+    if (range.last >= 128) answer.below_the_high_bit = false;
   }
-  return staying == 1;
+  return answer;
 }
 
 template <auto& automaton, std::size_t state>
-[[nodiscard]] consteval unsigned char staying_first() {
-  constexpr const auto& packed = automaton.states[state];
-  for (std::size_t index = 0; index < packed.range_count; ++index) {
-    if (packed.ranges[index].target == state) return packed.ranges[index].first;
-  }
-  return 0;
-}
-
-template <auto& automaton, std::size_t state>
-[[nodiscard]] consteval unsigned char staying_last() {
-  constexpr const auto& packed = automaton.states[state];
-  for (std::size_t index = 0; index < packed.range_count; ++index) {
-    if (packed.ranges[index].target == state) return packed.ranges[index].last;
-  }
-  return 0;
+[[nodiscard]] consteval bool runs_in_place() {
+  return staying_of<automaton, state>().count != 0;
 }
 
 template <auto& automaton, std::size_t state, class mark,
@@ -342,8 +366,7 @@ template <auto& automaton, bool in_words, std::size_t state,
     const char* cursor, const char* end,
     std::array<const char*, register_count>& registers) {
   if constexpr (in_words && runs_in_place<automaton, state>()) {
-    cursor = skip_class<staying_first<automaton, state>(),
-                        staying_last<automaton, state>()>(cursor, end);
+    cursor = skip_class<staying_of<automaton, state>()>(cursor, end);
   }
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
@@ -494,8 +517,7 @@ template <auto& automaton, unsigned char sentinel, bool in_words,
   // in one piece, which is a question about the subject and not about the
   // pattern.
   if constexpr (in_words && runs_in_place<automaton, state>()) {
-    cursor = skip_class<staying_first<automaton, state>(),
-                        staying_last<automaton, state>()>(cursor, limit);
+    cursor = skip_class<staying_of<automaton, state>()>(cursor, limit);
   }
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
