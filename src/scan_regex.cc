@@ -135,7 +135,12 @@ template <fixed_string pattern>
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.accepting)>>;
   constexpr std::size_t unreachable =
       std::numeric_limits<std::size_t>::max();
-  std::array<std::size_t, state_count> distance;
+  // Value-initialised, not left to the default constructor: an implicit
+  // constructor of a class from the `std` module is defined only where it is
+  // used, and clang's bytecode interpreter cannot produce that definition in
+  // whoever imports it. Braces build the object without asking for one, and
+  // this array is filled on the next line regardless.
+  std::array<std::size_t, state_count> distance{};
   std::ranges::fill(distance, unreachable);
   distance[automaton.initial] = 0;
   std::ranges::for_each(
