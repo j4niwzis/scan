@@ -76,18 +76,28 @@ class regex_result {
 
 namespace detail {
 
+// And the opposite request, for the entry points whose bodies hold the
+// scanning loop. Inlined into a caller, that loop shares its registers with
+// whatever is alive there and is encoded with the extended ones and a
+// byte-wide comparison -- seventeen bytes, across an instruction fetch
+// boundary, where the same five instructions in a frame of their own take
+// fourteen and sit in one. On a four kilobyte subject that is 1.8 gigabytes a
+// second against 3.2.
 #if defined(_MSC_VER)
 #define SCAN_REGEX_FORCE_INLINE __forceinline
 // A lambda takes the attribute but not the specifier: `inline` is not one of
 // the things a lambda-declarator may carry, and naming it there is not a
 // weaker request that compilers ignore -- it stops the parse.
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA __forceinline
+#define SCAN_REGEX_NEVER_INLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
 #define SCAN_REGEX_FORCE_INLINE [[gnu::always_inline]] inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
+#define SCAN_REGEX_NEVER_INLINE [[gnu::noinline]]
 #else
 #define SCAN_REGEX_FORCE_INLINE inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA
+#define SCAN_REGEX_NEVER_INLINE
 #endif
 
 template <class state_type>
