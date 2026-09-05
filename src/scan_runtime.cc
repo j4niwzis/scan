@@ -1400,9 +1400,13 @@ class stream_state {
   [[nodiscard]] constexpr const auto& gathering() const {
     const std::size_t here =
         state_ == packed_range<0>::reject ? automaton.initial : state_;
-    // Where the value ends is where it is gathered.
-    return std::get<field>(
-        scanner_states_[automaton.states[here].readings[0][field * 2 + 1]]);
+    // The same question the reading asks: a field still being typed is where
+    // it is being gathered, and one that has closed is the copy taken then.
+    const auto& reading = automaton.states[here].readings[0];
+    const std::uint32_t open = reading[field * 2];
+    const std::uint32_t close = reading[field * 2 + 1];
+    const bool still_reading = registers_[close] < registers_[open];
+    return std::get<field>(scanner_states_[still_reading ? open : close]);
   }
 
   // Whether that field is being read right now: begun and not yet ended.
