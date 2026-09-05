@@ -16,14 +16,15 @@ import scan;
 bool re2c_timestamp(const char* cursor);
 
 static void scan_timestamp(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::timestamp);
+  const auto& texts = bench::copies_of(bench::timestamp, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::timestamp.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::timestamp.size());
 }
 BENCHMARK(scan_timestamp);
 
@@ -33,38 +34,41 @@ BENCHMARK(scan_timestamp);
 // out of the class test, which is what re2c does, and what makes the two rows
 // comparable.
 static void scan_timestamp_sentinel(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::timestamp);
+  const auto& texts = bench::copies_of(bench::timestamp, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match_sentinel<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::match_sentinel<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::timestamp.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::timestamp.size());
 }
 BENCHMARK(scan_timestamp_sentinel);
 
 
 static void ctre_timestamp(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::timestamp);
+  const auto& texts = bench::copies_of(bench::timestamp, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(ctre::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(ctre::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::timestamp.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::timestamp.size());
 }
 BENCHMARK(ctre_timestamp);
 
 static void re2c_timestamp_benchmark(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::timestamp);
+  const auto& texts = bench::copies_of(bench::timestamp, 32);
   for (auto _ : state) {
-    const char* cursor = text.c_str();
-    benchmark::DoNotOptimize(cursor);
-    benchmark::DoNotOptimize(re2c_timestamp(cursor));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      const char* cursor = text.c_str();
+      benchmark::DoNotOptimize(cursor);
+      benchmark::DoNotOptimize(re2c_timestamp(cursor));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::timestamp.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::timestamp.size());
 }
 BENCHMARK(re2c_timestamp_benchmark);

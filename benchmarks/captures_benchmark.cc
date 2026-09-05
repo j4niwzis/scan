@@ -23,25 +23,27 @@ struct fields {
 };
 
 static void scan_captures(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::csv);
+  const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
 BENCHMARK(scan_captures);
 
 static void ctre_captures(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::csv);
+  const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
 BENCHMARK(ctre_captures);

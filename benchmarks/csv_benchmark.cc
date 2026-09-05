@@ -16,14 +16,15 @@ import scan;
 bool re2c_csv(const char* cursor);
 
 static void scan_csv(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::csv);
+  const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
 BENCHMARK(scan_csv);
 
@@ -33,38 +34,41 @@ BENCHMARK(scan_csv);
 // out of the class test, which is what re2c does, and what makes the two rows
 // comparable.
 static void scan_csv_sentinel(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::csv);
+  const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
 BENCHMARK(scan_csv_sentinel);
 
 
 static void ctre_csv(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::csv);
+  const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
 BENCHMARK(ctre_csv);
 
 static void re2c_csv_benchmark(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::csv);
+  const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
-    const char* cursor = text.c_str();
-    benchmark::DoNotOptimize(cursor);
-    benchmark::DoNotOptimize(re2c_csv(cursor));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      const char* cursor = text.c_str();
+      benchmark::DoNotOptimize(cursor);
+      benchmark::DoNotOptimize(re2c_csv(cursor));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
 BENCHMARK(re2c_csv_benchmark);

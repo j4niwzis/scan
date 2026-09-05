@@ -16,14 +16,13 @@ import scan;
 bool re2c_word(const char* cursor);
 
 static void scan_word(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::word);
+  const std::string& text = bench::long_word();
   for (auto _ : state) {
     std::string_view view(text);
     benchmark::DoNotOptimize(view);
     benchmark::DoNotOptimize(scan::match<"[a-z]+">(view));
-    benchmark::ClobberMemory();
   }
-  state.SetBytesProcessed(state.iterations() * bench::word.size());
+  state.SetBytesProcessed(state.iterations() * bench::long_word().size());
 }
 BENCHMARK(scan_word);
 
@@ -33,38 +32,35 @@ BENCHMARK(scan_word);
 // out of the class test, which is what re2c does, and what makes the two rows
 // comparable.
 static void scan_word_sentinel(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::word);
+  const std::string& text = bench::long_word();
   for (auto _ : state) {
     std::string_view view(text);
     benchmark::DoNotOptimize(view);
     benchmark::DoNotOptimize(scan::match_sentinel<"[a-z]+">(view));
-    benchmark::ClobberMemory();
   }
-  state.SetBytesProcessed(state.iterations() * bench::word.size());
+  state.SetBytesProcessed(state.iterations() * bench::long_word().size());
 }
 BENCHMARK(scan_word_sentinel);
 
 
 static void ctre_word(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::word);
+  const std::string& text = bench::long_word();
   for (auto _ : state) {
     std::string_view view(text);
     benchmark::DoNotOptimize(view);
     benchmark::DoNotOptimize(ctre::match<"[a-z]+">(view));
-    benchmark::ClobberMemory();
   }
-  state.SetBytesProcessed(state.iterations() * bench::word.size());
+  state.SetBytesProcessed(state.iterations() * bench::long_word().size());
 }
 BENCHMARK(ctre_word);
 
 static void re2c_word_benchmark(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::word);
+  const std::string& text = bench::long_word();
   for (auto _ : state) {
     const char* cursor = text.c_str();
     benchmark::DoNotOptimize(cursor);
     benchmark::DoNotOptimize(re2c_word(cursor));
-    benchmark::ClobberMemory();
   }
-  state.SetBytesProcessed(state.iterations() * bench::word.size());
+  state.SetBytesProcessed(state.iterations() * bench::long_word().size());
 }
 BENCHMARK(re2c_word_benchmark);

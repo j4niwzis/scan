@@ -16,14 +16,15 @@ import scan;
 bool re2c_address(const char* cursor);
 
 static void scan_address(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::address);
+  const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
 }
 BENCHMARK(scan_address);
 
@@ -33,38 +34,41 @@ BENCHMARK(scan_address);
 // out of the class test, which is what re2c does, and what makes the two rows
 // comparable.
 static void scan_address_sentinel(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::address);
+  const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
 }
 BENCHMARK(scan_address_sentinel);
 
 
 static void ctre_address(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::address);
+  const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      benchmark::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
 }
 BENCHMARK(ctre_address);
 
 static void re2c_address_benchmark(benchmark::State& state) {
-  const std::string& text = bench::subject_of(bench::address);
+  const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
-    const char* cursor = text.c_str();
-    benchmark::DoNotOptimize(cursor);
-    benchmark::DoNotOptimize(re2c_address(cursor));
-    benchmark::ClobberMemory();
+    for (const std::string& text : texts) {
+      const char* cursor = text.c_str();
+      benchmark::DoNotOptimize(cursor);
+      benchmark::DoNotOptimize(re2c_address(cursor));
+    }
   }
-  state.SetBytesProcessed(state.iterations() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
 }
 BENCHMARK(re2c_address_benchmark);

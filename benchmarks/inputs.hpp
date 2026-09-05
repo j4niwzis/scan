@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace bench {
 
@@ -26,6 +27,30 @@ inline constexpr std::string_view timestamp =
 // match while compiling and the loop is left holding the answer. Copying into
 // a string with static storage and hiding the pointer from the optimiser makes
 // the work happen where it is being timed.
+// A subject long enough that the work outweighs the loop around it. Sixty
+// bytes are matched in about twenty nanoseconds, which is also what one
+// iteration of the harness costs, so a short subject measures the harness.
+inline const std::string& long_word() {
+  static const std::string storage = [] {
+    std::string letters;
+    letters.reserve(4096);
+    while (letters.size() < 4096) letters.push_back('a' + (letters.size() % 26));
+    return letters;
+  }();
+  return storage;
+}
+
+// Copies of the same subject at different addresses, so that a batch of calls
+// in one iteration cannot be answered once and reused.
+inline const std::vector<std::string>& copies_of(std::string_view text,
+                                                 std::size_t count) {
+  static std::vector<std::string> storage;
+  if (storage.size() != count) {
+    storage.assign(count, std::string(text));
+  }
+  return storage;
+}
+
 inline const std::string& subject_of(std::string_view text) {
   static std::string storage;
   storage.assign(text);
