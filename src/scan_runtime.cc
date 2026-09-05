@@ -717,9 +717,8 @@ template <class type, fixed_string format, int sentinel = -1,
           bool terminated = false>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_branch_fields(
     std::string_view input) {
-  constexpr const auto& automaton = packed_automaton<type, format>;
   return scan_fields<type, format, sentinel, terminated, true>(
-      input, std::make_index_sequence<automaton.tag_count / 2>{});
+      input, std::make_index_sequence<groups_of<type>()>{});
 }
 
 template <class type, std::size_t index>

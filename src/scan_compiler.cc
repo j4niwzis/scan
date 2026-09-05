@@ -9,6 +9,17 @@ export import scan.views;
 export namespace scan::detail {
 
 
+// Three characters the spread writes and this parser reads, and which no format
+// anyone writes can contain. A format has no grouping of its own and no
+// alternation except at the top, and a variant standing in a field needs both:
+// its branches have to be held together and each one has to be marked, so that
+// which branch ran can be read off afterwards. Rather than give the written
+// language a syntax for that, the spread says it in a spelling of its own.
+inline constexpr char format_group_begin = '\x01';
+inline constexpr char format_group_end = '\x02';
+inline constexpr char format_branch = '\x03';
+inline constexpr char format_mark = '\x04';
+
 class tre_parser {
  public:
   constexpr tre_parser(std::string_view source,
@@ -64,8 +75,40 @@ class tre_parser {
                                                 : '\0';
   }
 
+  // A group of branches, held together, as the spread writes it.
+  [[nodiscard]] constexpr scan::tre::node parse_format_group() {
+    ++position_;
+    std::vector<scan::tre::node> branches;
+    while (true) {
+      branches.push_back(parse_format_sequence());
+      if (peek() != format_branch) break;
+      ++position_;
+    }
+    if (peek() != format_group_end) throw "unterminated group of branches";
+    ++position_;
+    if (branches.size() == 1) return std::move(branches.front());
+    return scan::tre::alt(std::move(branches));
+  }
+
   [[nodiscard]] constexpr scan::tre::node parse_format_sequence() {
-    if (at_end() || peek() == '|') return scan::tre::epsilon();
+    if (at_end() || peek() == '|' || peek() == format_group_end ||
+        peek() == format_branch) {
+      return scan::tre::epsilon();
+    }
+    if (peek() == format_group_begin) {
+      scan::tre::node group = parse_format_group();
+      return scan::tre::cat({std::move(group), parse_format_sequence()});
+    }
+    // A group that captures nothing and stands at the head of a branch. What it
+    // captured is never read; that it captured at all is how the branch is
+    // known to have run, and it is the only way to know for a branch whose
+    // alternative captures nothing of its own.
+    if (peek() == format_mark) {
+      ++position_;
+      const std::size_t capture = capture_count_++;
+      return scan::tre::cat(
+          {wrap_capture(capture, scan::tre::epsilon()), parse_format_sequence()});
+    }
     if (peek() == '\\') {
       if (peek(1) == '\0') throw "dangling format escape";
       const char literal = peek(1);
@@ -400,7 +443,8 @@ concept scanned_as_leaf = requires {
 // structure of structures can be written out flat.
 template <class type>
 [[nodiscard]] consteval std::size_t places_of() {
-  if constexpr (scanned_as_leaf<type> || scanned_by_format<type>) {
+  if constexpr (scanned_as_leaf<type> || scanned_by_format<type> ||
+                scanned_as_variant<type>) {
     return 1;
   } else {
     return []<std::size_t... index>(std::index_sequence<index...>) {
@@ -415,6 +459,13 @@ template <class type>
 [[nodiscard]] consteval std::size_t groups_of() {
   if constexpr (scanned_as_leaf<type>) {
     return 1;
+  } else if constexpr (scanned_as_variant<type>) {
+    // A mark for each branch, and then whatever that branch's alternative
+    // reads, in the order the branches are written.
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (std::size_t{0} + ... +
+              (1 + groups_of<std::variant_alternative_t<which, type>>()));
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
   } else {
     return []<std::size_t... index>(std::index_sequence<index...>) {
       return (std::size_t{0} + ... +
@@ -454,7 +505,8 @@ template <class subject>
 }
 
 template <class subject, std::size_t index,
-          bool = scanned_as_leaf<subject> || scanned_by_format<subject>>
+          bool = scanned_as_leaf<subject> || scanned_by_format<subject> ||
+                 scanned_as_variant<subject>>
 struct place_at;
 template <class subject, std::size_t index>
 struct place_at<subject, index, true> {
@@ -576,15 +628,82 @@ constexpr void copy_until_place(spread_format& made, std::string_view text,
 
 // Read outside a type, one place is the whole of it; read inside its own
 // format, one place is one of its fields. The same walk, told which it is.
+// Where the top level of a format has branches, each is read against the
+// alternative standing in the same place, and each one's places mean that
+// alternative's values.
+[[nodiscard]] constexpr std::array<std::pair<std::size_t, std::size_t>, 16>
+branches_of(std::string_view text, std::size_t& count) {
+  std::array<std::pair<std::size_t, std::size_t>, 16> found{};
+  std::size_t begin = 0;
+  std::size_t position = 0;
+  count = 0;
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (text[position] == '|') {
+      if (count == found.size()) throw "too many branches in a format";
+      found[count++] = {begin, position};
+      begin = position + 1;
+    }
+    ++position;
+  }
+  if (count == found.size()) throw "too many branches in a format";
+  found[count++] = {begin, text.size()};
+  return found;
+}
+
 template <class type, bool within>
 constexpr void spread_into(spread_format& made, std::string_view text);
 
 template <class kind>
 constexpr void spread_place(spread_format& made, std::string_view body) {
-  if constexpr (scanned_by_format<kind>) {
+  if constexpr (scanned_as_variant<kind>) {
+    // The branches, held together, each headed by a mark. Written out, the body
+    // of the place says them, one per alternative, separated by a bar. Left
+    // empty, each alternative is asked how it reads itself -- which it can
+    // answer if it declares a format or if something knows how to read it.
+    constexpr std::size_t count = std::variant_size_v<kind>;
+    std::size_t written = 0;
+    std::array<std::pair<std::size_t, std::size_t>, 16> parts{};
+    if (!body.empty()) {
+      parts = branches_of(body, written);
+      if (written != count) {
+        throw "a variant place must have one branch for each alternative";
+      }
+    }
+    made.text.push_back(format_group_begin);
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      const auto one = [&]<std::size_t branch>() {
+        if constexpr (branch != 0) made.text.push_back(format_branch);
+        made.text.push_back(format_mark);
+        using alternative = std::variant_alternative_t<branch, kind>;
+        if (body.empty()) {
+          spread_place<alternative>(made, std::string_view{});
+        } else {
+          spread_into<alternative, false>(
+              made, body.substr(parts[branch].first,
+                                parts[branch].second - parts[branch].first));
+        }
+      };
+      (one.template operator()<which>(), ...);
+    }(std::make_index_sequence<count>{});
+    made.text.push_back(format_group_end);
+  } else if constexpr (scanned_by_format<kind>) {
     if (!body.empty()) throw "a type that declares a format takes no body";
     spread_into<kind, true>(
         made, scan::scanner<std::remove_cv_t<kind>>::scan_format.view());
+  } else if constexpr (!scanned_as_leaf<kind>) {
+    // Only reached by a variant place left empty, which asks each alternative
+    // how it reads itself. This one does not say.
+    throw "an alternative of a variant place left empty must say how it reads "
+          "itself -- give it a scanner or a format of its own, or write the "
+          "branches out with a bar between them";
   } else {
     made.text.push_back('{');
     if (body.empty() || body.front() == ':') {
@@ -621,55 +740,13 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
   if (position != text.size()) throw "format has more places than values";
 }
 
-// Where the top level of a format has branches, each is read against the
-// alternative standing in the same place, and each one's places mean that
-// alternative's values.
-[[nodiscard]] constexpr std::array<std::pair<std::size_t, std::size_t>, 16>
-branches_of(std::string_view text, std::size_t& count) {
-  std::array<std::pair<std::size_t, std::size_t>, 16> found{};
-  std::size_t begin = 0;
-  std::size_t position = 0;
-  count = 0;
-  while (position < text.size()) {
-    if (text[position] == '\\' && position + 1 < text.size()) {
-      position += 2;
-      continue;
-    }
-    if (text[position] == '{') {
-      position = end_of_place(text, position) + 1;
-      continue;
-    }
-    if (text[position] == '|') {
-      if (count == found.size()) throw "too many branches in a format";
-      found[count++] = {begin, position};
-      begin = position + 1;
-    }
-    ++position;
-  }
-  if (count == found.size()) throw "too many branches in a format";
-  found[count++] = {begin, text.size()};
-  return found;
-}
-
 template <class type, fixed_string format>
 [[nodiscard]] consteval spread_format spread_of() {
   spread_format made;
   if constexpr (scanned_as_variant<type>) {
-    std::size_t count = 0;
-    const auto text = format.view();
-    const auto found = branches_of(text, count);
-    if (count != std::variant_size_v<type>) {
-      throw "the format must have one branch for each alternative";
-    }
-    [&]<std::size_t... branch>(std::index_sequence<branch...>) {
-      const auto one = [&]<std::size_t which>() {
-        if constexpr (which != 0) made.text.push_back('|');
-        spread_into<std::variant_alternative_t<which, type>, false>(
-            made, text.substr(found[which].first,
-                              found[which].second - found[which].first));
-      };
-      (one.template operator()<branch>(), ...);
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
+    // The whole format is the list of branches, which is what a place standing
+    // for a variant is written as anywhere else.
+    spread_place<type>(made, format.view());
   } else {
     // The type scanned into is always opened up: its fields are the places, and
     // it is never itself one. A format of a single place standing for the whole
@@ -677,10 +754,6 @@ template <class type, fixed_string format>
     // one, without a word changing in the format, so it is not allowed to mean
     // anything. Whoever wants it writes the wrapper themselves, and then the
     // place is the field and says so.
-    //
-    // A variant is the exception, and the branches below are why: there a place
-    // standing for a whole alternative is the thing being said, not an accident
-    // of what the alternative happens to be.
     spread_into<type, true>(made, format.view());
   }
   return made;
@@ -715,96 +788,12 @@ template <std::size_t extent>
   return result;
 }
 
-// An output that is one of several shapes, and a format whose top level says
-// which. The alternatives of the variant and the branches of the format stand
-// in the same order, and each alternative's fields are that branch's groups.
-
-template <class type>
-[[nodiscard]] consteval auto fields_of_each_alternative() {
-  return []<std::size_t... index>(std::index_sequence<index...>) {
-    return std::array<std::size_t, sizeof...(index)>{
-        groups_of<std::variant_alternative_t<index, type>>()...};
-  }(std::make_index_sequence<std::variant_size_v<type>>{});
-}
-
-template <class type>
-[[nodiscard]] consteval std::size_t fields_of_all_alternatives() {
-  std::size_t total = 0;
-  for (std::size_t count : fields_of_each_alternative<type>()) total += count;
-  return total;
-}
-
-// The type of the field a group writes to, counting the fields of every
-// alternative one after another in the order the branches are written.
-template <std::size_t index, class... alternatives>
-struct flattened_field;
-template <std::size_t index, class first, class... rest>
-struct flattened_field<index, first, rest...> {
-  static constexpr std::size_t here = groups_of<first>();
-  using type = typename std::conditional_t<
-      (index < here),
-      std::type_identity<leaf_kind<first, (index < here ? index : 0)>>,
-      flattened_field<(index < here ? 0 : index - here), rest...>>::type;
-};
-
-template <class variant_type, std::size_t index>
-struct flattened_field_of;
-template <class... alternatives, std::size_t index>
-struct flattened_field_of<std::variant<alternatives...>, index> {
-  using type = typename flattened_field<index, alternatives...>::type;
-};
-
-template <class type, std::size_t extent, std::size_t... index>
-[[nodiscard]] constexpr auto variant_patterns(
-    const std::array<std::string_view, extent>& parameters,
-    std::index_sequence<index...>) {
-  const auto make_pattern = []<class field_type>(std::string_view given) {
-    pattern_buffer<> result;
-    const auto pattern = scanner_pattern<field_type>(given);
-    result.append(std::string_view{pattern});
-    return result;
-  };
-  return std::array<pattern_buffer<>, extent>{
-      make_pattern.template operator()<std::remove_cvref_t<
-          typename flattened_field_of<type, index>::type>>(
-          parameters[index])...};
-}
-
-template <class type, fixed_string format>
-  requires scanned_as_variant<type>
-[[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
-  constexpr std::size_t branch_count = std::variant_size_v<type>;
-  constexpr auto wanted = fields_of_each_alternative<type>();
-  constexpr auto spread = spread_of<type, format>();
-  std::size_t captures = 0;
-  tre_parser parser(spread.text.view(), {}, captures);
-  std::vector<std::size_t> found;
-  std::vector<scan::tre::node> branches = parser.parse_format_branches(found);
-  if (branches.size() != branch_count) {
-    throw "the format must have one branch for each alternative";
-  }
-  for (std::size_t branch = 0; branch < branch_count; ++branch) {
-    if (found[branch] != wanted[branch]) {
-      throw "a branch has a different number of groups than its alternative";
-    }
-  }
-  // Each branch is wrapped in a group of its own, after the ones the format
-  // asked for. Nothing reads what it captured; that it captured anything at
-  // all is how the scan knows which branch the input took, and it is the only
-  // way to know for a branch that captures nothing itself.
-  for (std::size_t branch = 0; branch < branch_count; ++branch) {
-    branches[branch] = tre_parser::wrap_branch(captures + branch,
-                                               std::move(branches[branch]));
-  }
-  return scan::tre::compile_tnfa(scan::tre::alt(std::move(branches)));
-}
-
 // The automaton is built from the spread format, in which every place has
-// already become the pattern it stands for and every declared format has been
-// read against its own type. What is left is one flat format whose groups are
-// the values, in order.
+// already become the pattern it stands for, every declared format has been read
+// against its own type, and every variant has become branches with a mark at
+// the head of each. What is left is one format whose groups are the values, in
+// order.
 template <class type, fixed_string format>
-  requires(!scanned_as_variant<type>)
 [[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
   constexpr auto spread = spread_of<type, format>();
   std::size_t captures = 0;

@@ -15,6 +15,34 @@ template <class type>
   return scanner_parse<value_type>(text, parameters);
 }
 
+// Where a branch's mark stands, counting from the start of the variant: each
+// branch before it took a mark of its own and whatever its alternative reads.
+template <class type, std::size_t branch>
+[[nodiscard]] consteval std::size_t groups_before_branch() {
+  return []<std::size_t... which>(std::index_sequence<which...>) {
+    return (std::size_t{0} + ... +
+            (1 + groups_of<std::variant_alternative_t<which, type>>()));
+  }(std::make_index_sequence<branch>{});
+}
+
+// Whether a variant stands anywhere inside this output, at any depth. Where one
+// does, a group that took no part is the ordinary state of affairs rather than
+// a fault.
+template <class type>
+[[nodiscard]] consteval bool holds_a_variant() {
+  if constexpr (scanned_as_variant<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              holds_a_variant<std::remove_cvref_t<
+                  boost::pfr::tuple_element_t<field, type>>>());
+    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+  }
+}
+
 // A leaf is read from its one group; a product is built from its fields, each
 // of which takes as many groups as it needs, in order. Nothing about the
 // nesting is written in the format: a structure of structures is spelled out
@@ -31,6 +59,22 @@ template <class root, class type, fixed_string format, std::size_t offset,
     static constexpr auto spread = spread_of<root, format>();
     return parse_value<std::remove_cv_t<type>>(
         groups[offset], spread.parameters[offset].view());
+  } else if constexpr (scanned_as_variant<type>) {
+    // Exactly one branch ran, and its mark says so: a mark that took part
+    // points into the subject, and the others point nowhere.
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
+      std::optional<type> made;
+      const auto take = [&]<std::size_t which>() {
+        constexpr std::size_t mark = offset + groups_before_branch<type, which>();
+        if (made || groups[mark].data() == nullptr) return;
+        using alternative = std::variant_alternative_t<which, type>;
+        made.emplace(std::in_place_index<which>,
+                     build_value<root, alternative, format, mark + 1>(groups));
+      };
+      (take.template operator()<branch>(), ...);
+      if (!made) throw scan_error("no branch of the format took the input");
+      return std::move(*made);
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
   } else {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return type{build_value<
@@ -57,14 +101,6 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   return build_value<type, type, format, 0>(fields);
 }
 
-template <class type, std::size_t branch>
-[[nodiscard]] consteval std::size_t groups_before_branch() {
-  constexpr auto counts = fields_of_each_alternative<type>();
-  std::size_t before = 0;
-  for (std::size_t index = 0; index < branch; ++index) before += counts[index];
-  return before;
-}
-
 template <fixed_string format, int sentinel = -1, bool terminated = false>
 class borrowed_result {
  public:
@@ -77,35 +113,28 @@ class borrowed_result {
                   "a type that declares its own format is read as a field, not "
                   "as the whole of what is scanned into: wrap it in a struct "
                   "with one member and scan into that");
-    const auto fields = scan_fields<type, format, sentinel, terminated>(input_);
-    return convert<type, format>(fields,
-                                 std::make_index_sequence<groups_of<type>()>{});
+    // A group that took no part is an error, unless somewhere in this output
+    // there is a variant, where exactly one branch takes part and the rest do
+    // not. Which it is, is known while the pattern is compiled.
+    const auto fields =
+        [&] {
+          if constexpr (holds_a_variant<type>()) {
+            return scan_branch_fields<type, format, sentinel, terminated>(input_);
+          } else {
+            return scan_fields<type, format, sentinel, terminated>(input_);
+          }
+        }();
+    return build_value<type, type, format, 0>(fields);
   }
 
   // The same scan, for a format that says the input may be one of several
-  // shapes. Which branch ran is read from the group each branch was wrapped in:
-  // exactly one of them took part, and the others point nowhere.
+  // shapes. Which branch ran is read from the mark each branch was given.
   template <class type>
     requires scanned_as_variant<type>
   constexpr operator type() const {
-    constexpr std::size_t branches = std::variant_size_v<type>;
-    constexpr std::size_t total = fields_of_all_alternatives<type>();
     const auto groups =
         scan_branch_fields<type, format, sentinel, terminated>(input_);
-    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
-      std::optional<type> made;
-      const auto take = [&]<std::size_t which>() {
-        if (made || groups[total + which].data() == nullptr) return false;
-        using alternative = std::variant_alternative_t<which, type>;
-        made.emplace(std::in_place_index<which>,
-                     build_value<type, alternative, format,
-                                 groups_before_branch<type, which>()>(groups));
-        return true;
-      };
-      (void)(take.template operator()<branch>() || ...);
-      if (!made) throw scan_error("no branch of the format took the input");
-      return std::move(*made);
-    }(std::make_index_sequence<branches>{});
+    return build_value<type, type, format, 0>(groups);
   }
 
  private:
