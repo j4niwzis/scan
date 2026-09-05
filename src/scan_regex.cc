@@ -439,7 +439,7 @@ using regex_result_for =
     regex_result<regex_automaton<pattern>.tag_count / 2>;
 
 template <fixed_string pattern>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr regex_result_for<pattern>
+[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr regex_result_for<pattern>
 regex_match(
     std::string_view input) {
   constexpr const auto& automaton = regex_automaton<pattern>;
@@ -492,7 +492,7 @@ regex_match(
 }
 
 template <fixed_string pattern, unsigned char sentinel>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr regex_result_for<pattern>
+[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr regex_result_for<pattern>
 regex_match_sentinel(std::string_view input) {
   constexpr const auto& automaton = regex_automaton<pattern>;
   static_assert(automaton.tag_count == 0,
