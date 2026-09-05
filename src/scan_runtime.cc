@@ -86,7 +86,8 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 // with an interpreter -- a search through ranges and a loop over commands, per
 // character, through pointers.
 
-template <auto& automaton, std::size_t state, std::size_t register_count>
+template <auto& automaton, bool in_words, std::size_t state,
+          std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_state_continuation(
     const char* cursor, const char* end,
     std::array<const char*, register_count>& registers);
@@ -127,6 +128,75 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
       }(std::make_index_sequence<packed_state.final_command_count>{});
 }
 
+// Staying in a state, eight characters at a time.
+//
+// A state that a run of characters keeps returning to is the inside of a field,
+// and the whole point of holding the tags back is that there is nothing to do
+// while the run lasts -- no operation, no register, nothing but the question of
+// whether this character belongs to the class. Asked one character at a time
+// that question costs a load, a subtraction, a comparison and a branch. Asked
+// of eight characters packed in a word it costs about as much for all eight.
+//
+// The trick is the usual one. For bytes below 128 a byte is under `n` exactly
+// when subtracting `n` borrows out of it, and the borrow shows in the high bit
+// that was cleared beforehand; the two halves of a range are two such tests. A
+// byte of 128 or over answers neither and is simply called foreign, which it is
+// whenever the class ends below 128 -- which is the only case this is used for.
+template <unsigned char first, unsigned char last>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
+    const char* cursor, const char* limit) {
+  if (std::is_constant_evaluated()) return cursor;
+  constexpr std::uint64_t ones = 0x0101010101010101ull;
+  constexpr std::uint64_t highs = 0x8080808080808080ull;
+  while (limit - cursor >= 8) {
+    std::uint64_t word = 0;
+    __builtin_memcpy(&word, cursor, 8);
+    const std::uint64_t below = (word - ones * first) & ~word & highs;
+    const std::uint64_t above =
+        (word + ones * (127 - last)) & ~word & highs;
+    const std::uint64_t foreign = below | above | (word & highs);
+    if (foreign != 0) {
+      return cursor + (static_cast<std::size_t>(std::countr_zero(foreign)) >> 3);
+    }
+    cursor += 8;
+  }
+  return cursor;
+}
+
+// Whether a state is one of those: everything that stays is one range of
+// characters below 128, and staying costs no operation.
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval bool runs_in_place() {
+  constexpr const auto& packed = automaton.states[state];
+  std::size_t staying = 0;
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    const auto& range = packed.ranges[index];
+    if (range.target != state) continue;
+    if (range.command_count != 0) return false;
+    if (range.last >= 128) return false;
+    ++staying;
+  }
+  return staying == 1;
+}
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval unsigned char staying_first() {
+  constexpr const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (packed.ranges[index].target == state) return packed.ranges[index].first;
+  }
+  return 0;
+}
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval unsigned char staying_last() {
+  constexpr const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (packed.ranges[index].target == state) return packed.ranges[index].last;
+  }
+  return 0;
+}
+
 template <auto& automaton, std::size_t state, class mark,
           std::size_t register_count, std::size_t index = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
@@ -159,8 +229,8 @@ execute_tagged_self_transition(
   }
 }
 
-template <auto& automaton, std::size_t state, std::size_t register_count,
-          std::size_t index = 0>
+template <auto& automaton, bool in_words, std::size_t state,
+          std::size_t register_count, std::size_t index = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 dispatch_tagged_transition(
     unsigned char symbol, const char* cursor, const char* end,
@@ -175,18 +245,23 @@ dispatch_tagged_transition(
       execute_static_transition_commands<automaton, state, index>(registers,
                                                                   cursor - 1);
       [[clang::always_inline]] return run_tagged_state_continuation<
-          automaton, range.target>(cursor, end, registers);
+          automaton, in_words, range.target>(cursor, end, registers);
     }
-    return dispatch_tagged_transition<automaton, state, register_count,
-                                      index + 1>(symbol, cursor, end,
-                                                 registers);
+    return dispatch_tagged_transition<automaton, in_words, state,
+                                      register_count, index + 1>(
+        symbol, cursor, end, registers);
   }
 }
 
-template <auto& automaton, std::size_t state, std::size_t register_count>
+template <auto& automaton, bool in_words, std::size_t state,
+          std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_state_continuation(
     const char* cursor, const char* end,
     std::array<const char*, register_count>& registers) {
+  if constexpr (in_words && runs_in_place<automaton, state>()) {
+    cursor = skip_class<staying_first<automaton, state>(),
+                        staying_last<automaton, state>()>(cursor, end);
+  }
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     // The operations of a transition are the tags the state before it was
@@ -196,8 +271,8 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
                                                          cursor - 1)) {
       continue;
     }
-    return dispatch_tagged_transition<automaton, state>(symbol, cursor, end,
-                                                        registers);
+    return dispatch_tagged_transition<automaton, in_words, state>(
+        symbol, cursor, end, registers);
   }
   if constexpr (automaton.states[state].accepting_slot ==
                 packed_state<0, 0, 0>::not_accepting) {
@@ -294,16 +369,17 @@ template <auto& automaton>
   return answer;
 }
 
-template <auto& automaton, unsigned char sentinel, std::size_t state,
-          std::size_t register_count>
+template <auto& automaton, unsigned char sentinel, bool in_words,
+          std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
-    const char* cursor, std::array<const char*, register_count>& registers);
+    const char* cursor, const char* limit,
+    std::array<const char*, register_count>& registers);
 
-template <auto& automaton, unsigned char sentinel, std::size_t state,
-          std::size_t register_count, std::size_t index = 0>
+template <auto& automaton, unsigned char sentinel, bool in_words,
+          std::size_t state, std::size_t register_count, std::size_t index = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 dispatch_tagged_sentinel_transition(
-    unsigned char symbol, const char* cursor,
+    unsigned char symbol, const char* cursor, const char* limit,
     std::array<const char*, register_count>& registers) {
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
@@ -315,18 +391,29 @@ dispatch_tagged_sentinel_transition(
       execute_static_transition_commands<automaton, state, index>(registers,
                                                                   cursor - 1);
       [[clang::always_inline]] return run_tagged_sentinel_continuation<
-          automaton, sentinel, range.target>(cursor, registers);
+          automaton, sentinel, in_words, range.target>(cursor, limit,
+                                                       registers);
     }
-    return dispatch_tagged_sentinel_transition<automaton, sentinel, state,
-                                               register_count, index + 1>(
-        symbol, cursor, registers);
+    return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
+                                               state, register_count,
+                                               index + 1>(symbol, cursor, limit,
+                                                          registers);
   }
 }
 
-template <auto& automaton, unsigned char sentinel, std::size_t state,
-          std::size_t register_count>
+template <auto& automaton, unsigned char sentinel, bool in_words,
+          std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
-    const char* cursor, std::array<const char*, register_count>& registers) {
+    const char* cursor, const char* limit,
+    std::array<const char*, register_count>& registers) {
+  // The limit is not what ends the match -- the terminator is -- and no
+  // character is compared against it. It says only how far a word may be read
+  // in one piece, which is a question about the subject and not about the
+  // pattern.
+  if constexpr (in_words && runs_in_place<automaton, state>()) {
+    cursor = skip_class<staying_first<automaton, state>(),
+                        staying_last<automaton, state>()>(cursor, limit);
+  }
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (execute_tagged_self_transition<automaton, state>(symbol, registers,
@@ -343,8 +430,9 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
         return true;
       }
     }
-    return dispatch_tagged_sentinel_transition<automaton, sentinel, state>(
-        symbol, cursor, registers);
+    return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
+                                               state>(symbol, cursor, limit,
+                                                      registers);
   }
 }
 
@@ -418,14 +506,33 @@ template <class type, fixed_string format, int sentinel,
       static_assert(is_safe_tagged_sentinel<automaton,
                                             static_cast<unsigned char>(sentinel)>(),
                     "the terminator must be rejected in every state");
-      [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
-          automaton, static_cast<unsigned char>(sentinel), automaton.initial>(
-          cursor, registers);
+      // Two machines, and the subject picks one. A field of five characters is
+      // read faster one at a time than by a loop that first asks whether a
+      // whole word will fit; a field of two hundred is read four times faster
+      // in words. Asking once, here, costs one comparison for the match --
+      // asking inside would cost one for every state it passes through.
+      constexpr std::size_t worth_a_word = 32;
+      if (input.size() >= worth_a_word) {
+        [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
+            automaton, static_cast<unsigned char>(sentinel), true,
+            automaton.initial>(cursor, cursor + input.size(), registers);
+      } else {
+        [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
+            automaton, static_cast<unsigned char>(sentinel), false,
+            automaton.initial>(cursor, cursor + input.size(), registers);
+      }
     } else {
       const char* const end = cursor + input.size();
-      [[clang::always_inline]] matched =
-          run_tagged_state_continuation<automaton, automaton.initial>(
-              cursor, end, registers);
+      constexpr std::size_t worth_a_word = 32;
+      if (input.size() >= worth_a_word) {
+        [[clang::always_inline]] matched =
+            run_tagged_state_continuation<automaton, true, automaton.initial>(
+                cursor, end, registers);
+      } else {
+        [[clang::always_inline]] matched =
+            run_tagged_state_continuation<automaton, false, automaton.initial>(
+                cursor, end, registers);
+      }
     }
     if (!matched) throw scan_error("input does not match scan expression");
     // Two of the three tests this used to make were asking whether the machine
