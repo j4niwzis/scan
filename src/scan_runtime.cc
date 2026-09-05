@@ -358,13 +358,19 @@ template <class type, fixed_string format, int sentinel,
   } else {
     constexpr const auto& automaton = packed_automaton<type, format>;
     std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    // Only the tag slots are given the value that means "this field did not
-    // take part". Everything past them is a working register, and the optimiser
-    // leaves no operation that reads one before it has been written -- there is
-    // no initialisation left at all -- so filling them would be filling for
-    // nobody.
-    std::ranges::fill(registers | std::views::take(automaton.tag_count),
-                      scan::tre::negative_tag);
+    // Only the slots that can still be unwritten when the machine accepts are
+    // given the value that says a field took no part. Everything past the tags
+    // is a working register, never read before it is written -- there is no
+    // initialisation left at all -- and a tag written on every path does not
+    // need telling either. For a pattern whose fields all take part, which is
+    // most of them, there is nothing here to do.
+    constexpr auto written_everywhere = tags_always_written<automaton>();
+    [&]<std::size_t... tag>(std::index_sequence<tag...>) {
+      ((written_everywhere[tag]
+            ? void()
+            : void(registers[tag] = scan::tre::negative_tag)),
+       ...);
+    }(std::make_index_sequence<automaton.tag_count>{});
     execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                      0);
     // The generated form, not an interpreter.
