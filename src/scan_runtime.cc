@@ -136,10 +136,19 @@ execute_tagged_self_transition(
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
     return false;
+  } else if constexpr (packed.ranges[index].target != state) {
+    // A range that leads elsewhere is passed over without being compared
+    // against. It used to be compared and then declined, which put the test for
+    // the comma that ends a field inside the loop that reads the field -- one
+    // comparison and one branch on every letter, to find something that happens
+    // once. The ranges of a state do not overlap, so a symbol skipped here
+    // cannot match any of the others either, and the answer is the same.
+    return execute_tagged_self_transition<automaton, state, mark,
+                                          register_count, index + 1>(
+        symbol, registers, here);
   } else {
     constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target != state) return false;
       execute_static_transition_commands<automaton, state, index>(registers,
                                                                   here);
       return true;
