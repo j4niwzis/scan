@@ -27,6 +27,24 @@ static void scan_csv(benchmark::State& state) {
 }
 BENCHMARK(scan_csv);
 
+// The same expression, matched the way the generated scanner is given it: a
+// terminator instead of a length. The bounded form above carries an end
+// pointer and tests it for every character; this one lets the terminator fall
+// out of the class test, which is what re2c does, and what makes the two rows
+// comparable.
+static void scan_csv_sentinel(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::csv);
+  for (auto _ : state) {
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+    benchmark::ClobberMemory();
+  }
+  state.SetBytesProcessed(state.iterations() * bench::csv.size());
+}
+BENCHMARK(scan_csv_sentinel);
+
+
 static void ctre_csv(benchmark::State& state) {
   const std::string& text = bench::subject_of(bench::csv);
   for (auto _ : state) {

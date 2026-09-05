@@ -27,6 +27,24 @@ static void scan_address(benchmark::State& state) {
 }
 BENCHMARK(scan_address);
 
+// The same expression, matched the way the generated scanner is given it: a
+// terminator instead of a length. The bounded form above carries an end
+// pointer and tests it for every character; this one lets the terminator fall
+// out of the class test, which is what re2c does, and what makes the two rows
+// comparable.
+static void scan_address_sentinel(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::address);
+  for (auto _ : state) {
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+    benchmark::ClobberMemory();
+  }
+  state.SetBytesProcessed(state.iterations() * bench::address.size());
+}
+BENCHMARK(scan_address_sentinel);
+
+
 static void ctre_address(benchmark::State& state) {
   const std::string& text = bench::subject_of(bench::address);
   for (auto _ : state) {

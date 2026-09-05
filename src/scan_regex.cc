@@ -210,21 +210,27 @@ dispatch_sentinel_transition(unsigned char symbol, const char* cursor) {
   }
 }
 
-template <fixed_string pattern, std::size_t state>
-inline constexpr auto self_transition_table = [] consteval {
-  std::array<unsigned char, 256> result{};
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  std::ranges::transform(
-      automaton.transitions[state], result.begin(), [](auto target) {
-        return static_cast<unsigned char>(target == state);
-      });
-  return result;
-}();
-
-template <fixed_string pattern, std::size_t state>
+// Whether the symbol keeps the automaton where it is, decided by comparing it
+// against the ranges that do, rather than by reading a byte out of a table of
+// two hundred and fifty-six.
+//
+// The table costs a load from memory for every character of the subject. The
+// ranges are known while compiling and there are a handful of them -- one, for
+// a class like [a-z] -- so the same question is a compare against a constant,
+// which is what a generated scanner does.
+template <fixed_string pattern, std::size_t state, std::size_t index = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool is_self_transition(
     unsigned char symbol) {
-  return self_transition_table<pattern, state>[symbol] != 0;
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  if constexpr (index == ranges.size) {
+    return false;
+  } else {
+    constexpr auto range = ranges.values[index];
+    if constexpr (range.target == state) {
+      if (symbol >= range.first && symbol <= range.last) return true;
+    }
+    return is_self_transition<pattern, state, index + 1>(symbol);
+  }
 }
 
 template <fixed_string pattern, std::size_t state>
