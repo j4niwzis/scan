@@ -1,7 +1,7 @@
 export module scan.runtime;
 
 import std;
-import tre;
+import scan.tre;
 import boost.pfr;
 export import scan.compiler;
 
@@ -20,11 +20,11 @@ SCAN_FORCE_INLINE constexpr void execute_command(
     const packed_command& command, std::ptrdiff_t source_value,
     std::array<std::ptrdiff_t, register_count>& registers,
     std::ptrdiff_t position) {
-  std::ptrdiff_t value = tre::negative_tag;
+  std::ptrdiff_t value = scan::tre::negative_tag;
   if (command.source != packed_command::no_source) {
     value = source_value;
   }
-  if (command.value == -1) value = tre::negative_tag;
+  if (command.value == -1) value = scan::tre::negative_tag;
   if (command.value == 0) value = position;
   registers[command.destination] = value;
 }
@@ -38,7 +38,7 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
   std::size_t index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
     source_values[index++] = command.source == packed_command::no_source
-                                 ? tre::negative_tag
+                                 ? scan::tre::negative_tag
                                  : registers[command.source];
   }
   index = 0;
@@ -89,7 +89,7 @@ SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
       SCAN_FORCE_INLINE_LAMBDA {
         const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
             (transition.commands[index].source == packed_command::no_source
-                 ? tre::negative_tag
+                 ? scan::tre::negative_tag
                  : registers[transition.commands[index].source])...};
         (execute_command(transition.commands[index], source_values[index],
                          registers, position),
@@ -107,7 +107,7 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
         const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
             (packed_state.final_commands[index].source ==
                      packed_command::no_source
-                 ? tre::negative_tag
+                 ? scan::tre::negative_tag
                  : registers[packed_state.final_commands[index].source])...};
         (execute_command(packed_state.final_commands[index],
                          source_values[index], registers, position),
@@ -210,6 +210,73 @@ template <auto& automaton, unsigned char sentinel>
   return true;
 }
 
+// Which tags the machine cannot reach an accepting state without having
+// written.
+//
+// A field is read out of two slots, and a slot that was never written holds the
+// value that says the group took no part in the match -- which has to be
+// checked before the field is handed back. For most patterns there is nothing
+// to check: a group inside no alternation and under no star is written on
+// every path there is, and the test is a branch that is never taken and never
+// needed.
+//
+// So ask the automaton. Entering a state, a tag is certainly written if it is
+// certainly written entering every state that leads here, or written by the
+// step that led here; unreachable states start out claiming everything, and
+// the answer falls to a fixed point. What every accepting state agrees on --
+// its own closing operations included -- is what needs no test.
+template <auto& automaton>
+[[nodiscard]] consteval auto tags_always_written() {
+  constexpr std::size_t tags = automaton.tag_count;
+  constexpr std::size_t count = automaton.states.size();
+  using row_type = std::array<bool, tags>;
+  const auto note = [](row_type& row, const auto& commands, std::size_t total) {
+    for (std::size_t index = 0; index < total; ++index) {
+      const std::size_t destination = commands[index].destination;
+      if (destination < tags) row[destination] = true;
+    }
+  };
+  row_type start{};
+  note(start, automaton.initialize, automaton.initialize.size());
+  std::array<row_type, count> entry{};
+  for (row_type& row : entry) row.fill(true);
+  entry[automaton.initial] = start;
+  for (bool changed = true; changed;) {
+    changed = false;
+    std::array<row_type, count> next{};
+    for (row_type& row : next) row.fill(true);
+    next[automaton.initial] = start;
+    for (std::size_t state = 0; state < count; ++state) {
+      const auto& packed = automaton.states[state];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const auto& range = packed.ranges[index];
+        if (range.target == range.reject) continue;
+        row_type carried = entry[state];
+        note(carried, range.commands, range.command_count);
+        for (std::size_t tag = 0; tag < tags; ++tag) {
+          next[range.target][tag] = next[range.target][tag] && carried[tag];
+        }
+      }
+    }
+    if (next != entry) {
+      entry = next;
+      changed = true;
+    }
+  }
+  row_type answer{};
+  answer.fill(true);
+  for (std::size_t state = 0; state < count; ++state) {
+    const auto& packed = automaton.states[state];
+    if (packed.accepting_slot == packed.not_accepting) continue;
+    row_type closing = entry[state];
+    note(closing, packed.final_commands, packed.final_command_count);
+    for (std::size_t tag = 0; tag < tags; ++tag) {
+      answer[tag] = answer[tag] && closing[tag];
+    }
+  }
+  return answer;
+}
+
 template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
@@ -273,7 +340,7 @@ template <class type, fixed_string format, int sentinel,
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
-    const auto matched = tre::simulate(build_tnfa<type, format>(), input);
+    const auto matched = scan::tre::simulate(build_tnfa<type, format>(), input);
     if (!matched.matched) throw scan_error("input does not match scan expression");
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto& begins = matched.tags[capture_index * 2];
@@ -297,7 +364,7 @@ template <class type, fixed_string format, int sentinel,
     // no initialisation left at all -- so filling them would be filling for
     // nobody.
     std::ranges::fill(registers | std::views::take(automaton.tag_count),
-                      tre::negative_tag);
+                      scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                      0);
     // The generated form, not an interpreter.
@@ -328,15 +395,25 @@ template <class type, fixed_string format, int sentinel,
           cursor, end, registers, 0);
     }
     if (!matched) throw scan_error("input does not match scan expression");
+    // Two of the three tests this used to make were asking whether the machine
+    // had done something it cannot do. A position is written as the cursor
+    // stands somewhere inside the subject, so it is never past the end; the
+    // opening slot of a group is written before its closing one, so the length
+    // is never negative. Only the third question is real, and only for a group
+    // that some path can reach the end without entering -- which the automaton
+    // is asked about while it is being compiled.
+    constexpr auto always_written = tags_always_written<automaton>();
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto begin = registers[capture_index * 2];
       const auto end = registers[capture_index * 2 + 1];
-      if (begin < 0 || end < begin ||
-          static_cast<std::size_t>(end) > input.size()) {
-        throw scan_error("capture group did not participate in the match");
+      if constexpr (!(always_written[capture_index * 2] &&
+                      always_written[capture_index * 2 + 1])) {
+        if (begin < 0) {
+          throw scan_error("capture group did not participate in the match");
+        }
       }
-      return input.substr(static_cast<std::size_t>(begin),
-                          static_cast<std::size_t>(end - begin));
+      return std::string_view(input.data() + begin,
+                              static_cast<std::size_t>(end - begin));
     };
     return std::array{capture.template operator()<index>()...};
   }
@@ -451,7 +528,7 @@ class stream_state {
  public:
   constexpr stream_state() {
     std::ranges::fill(scanner_states_, make_scanner_state<type, format>());
-    std::ranges::fill(registers_, tre::negative_tag);
+    std::ranges::fill(registers_, scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers_, 0);
   }
