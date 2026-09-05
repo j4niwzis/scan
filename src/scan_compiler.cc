@@ -642,6 +642,21 @@ struct packed_state {
   std::array<packed_command, final_command_capacity> final_commands{};
 };
 
+// The transition a symbol takes, or nothing at all. The ranges of a state are
+// in symbol order and do not overlap, so the search stops at the first range
+// that starts past the symbol.
+template <class packed_state_type>
+[[nodiscard]] constexpr auto find_range(const packed_state_type& state,
+                                        unsigned char symbol)
+    -> const std::remove_cvref_t<decltype(state.ranges[0])>* {
+  for (std::size_t index = 0; index < state.range_count; ++index) {
+    const auto& range = state.ranges[index];
+    if (symbol < range.first) break;
+    if (symbol <= range.last) return &range;
+  }
+  return nullptr;
+}
+
 template <std::size_t state_count, std::size_t register_extent,
           std::size_t initial_command_count, std::size_t command_count,
           std::size_t final_command_count, std::size_t tag_extent,
