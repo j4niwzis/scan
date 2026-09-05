@@ -30,7 +30,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   return result;
 }
 
-template <fixed_string format, unsigned char sentinel = 0>
+template <fixed_string format, int sentinel = -1>
 class borrowed_result {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
@@ -94,7 +94,7 @@ template <fixed_string format, detail::contiguous_char_range range_type>
 // any other symbol no transition takes. It is the caller's promise that the
 // terminator is there -- a `std::string` always has it, a `string_view` into
 // the middle of something does not.
-template <fixed_string format, unsigned char sentinel = 0,
+template <fixed_string format, int sentinel = 0,
           detail::contiguous_char_range range_type>
   requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
 [[nodiscard]] constexpr auto scan_sentinel(range_type&& input) {
