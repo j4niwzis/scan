@@ -30,13 +30,15 @@ inline constexpr std::string_view timestamp =
 // A subject long enough that the work outweighs the loop around it. Sixty
 // bytes are matched in about twenty nanoseconds, which is also what one
 // iteration of the harness costs, so a short subject measures the harness.
-inline const std::string& long_word() {
-  static const std::string storage = [] {
-    std::string letters;
-    letters.reserve(4096);
-    while (letters.size() < 4096) letters.push_back('a' + (letters.size() % 26));
-    return letters;
-  }();
+inline const std::string& long_word(std::size_t length = 4096) {
+  static std::string storage;
+  if (storage.size() != length) {
+    storage.clear();
+    storage.reserve(length);
+    while (storage.size() < length) {
+      storage.push_back(static_cast<char>('a' + (storage.size() % 26)));
+    }
+  }
   return storage;
 }
 
