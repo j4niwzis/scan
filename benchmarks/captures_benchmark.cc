@@ -124,6 +124,25 @@ void scan_captures_strings(harness::State& state) {
                           bench::csv.size());
 }
 
+// The fields, and not ten offsets into the subject.
+//
+// This row used to hand back the positions the generated scanner had left and
+// stop there, while the rows above it handed back five views -- a pointer and a
+// length each, which is what a caller asked for. That is two nanoseconds of work
+// on a thirty byte subject, and all of the difference between the two engines
+// on it: matching the same pattern without taking anything out costs this
+// library the same six nanoseconds it costs re2c to match and place its tags.
+// So both sides now build the same thing.
+[[nodiscard]] inline field_views views_from(const char* const* positions) {
+  const auto field = [&](std::size_t index) {
+    return std::string_view(
+        positions[index * 2],
+        static_cast<std::size_t>(positions[index * 2 + 1] -
+                                 positions[index * 2]));
+  };
+  return field_views{field(0), field(1), field(2), field(3), field(4)};
+}
+
 // The same work on a subject a thousand bytes long, for both engines. What a
 // row like this reports is a cost per byte, which is what the loop decides;
 // everything around the match is the same handful of nanoseconds it was, and is
@@ -147,8 +166,10 @@ void re2c_captures_long(harness::State& state) {
     const char* cursor = text.c_str();
     const char* positions[10] = {};
     harness::DoNotOptimize(cursor);
-    harness::DoNotOptimize(re2c_captures(cursor, positions));
-    harness::DoNotOptimize(positions);
+    if (re2c_captures(cursor, positions)) {
+      field_views value = views_from(positions);
+      harness::DoNotOptimize(value);
+    }
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
@@ -175,8 +196,10 @@ void re2c_captures_benchmark(harness::State& state) {
       const char* cursor = text.c_str();
       const char* positions[10] = {};
       harness::DoNotOptimize(cursor);
-      harness::DoNotOptimize(re2c_captures(cursor, positions));
-      harness::DoNotOptimize(positions);
+      if (re2c_captures(cursor, positions)) {
+        field_views value = views_from(positions);
+        harness::DoNotOptimize(value);
+      }
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
