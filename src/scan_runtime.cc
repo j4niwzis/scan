@@ -15,35 +15,49 @@ export namespace scan::detail {
 #define SCAN_FORCE_INLINE inline
 #endif
 
-template <std::size_t register_count>
+// What a register holds: where in the subject something happened.
+//
+// Over a range that can be read once and not pointed into afterwards that has
+// to be a count of characters seen. Over a contiguous subject it can be the
+// address itself, and then nothing has to be added to it or taken from it --
+// neither when it is written nor when a field is cut out of it at the end. Both
+// are marks, and everything below is written for either.
+template <class mark>
+inline constexpr mark absent_mark = [] {
+  if constexpr (std::is_pointer_v<mark>) {
+    return nullptr;
+  } else {
+    return scan::tre::negative_tag;
+  }
+}();
+
+template <class mark, std::size_t register_count>
 SCAN_FORCE_INLINE constexpr void execute_command(
-    const packed_command& command, std::ptrdiff_t source_value,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  std::ptrdiff_t value = scan::tre::negative_tag;
+    const packed_command& command, mark source_value,
+    std::array<mark, register_count>& registers, mark here) {
+  mark value = absent_mark<mark>;
   if (command.source != packed_command::no_source) {
     value = source_value;
   }
-  if (command.value == -1) value = scan::tre::negative_tag;
-  if (command.value == 0) value = position;
+  if (command.value == -1) value = absent_mark<mark>;
+  if (command.value == 0) value = here;
   registers[command.destination] = value;
 }
 
-template <std::size_t register_count, std::size_t command_count>
+template <class mark, std::size_t register_count, std::size_t command_count>
 SCAN_FORCE_INLINE constexpr void execute_commands(
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
-  std::array<std::ptrdiff_t, command_count> source_values{};
+    std::size_t count, std::array<mark, register_count>& registers, mark here) {
+  std::array<mark, command_count> source_values{};
   std::size_t index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
     source_values[index++] = command.source == packed_command::no_source
-                                 ? scan::tre::negative_tag
+                                 ? absent_mark<mark>
                                  : registers[command.source];
   }
   index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
-    execute_command(command, source_values[index++], registers, position);
+    execute_command(command, source_values[index++], registers, here);
   }
 }
 
@@ -75,53 +89,50 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_state_continuation(
     const char* cursor, const char* end,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    const char* origin);
+    std::array<const char*, register_count>& registers);
 
-template <auto& automaton, std::size_t state, std::size_t range,
+template <auto& automaton, std::size_t state, std::size_t range, class mark,
           std::size_t register_count>
 SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    std::array<mark, register_count>& registers, mark here) {
   constexpr const auto& transition =
       automaton.states[state].ranges[range];
   [&]<std::size_t... index>(std::index_sequence<index...>)
       SCAN_FORCE_INLINE_LAMBDA {
-        const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
+        const std::array<mark, sizeof...(index)> source_values{
             (transition.commands[index].source == packed_command::no_source
-                 ? scan::tre::negative_tag
+                 ? absent_mark<mark>
                  : registers[transition.commands[index].source])...};
         (execute_command(transition.commands[index], source_values[index],
-                         registers, position),
+                         registers, here),
          ...);
       }(std::make_index_sequence<transition.command_count>{});
 }
 
-template <auto& automaton, std::size_t state, std::size_t register_count>
+template <auto& automaton, std::size_t state, class mark,
+          std::size_t register_count>
 SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    std::array<mark, register_count>& registers, mark here) {
   constexpr const auto& packed_state = automaton.states[state];
   [&]<std::size_t... index>(std::index_sequence<index...>)
       SCAN_FORCE_INLINE_LAMBDA {
-        const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
+        const std::array<mark, sizeof...(index)> source_values{
             (packed_state.final_commands[index].source ==
                      packed_command::no_source
-                 ? scan::tre::negative_tag
+                 ? absent_mark<mark>
                  : registers[packed_state.final_commands[index].source])...};
         (execute_command(packed_state.final_commands[index],
-                         source_values[index], registers, position),
+                         source_values[index], registers, here),
          ...);
       }(std::make_index_sequence<packed_state.final_command_count>{});
 }
 
-template <auto& automaton, std::size_t state, std::size_t register_count,
-          std::size_t index = 0>
+template <auto& automaton, std::size_t state, class mark,
+          std::size_t register_count, std::size_t index = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 execute_tagged_self_transition(
-    unsigned char symbol,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    unsigned char symbol, std::array<mark, register_count>& registers,
+    mark here) {
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
     return false;
@@ -130,12 +141,12 @@ execute_tagged_self_transition(
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target != state) return false;
       execute_static_transition_commands<automaton, state, index>(registers,
-                                                                position);
+                                                                  here);
       return true;
     }
-    return execute_tagged_self_transition<automaton, state, register_count,
-                                          index + 1>(symbol, registers,
-                                                     position);
+    return execute_tagged_self_transition<automaton, state, mark,
+                                          register_count, index + 1>(
+        symbol, registers, here);
   }
 }
 
@@ -144,8 +155,7 @@ template <auto& automaton, std::size_t state, std::size_t register_count,
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 dispatch_tagged_transition(
     unsigned char symbol, const char* cursor, const char* end,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    const char* origin) {
+    std::array<const char*, register_count>& registers) {
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
     return false;
@@ -153,39 +163,38 @@ dispatch_tagged_transition(
     constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target == state) return false;
-      execute_static_transition_commands<automaton, state, index>(
-          registers, cursor - origin - 1);
+      execute_static_transition_commands<automaton, state, index>(registers,
+                                                                  cursor - 1);
       [[clang::always_inline]] return run_tagged_state_continuation<
-          automaton, range.target>(cursor, end, registers, origin);
+          automaton, range.target>(cursor, end, registers);
     }
     return dispatch_tagged_transition<automaton, state, register_count,
                                       index + 1>(symbol, cursor, end,
-                                                 registers, origin);
+                                                 registers);
   }
 }
 
 template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_state_continuation(
     const char* cursor, const char* end,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    const char* origin) {
+    std::array<const char*, register_count>& registers) {
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     // The operations of a transition are the tags the state before it was
-    // holding back, so they are written with the position from before this
+    // holding back, so they are written with the place from before this
     // symbol, which is where the cursor stood one character ago.
-    if (execute_tagged_self_transition<automaton, state>(
-            symbol, registers, cursor - origin - 1)) {
+    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
+                                                         cursor - 1)) {
       continue;
     }
     return dispatch_tagged_transition<automaton, state>(symbol, cursor, end,
-                                                        registers, origin);
+                                                        registers);
   }
   if constexpr (automaton.states[state].accepting_slot ==
                 packed_state<0, 0, 0>::not_accepting) {
     return false;
   } else {
-    execute_static_final_commands<automaton, state>(registers, cursor - origin);
+    execute_static_final_commands<automaton, state>(registers, cursor);
     return true;
   }
 }
@@ -279,16 +288,14 @@ template <auto& automaton>
 template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
-    const char* cursor, std::array<std::ptrdiff_t, register_count>& registers,
-    const char* origin);
+    const char* cursor, std::array<const char*, register_count>& registers);
 
 template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count, std::size_t index = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 dispatch_tagged_sentinel_transition(
     unsigned char symbol, const char* cursor,
-    std::array<std::ptrdiff_t, register_count>& registers,
-    const char* origin) {
+    std::array<const char*, register_count>& registers) {
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
     return false;
@@ -296,26 +303,25 @@ dispatch_tagged_sentinel_transition(
     constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target == state) return false;
-      execute_static_transition_commands<automaton, state, index>(
-          registers, cursor - origin - 1);
+      execute_static_transition_commands<automaton, state, index>(registers,
+                                                                  cursor - 1);
       [[clang::always_inline]] return run_tagged_sentinel_continuation<
-          automaton, sentinel, range.target>(cursor, registers, origin);
+          automaton, sentinel, range.target>(cursor, registers);
     }
     return dispatch_tagged_sentinel_transition<automaton, sentinel, state,
                                                register_count, index + 1>(
-        symbol, cursor, registers, origin);
+        symbol, cursor, registers);
   }
 }
 
 template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
-    const char* cursor, std::array<std::ptrdiff_t, register_count>& registers,
-    const char* origin) {
+    const char* cursor, std::array<const char*, register_count>& registers) {
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    if (execute_tagged_self_transition<automaton, state>(
-            symbol, registers, cursor - origin - 1)) {
+    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
+                                                         cursor - 1)) {
       continue;
     }
     if (symbol == sentinel) {
@@ -324,12 +330,12 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
         return false;
       } else {
         execute_static_final_commands<automaton, state>(registers,
-                                                        cursor - origin - 1);
+                                                        cursor - 1);
         return true;
       }
     }
     return dispatch_tagged_sentinel_transition<automaton, sentinel, state>(
-        symbol, cursor, registers, origin);
+        symbol, cursor, registers);
   }
 }
 
@@ -368,7 +374,7 @@ template <class type, fixed_string format, int sentinel,
     return std::array{capture.template operator()<index>()...};
   } else {
     constexpr const auto& automaton = packed_automaton<type, format>;
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    std::array<const char*, automaton.register_count> registers{};
     // Only the slots that can still be unwritten when the machine accepts are
     // given the value that says a field took no part. Everything past the tags
     // is a working register, never read before it is written -- there is no
@@ -379,11 +385,11 @@ template <class type, fixed_string format, int sentinel,
     [&]<std::size_t... tag>(std::index_sequence<tag...>) {
       ((written_everywhere[tag]
             ? void()
-            : void(registers[tag] = scan::tre::negative_tag)),
+            : void(registers[tag] = nullptr)),
        ...);
     }(std::make_index_sequence<automaton.tag_count>{});
-    execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                     0);
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, input.data());
     // The generated form, not an interpreter.
     //
     // This walked the automaton one character at a time: a search through the
@@ -405,12 +411,12 @@ template <class type, fixed_string format, int sentinel,
                     "the terminator must be rejected in every state");
       [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
           automaton, static_cast<unsigned char>(sentinel), automaton.initial>(
-          cursor, registers, cursor);
+          cursor, registers);
     } else {
       const char* const end = cursor + input.size();
       [[clang::always_inline]] matched =
           run_tagged_state_continuation<automaton, automaton.initial>(
-              cursor, end, registers, cursor);
+              cursor, end, registers);
     }
     if (!matched) throw scan_error("input does not match scan expression");
     // Two of the three tests this used to make were asking whether the machine
@@ -426,12 +432,11 @@ template <class type, fixed_string format, int sentinel,
       const auto end = registers[capture_index * 2 + 1];
       if constexpr (!(always_written[capture_index * 2] &&
                       always_written[capture_index * 2 + 1])) {
-        if (begin < 0) {
+        if (begin == nullptr) {
           throw scan_error("capture group did not participate in the match");
         }
       }
-      return std::string_view(input.data() + begin,
-                              static_cast<std::size_t>(end - begin));
+      return std::string_view(begin, static_cast<std::size_t>(end - begin));
     };
     return std::array{capture.template operator()<index>()...};
   }
