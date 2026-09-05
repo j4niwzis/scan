@@ -256,6 +256,48 @@ class prefix_scan {
   std::string_view input_;
 };
 
+// A machine fed one character at a time, for input that arrives rather than
+// waiting to be read.
+//
+// Nothing pulls: whoever has the characters offers them, one at a time, and is
+// told whether each was taken. Nothing is buffered and nothing is allocated
+// beyond what the fields themselves ask for, so a field of fixed room --
+// `scan::held<n>` -- makes the whole of it fit in a place with no allocator at
+// all. And because nothing waits for the end of the input, whatever else the
+// arriving characters are supposed to cause can happen as they arrive.
+//
+//     scan::reader<command, "set {[a-z]+} {[0-9]+}"> reading;
+//     for (;;) {
+//       const char symbol = next();
+//       if (reading.offer(symbol)) continue;
+//       if (reading.accepting()) act(reading.take());
+//       reading.restart();
+//       if (!reading.offer(symbol)) report(symbol);
+//     }
+template <class type, fixed_string format>
+class reader {
+ public:
+  // False means the character was not taken and the machine has not moved:
+  // either what came before is a whole command and this character belongs to
+  // what comes next, or nothing here matches at all, which `accepting` tells
+  // apart.
+  [[nodiscard]] constexpr bool offer(char symbol) {
+    return state_.offer(symbol);
+  }
+
+  // Would what has been read so far be a whole match?
+  [[nodiscard]] constexpr bool accepting() const { return state_.accepting(); }
+
+  // The values. Reading further after this is reading further into the same
+  // match, so whoever wants the next one says so.
+  [[nodiscard]] constexpr type take() const { return state_.finish(); }
+
+  constexpr void restart() { state_.restart(); }
+
+ private:
+  detail::stream_state<type, format> state_;
+};
+
 // The head of a range that is read once. The range is left standing after the
 // character that ended the match, which is handed back with the values because
 // it has been read and there is nowhere to put it back.

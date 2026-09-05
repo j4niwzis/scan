@@ -916,10 +916,29 @@ constexpr void advance_scanners(
     states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, std::index_sequence<field...>) {
-  const states_type old_states = states;
-  (advance_scanner<field, type, format, automaton>(
-       symbol, state, registers, old_states, states, commands, count),
-   ...);
+  // The old gatherings are only needed where a command copies one, and inside a
+  // field nothing is copied and nothing is written -- that is what holding the
+  // tags back bought. Copying the whole set on every character to be ready for
+  // a copy that is not coming is the difference between reading a long command
+  // and reading it twice for nothing.
+  bool copies = false;
+  for (std::size_t index = 0; index < count; ++index) {
+    if (commands[index].source != packed_command::no_source &&
+        commands[index].value == -2) {
+      copies = true;
+      break;
+    }
+  }
+  if (copies) {
+    const states_type old_states = states;
+    (advance_scanner<field, type, format, automaton>(
+         symbol, state, registers, old_states, states, commands, count),
+     ...);
+  } else {
+    (advance_scanner<field, type, format, automaton>(
+         symbol, state, registers, states, states, commands, count),
+     ...);
+  }
 }
 
 template <class type, class state_type, std::size_t... index>
@@ -988,6 +1007,22 @@ class stream_state {
         std::make_index_sequence<field_count>{});
     state_ = transition->target;
     return true;
+  }
+
+  // Where the machine stands now: would what it has read so far be a whole
+  // match? Asked between characters, this is how something that reads a command
+  // as it is typed knows the command has arrived.
+  [[nodiscard]] constexpr bool accepting() const {
+    return state_ != packed_range<0>::reject &&
+           automaton.states[state_].accepting_slot !=
+               packed_state<0, 0, 0>::not_accepting;
+  }
+
+  constexpr void restart() { *this = stream_state{}; }
+
+  [[nodiscard]] constexpr type finish() const& {
+    stream_state copy = *this;
+    return std::move(copy).finish();
   }
 
   [[nodiscard]] constexpr type finish() && {

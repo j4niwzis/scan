@@ -96,6 +96,69 @@ struct scanner<std::string> {
   }
 };
 
+// A field of characters with nowhere to grow.
+//
+// A machine reading a range as it comes has to gather each field as it arrives,
+// and gathering into a `std::string` asks an allocator for room. Where there is
+// no allocator -- and where what has to be kept is small even though what has
+// to be matched may not be -- the room is said in advance and the gathering
+// stops at the brim rather than reaching for more.
+//
+// What overflows is dropped and remembered as having overflowed, because the
+// alternative is either an allocation or a lie.
+template <std::size_t capacity>
+struct held {
+  std::array<char, capacity> storage{};
+  std::size_t length = 0;
+  bool overflowed = false;
+
+  [[nodiscard]] constexpr std::string_view view() const noexcept {
+    return {storage.data(), length};
+  }
+  [[nodiscard]] constexpr operator std::string_view() const noexcept {
+    return view();
+  }
+  constexpr void push_back(char value) {
+    if (length == capacity) {
+      overflowed = true;
+      return;
+    }
+    storage[length++] = value;
+  }
+};
+
+template <std::size_t capacity>
+struct scanner<held<capacity>> {
+  [[nodiscard]] static constexpr std::string_view pattern() { return ".*"; }
+  using state_type = held<capacity>;
+
+  [[nodiscard]] static constexpr state_type begin() { return {}; }
+  [[nodiscard]] static constexpr state_type begin(std::string_view) {
+    return {};
+  }
+  static constexpr void push(state_type& state, char value) {
+    state.push_back(value);
+  }
+  [[nodiscard]] static constexpr held<capacity> finish(state_type state) {
+    return state;
+  }
+
+  [[nodiscard]] static constexpr held<capacity> parse(std::string_view text) {
+    held<capacity> made;
+    for (char value : text) made.push_back(value);
+    return made;
+  }
+
+  [[nodiscard]] static constexpr auto pattern(std::string_view parameters) {
+    return scanner<std::string>::pattern(parameters);
+  }
+
+  [[nodiscard]] static constexpr held<capacity> parse(std::string_view text,
+                                                      std::string_view) {
+    return parse(text);
+  }
+};
+
 template <>
 struct scanner<std::string_view> {
   [[nodiscard]] static constexpr std::string_view pattern() { return ".*"; }
