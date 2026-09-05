@@ -673,14 +673,31 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       -> std::size_t {
     for (std::size_t id = 0; id < configurations.size(); ++id) {
       if (auto copies = mapping(configurations[id], entries)) {
-        // The copies go on the transition that leads here, after whatever it
-        // already writes: a register the transition sets is not copied over.
+        // The copies go on the transition that leads here -- but a transition
+        // executes as one step: every source is read before any destination is
+        // written, which is what makes a permutation of registers work at all.
+        // So a copy may not be chained after an operation of the same
+        // transition; it would read the value from before it. Where the copy
+        // would take from a register this transition writes, the operation
+        // that writes it is repeated into the destination instead, and where
+        // the destination is already written there is nothing to do.
         for (register_command& copy : *copies) {
-          const bool written = std::ranges::any_of(
+          const auto written = std::ranges::find_if(
               operations, [&](const register_command& command) {
                 return command.destination == copy.destination;
               });
-          if (!written) operations.push_back(std::move(copy));
+          if (written != operations.end()) continue;
+          const auto produces = std::ranges::find_if(
+              operations, [&](const register_command& command) {
+                return copy.source && command.destination == *copy.source;
+              });
+          if (produces != operations.end()) {
+            register_command repeated = *produces;
+            repeated.destination = copy.destination;
+            operations.push_back(std::move(repeated));
+          } else {
+            operations.push_back(std::move(copy));
+          }
         }
         return id;
       }
