@@ -29,6 +29,24 @@ inline const std::string& long_word(std::size_t length = 4096) {
   return storage;
 }
 
+// The same five fields, long enough that what the loop does to a character is
+// what is being measured. Thirty bytes are read in under ten nanoseconds, which
+// is the same order as everything that surrounds a match -- entering it,
+// cutting the fields out of it, handing them back -- so a short subject prices
+// all of that together. A thousand bytes prices the loop.
+inline const std::string& long_csv(std::size_t field_length = 200) {
+  static std::string storage;
+  const std::size_t wanted = field_length * 5 + 4;
+  if (storage.size() != wanted) {
+    storage.clear();
+    for (std::size_t field = 0; field < 5; ++field) {
+      if (field) storage.push_back(',');
+      storage.append(field_length, static_cast<char>('a' + field));
+    }
+  }
+  return storage;
+}
+
 // Copies of the same subject at different addresses, so that a batch of calls
 // in one iteration cannot be answered once and reused.
 //
