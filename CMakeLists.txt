@@ -128,6 +128,31 @@ add_executable(tre_runtime_test tests/tre_runtime_test.cc)
 target_link_libraries(tre_runtime_test PRIVATE scan gtest_main)
 add_test(NAME tre_runtime_test COMMAND tre_runtime_test)
 
+# One pattern to a translation unit. A pattern is compiled while this file is
+# being compiled, so two patterns in one file is two waits in a row, and
+# separate files are two waits at once.
+set(scan_tests
+  both_paths_test
+  flat_shape_test
+  shape_format_test
+  values_call_test
+  variant_field_test
+  variant_nested_test
+  variant_default_test
+  unkept_place_test
+  prefix_test
+  stream_test
+  each_test
+  reader_test
+  list_test
+  list_shape_test
+  list_own_test)
+foreach(one IN LISTS scan_tests)
+  add_executable(${one} tests/${one}.cc)
+  target_link_libraries(${one} PRIVATE scan gtest_main)
+  add_test(NAME ${one} COMMAND ${one})
+endforeach()
+
 if(SCAN_BUILD_BENCHMARKS)
   # Everything a benchmark uses is a module.
   #
