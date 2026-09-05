@@ -7,6 +7,10 @@ bool re2c_captures(const char* cursor, const char** positions) {
   const char* marker = nullptr;
   const char *t1, *t2, *t3, *t4, *t5, *t6, *t7, *t8, *t9, *t10;
   (void)marker;
+  // The generator keeps its own variables for the tags it places, and they
+  // have to be declared where it can see them. This block is where it writes
+  // those declarations.
+  /*!stags:re2c format = "const char *@@;\n"; */
   /*!re2c
      re2c:define:YYCTYPE = char;
      re2c:define:YYCURSOR = cursor;
