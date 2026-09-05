@@ -411,7 +411,7 @@ template <class type, fixed_string format>
     const auto& transitions = automaton.states[state].transitions;
     for (std::size_t index = 0; index < transitions.size(); ++index) {
       for (std::size_t symbol = 0; symbol < 256; ++symbol) {
-        if (transitions[index].symbols[symbol]) owner[state][symbol] = index;
+        if (transitions[index].symbols.test(symbol)) owner[state][symbol] = index;
       }
     }
   }
@@ -575,7 +575,7 @@ template <fixed_string pattern>
         std::ranges::for_each(
             std::views::iota(std::size_t{0}, std::size_t{256}),
             [&](std::size_t symbol) {
-              if (state.transitions[index].symbols[symbol]) {
+              if (state.transitions[index].symbols.test(symbol)) {
                 result[symbol] = index;
               }
             });
@@ -833,9 +833,9 @@ template <fixed_string pattern>
           std::ranges::for_each(
               source.transitions, [&](const tre::tdfa_transition& transition) {
                 std::ranges::for_each(
-                    std::views::iota(std::size_t{0}, transition.symbols.size()) |
+                    std::views::iota(std::size_t{0}, std::size_t{256}) |
                         std::views::filter([&](std::size_t symbol) {
-                          return transition.symbols[symbol];
+                          return transition.symbols.test(symbol);
                         }),
                     [&](std::size_t symbol) {
                       packed.transitions[state_index][symbol] =
