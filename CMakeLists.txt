@@ -101,6 +101,22 @@ target_compile_options(scan PUBLIC
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-depth=4096>
 )
 
+# Clang evaluates constant expressions by walking the syntax tree, and is
+# replacing that with a bytecode interpreter. A pattern is compiled entirely in
+# constant evaluation here, so the difference is the difference between one
+# build and another: measured on the five-group pattern this project's tests
+# use, the evaluation takes 9.3 seconds by the tree walker and 2.9 by the
+# interpreter -- a little over three times.
+#
+# It is still called experimental, and it is: it declines constructs the tree
+# walker accepts. So it is a choice, on where it works.
+option(SCAN_BYTECODE_CONSTANT_INTERPRETER
+       "Evaluate constant expressions with clang's bytecode interpreter" OFF)
+if(SCAN_BYTECODE_CONSTANT_INTERPRETER)
+  target_compile_options(scan PUBLIC
+    $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
+endif()
+
 enable_testing()
 add_executable(tre_tdfa_test tests/tre_test.cc tests/ctre_compat_test.cc)
 target_link_libraries(tre_tdfa_test PRIVATE tre_tdfa scan gtest_main)
