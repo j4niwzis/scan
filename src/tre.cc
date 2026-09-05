@@ -163,11 +163,43 @@ template <std::size_t extent>
   return simulate(automaton, std::string_view(input, extent - 1));
 }
 
+// The values a command appends, and there are a handful of them at most: a bit
+// each, in one word, so a command is a fixed-size object. As a vector it was
+// an allocation per command -- and a command is made for every slot and every
+// tag of every transition, nearly all of them empty.
+struct tag_values {
+  std::uint32_t bits = 0;
+  std::uint8_t size = 0;
+
+  constexpr void push_back(bool value) {
+    if (size == 32) throw "a command appends more values than a word holds";
+    if (value) bits |= std::uint32_t{1} << size;
+    ++size;
+  }
+  [[nodiscard]] constexpr bool empty() const { return size == 0; }
+  [[nodiscard]] constexpr bool back() const {
+    return ((bits >> (size - 1)) & 1) != 0;
+  }
+  [[nodiscard]] constexpr bool operator==(const tag_values&) const = default;
+
+  struct iterator {
+    const tag_values* owner = nullptr;
+    std::uint8_t index = 0;
+    [[nodiscard]] constexpr bool operator*() const {
+      return ((owner->bits >> index) & 1) != 0;
+    }
+    constexpr iterator& operator++() { ++index; return *this; }
+    [[nodiscard]] constexpr bool operator==(const iterator&) const = default;
+  };
+  [[nodiscard]] constexpr iterator begin() const { return {this, 0}; }
+  [[nodiscard]] constexpr iterator end() const { return {this, size}; }
+};
+
 struct register_command {
   std::size_t destination = 0;
   std::optional<std::size_t> source;
   // Values are appended in order; true means current input position.
-  std::vector<bool> values;
+  tag_values values;
 };
 
 struct tdfa_transition {
@@ -397,6 +429,9 @@ class tnfa_builder {
 struct path {
   state_id state = 0;
   std::vector<std::pair<tag_id, bool>> actions;
+  // Which seed this path grew from, so that the closure of a whole set can be
+  // taken at once and still say where each path came from.
+  std::size_t origin = 0;
 };
 
 [[nodiscard]] constexpr std::vector<path> closure(
@@ -410,21 +445,30 @@ struct path {
     if (seen[current.state]) continue;
     seen[current.state] = true;
     result.push_back(current);
-    std::vector<transition> edges;
-    for (const transition& edge : automaton.transitions[current.state]) {
+    // The edges are ordered by priority without copying them: a transition
+    // carries a symbol set and a copy of it is an object the constant
+    // evaluator tracks, where an index is a number.
+    const std::vector<transition>& outgoing = automaton.transitions[current.state];
+    std::vector<std::size_t> order;
+    for (std::size_t index = 0; index < outgoing.size(); ++index) {
+      const transition& edge = outgoing[index];
       if (edge.kind != transition_kind::symbol &&
           edge.kind != transition_kind::character_class) {
-        edges.push_back(edge);
+        order.push_back(index);
       }
     }
-    std::ranges::sort(edges, [](const auto& lhs, const auto& rhs) {
-      return lhs.priority < rhs.priority;
+    std::ranges::sort(order, [&](std::size_t lhs, std::size_t rhs) {
+      return outgoing[lhs].priority < outgoing[rhs].priority;
     });
-    for (auto it = edges.rbegin(); it != edges.rend(); ++it) {
-      path next = current;
-      next.state = it->target;
-      if (it->kind == transition_kind::tag) {
-        next.actions.emplace_back(it->tag, it->negative);
+    // Lowest priority is pushed first, so the greedy branch is on top of the
+    // stack. The last one to be pushed is the one that may take the path it
+    // was built from rather than copy its actions.
+    for (std::size_t position = order.size(); position-- > 0;) {
+      const transition& edge = outgoing[order[position]];
+      path next = position == 0 ? std::move(current) : current;
+      next.state = edge.target;
+      if (edge.kind == transition_kind::tag) {
+        next.actions.emplace_back(edge.tag, edge.negative);
       }
       work.push_back(std::move(next));
     }
@@ -642,18 +686,22 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
           }
         }
       }
-      std::vector<path> target_paths;
+      // One closure over every seed, in seed order. Taking it per seed and
+      // merging afterwards visits the same states in the same order -- the
+      // stack is shared either way -- but allocates the whole apparatus once
+      // per seed instead of once.
+      std::vector<path> seed_paths;
+      seed_paths.reserve(seeds.size());
+      for (std::size_t index = 0; index < seeds.size(); ++index) {
+        path entry = seeds[index].path;
+        entry.origin = index;
+        seed_paths.push_back(std::move(entry));
+      }
+      std::vector<path> target_paths = closure(automaton, seed_paths);
       std::vector<std::size_t> source_slots;
-      std::vector<bool> seen(automaton.transitions.size());
-      for (const seed& seed : seeds) {
-        const auto part = closure(automaton, std::span(&seed.path, 1));
-        for (const path& path : part) {
-          if (!seen[path.state]) {
-            seen[path.state] = true;
-            target_paths.push_back(path);
-            source_slots.push_back(seed.source_slot);
-          }
-        }
+      source_slots.reserve(target_paths.size());
+      for (const path& path : target_paths) {
+        source_slots.push_back(seeds[path.origin].source_slot);
       }
       const std::size_t target = add_state(target_paths);
       result.register_count = std::max(
@@ -903,8 +951,13 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
            });
   };
   for (tdfa_state& state : automaton.states) {
+    // Moved from where they are rather than copied into the loop: a
+    // transition carries a command list, and taking a copy of every one of
+    // them to decide whether it is a duplicate is the copy this loop exists
+    // to avoid making twice.
     std::vector<tdfa_transition> normalized;
-    for (tdfa_transition transition : state.transitions) {
+    normalized.reserve(state.transitions.size());
+    for (tdfa_transition& transition : state.transitions) {
       const auto equivalent = std::ranges::find_if(
           normalized, [&](const tdfa_transition& candidate) {
             return candidate.target == transition.target &&
