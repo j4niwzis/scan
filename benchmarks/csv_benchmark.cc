@@ -1,74 +1,74 @@
-// One pattern: a run of lowercase letters, matched against the whole input.
-//
-// Every benchmark here compiles exactly one pattern. Compiling a pattern is a
-// constant evaluation, so a translation unit that held ten of them would cost
-// ten times as much to rebuild -- and rebuilding one benchmark to look at it
-// is the thing this file is shaped for.
-#include <benchmark/benchmark.h>
-#include <ctre.hpp>
-
-#include <string>
-
-#include "inputs.hpp"
-
+// One pattern, recognised over the whole input. Nothing is included here: the
+// harness and the other engine are modules, so this file is compiled with the
+// same constant evaluator the library is.
+import std;
+import bench.harness;
+import bench.inputs;
+import ctre;
 import scan;
 
 bool re2c_csv(const char* cursor);
 
-static void scan_csv(benchmark::State& state) {
+namespace {
+
+void scan_csv(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
 }
-BENCHMARK(scan_csv);
 
-// The same expression, matched the way the generated scanner is given it: a
-// terminator instead of a length. The bounded form above carries an end
-// pointer and tests it for every character; this one lets the terminator fall
-// out of the class test, which is what re2c does, and what makes the two rows
-// comparable.
-static void scan_csv_sentinel(benchmark::State& state) {
+void scan_csv_sentinel(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
 }
-BENCHMARK(scan_csv_sentinel);
 
-
-static void ctre_csv(benchmark::State& state) {
+void ctre_csv(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
 }
-BENCHMARK(ctre_csv);
 
-static void re2c_csv_benchmark(benchmark::State& state) {
+void re2c_csv_benchmark(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       const char* cursor = text.c_str();
-      benchmark::DoNotOptimize(cursor);
-      benchmark::DoNotOptimize(re2c_csv(cursor));
+      harness::DoNotOptimize(cursor);
+      harness::DoNotOptimize(re2c_csv(cursor));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
 }
-BENCHMARK(re2c_csv_benchmark);
+
+const int registered = [] {
+  harness::RegisterBenchmark("scan_csv", scan_csv);
+  harness::RegisterBenchmark("scan_csv_sentinel", scan_csv_sentinel);
+  harness::RegisterBenchmark("ctre_csv", ctre_csv);
+  harness::RegisterBenchmark("re2c_csv", re2c_csv_benchmark);
+  return 0;
+}();
+
+}  // namespace

@@ -1,74 +1,74 @@
-// One pattern: a run of lowercase letters, matched against the whole input.
-//
-// Every benchmark here compiles exactly one pattern. Compiling a pattern is a
-// constant evaluation, so a translation unit that held ten of them would cost
-// ten times as much to rebuild -- and rebuilding one benchmark to look at it
-// is the thing this file is shaped for.
-#include <benchmark/benchmark.h>
-#include <ctre.hpp>
-
-#include <string>
-
-#include "inputs.hpp"
-
+// One pattern, recognised over the whole input. Nothing is included here: the
+// harness and the other engine are modules, so this file is compiled with the
+// same constant evaluator the library is.
+import std;
+import bench.harness;
+import bench.inputs;
+import ctre;
 import scan;
 
 bool re2c_address(const char* cursor);
 
-static void scan_address(benchmark::State& state) {
+namespace {
+
+void scan_address(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::address.size());
 }
-BENCHMARK(scan_address);
 
-// The same expression, matched the way the generated scanner is given it: a
-// terminator instead of a length. The bounded form above carries an end
-// pointer and tests it for every character; this one lets the terminator fall
-// out of the class test, which is what re2c does, and what makes the two rows
-// comparable.
-static void scan_address_sentinel(benchmark::State& state) {
+void scan_address_sentinel(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::address.size());
 }
-BENCHMARK(scan_address_sentinel);
 
-
-static void ctre_address(benchmark::State& state) {
+void ctre_address(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::address.size());
 }
-BENCHMARK(ctre_address);
 
-static void re2c_address_benchmark(benchmark::State& state) {
+void re2c_address_benchmark(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       const char* cursor = text.c_str();
-      benchmark::DoNotOptimize(cursor);
-      benchmark::DoNotOptimize(re2c_address(cursor));
+      harness::DoNotOptimize(cursor);
+      harness::DoNotOptimize(re2c_address(cursor));
     }
   }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::address.size());
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::address.size());
 }
-BENCHMARK(re2c_address_benchmark);
+
+const int registered = [] {
+  harness::RegisterBenchmark("scan_address", scan_address);
+  harness::RegisterBenchmark("scan_address_sentinel", scan_address_sentinel);
+  harness::RegisterBenchmark("ctre_address", ctre_address);
+  harness::RegisterBenchmark("re2c_address", re2c_address_benchmark);
+  return 0;
+}();
+
+}  // namespace

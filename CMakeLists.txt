@@ -135,12 +135,34 @@ target_link_libraries(tre_runtime_test PRIVATE tre_tdfa gtest_main)
 add_test(NAME tre_runtime_test COMMAND tre_runtime_test)
 
 if(SCAN_BUILD_BENCHMARKS)
-  # One pattern per benchmark, one benchmark per executable.
+  # Everything a benchmark uses is a module.
   #
-  # Compiling a pattern is a constant evaluation and costs seconds; a
-  # translation unit holding ten of them costs ten times that, every time one
-  # of them is touched. Splitting them means looking at a single benchmark
-  # rebuilds a single pattern.
+  # A translation unit that imports a module built against the `std` module and
+  # also includes a standard header textually gives clang's bytecode
+  # interpreter two views of the same entity, and nothing in that file
+  # evaluates afterwards. The harness and the other engine are headers, so they
+  # are wrapped once each and imported from then on -- which is also what lets
+  # the benchmarks be compiled with the same evaluator as the library.
+  add_library(bench_harness)
+  target_sources(bench_harness PUBLIC FILE_SET CXX_MODULES FILES
+    benchmarks/harness.cppm)
+  target_link_libraries(bench_harness PUBLIC benchmark::benchmark)
+  target_compile_features(bench_harness PUBLIC cxx_std_23)
+
+  add_library(bench_inputs)
+  target_sources(bench_inputs PUBLIC FILE_SET CXX_MODULES FILES
+    benchmarks/inputs.cppm)
+  target_compile_features(bench_inputs PUBLIC cxx_std_23)
+
+  add_library(ctre_module)
+  target_sources(ctre_module PUBLIC FILE_SET CXX_MODULES FILES
+    "${ctre_SOURCE_DIR}/ctre.cppm")
+  target_link_libraries(ctre_module PUBLIC ctre)
+  target_compile_features(ctre_module PUBLIC cxx_std_23)
+
+  # One pattern per benchmark, one benchmark per executable: compiling a
+  # pattern is a constant evaluation and costs seconds, so a translation unit
+  # holding ten of them costs ten times that whenever one is touched.
   function(scan_add_benchmark name)
     cmake_parse_arguments(PARSE_ARGV 1 arg "NO_RE2C" "" "")
     set(sources "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/${name}_benchmark.cc")
@@ -157,10 +179,14 @@ if(SCAN_BUILD_BENCHMARKS)
       list(APPEND sources "${generated}")
     endif()
     add_executable(${name}_benchmark ${sources})
-    target_include_directories(${name}_benchmark PRIVATE benchmarks)
     target_link_libraries(${name}_benchmark
-      PRIVATE scan benchmark::benchmark_main ctre)
+      PRIVATE scan bench_harness bench_inputs ctre_module
+              benchmark::benchmark_main)
     target_compile_options(${name}_benchmark PRIVATE $<$<CONFIG:Release>:-O3>)
+    if(SCAN_BYTECODE_CONSTANT_INTERPRETER)
+      target_compile_options(${name}_benchmark PRIVATE
+        $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
+    endif()
   endfunction()
 
   # Recognition: the whole input, matched and not taken apart.

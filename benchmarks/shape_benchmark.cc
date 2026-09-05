@@ -2,11 +2,9 @@
 // generated code takes. No library and no pattern compilation: this measures
 // only what the shape of the loop is worth, so that a difference between the
 // engines can be told apart from a difference between the loops they emit.
-#include <benchmark/benchmark.h>
-
-#include <string>
-
-#include "inputs.hpp"
+import std;
+import bench.harness;
+import bench.inputs;
 
 // What this library emits: read, classify, advance, and only then look at the
 // terminator.
@@ -28,28 +26,37 @@
   }
 }
 
-static void loop_scan_shape(benchmark::State& state) {
+void loop_scan_shape(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
   for (auto _ : state) {
     const char* cursor = text.c_str();
-    benchmark::DoNotOptimize(cursor);
-    benchmark::DoNotOptimize(scan_shape(cursor));
+    harness::DoNotOptimize(cursor);
+    harness::DoNotOptimize(scan_shape(cursor));
   }
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
-BENCHMARK(loop_scan_shape)->Arg(4096)->Arg(65536);
 
-static void loop_re2c_shape(benchmark::State& state) {
+
+void loop_re2c_shape(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
   for (auto _ : state) {
     const char* cursor = text.c_str();
-    benchmark::DoNotOptimize(cursor);
-    benchmark::DoNotOptimize(re2c_shape(cursor));
+    harness::DoNotOptimize(cursor);
+    harness::DoNotOptimize(re2c_shape(cursor));
   }
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
-BENCHMARK(loop_re2c_shape)->Arg(4096)->Arg(65536);
+
+namespace {
+const int registered = [] {
+  harness::RegisterBenchmark("loop_scan_shape", loop_scan_shape)
+      ->Arg(4096)->Arg(65536);
+  harness::RegisterBenchmark("loop_re2c_shape", loop_re2c_shape)
+      ->Arg(4096)->Arg(65536);
+  return 0;
+}();
+}  // namespace

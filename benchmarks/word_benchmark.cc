@@ -1,94 +1,82 @@
 // One pattern: a run of lowercase letters, matched against the whole input.
 //
-// Every benchmark here compiles exactly one pattern. Compiling a pattern is a
-// constant evaluation, so a translation unit that held ten of them would cost
-// ten times as much to rebuild -- and rebuilding one benchmark to look at it
-// is the thing this file is shaped for.
-#include <benchmark/benchmark.h>
-#include <ctre.hpp>
-
-#include <string>
-
-#include "inputs.hpp"
-
+// Nothing is included here. The harness and the other engine are modules --
+// see benchmarks/harness.cppm -- so this file can be compiled with the same
+// constant evaluator the library is built with.
+import std;
+import bench.harness;
+import ctre;
 import scan;
+
+import bench.inputs;
 
 bool re2c_word(const char* cursor);
 
-static void scan_word(benchmark::State& state) {
-  const std::string& text = bench::long_word(static_cast<std::size_t>(state.range(0)));
-  for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match<"[a-z]+">(view));
-  }
-  state.SetBytesProcessed(state.iterations() * static_cast<std::size_t>(state.range(0)));
-}
-BENCHMARK(scan_word)->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
+namespace {
 
-// The same expression, matched the way the generated scanner is given it: a
-// terminator instead of a length. The bounded form above carries an end
-// pointer and tests it for every character; this one lets the terminator fall
-// out of the class test, which is what re2c does, and what makes the two rows
-// comparable.
-static void scan_word_sentinel(benchmark::State& state) {
-  const std::string& text = bench::long_word(static_cast<std::size_t>(state.range(0)));
-  for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(scan::match_sentinel<"[a-z]+">(view));
-  }
-  state.SetBytesProcessed(state.iterations() * static_cast<std::size_t>(state.range(0)));
-}
-BENCHMARK(scan_word_sentinel)->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
-
-
-static void ctre_word(benchmark::State& state) {
-  const std::string& text = bench::long_word(static_cast<std::size_t>(state.range(0)));
-  for (auto _ : state) {
-    std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(ctre::match<"[a-z]+">(view));
-  }
-  state.SetBytesProcessed(state.iterations() * static_cast<std::size_t>(state.range(0)));
-}
-BENCHMARK(ctre_word)->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
-
-static void re2c_word_benchmark(benchmark::State& state) {
-  const std::string& text = bench::long_word(static_cast<std::size_t>(state.range(0)));
-  for (auto _ : state) {
-    const char* cursor = text.c_str();
-    benchmark::DoNotOptimize(cursor);
-    benchmark::DoNotOptimize(re2c_word(cursor));
-  }
-  state.SetBytesProcessed(state.iterations() * static_cast<std::size_t>(state.range(0)));
-}
-// The same loop over inputs of very different length: a cost paid once per
-// call shows up at sixty-four bytes and disappears at sixty-four kilobytes,
-// while a cost paid per byte does not move.
-BENCHMARK(re2c_word_benchmark)->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
-
-// The same match, called rather than inlined into the timing loop.
-//
-// The hand-written loops in shape_benchmark run at three gigabytes a second
-// and they are `noinline`: a function of their own, with nothing else alive.
-// Inlined here, the matcher shares its registers with the benchmark's state,
-// the subject and the result, and the loop is encoded with extended registers
-// and a byte-wide comparison -- seventeen bytes where re2c's is fourteen, and
-// across a fetch boundary. This row says how much of the difference that is.
-[[gnu::noinline]] static bool match_word_out_of_line(std::string_view view) {
-  return static_cast<bool>(scan::match_sentinel<"[a-z]+">(view));
-}
-
-static void scan_word_sentinel_outlined(benchmark::State& state) {
+void scan_word(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
   for (auto _ : state) {
     std::string_view view(text);
-    benchmark::DoNotOptimize(view);
-    benchmark::DoNotOptimize(match_word_out_of_line(view));
+    harness::DoNotOptimize(view);
+    harness::DoNotOptimize(scan::match<"[a-z]+">(view));
   }
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
-BENCHMARK(scan_word_sentinel_outlined)->Arg(4096)->Arg(65536);
+
+void scan_word_sentinel(harness::State& state) {
+  const std::string& text =
+      bench::long_word(static_cast<std::size_t>(state.range(0)));
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    harness::DoNotOptimize(scan::match_sentinel<"[a-z]+">(view));
+  }
+  state.SetBytesProcessed(state.iterations() *
+                          static_cast<std::size_t>(state.range(0)));
+}
+
+void ctre_word(harness::State& state) {
+  const std::string& text =
+      bench::long_word(static_cast<std::size_t>(state.range(0)));
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    harness::DoNotOptimize(ctre::match<"[a-z]+">(view));
+  }
+  state.SetBytesProcessed(state.iterations() *
+                          static_cast<std::size_t>(state.range(0)));
+}
+
+void re2c_word_benchmark(harness::State& state) {
+  const std::string& text =
+      bench::long_word(static_cast<std::size_t>(state.range(0)));
+  for (auto _ : state) {
+    const char* cursor = text.c_str();
+    harness::DoNotOptimize(cursor);
+    harness::DoNotOptimize(re2c_word(cursor));
+  }
+  state.SetBytesProcessed(state.iterations() *
+                          static_cast<std::size_t>(state.range(0)));
+}
+
+// The same loop over inputs of very different length: a cost paid once per
+// call shows at sixty-four bytes and disappears at sixty-four kilobytes, while
+// a cost paid per byte does not move.
+harness::Benchmark* with_lengths(harness::Benchmark* registration) {
+  return registration->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
+}
+
+const int registered = [] {
+  with_lengths(harness::RegisterBenchmark("scan_word", scan_word));
+  with_lengths(
+      harness::RegisterBenchmark("scan_word_sentinel", scan_word_sentinel));
+  with_lengths(harness::RegisterBenchmark("ctre_word", ctre_word));
+  with_lengths(
+      harness::RegisterBenchmark("re2c_word", re2c_word_benchmark));
+  return 0;
+}();
+
+}  // namespace
