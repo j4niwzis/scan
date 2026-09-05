@@ -103,63 +103,6 @@ struct transition_ranges {
   std::size_t size = 0;
 };
 
-struct tagged_transition_range {
-  unsigned char first = 0;
-  unsigned char last = 0;
-  unsigned char representative = 0;
-  std::size_t target = 0;
-};
-
-struct tagged_transition_ranges {
-  std::array<tagged_transition_range, 256> values{};
-  std::size_t size = 0;
-};
-
-template <class transition_type>
-[[nodiscard]] consteval bool same_tagged_transition(
-    const transition_type& lhs, const transition_type& rhs) {
-  if (lhs.target != rhs.target || lhs.command_count != rhs.command_count)
-    return false;
-  return std::ranges::equal(
-      lhs.commands | std::views::take(lhs.command_count),
-      rhs.commands | std::views::take(rhs.command_count), {},
-      [](const packed_command& command) {
-        return std::tuple(command.destination, command.source, command.value);
-      },
-      [](const packed_command& command) {
-        return std::tuple(command.destination, command.source, command.value);
-      });
-}
-
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] consteval auto make_tagged_transition_ranges() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  tagged_transition_ranges result;
-  for (std::size_t symbol :
-       std::views::iota(std::size_t{0}, std::size_t{256})) {
-    const auto& transition = automaton.states[state].transitions[symbol];
-    if (transition.target == transition.reject) continue;
-    if (result.size != 0 &&
-        result.values[result.size - 1].last + 1 == symbol) {
-      const auto representative =
-          result.values[result.size - 1].representative;
-      if (same_tagged_transition(
-              automaton.states[state].transitions[representative],
-              transition)) {
-        result.values[result.size - 1].last =
-            static_cast<unsigned char>(symbol);
-        continue;
-      }
-    }
-    result.values[result.size++] = {
-        .first = static_cast<unsigned char>(symbol),
-        .last = static_cast<unsigned char>(symbol),
-        .representative = static_cast<unsigned char>(symbol),
-        .target = transition.target};
-  }
-  return result;
-}
-
 template <fixed_string pattern, std::size_t state>
 [[nodiscard]] consteval auto make_transition_ranges() {
   constexpr const auto& automaton = regex_automaton<pattern>;
@@ -370,13 +313,13 @@ template <fixed_string pattern, std::size_t state, std::size_t register_count>
     std::array<std::ptrdiff_t, register_count>& registers,
     std::ptrdiff_t position);
 
-template <fixed_string pattern, std::size_t state, unsigned char symbol,
+template <fixed_string pattern, std::size_t state, std::size_t range,
           std::size_t register_count>
 SCAN_REGEX_FORCE_INLINE constexpr void execute_static_transition_commands(
     std::array<std::ptrdiff_t, register_count>& registers,
     std::ptrdiff_t position) {
   constexpr const auto& transition =
-      regex_automaton<pattern>.states[state].transitions[symbol];
+      regex_automaton<pattern>.states[state].ranges[range];
   [&]<std::size_t... index>(std::index_sequence<index...>)
       SCAN_REGEX_FORCE_INLINE_LAMBDA {
         const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
@@ -414,16 +357,15 @@ execute_tagged_self_transition(
     unsigned char symbol,
     std::array<std::ptrdiff_t, register_count>& registers,
     std::ptrdiff_t position) {
-  constexpr auto ranges = make_tagged_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
+  constexpr const auto& packed = regex_automaton<pattern>.states[state];
+  if constexpr (index == packed.range_count) {
     return false;
   } else {
-    constexpr auto range = ranges.values[index];
+    constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target != state) return false;
-      execute_static_transition_commands<pattern, state,
-                                         range.representative>(registers,
-                                                               position);
+      execute_static_transition_commands<pattern, state, index>(registers,
+                                                                position);
       return true;
     }
     return execute_tagged_self_transition<pattern, state, register_count,
@@ -439,16 +381,15 @@ dispatch_tagged_transition(
     unsigned char symbol, const char* cursor, const char* end,
     std::array<std::ptrdiff_t, register_count>& registers,
     std::ptrdiff_t position) {
-  constexpr auto ranges = make_tagged_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
+  constexpr const auto& packed = regex_automaton<pattern>.states[state];
+  if constexpr (index == packed.range_count) {
     return false;
   } else {
-    constexpr auto range = ranges.values[index];
+    constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target == state) return false;
-      execute_static_transition_commands<pattern, state,
-                                         range.representative>(registers,
-                                                               position);
+      execute_static_transition_commands<pattern, state, index>(registers,
+                                                                position);
       return run_tagged_state_continuation<pattern, range.target>(
           cursor, end, registers, position);
     }
@@ -474,7 +415,7 @@ template <fixed_string pattern, std::size_t state, std::size_t register_count>
         symbol, cursor, end, registers, position);
   }
   if constexpr (regex_automaton<pattern>.states[state].accepting_slot ==
-                packed_state<0, 0>::not_accepting) {
+                packed_state<0, 0, 0>::not_accepting) {
     return false;
   } else {
     execute_static_final_commands<pattern, state>(registers, position);
@@ -507,21 +448,28 @@ regex_match(
     std::ranges::for_each(
         std::views::iota(std::size_t{0}, input.size()),
         [&](std::size_t position) {
-          if (state == packed_transition<0>::reject) return;
-          const auto& transition = automaton.states[state].transitions[
-              static_cast<unsigned char>(input[position])];
-          if (transition.target == transition.reject) {
-            state = transition.reject;
+          if (state == packed_range<0>::reject) return;
+          const auto& packed = automaton.states[state];
+          const auto symbol = static_cast<unsigned char>(input[position]);
+          // The ranges are in symbol order and do not overlap, so the one
+          // holding a symbol is the last that starts at or before it.
+          const auto found = std::ranges::find_if(
+              packed.ranges | std::views::take(packed.range_count),
+              [&](const auto& range) {
+                return symbol >= range.first && symbol <= range.last;
+              });
+          if (found ==
+              (packed.ranges | std::views::take(packed.range_count)).end()) {
+            state = packed_range<0>::reject;
             return;
           }
-          execute_commands(transition.commands, transition.command_count,
-                           registers,
+          execute_commands(found->commands, found->command_count, registers,
                            static_cast<std::ptrdiff_t>(position + 1));
-          state = transition.target;
+          state = found->target;
         });
-    if (state == packed_transition<0>::reject) return {};
+    if (state == packed_range<0>::reject) return {};
     const std::size_t slot = automaton.states[state].accepting_slot;
-    if (slot == packed_state<0, 0>::not_accepting) return {};
+    if (slot == packed_state<0, 0, 0>::not_accepting) return {};
     execute_commands(automaton.states[state].final_commands,
                      automaton.states[state].final_command_count, registers,
                      static_cast<std::ptrdiff_t>(input.size()));
