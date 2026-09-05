@@ -613,14 +613,15 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
   for (const path& walk : initial_paths) {
     configuration entry{.walk = walk, .regs = std::vector<std::uint32_t>(tags)};
     for (tag_id tag = 0; tag < tags; ++tag) {
-      // Empty, not what the closure found: those tags are held back like any
-      // others, and written by the first transition -- or, if the input ends
-      // here, by the final operations.
-      register_command command{.destination = fresh_register(),
-                               .source = std::nullopt,
-                               .values = {}};
-      entry.regs[tag] = static_cast<std::uint32_t>(command.destination);
-      result.initialize.push_back(std::move(command));
+      // A register, and no operation to go with it.
+      //
+      // What the initial closure found is held back like anything else, and
+      // written by the first transition -- or, if the input ends here, by the
+      // final operations. What is left to say is that the register holds
+      // nothing, and everything that runs one of these automata starts every
+      // register holding nothing already: ten operations at the head of every
+      // match said what was true before they ran.
+      entry.regs[tag] = static_cast<std::uint32_t>(fresh_register());
     }
     initial.push_back(std::move(entry));
   }
