@@ -186,7 +186,84 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
 }
 
 
-template <class type, fixed_string format, std::size_t... index>
+// The same automaton walked without an end pointer.
+//
+// A terminator the automaton rejects in every state ends the match by failing
+// the class test, exactly as any other symbol that no transition takes would,
+// so the loop carries one comparison per character instead of two. The class
+// is tested first and the terminator afterwards -- it can never keep the
+// automaton where it is, so asking about it first would only add a branch.
+template <auto& automaton, unsigned char sentinel>
+[[nodiscard]] consteval bool is_safe_tagged_sentinel() {
+  for (const auto& state : automaton.states) {
+    for (std::size_t index = 0; index < state.range_count; ++index) {
+      const auto& range = state.ranges[index];
+      if (sentinel >= range.first && sentinel <= range.last) return false;
+    }
+  }
+  return true;
+}
+
+template <auto& automaton, unsigned char sentinel, std::size_t state,
+          std::size_t register_count>
+[[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
+    const char* cursor, std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position);
+
+template <auto& automaton, unsigned char sentinel, std::size_t state,
+          std::size_t register_count, std::size_t index = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool
+dispatch_tagged_sentinel_transition(
+    unsigned char symbol, const char* cursor,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  constexpr const auto& packed = automaton.states[state];
+  if constexpr (index == packed.range_count) {
+    return false;
+  } else {
+    constexpr const auto& range = packed.ranges[index];
+    if (symbol >= range.first && symbol <= range.last) {
+      if constexpr (range.target == state) return false;
+      execute_static_transition_commands<automaton, state, index>(registers,
+                                                                  position);
+      return run_tagged_sentinel_continuation<automaton, sentinel,
+                                              range.target>(cursor, registers,
+                                                            position + 1);
+    }
+    return dispatch_tagged_sentinel_transition<automaton, sentinel, state,
+                                               register_count, index + 1>(
+        symbol, cursor, registers, position);
+  }
+}
+
+template <auto& automaton, unsigned char sentinel, std::size_t state,
+          std::size_t register_count>
+[[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
+    const char* cursor, std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t position) {
+  while (true) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
+    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
+                                                         position)) {
+      ++position;
+      continue;
+    }
+    if (symbol == sentinel) {
+      if constexpr (automaton.states[state].accepting_slot ==
+                    packed_state<0, 0, 0>::not_accepting) {
+        return false;
+      } else {
+        execute_static_final_commands<automaton, state>(registers, position);
+        return true;
+      }
+    }
+    return dispatch_tagged_sentinel_transition<automaton, sentinel, state>(
+        symbol, cursor, registers, position);
+  }
+}
+
+template <class type, fixed_string format, unsigned char sentinel,
+          std::size_t... index>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
@@ -220,11 +297,19 @@ template <class type, fixed_string format, std::size_t... index>
     // constants is what the captureless path has always used, and it is the
     // difference between reading a table and running code.
     const char* cursor = input.data();
-    const char* const end = cursor + input.size();
-    if (!run_tagged_state_continuation<automaton, automaton.initial>(
-            cursor, end, registers, 0)) {
-      throw scan_error("input does not match scan expression");
+    bool matched = false;
+    if constexpr (sentinel != 0) {
+      static_assert(is_safe_tagged_sentinel<automaton, sentinel>(),
+                    "the terminator must be rejected in every state");
+      matched = run_tagged_sentinel_continuation<automaton, sentinel,
+                                                 automaton.initial>(
+          cursor, registers, 0);
+    } else {
+      const char* const end = cursor + input.size();
+      matched = run_tagged_state_continuation<automaton, automaton.initial>(
+          cursor, end, registers, 0);
     }
+    if (!matched) throw scan_error("input does not match scan expression");
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto begin = registers[capture_index * 2];
       const auto end = registers[capture_index * 2 + 1];
@@ -239,10 +324,10 @@ template <class type, fixed_string format, std::size_t... index>
   }
 }
 
-template <class type, fixed_string format>
+template <class type, fixed_string format, unsigned char sentinel = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
-  return scan_fields<type, format>(
+  return scan_fields<type, format, sentinel>(
       input, std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
 }
 

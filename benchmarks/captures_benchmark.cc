@@ -50,6 +50,25 @@ void scan_captures_views(harness::State& state) {
                           bench::csv.size());
 }
 
+// The same fields, from input that carries a terminator the pattern never
+// matches -- which a `std::string` always does. The loop then tests only the
+// character, not the character and the end of the input.
+void scan_captures_views_sentinel(harness::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      field_views value =
+          scan::scan_sentinel<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+              view);
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
 void scan_captures_strings(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -97,6 +116,8 @@ void re2c_captures_benchmark(harness::State& state) {
 
 const int registered = [] {
   harness::RegisterBenchmark("scan_captures_views", scan_captures_views);
+  harness::RegisterBenchmark("scan_captures_views_sentinel",
+                             scan_captures_views_sentinel);
   harness::RegisterBenchmark("scan_captures_strings", scan_captures_strings);
   harness::RegisterBenchmark("ctre_captures", ctre_captures);
   harness::RegisterBenchmark("re2c_captures", re2c_captures_benchmark);
