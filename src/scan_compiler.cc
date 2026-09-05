@@ -165,7 +165,7 @@ class tre_parser {
     if (peek() == '[') return parse_character_class();
     if (peek() == '.') {
       ++position_;
-      std::array<bool, 256> symbols;
+      std::array<bool, 256> symbols{};
       std::ranges::fill(symbols, true);
       return tre::character_class(symbols);
     }
