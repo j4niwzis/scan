@@ -1018,6 +1018,22 @@ class stream_state {
                packed_state<0, 0, 0>::not_accepting;
   }
 
+  // Accepting, with nowhere to go from here: the match is over and saying so
+  // costs nothing, where finding out by offering the next character costs that
+  // character. A pattern that ends in the thing that ends it -- a newline at
+  // the end of a command -- settles like this, and then reading one after
+  // another loses nothing at all.
+  [[nodiscard]] constexpr bool settled() const {
+    if (!accepting()) return false;
+    const auto& packed = automaton.states[state_];
+    for (std::size_t index = 0; index < packed.range_count; ++index) {
+      if (packed.ranges[index].target != packed.ranges[index].reject) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   constexpr void restart() { *this = stream_state{}; }
 
   [[nodiscard]] constexpr type finish() const& {
@@ -1135,6 +1151,9 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
       break;
     }
     ++first;
+    // And where the machine can go nowhere from where it stands, it is over,
+    // and nothing needs to be read to find that out.
+    if (state.settled()) break;
   }
   return {std::move(state).finish(), stopped};
 }

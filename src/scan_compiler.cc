@@ -22,6 +22,24 @@ inline constexpr char format_mark = '\x04';
 inline constexpr char format_raw_begin = '\x05';
 inline constexpr char format_raw_end = '\x06';
 
+// The characters a backslash names. Without these a format can only say a
+// newline by holding one, which means a pattern cannot be written on one line,
+// and a class can only say one as a number.
+[[nodiscard]] constexpr char named_character(char letter) {
+  switch (letter) {
+    case 'n': return '\n';
+    case 't': return '\t';
+    case 'r': return '\r';
+    case 'f': return '\f';
+    case 'v': return '\v';
+    case '0': return '\0';
+    case 'a': return '\a';
+    case 'b': return '\b';
+    case 'e': return '\x1b';
+    default: return letter;
+  }
+}
+
 class tre_parser {
  public:
   constexpr tre_parser(std::string_view source,
@@ -124,7 +142,7 @@ class tre_parser {
     }
     if (peek() == '\\') {
       if (peek(1) == '\0') throw "dangling format escape";
-      const char literal = peek(1);
+      const char literal = named_character(peek(1));
       position_ += 2;
       return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
     }
@@ -268,6 +286,10 @@ class tre_parser {
     if (escaped == 'x') return scan::tre::symbol(parse_hex_byte());
     if (escaped == 'd') return make_range('0', '9');
     if (escaped == 's') return make_set(" \t\n\r\f\v");
+    if (escaped == 'n' || escaped == 't' || escaped == 'r' || escaped == 'f' ||
+        escaped == 'v' || escaped == 'a' || escaped == 'e') {
+      return scan::tre::symbol(named_character(escaped));
+    }
     if (escaped == 'w') {
       auto symbols = range_bits('a', 'z');
       add_range(symbols, 'A', 'Z');
@@ -313,6 +335,9 @@ class tre_parser {
         ++position_;
         return parse_hex_byte();
       }
+      const char value = named_character(peek());
+      ++position_;
+      return value;
     }
     const char value = peek();
     ++position_;

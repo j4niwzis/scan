@@ -288,6 +288,11 @@ class reader {
   // Would what has been read so far be a whole match?
   [[nodiscard]] constexpr bool accepting() const { return state_.accepting(); }
 
+  // A whole match that nothing can extend. Where a pattern ends in the thing
+  // that ends it, this is true the moment the last character goes in, and the
+  // next character need never be offered to find out.
+  [[nodiscard]] constexpr bool settled() const { return state_.settled(); }
+
   // The values. Reading further after this is reading further into the same
   // match, so whoever wants the next one says so.
   [[nodiscard]] constexpr type take() const { return state_.finish(); }
