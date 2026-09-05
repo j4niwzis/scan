@@ -73,6 +73,10 @@ class borrowed_result {
   template <class type>
     requires std::is_aggregate_v<type>
   constexpr operator type() const {
+    static_assert(!scanned_by_format<type>,
+                  "a type that declares its own format is read as a field, not "
+                  "as the whole of what is scanned into: wrap it in a struct "
+                  "with one member and scan into that");
     const auto fields = scan_fields<type, format, sentinel, terminated>(input_);
     return convert<type, format>(fields,
                                  std::make_index_sequence<groups_of<type>()>{});

@@ -671,7 +671,17 @@ template <class type, fixed_string format>
       (one.template operator()<branch>(), ...);
     }(std::make_index_sequence<std::variant_size_v<type>>{});
   } else {
-    spread_into<type, false>(made, format.view());
+    // The type scanned into is always opened up: its fields are the places, and
+    // it is never itself one. A format of a single place standing for the whole
+    // output would read differently the day that type gained a scanner or lost
+    // one, without a word changing in the format, so it is not allowed to mean
+    // anything. Whoever wants it writes the wrapper themselves, and then the
+    // place is the field and says so.
+    //
+    // A variant is the exception, and the branches below are why: there a place
+    // standing for a whole alternative is the thing being said, not an accident
+    // of what the alternative happens to be.
+    spread_into<type, true>(made, format.view());
   }
   return made;
 }

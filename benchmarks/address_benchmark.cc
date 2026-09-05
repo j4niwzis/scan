@@ -16,6 +16,13 @@ import bench.inputs;
 import ctre;
 import scan;
 
+// Measured, and not yet answered: this library reads the address in about a
+// thousand nanoseconds where re2c reads it in seven hundred and forty. The
+// sentinel row is worth nothing here, which is the first thing to look at --
+// where a class is one range the loop is a comparison and the terminator falls
+// out of it for free, and the classes in this pattern are six and seven ranges
+// wide. The word step does not run for them at all, and the vector step spends
+// a comparison on each range. Something to fix, not to leave unwritten.
 bool re2c_address(const char* cursor);
 
 namespace {
