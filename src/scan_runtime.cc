@@ -48,6 +48,19 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 }
 
 
+// The opposite request, for the entry that carries the scanning loop: inlined
+// into a caller it shares registers with everything alive there, and the loop
+// is encoded with the extended registers -- which is measurable, and which
+// changes when an unrelated function appears beside it. The recognition path
+// draws the same line at its entry.
+#if defined(_MSC_VER) && !defined(__clang__)
+#define SCAN_NEVER_INLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define SCAN_NEVER_INLINE [[gnu::noinline]]
+#else
+#define SCAN_NEVER_INLINE
+#endif
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #define SCAN_FORCE_INLINE_LAMBDA
 #elif defined(__GNUC__) || defined(__clang__)
@@ -264,7 +277,7 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
 
 template <class type, fixed_string format, unsigned char sentinel,
           std::size_t... index>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
+[[nodiscard]] SCAN_NEVER_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
     const auto matched = tre::simulate(build_tnfa<type, format>(), input);
