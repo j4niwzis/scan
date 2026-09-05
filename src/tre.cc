@@ -810,19 +810,43 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       });
     }
 
+    // Two registers interfere when one is written while the other is alive --
+    // not merely when both are alive somewhere.
+    //
+    // The coarser rule makes every pair that is ever alive together
+    // inseparable, and the whole point of the analysis is to separate them: a
+    // TDFA copies a bank of registers across a transition, and those copies
+    // can only be removed if the source and the destination may become one
+    // register. Which is the second half of the rule: a copy `x <- y` does not
+    // make x and y interfere, because after it they hold the same value. That
+    // exception is what a coalescing pass is for.
     std::vector<std::vector<char>> interference(
         register_count, std::vector<char>(register_count));
-    // Plain loops with a test in the body, and no filter view: the predicate
-    // of one is a temporary of the range expression, and reading it back
-    // during constant evaluation is where this stopped being a constant.
-    for (const std::vector<char>& state_live : live) {
-      for (std::size_t lhs = 0; lhs < register_count; ++lhs) {
-        if (!state_live[lhs]) continue;
-        for (std::size_t rhs = lhs + 1; rhs < register_count; ++rhs) {
-          if (!state_live[rhs]) continue;
-          interference[lhs][rhs] = true;
-          interference[rhs][lhs] = true;
+    const auto note_interference = [&](std::size_t lhs, std::size_t rhs) {
+      if (lhs == rhs) return;
+      interference[lhs][rhs] = true;
+      interference[rhs][lhs] = true;
+    };
+    const auto interfere_over = [&](const std::vector<register_command>& commands,
+                                    const std::vector<char>& output) {
+      for (const register_command& command : commands) {
+        for (std::size_t reg = 0; reg < register_count; ++reg) {
+          if (!output[reg]) continue;
+          if (command.source && *command.source == reg &&
+              command.values.empty()) {
+            continue;  // a copy: the two hold one value from here on
+          }
+          note_interference(command.destination, reg);
         }
+      }
+    };
+    interfere_over(automaton.initialize, live[automaton.initial]);
+    for (std::size_t state = 0; state < automaton.states.size(); ++state) {
+      for (const tdfa_transition& transition : automaton.states[state].transitions) {
+        interfere_over(transition.commands, live[transition.target]);
+      }
+      if (automaton.states[state].accepting_slot) {
+        interfere_over(automaton.states[state].final_commands, final_live);
       }
     }
 
@@ -940,8 +964,30 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
     }
   };
 
-  optimize_registers();
-  optimize_registers();
+  // Until it stops changing, rather than a fixed number of passes.
+  //
+  // Each pass removes operations that the previous one made dead and merges
+  // registers the previous one made mergeable, so the passes feed each other;
+  // two of them was a guess at where that stops. The bound is there because a
+  // guess about termination is not a proof.
+  if (allocate_registers) {
+    std::size_t previous = 0;
+    for (std::size_t pass = 0; pass < 8; ++pass) {
+      optimize_registers();
+      std::size_t commands = automaton.initialize.size();
+      for (const tdfa_state& state : automaton.states) {
+        commands += state.final_commands.size();
+        for (const tdfa_transition& transition : state.transitions) {
+          commands += transition.commands.size();
+        }
+      }
+      if (pass != 0 && commands == previous) break;
+      previous = commands;
+    }
+  } else {
+    optimize_registers();
+    optimize_registers();
+  }
 
   const auto same_commands = [](const auto& lhs, const auto& rhs) {
     return lhs.size() == rhs.size() &&
