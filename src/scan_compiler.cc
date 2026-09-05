@@ -426,8 +426,8 @@ template <class type, fixed_string format>
     pool.push_back(commands);
     return pool.size() - 1;
   };
-  std::vector<std::size_t> final_command_id(count);
-  std::vector<std::vector<std::size_t>> command_id(count);
+  std::vector<std::uint32_t> final_command_id(count);
+  std::vector<std::vector<std::uint32_t>> command_id(count);
   for (std::size_t state = 0; state < count; ++state) {
     final_command_id[state] = intern(automaton.states[state].final_commands);
     command_id[state].resize(automaton.states[state].transitions.size());
@@ -439,8 +439,9 @@ template <class type, fixed_string format>
 
   // Symbols that take the same transition in every state, and carry the same
   // commands, are one class: the refinement then walks classes, not bytes.
-  std::vector<std::size_t> symbol_class(256, none);
-  std::vector<std::size_t> representatives;
+  constexpr std::uint32_t no_class = std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::uint32_t> symbol_class(256, no_class);
+  std::vector<std::uint32_t> representatives;
   for (std::size_t symbol = 0; symbol < 256; ++symbol) {
     for (std::size_t index = 0; index < representatives.size(); ++index) {
       const std::size_t other = representatives[index];
@@ -458,7 +459,7 @@ template <class type, fixed_string format>
       }
       if (alike) { symbol_class[symbol] = index; break; }
     }
-    if (symbol_class[symbol] == none) {
+    if (symbol_class[symbol] == no_class) {
       symbol_class[symbol] = representatives.size();
       representatives.push_back(symbol);
     }
@@ -468,7 +469,7 @@ template <class type, fixed_string format>
   // Moore: refine until the partition stops changing. A state's signature is
   // its own class and, per symbol class, the class it goes to with which
   // commands.
-  std::vector<std::size_t> classes(count);
+  std::vector<std::uint32_t> classes(count);
   for (std::size_t state = 0; state < count; ++state) {
     classes[state] = automaton.states[state].accepting_slot.has_value()
                          ? final_command_id[state] + 1
@@ -476,7 +477,7 @@ template <class type, fixed_string format>
   }
   std::size_t class_count = 0;
   for (;;) {
-    std::vector<std::vector<std::size_t>> signature(count);
+    std::vector<std::vector<std::uint32_t>> signature(count);
     for (std::size_t state = 0; state < count; ++state) {
       signature[state].reserve(1 + 2 * class_width);
       signature[state].push_back(classes[state]);
@@ -495,14 +496,14 @@ template <class type, fixed_string format>
     }
     // Number the classes by the first state that has them, which is the
     // numbering the pairwise version produced.
-    std::vector<std::size_t> order(count);
+    std::vector<std::uint32_t> order(count);
     for (std::size_t state = 0; state < count; ++state) order[state] = state;
     std::ranges::sort(order, [&](std::size_t lhs, std::size_t rhs) {
       if (signature[lhs] != signature[rhs]) return signature[lhs] < signature[rhs];
       return lhs < rhs;
     });
-    std::vector<std::size_t> group(count, none);
-    std::vector<std::size_t> first_state;
+    std::vector<std::uint32_t> group(count, no_class);
+    std::vector<std::uint32_t> first_state;
     for (std::size_t index = 0; index < count; ++index) {
       const std::size_t state = order[index];
       if (index == 0 || signature[state] != signature[order[index - 1]]) {
@@ -510,18 +511,18 @@ template <class type, fixed_string format>
       }
       group[state] = first_state.size() - 1;
     }
-    std::vector<std::size_t> group_order(first_state.size());
+    std::vector<std::uint32_t> group_order(first_state.size());
     for (std::size_t index = 0; index < first_state.size(); ++index) {
       group_order[index] = index;
     }
     std::ranges::sort(group_order, [&](std::size_t lhs, std::size_t rhs) {
       return first_state[lhs] < first_state[rhs];
     });
-    std::vector<std::size_t> renumber(first_state.size());
+    std::vector<std::uint32_t> renumber(first_state.size());
     for (std::size_t index = 0; index < group_order.size(); ++index) {
       renumber[group_order[index]] = index;
     }
-    std::vector<std::size_t> refined(count);
+    std::vector<std::uint32_t> refined(count);
     for (std::size_t state = 0; state < count; ++state) {
       refined[state] = renumber[group[state]];
     }
