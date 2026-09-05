@@ -268,7 +268,7 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
   }
 }
 
-template <class type, fixed_string format, unsigned char sentinel,
+template <class type, fixed_string format, int sentinel,
           std::size_t... index>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
@@ -310,11 +310,17 @@ template <class type, fixed_string format, unsigned char sentinel,
     // difference between reading a table and running code.
     const char* cursor = input.data();
     bool matched = false;
-    if constexpr (sentinel != 0) {
-      static_assert(is_safe_tagged_sentinel<automaton, sentinel>(),
+    // Not `sentinel != 0`, which is what this used to ask. Zero is the
+    // terminator of every `std::string`, and so the one worth asking for; it
+    // is also what a defaulted template parameter of a character type is,
+    // which meant that asking for it politely was the same as not asking. The
+    // absence is its own value now.
+    if constexpr (sentinel >= 0) {
+      static_assert(is_safe_tagged_sentinel<automaton,
+                                            static_cast<unsigned char>(sentinel)>(),
                     "the terminator must be rejected in every state");
-      matched = run_tagged_sentinel_continuation<automaton, sentinel,
-                                                 automaton.initial>(
+      matched = run_tagged_sentinel_continuation<
+          automaton, static_cast<unsigned char>(sentinel), automaton.initial>(
           cursor, registers, 0);
     } else {
       const char* const end = cursor + input.size();
@@ -336,7 +342,7 @@ template <class type, fixed_string format, unsigned char sentinel,
   }
 }
 
-template <class type, fixed_string format, unsigned char sentinel = 0>
+template <class type, fixed_string format, int sentinel = -1>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
   return scan_fields<type, format, sentinel>(
