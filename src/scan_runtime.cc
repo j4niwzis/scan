@@ -555,7 +555,7 @@ template <auto& automaton, unsigned char sentinel, bool in_words,
 // and is not: the compiler says so and carries on with a call, which is what a
 // pattern that loops has to pay anyway.
 template <class type, fixed_string format, int sentinel, bool terminated,
-          std::size_t... index>
+          bool absent_is_empty, std::size_t... index>
 [[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
@@ -668,6 +668,11 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       if constexpr (!(always_written[capture_index * 2] &&
                       always_written[capture_index * 2 + 1])) {
         if (begin == nullptr) {
+          // A group that took no part is an error where every group was meant
+          // to take part, and is the ordinary state of affairs where the format
+          // has branches and only one of them ran. There the empty view says
+          // so: it points nowhere, which no group that did take part does.
+          if constexpr (absent_is_empty) return std::string_view{};
           throw scan_error("capture group did not participate in the match");
         }
       }
@@ -681,8 +686,22 @@ template <class type, fixed_string format, int sentinel = -1,
           bool terminated = false>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
-  return scan_fields<type, format, sentinel, terminated>(
+  return scan_fields<type, format, sentinel, terminated, false>(
       input, std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+}
+
+// Every group of every branch, with the ones that took no part left empty.
+//
+// The count comes from the automaton and not from the output type: a format
+// with branches has a group for each branch on top of the ones written down,
+// and that is how the scan says which branch the input took.
+template <class type, fixed_string format, int sentinel = -1,
+          bool terminated = false>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_branch_fields(
+    std::string_view input) {
+  constexpr const auto& automaton = packed_automaton<type, format>;
+  return scan_fields<type, format, sentinel, terminated, true>(
+      input, std::make_index_sequence<automaton.tag_count / 2>{});
 }
 
 template <class type, std::size_t index>
