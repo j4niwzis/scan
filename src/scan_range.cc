@@ -21,13 +21,17 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
     std::index_sequence<index...>) {
   static_assert(boost::pfr::tuple_size_v<type> == extent,
                 "placeholder count must equal aggregate field count");
-  type result{};
+  // Built, not built empty and then written over. The aggregate used to be
+  // default-constructed and each field assigned a temporary afterwards, which
+  // for a field that owns storage is a construction, a move-assignment that
+  // must first ask whether the destination is holding any, and a destruction --
+  // three times what initialising it once costs. It also demanded that every
+  // field be default-constructible and assignable, which is more than an
+  // aggregate has to be.
   constexpr auto parameters = field_parameters<format, extent>();
-  ((boost::pfr::get<index>(result) =
-        parse_value<std::remove_cvref_t<decltype(boost::pfr::get<index>(result))>>(
-            fields[index], parameters[index])),
-   ...);
-  return result;
+  return type{parse_value<std::remove_cvref_t<
+      boost::pfr::tuple_element_t<index, type>>>(fields[index],
+                                                 parameters[index])...};
 }
 
 template <fixed_string format, int sentinel = -1>
