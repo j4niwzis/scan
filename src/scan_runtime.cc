@@ -142,76 +142,108 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
 // that was cleared beforehand; the two halves of a range are two such tests. A
 // byte of 128 or over answers neither and is simply called foreign, which it is
 // whenever the class ends below 128 -- which is the only case this is used for.
+#if defined(__clang__) || defined(__GNUC__)
+#define SCAN_HAS_LANES 1
+template <class lane_type>
+[[nodiscard]] constexpr lane_type spread_over(unsigned char value) {
+  lane_type made{};
+  for (std::size_t index = 0; index < sizeof(lane_type); ++index) {
+    made[index] = value;
+  }
+  return made;
+}
+
+// Did any of them fall out of the class? Not which -- any. The comparison
+// collapses to one bit, and where the compiler can fold a vector down to a
+// scalar it does it in a couple of instructions.
+template <class lane_type>
+[[nodiscard]] SCAN_FORCE_INLINE bool any_of(lane_type mask) {
+#if __has_builtin(__builtin_reduce_or)
+  return __builtin_reduce_or(mask) != 0;
+#else
+  std::uint64_t words[sizeof(lane_type) / 8];
+  __builtin_memcpy(words, &mask, sizeof(mask));
+  std::uint64_t together = 0;
+  for (std::uint64_t word : words) together |= word;
+  return together != 0;
+#endif
+}
+
+#endif
+
 template <unsigned char first, unsigned char last>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
     const char* cursor, const char* limit) {
+  // Everything below reads several characters as one number and then asks which
+  // end of it they came from, so it holds only where the first character is the
+  // least significant byte. Elsewhere the caller reads them one at a time,
+  // which is what it would have done anyway.
   if (std::is_constant_evaluated()) return cursor;
-#if defined(__clang__) || defined(__GNUC__)
-  // Sixteen at a time first, where the compiler has a vector to put them in.
-  // Written as a vector type and not as anything named after an instruction
-  // set: on one machine this is a pair of SSE2 operations, on another a pair of
-  // NEON ones, and where there is no such register at all it is not compiled.
-  //
-  // The fast step does not ask which byte fell out of the class, only whether
-  // any did -- the answer is a pair of words anded together and compared with
-  // all ones. Finding the byte is the business of the word step below, which
-  // happens once at the end of a field rather than once every sixteen
-  // characters.
-  {
-    using lane [[gnu::vector_size(32)]] = unsigned char;
-    constexpr auto spread = [](unsigned char value) {
-      return lane{value, value, value, value, value, value, value, value,
-                  value, value, value, value, value, value, value, value,
-                  value, value, value, value, value, value, value, value,
-                  value, value, value, value, value, value, value, value};
-    };
-    constexpr lane low = spread(first);
-    constexpr lane span = spread(static_cast<unsigned char>(last - first));
-    while (limit - cursor >= 32) {
-      lane letters{};
-      __builtin_memcpy(&letters, cursor, 32);
-      const auto inside = (letters - low) <= span;
-      std::uint64_t quarters[4];
-      __builtin_memcpy(quarters, &inside, 32);
-      if ((quarters[0] & quarters[1] & quarters[2] & quarters[3]) !=
-          ~std::uint64_t{0}) {
-        break;
+  if constexpr (std::endian::native != std::endian::little) {
+    return cursor;
+  } else {
+#if SCAN_HAS_LANES
+    // Sixty-four characters to a step and one question at the end of it.
+    // Written as a vector of bytes and not as anything named after an
+    // instruction set: on one machine this is four SSE2 comparisons, on another
+    // four NEON ones, and where the compiler has no such register none of it is
+    // compiled. Asking after every thirty-two costs more than the comparison
+    // does -- the question is a branch, and that is a branch too often.
+    {
+      using lane [[gnu::vector_size(32)]] = unsigned char;
+      constexpr lane low = spread_over<lane>(first);
+      constexpr lane span =
+          spread_over<lane>(static_cast<unsigned char>(last - first));
+      while (limit - cursor >= 64) {
+        lane head{}, tail{};
+        __builtin_memcpy(&head, cursor, 32);
+        __builtin_memcpy(&tail, cursor + 32, 32);
+        if (any_of(((head - low) > span) | ((tail - low) > span))) break;
+        cursor += 64;
       }
-      cursor += 32;
+      while (limit - cursor >= 32) {
+        lane letters{};
+        __builtin_memcpy(&letters, cursor, 32);
+        if (any_of((letters - low) > span)) break;
+        cursor += 32;
+      }
     }
-    using half [[gnu::vector_size(16)]] = unsigned char;
-    constexpr auto spread_half = [](unsigned char value) {
-      return half{value, value, value, value, value, value, value, value,
-                  value, value, value, value, value, value, value, value};
-    };
-    constexpr half low_half = spread_half(first);
-    constexpr half span_half = spread_half(static_cast<unsigned char>(last - first));
-    while (limit - cursor >= 16) {
-      half letters{};
-      __builtin_memcpy(&letters, cursor, 16);
-      const auto inside = (letters - low_half) <= span_half;
-      std::uint64_t halves[2];
-      __builtin_memcpy(halves, &inside, 16);
-      if ((halves[0] & halves[1]) != ~std::uint64_t{0}) break;
-      cursor += 16;
+    {
+      using lane [[gnu::vector_size(16)]] = unsigned char;
+      constexpr lane low = spread_over<lane>(first);
+      constexpr lane span =
+          spread_over<lane>(static_cast<unsigned char>(last - first));
+      while (limit - cursor >= 16) {
+        lane letters{};
+        __builtin_memcpy(&letters, cursor, 16);
+        if (any_of((letters - low) > span)) break;
+        cursor += 16;
+      }
     }
-  }
 #endif
-  constexpr std::uint64_t ones = 0x0101010101010101ull;
-  constexpr std::uint64_t highs = 0x8080808080808080ull;
-  while (limit - cursor >= 8) {
-    std::uint64_t word = 0;
-    __builtin_memcpy(&word, cursor, 8);
-    const std::uint64_t below = (word - ones * first) & ~word & highs;
-    const std::uint64_t above =
-        (word + ones * (127 - last)) & ~word & highs;
-    const std::uint64_t foreign = below | above | (word & highs);
-    if (foreign != 0) {
-      return cursor + (static_cast<std::size_t>(std::countr_zero(foreign)) >> 3);
+    // Eight in a word, which is what a machine without vectors has and what the
+    // last few characters fall back to in any case. For bytes under a hundred
+    // and twenty-eight a byte is below a bound exactly when subtracting the
+    // bound borrows out of it, and the borrow shows in a high bit cleared
+    // beforehand; two such tests are the two ends of the class, and a byte with
+    // its high bit already set is foreign, which it is whenever the class ends
+    // below a hundred and twenty-eight.
+    constexpr std::uint64_t ones = 0x0101010101010101ull;
+    constexpr std::uint64_t highs = 0x8080808080808080ull;
+    while (limit - cursor >= 8) {
+      std::uint64_t word = 0;
+      __builtin_memcpy(&word, cursor, 8);
+      const std::uint64_t below = (word - ones * first) & ~word & highs;
+      const std::uint64_t above = (word + ones * (127 - last)) & ~word & highs;
+      const std::uint64_t foreign = below | above | (word & highs);
+      if (foreign != 0) {
+        return cursor +
+               (static_cast<std::size_t>(std::countr_zero(foreign)) >> 3);
+      }
+      cursor += 8;
     }
-    cursor += 8;
+    return cursor;
   }
-  return cursor;
 }
 
 // Whether a state is one of those: everything that stays is one range of
