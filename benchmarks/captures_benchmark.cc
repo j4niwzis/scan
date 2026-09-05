@@ -35,6 +35,24 @@ struct field_strings {
   std::string fifth;
 };
 
+// What the loop around the work costs, and nothing else: the same subjects,
+// the same two barriers, no scanning between them. Every row below carries
+// this, so it is the floor none of them can go under, and the difference
+// between a row and this one is the engine.
+void harness_floor(harness::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      field_views value{view, view, view, view, view};
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
 void scan_captures_views(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -115,6 +133,7 @@ void re2c_captures_benchmark(harness::State& state) {
 }
 
 const int registered = [] {
+  harness::RegisterBenchmark("harness_floor", harness_floor);
   harness::RegisterBenchmark("scan_captures_views", scan_captures_views);
   harness::RegisterBenchmark("scan_captures_views_sentinel",
                              scan_captures_views_sentinel);
