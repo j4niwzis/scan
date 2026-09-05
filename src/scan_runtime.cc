@@ -1038,6 +1038,40 @@ class stream_state {
                packed_state<0, 0, 0>::not_accepting;
   }
 
+  // What has been gathered for a field so far, in the reading the machine would
+  // prefer.
+  //
+  // Standing in several readings at once, the machine has several answers for a
+  // field until the input decides between them; the readings are held in the
+  // order the pattern gives them, so the first is the one that would win if the
+  // match ended here. That is the one worth showing while a command is still
+  // being typed.
+  //
+  // What comes back is the state of that field's own scanner, as far as it has
+  // been fed -- for a field of fixed room, the characters themselves.
+  template <std::size_t field>
+  [[nodiscard]] constexpr const auto& gathering() const {
+    const std::size_t here =
+        state_ == packed_range<0>::reject ? automaton.initial : state_;
+    return std::get<field>(
+        scanner_states_[automaton.states[here].readings[0][field * 2]]);
+  }
+
+  // Whether that field is being read right now: begun and not yet ended.
+  template <std::size_t field>
+  [[nodiscard]] constexpr bool reading() const {
+    if (state_ == packed_range<0>::reject) return false;
+    const auto& packed = automaton.states[state_];
+    if (packed.reading_count == 0) return false;
+    const std::uint32_t open = packed.readings[0][field * 2];
+    const std::uint32_t close = packed.readings[0][field * 2 + 1];
+    return registers_[open] >= 0 && registers_[close] < registers_[open];
+  }
+
+  [[nodiscard]] constexpr bool rejected() const {
+    return state_ == packed_range<0>::reject;
+  }
+
   // Accepting, with nowhere to go from here: the match is over and saying so
   // costs nothing, where finding out by offering the next character costs that
   // character. A pattern that ends in the thing that ends it -- a newline at

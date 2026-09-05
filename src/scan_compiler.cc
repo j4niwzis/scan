@@ -475,6 +475,55 @@ concept scanned_as_leaf = requires {
   sizeof(scan::scanner<std::remove_cv_t<type>>);
 } && !scanned_by_format<type>;
 
+// A type that says how it is read and also how it is made.
+//
+//   template <> struct scan::scanner<point> : scan::aggregate_scanner<"({}, {})"> {
+//     static constexpr point parse(int x, int y) { return point(x, y); }
+//   };
+//
+// The places of its format then stand for the arguments of that call rather
+// than for the fields of the type, and the type is built by making the call. So
+// it need not be an aggregate at all: it may have invariants to keep, members
+// nobody outside may touch, or an order of its own that has nothing to do with
+// the order it is written in.
+//
+// Both halves are required. A scanner with a `parse` and no format is an
+// ordinary leaf and reads itself from the text of one place; the format is what
+// says the places are the arguments.
+template <class type>
+concept scanned_from_values = scanned_by_format<type> && requires {
+  &scan::scanner<std::remove_cv_t<type>>::parse;
+};
+
+template <class function_type>
+struct call_parameters;
+template <class result_type, class... argument_types>
+struct call_parameters<result_type (*)(argument_types...)> {
+  static constexpr std::size_t count = sizeof...(argument_types);
+  template <std::size_t index>
+  using at = std::remove_cvref_t<
+      std::tuple_element_t<index, std::tuple<argument_types...>>>;
+};
+
+// What a type is made of, for the purpose of reading it: the arguments of the
+// call that makes it, where there is one, and its fields otherwise.
+template <class type, bool = scanned_from_values<type>>
+struct parts_of;
+template <class type>
+struct parts_of<type, false> {
+  static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
+  template <std::size_t index>
+  using at = std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>;
+};
+template <class type>
+struct parts_of<type, true> {
+  using call = call_parameters<
+      decltype(&scan::scanner<std::remove_cv_t<type>>::parse)>;
+  static constexpr std::size_t count = call::count;
+  template <std::size_t index>
+  using at = typename call::template at<index>;
+};
+
 // What one place in a format stands for. A leaf takes one; a type with a format
 // of its own takes one and spends it on the format it declared; anything else
 // is opened up and its fields take places of their own, which is why a
@@ -487,9 +536,8 @@ template <class type>
   } else {
     return []<std::size_t... index>(std::index_sequence<index...>) {
       return (std::size_t{0} + ... +
-              places_of<std::remove_cvref_t<
-                  boost::pfr::tuple_element_t<index, type>>>());
-    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+              places_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
@@ -507,9 +555,8 @@ template <class type>
   } else {
     return []<std::size_t... index>(std::index_sequence<index...>) {
       return (std::size_t{0} + ... +
-              groups_of<std::remove_cvref_t<
-                  boost::pfr::tuple_element_t<index, type>>>());
-    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+              groups_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
@@ -517,8 +564,7 @@ template <class type, std::size_t field>
 [[nodiscard]] consteval std::size_t groups_before_field() {
   return []<std::size_t... index>(std::index_sequence<index...>) {
     return (std::size_t{0} + ... +
-            groups_of<std::remove_cvref_t<
-                boost::pfr::tuple_element_t<index, type>>>());
+            groups_of<typename parts_of<type>::template at<index>>());
   }(std::make_index_sequence<field>{});
 }
 
@@ -532,9 +578,8 @@ template <class subject>
   constexpr auto counts = []<std::size_t... field>(
                               std::index_sequence<field...>) {
     return std::array<std::size_t, sizeof...(field)>{
-        places_of<std::remove_cvref_t<
-            boost::pfr::tuple_element_t<field, subject>>>()...};
-  }(std::make_index_sequence<boost::pfr::tuple_size_v<subject>>{});
+        places_of<typename parts_of<subject>::template at<field>>()...};
+  }(std::make_index_sequence<parts_of<subject>::count>{});
   for (std::size_t field = 0; field < counts.size(); ++field) {
     if (index < counts[field]) return {field, index};
     index -= counts[field];
@@ -553,8 +598,7 @@ struct place_at<subject, index, true> {
 template <class subject, std::size_t index>
 struct place_at<subject, index, false> {
   static constexpr auto where = field_of_place<subject>(index);
-  using next =
-      std::remove_cvref_t<boost::pfr::tuple_element_t<where.first, subject>>;
+  using next = typename parts_of<subject>::template at<where.first>;
   using kind = typename place_at<next, where.second>::kind;
 };
 
@@ -569,9 +613,8 @@ template <class subject>
 [[nodiscard]] consteval std::size_t places_within() {
   return []<std::size_t... field>(std::index_sequence<field...>) {
     return (std::size_t{0} + ... +
-            places_of<std::remove_cvref_t<
-                boost::pfr::tuple_element_t<field, subject>>>());
-  }(std::make_index_sequence<boost::pfr::tuple_size_v<subject>>{});
+            places_of<typename parts_of<subject>::template at<field>>());
+  }(std::make_index_sequence<parts_of<subject>::count>{});
 }
 
 template <class subject, std::size_t index>
@@ -604,9 +647,8 @@ template <class subject>
   constexpr auto counts = []<std::size_t... field>(
                               std::index_sequence<field...>) {
     return std::array<std::size_t, sizeof...(field)>{
-        groups_of<std::remove_cvref_t<
-            boost::pfr::tuple_element_t<field, subject>>>()...};
-  }(std::make_index_sequence<boost::pfr::tuple_size_v<subject>>{});
+        groups_of<typename parts_of<subject>::template at<field>>()...};
+  }(std::make_index_sequence<parts_of<subject>::count>{});
   for (std::size_t field = 0; field < counts.size(); ++field) {
     if (index < counts[field]) return {field, index};
     index -= counts[field];
@@ -623,8 +665,7 @@ struct leaf_at<subject, index, true> {
 template <class subject, std::size_t index>
 struct leaf_at<subject, index, false> {
   static constexpr auto where = field_holding<subject>(index);
-  using next =
-      std::remove_cvref_t<boost::pfr::tuple_element_t<where.first, subject>>;
+  using next = typename parts_of<subject>::template at<where.first>;
   using kind = typename leaf_at<next, where.second>::kind;
 };
 

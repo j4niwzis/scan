@@ -37,9 +37,8 @@ template <class type>
   } else {
     return []<std::size_t... field>(std::index_sequence<field...>) {
       return (false || ... ||
-              holds_a_variant<std::remove_cvref_t<
-                  boost::pfr::tuple_element_t<field, type>>>());
-    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+              holds_a_variant<typename parts_of<type>::template at<field>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
@@ -75,13 +74,20 @@ template <class root, class type, fixed_string format, std::size_t offset,
       if (!made) throw scan_error("no branch of the format took the input");
       return std::move(*made);
     }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else if constexpr (scanned_from_values<type>) {
+    // Made by the call it named, out of the values its places stood for.
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return scan::scanner<std::remove_cv_t<type>>::parse(
+          build_value<root, typename parts_of<type>::template at<index>, format,
+                      offset + groups_before_field<type, index>()>(groups)...);
+    }(std::make_index_sequence<parts_of<type>::count>{});
   } else {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return type{build_value<
-          root,
-          std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>, format,
-          offset + groups_before_field<type, index>()>(groups)...};
-    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+      return type{build_value<root, typename parts_of<type>::template at<index>,
+                              format,
+                              offset + groups_before_field<type, index>()>(
+          groups)...};
+    }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 template <class type, fixed_string format, std::size_t extent, std::size_t... index>
@@ -423,6 +429,24 @@ class reader {
   // The values. Reading further after this is reading further into the same
   // match, so whoever wants the next one says so.
   [[nodiscard]] constexpr type take() const { return state_.finish(); }
+
+  // What has been gathered for a field so far, while the match is still going
+  // on -- for showing a command back as it is typed, for finishing it for
+  // whoever is typing, for refusing it before they are done.
+  template <std::size_t field>
+  [[nodiscard]] constexpr const auto& gathering() const {
+    return state_.template gathering<field>();
+  }
+
+  // Whether that field is being read right now.
+  template <std::size_t field>
+  [[nodiscard]] constexpr bool reading() const {
+    return state_.template reading<field>();
+  }
+
+  // Whether nothing can follow what has been offered: the machine is not in a
+  // match and cannot get into one from here.
+  [[nodiscard]] constexpr bool rejected() const { return state_.rejected(); }
 
   constexpr void restart() { state_.restart(); }
 

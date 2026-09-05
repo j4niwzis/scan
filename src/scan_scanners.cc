@@ -580,6 +580,12 @@ struct aggregate_scanner {
 
   [[nodiscard]] constexpr auto begin(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
+    static_assert(
+        !requires { &scanner<type>::parse; },
+        "a type made by the call it named is read by spreading its format into "
+        "the automaton, which a range that is read once is not scanned by: "
+        "read it from something contiguous, or give the type a scanner that "
+        "gathers it a character at a time");
     return detail::stream_state<type, format>{};
   }
 
