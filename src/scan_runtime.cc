@@ -78,23 +78,24 @@ template <class type, fixed_string format, std::size_t... index>
     std::ranges::for_each(
         std::views::iota(std::size_t{0}, input.size()),
         [&](std::size_t position) {
-          if (state == packed_transition<0>::reject) return;
-          const auto& transition = automaton.states[state].transitions[
-              static_cast<unsigned char>(input[position])];
-          if (transition.target == transition.reject) {
-            state = transition.reject;
+          if (state == packed_range<0>::reject) return;
+          const auto* transition = find_range(
+              automaton.states[state],
+              static_cast<unsigned char>(input[position]));
+          if (transition == nullptr) {
+            state = packed_range<0>::reject;
             return;
           }
-          execute_commands(transition.commands, transition.command_count,
+          execute_commands(transition->commands, transition->command_count,
                            registers,
                            static_cast<std::ptrdiff_t>(position + 1));
-          state = transition.target;
+          state = transition->target;
         });
-    if (state == packed_transition<0>::reject) {
+    if (state == packed_range<0>::reject) {
       throw scan_error("input does not match scan expression");
     }
     const auto slot = automaton.states[state].accepting_slot;
-    if (slot == packed_state<0, 0>::not_accepting) {
+    if (slot == packed_state<0, 0, 0>::not_accepting) {
       throw scan_error("input does not match scan expression");
     }
     execute_commands(automaton.states[state].final_commands,
@@ -229,28 +230,27 @@ class stream_state {
   }
 
   constexpr void push(char symbol) {
-    if (state_ == packed_transition<0>::reject) return;
-    const auto& transition = automaton.states[state_].transitions[
-        static_cast<unsigned char>(symbol)];
-    if (transition.target == transition.reject) {
-      state_ = transition.reject;
+    if (state_ == packed_range<0>::reject) return;
+    const auto* transition = find_range(automaton.states[state_], static_cast<unsigned char>(symbol));
+    if (transition == nullptr) {
+      state_ = packed_range<0>::reject;
       return;
     }
     advance_scanners<type, format>(
         symbol, automaton.tag_count, registers_, scanner_states_,
-        transition.commands, transition.command_count,
+        transition->commands, transition->command_count,
         std::make_index_sequence<field_count>{});
-    execute_commands(transition.commands, transition.command_count, registers_,
+    execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
-    state_ = transition.target;
+    state_ = transition->target;
   }
 
   [[nodiscard]] constexpr type finish() && {
-    if (state_ == packed_transition<0>::reject) {
+    if (state_ == packed_range<0>::reject) {
       throw scan_error("input does not match scan expression");
     }
     const auto slot = automaton.states[state_].accepting_slot;
-    if (slot == packed_state<0, 0>::not_accepting) {
+    if (slot == packed_state<0, 0, 0>::not_accepting) {
       throw scan_error("input does not match scan expression");
     }
     const std::size_t scanner_slot =
