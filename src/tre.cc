@@ -613,12 +613,12 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
   for (const path& walk : initial_paths) {
     configuration entry{.walk = walk, .regs = std::vector<std::uint32_t>(tags)};
     for (tag_id tag = 0; tag < tags; ++tag) {
+      // Empty, not what the closure found: those tags are held back like any
+      // others, and written by the first transition -- or, if the input ends
+      // here, by the final operations.
       register_command command{.destination = fresh_register(),
                                .source = std::nullopt,
                                .values = {}};
-      for (const auto& [action_tag, negative] : walk.actions) {
-        if (action_tag == tag) command.values.push_back(!negative);
-      }
       entry.regs[tag] = static_cast<std::uint32_t>(command.destination);
       result.initialize.push_back(std::move(command));
     }
@@ -717,11 +717,18 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       }
     }
     if (state.accepting_slot) {
+      const configuration& accepting = entries[*state.accepting_slot];
       for (tag_id tag = 0; tag < tags; ++tag) {
+        // Held back until the end, and applied here with the position the
+        // input ended at.
+        tag_values values;
+        for (const auto& [action_tag, negative] : accepting.walk.actions) {
+          if (action_tag == tag) values.push_back(!negative);
+        }
         state.final_commands.push_back(register_command{
             .destination = tag,
-            .source = entries[*state.accepting_slot].regs[tag],
-            .values = {}});
+            .source = accepting.regs[tag],
+            .values = values});
       }
     }
     result.states.push_back(std::move(state));
@@ -785,6 +792,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       // each keeping the registers it arrived with.
       std::vector<path> seeds;
       std::vector<std::vector<std::uint32_t>> seed_regs;
+      std::vector<std::vector<std::pair<tag_id, bool>>> seed_actions;
       for (std::size_t slot = 0; slot < source.size(); ++slot) {
         for (const transition& edge : automaton.transitions[source_states[slot]]) {
           if (!edge_matches(edge, symbol)) continue;
@@ -792,6 +800,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
           seed.origin = seeds.size();
           seeds.push_back(std::move(seed));
           seed_regs.push_back(source[slot].regs);
+          seed_actions.push_back(source[slot].walk.actions);
         }
       }
       const std::vector<path> reached = closure(automaton, seeds);
@@ -804,9 +813,20 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       entries.reserve(reached.size());
       for (const path& walk : reached) {
         configuration entry{.walk = walk, .regs = seed_regs[walk.origin]};
+        // What this transition writes is what the source configuration was
+        // holding back -- the tags its closure found and did not apply -- and
+        // it writes them with the position from before this symbol. The tags
+        // this closure finds are held back in turn, and written by whichever
+        // transition is taken next.
+        //
+        // That is what a lookahead of one symbol buys. Inside a field every
+        // character reaches a configuration where the field could end, so
+        // applying tags as they are found writes the end of the field on every
+        // character; held back, the write happens once, on the transition that
+        // actually leaves.
         for (tag_id tag = 0; tag < tags; ++tag) {
           tag_values values;
-          for (const auto& [action_tag, negative] : walk.actions) {
+          for (const auto& [action_tag, negative] : seed_actions[walk.origin]) {
             if (action_tag == tag) values.push_back(!negative);
           }
           if (values.empty()) continue;  // untouched: the register stands
@@ -1154,7 +1174,7 @@ constexpr match simulate(const tdfa& automaton, std::string_view input) {
       return {.matched = false,
               .tags = std::vector<tag_history>(automaton.tag_count)};
     }
-    execute(found->commands, i + 1);
+    execute(found->commands, i);
     state = found->target;
   }
   const auto slot = automaton.states[state].accepting_slot;

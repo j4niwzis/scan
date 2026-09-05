@@ -150,7 +150,7 @@ dispatch_tagged_transition(
       execute_static_transition_commands<automaton, state, index>(registers,
                                                                 position);
       return run_tagged_state_continuation<automaton, range.target>(
-          cursor, end, registers, position);
+          cursor, end, registers, position + 1);
     }
     return dispatch_tagged_transition<automaton, state, register_count,
                                       index + 1>(symbol, cursor, end,
@@ -165,9 +165,12 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
     std::ptrdiff_t position) {
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    ++position;
+    // The operations of a transition are the tags the state before it was
+    // holding back, so they are written with the position from before this
+    // symbol -- which is why the position advances after them, not before.
     if (execute_tagged_self_transition<automaton, state>(symbol, registers,
                                                         position)) {
+      ++position;
       continue;
     }
     return dispatch_tagged_transition<automaton, state>(
