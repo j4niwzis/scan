@@ -67,3 +67,28 @@ static void re2c_word_benchmark(benchmark::State& state) {
 // call shows up at sixty-four bytes and disappears at sixty-four kilobytes,
 // while a cost paid per byte does not move.
 BENCHMARK(re2c_word_benchmark)->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
+
+// The same match, called rather than inlined into the timing loop.
+//
+// The hand-written loops in shape_benchmark run at three gigabytes a second
+// and they are `noinline`: a function of their own, with nothing else alive.
+// Inlined here, the matcher shares its registers with the benchmark's state,
+// the subject and the result, and the loop is encoded with extended registers
+// and a byte-wide comparison -- seventeen bytes where re2c's is fourteen, and
+// across a fetch boundary. This row says how much of the difference that is.
+[[gnu::noinline]] static bool match_word_out_of_line(std::string_view view) {
+  return static_cast<bool>(scan::match_sentinel<"[a-z]+">(view));
+}
+
+static void scan_word_sentinel_outlined(benchmark::State& state) {
+  const std::string& text =
+      bench::long_word(static_cast<std::size_t>(state.range(0)));
+  for (auto _ : state) {
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(match_word_out_of_line(view));
+  }
+  state.SetBytesProcessed(state.iterations() *
+                          static_cast<std::size_t>(state.range(0)));
+}
+BENCHMARK(scan_word_sentinel_outlined)->Arg(4096)->Arg(65536);
