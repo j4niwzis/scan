@@ -4,6 +4,42 @@ import std;
 
 export namespace tre {
 
+// A set of symbols as four words rather than two hundred and fifty-six bools.
+//
+// It is the same information, but the constant evaluator counts objects, not
+// bytes: an array of two hundred and fifty-six bools is two hundred and fifty
+// six tracked objects, copied one at a time whenever a transition is copied --
+// and transitions are copied on every vector growth in the determinisation.
+// Four words are four objects.
+struct symbol_set {
+  std::array<std::uint64_t, 4> words{};
+
+  [[nodiscard]] constexpr bool test(std::size_t symbol) const {
+    return (words[symbol >> 6] >> (symbol & 63)) & 1;
+  }
+  constexpr void set(std::size_t symbol) {
+    words[symbol >> 6] |= std::uint64_t{1} << (symbol & 63);
+  }
+  constexpr void merge(const symbol_set& other) {
+    for (std::size_t index = 0; index < words.size(); ++index) {
+      words[index] |= other.words[index];
+    }
+  }
+  [[nodiscard]] constexpr bool any() const {
+    return words[0] != 0 || words[1] != 0 || words[2] != 0 || words[3] != 0;
+  }
+  [[nodiscard]] constexpr bool operator==(const symbol_set&) const = default;
+
+  [[nodiscard]] static constexpr symbol_set from_bools(
+      const std::array<bool, 256>& symbols) {
+    symbol_set result;
+    for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+      if (symbols[symbol]) result.set(symbol);
+    }
+    return result;
+  }
+};
+
 using state_id = std::uint32_t;
 using tag_id = std::uint32_t;
 inline constexpr std::size_t unbounded =
@@ -23,7 +59,7 @@ struct tag {
   tag_id id = 0;
 };
 struct character_class {
-  std::array<bool, 256> symbols{};
+  symbol_set symbols{};
 };
 struct alternative {
   std::vector<node> branches;
@@ -53,8 +89,13 @@ class node : public ast::node_variant {
 [[nodiscard]] constexpr node epsilon() { return ast::epsilon{}; }
 [[nodiscard]] constexpr node symbol(char value) { return ast::symbol{value}; }
 [[nodiscard]] constexpr node tag(tag_id id) { return ast::tag{id}; }
-[[nodiscard]] constexpr node character_class(std::array<bool, 256> symbols) {
+[[nodiscard]] constexpr node character_class(symbol_set symbols) {
   return ast::character_class{symbols};
+}
+
+[[nodiscard]] constexpr node character_class(
+    const std::array<bool, 256>& symbols) {
+  return ast::character_class{symbol_set::from_bools(symbols)};
 }
 [[nodiscard]] constexpr node alt(std::vector<node> branches) {
   return ast::alternative{std::move(branches)};
@@ -87,7 +128,7 @@ struct transition {
   state_id target = 0;
   transition_kind kind = transition_kind::epsilon;
   char symbol = 0;
-  std::array<bool, 256> symbols{};
+  symbol_set symbols{};
   tag_id tag = 0;
   bool negative = false;
   // Lower values have higher priority. Priority zero is the greedy branch.
@@ -130,7 +171,7 @@ struct register_command {
 };
 
 struct tdfa_transition {
-  std::array<bool, 256> symbols{};
+  symbol_set symbols{};
   std::size_t target = 0;
   std::vector<register_command> commands;
 };
@@ -454,7 +495,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
             (edge.kind == transition_kind::symbol &&
              edge.symbol == symbol) ||
             (edge.kind == transition_kind::character_class &&
-             edge.symbols[static_cast<unsigned char>(symbol)]);
+             edge.symbols.test(static_cast<unsigned char>(symbol)));
         if (matches) {
           configuration moved = item;
           moved.state = edge.target;
@@ -542,7 +583,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
     const auto edge_matches = [](const transition& edge, char symbol) {
       return (edge.kind == transition_kind::symbol && edge.symbol == symbol) ||
              (edge.kind == transition_kind::character_class &&
-              edge.symbols[static_cast<unsigned char>(symbol)]);
+              edge.symbols.test(static_cast<unsigned char>(symbol)));
     };
     const auto equivalent = [&](char lhs, char rhs) {
       return std::ranges::all_of(source_states, [&](state_id state) {
@@ -553,7 +594,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       });
     };
     std::vector<char> representatives;
-    std::vector<std::array<bool, 256>> symbol_classes;
+    std::vector<symbol_set> symbol_classes;
     std::ranges::for_each(
         std::views::iota(std::size_t{0}, std::size_t{256}),
         [&](std::size_t value) {
@@ -572,11 +613,11 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
           if (found == representatives.end()) {
             representatives.push_back(symbol);
             symbol_classes.emplace_back();
-            symbol_classes.back()[value] = true;
+            symbol_classes.back().set(value);
           } else {
             const auto index = static_cast<std::size_t>(
                 std::ranges::distance(representatives.begin(), found));
-            symbol_classes[index][value] = true;
+            symbol_classes[index].set(value);
           }
         });
     std::ranges::for_each(
@@ -594,7 +635,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
               (edge.kind == transition_kind::symbol &&
                edge.symbol == symbol) ||
               (edge.kind == transition_kind::character_class &&
-               edge.symbols[static_cast<unsigned char>(symbol)]);
+               edge.symbols.test(static_cast<unsigned char>(symbol)));
           if (matches) {
             seeds.push_back(
                 {path{.state = edge.target, .actions = {}}, slot});
@@ -873,8 +914,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
         normalized.push_back(std::move(transition));
         continue;
       }
-      std::ranges::transform(equivalent->symbols, transition.symbols,
-                             equivalent->symbols.begin(), std::logical_or<>{});
+      equivalent->symbols.merge(transition.symbols);
     }
     state.transitions = std::move(normalized);
   }
@@ -902,7 +942,7 @@ constexpr match simulate(const tdfa& automaton, std::string_view input) {
     const auto& transitions = automaton.states[state].transitions;
     const auto found = std::find_if(transitions.begin(), transitions.end(),
                                     [&](const auto& transition) {
-      return transition.symbols[static_cast<unsigned char>(input[i])];
+      return transition.symbols.test(static_cast<unsigned char>(input[i]));
     });
     if (found == transitions.end()) {
       return {.matched = false,
