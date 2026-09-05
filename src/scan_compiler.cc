@@ -861,9 +861,18 @@ template <class type, fixed_string format>
 // sixty-three of them for five fields -- and the scan begins by filling all of
 // them. With it the file is as wide as the tags, because the first slots are
 // pinned to the tags the fields are read from and the rest are coalesced away.
-template <class type, fixed_string format>
+// Except for the machine that reads a range as it comes. That one keeps a set
+// of half-read fields for every way the tags could yet turn out, and it tells
+// those sets apart by dividing a register number by the number of tags -- which
+// is only a meaning at all while the registers are numbered as determinisation
+// handed them out. Allocation renumbers them and merges the ones that never
+// overlap, and the division stops meaning anything. So that machine is built
+// from the same pattern without allocation, and pays a wider register file for
+// it, which costs it nothing: it never fills the file, it walks it.
+template <class type, fixed_string format, bool allocate = true>
 [[nodiscard]] constexpr scan::tre::tdfa build_tdfa() {
-  return scan::tre::optimize_tdfa(scan::tre::compile_tdfa(build_tnfa<type, format>()));
+  return scan::tre::optimize_tdfa(
+      scan::tre::compile_tdfa(build_tnfa<type, format>()), allocate);
 }
 
 // Minimisation as Moore's refinement, with the two things that make it cheap:
@@ -1117,9 +1126,9 @@ struct packed_shape {
   return shape;
 }
 
-template <class type, fixed_string format>
+template <class type, fixed_string format, bool allocate = true>
 [[nodiscard]] consteval packed_shape compute_shape() {
-  const scan::tre::tdfa tdfa = build_tdfa<type, format>();
+  const scan::tre::tdfa tdfa = build_tdfa<type, format, allocate>();
   return compute_shape(tdfa);
 }
 
@@ -1274,17 +1283,20 @@ template <std::size_t state_count, std::size_t register_count,
   return packed;
 }
 
-template <class type, fixed_string format>
+template <class type, fixed_string format, bool allocate = true>
 [[nodiscard]] consteval auto pack_tdfa() {
-  constexpr packed_shape shape = compute_shape<type, format>();
+  constexpr packed_shape shape = compute_shape<type, format, allocate>();
   return pack_tdfa_value<shape.states, shape.registers,
                          shape.initial_commands, shape.maximum_commands,
                          shape.maximum_final_commands, shape.tags,
-                         shape.ranges>(build_tdfa<type, format>());
+                         shape.ranges>(build_tdfa<type, format, allocate>());
 }
 
 template <class type, fixed_string format>
 inline constexpr auto packed_automaton = pack_tdfa<type, format>();
+
+template <class type, fixed_string format>
+inline constexpr auto streaming_automaton = pack_tdfa<type, format, false>();
 
 template <fixed_string pattern>
 [[nodiscard]] consteval packed_shape compute_regex_shape() {

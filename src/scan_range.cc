@@ -256,12 +256,53 @@ class prefix_scan {
   std::string_view input_;
 };
 
+// The head of a range that is read once. The range is left standing after the
+// character that ended the match, which is handed back with the values because
+// it has been read and there is nowhere to put it back.
+template <fixed_string format, std::ranges::input_range range_type>
+class prefix_stream_scan {
+ public:
+  constexpr explicit prefix_stream_scan(range_type input)
+      : input_(std::move(input)) {}
+
+  prefix_stream_scan(prefix_stream_scan&&) = default;
+  prefix_stream_scan& operator=(prefix_stream_scan&&) = default;
+  prefix_stream_scan(const prefix_stream_scan&) = delete;
+  prefix_stream_scan& operator=(const prefix_stream_scan&) = delete;
+
+  template <class type>
+  [[nodiscard]] constexpr detail::taken_ahead<type> take() {
+    return detail::scan_stream_prefix<type, format>(input_);
+  }
+
+  template <class type>
+    requires std::is_aggregate_v<type>
+  constexpr operator type() {
+    return take<type>().value;
+  }
+
+ private:
+  range_type input_;
+};
+
 // The head of the input that the pattern takes, and what follows it.
 template <fixed_string format, detail::contiguous_char_range range_type>
   requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
 [[nodiscard]] constexpr auto scan_prefix(range_type&& input) {
   return prefix_scan<format>(std::string_view(std::ranges::data(input),
                                               std::ranges::size(input)));
+}
+
+// The same, for input that has to be read as it comes. Nothing is buffered and
+// nothing is looked at twice.
+template <fixed_string format, std::ranges::input_range range_type>
+  requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
+           (!detail::contiguous_char_range<range_type> ||
+            (!std::is_lvalue_reference_v<range_type&&> &&
+             !std::ranges::borrowed_range<range_type>))
+[[nodiscard]] constexpr auto scan_prefix(range_type&& input) {
+  auto view = std::views::all(std::forward<range_type>(input));
+  return prefix_stream_scan<format, decltype(view)>(std::move(view));
 }
 
 // The proxy owns the view and consumes it once after the output type is known.

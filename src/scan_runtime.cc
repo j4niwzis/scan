@@ -895,7 +895,7 @@ template <class type, fixed_string format>
 class stream_state {
  private:
   inline static constexpr const auto& automaton =
-      packed_automaton<type, format>;
+      streaming_automaton<type, format>;
   inline static constexpr std::size_t field_count =
       boost::pfr::tuple_size_v<type>;
   inline static constexpr std::size_t slot_count =
@@ -907,16 +907,21 @@ class stream_state {
     std::ranges::fill(scanner_states_, make_scanner_state<type, format>());
     std::ranges::fill(registers_, scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers_, 0);
+                     registers_, std::ptrdiff_t{0});
   }
 
   constexpr void push(char symbol) {
-    if (state_ == packed_range<0>::reject) return;
+    if (!offer(symbol)) state_ = packed_range<0>::reject;
+  }
+
+  // The same step, told rather than assumed: false means the machine could not
+  // take this character and has not moved. Whoever is feeding it then knows
+  // that what came before is as far as the pattern goes, and holds a character
+  // that belongs to whatever comes next.
+  [[nodiscard]] constexpr bool offer(char symbol) {
+    if (state_ == packed_range<0>::reject) return false;
     const auto* transition = find_range(automaton.states[state_], static_cast<unsigned char>(symbol));
-    if (transition == nullptr) {
-      state_ = packed_range<0>::reject;
-      return;
-    }
+    if (transition == nullptr) return false;
     advance_scanners<type, format>(
         symbol, automaton.tag_count, registers_, scanner_states_,
         transition->commands, transition->command_count,
@@ -924,6 +929,7 @@ class stream_state {
     execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
     state_ = transition->target;
+    return true;
   }
 
   [[nodiscard]] constexpr type finish() && {
@@ -949,11 +955,92 @@ class stream_state {
   std::ptrdiff_t position_ = 0;
 };
 
+// Whether stopping where the machine stops can be the wrong place.
+//
+// Reading an input that is gone once it is read, there is no going back: what
+// the machine has taken, it has taken. That is right whenever leaving a state
+// that accepts cannot land anywhere that does not -- then being unable to go on
+// means the pattern ended here, and here is where it ended. Where a state that
+// accepts leads to one that does not, a pattern like a number with an optional
+// fraction can walk past its own ending and find nothing, and the answer would
+// be a place already thrown away. Those are read from something that can be
+// looked at twice.
+template <auto& automaton>
+[[nodiscard]] consteval bool can_walk_past_the_end() {
+  constexpr std::size_t count = automaton.states.size();
+  const auto accepts = [](std::size_t state) {
+    return automaton.states[state].accepting_slot !=
+           packed_state<0, 0, 0>::not_accepting;
+  };
+  std::array<bool, count> beyond{};
+  for (std::size_t state = 0; state < count; ++state) {
+    if (!accepts(state)) continue;
+    const auto& packed = automaton.states[state];
+    for (std::size_t index = 0; index < packed.range_count; ++index) {
+      if (packed.ranges[index].target != packed.ranges[index].reject) {
+        beyond[packed.ranges[index].target] = true;
+      }
+    }
+  }
+  for (bool changed = true; changed;) {
+    changed = false;
+    for (std::size_t state = 0; state < count; ++state) {
+      if (!beyond[state]) continue;
+      const auto& packed = automaton.states[state];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (target == packed.ranges[index].reject || beyond[target]) continue;
+        beyond[target] = true;
+        changed = true;
+      }
+    }
+  }
+  for (std::size_t state = 0; state < count; ++state) {
+    if (beyond[state] && !accepts(state)) return true;
+  }
+  return false;
+}
+
 template <class type, fixed_string format, std::ranges::input_range range_type>
 [[nodiscard]] constexpr type scan_stream(range_type&& input) {
   stream_state<type, format> state;
   for (char symbol : input) { state.push(symbol); }
   return std::move(state).finish();
+}
+
+// The head of a range that is read once, and the character that ended it.
+//
+// Nothing is buffered: the characters go through the machine as they come, the
+// values are gathered by the scanners of the fields themselves, and the one
+// character the machine could not take is handed back with them, because it has
+// been read and cannot be put back where it came from.
+template <class type>
+struct taken_ahead {
+  type value;
+  std::optional<char> stopped;
+};
+
+template <class type, fixed_string format, std::ranges::input_range range_type>
+[[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
+    range_type&& input) {
+  static_assert(
+      !can_walk_past_the_end<streaming_automaton<type, format>>(),
+      "this pattern can walk past its own ending, and an input read once "
+      "cannot be walked back: scan the head of something that can be looked at "
+      "twice");
+  stream_state<type, format> state;
+  auto first = std::ranges::begin(input);
+  const auto last = std::ranges::end(input);
+  std::optional<char> stopped;
+  while (first != last) {
+    const char symbol = static_cast<char>(*first);
+    ++first;
+    if (!state.offer(symbol)) {
+      stopped = symbol;
+      break;
+    }
+  }
+  return {std::move(state).finish(), stopped};
 }
 
 #undef SCAN_FORCE_INLINE
