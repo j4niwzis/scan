@@ -21,9 +21,31 @@ class tre_parser {
         capture_parentheses_(capture_parentheses) {}
 
   [[nodiscard]] constexpr scan::tre::node parse_format() {
-    scan::tre::node result = parse_format_sequence();
+    std::vector<std::size_t> groups;
+    std::vector<scan::tre::node> branches = parse_format_branches(groups);
     if (position_ != source_.size()) throw "invalid scan format";
-    return result;
+    if (branches.size() == 1) return std::move(branches.front());
+    return scan::tre::alt(std::move(branches));
+  }
+
+  // The branches of a format, in order, with how many groups each one holds.
+  //
+  // A bar at the top level of a format separates one whole shape of input from
+  // another, the way it separates one rule of a lexer from the next. Inside a
+  // group it has always meant alternation; outside one it used to be an
+  // ordinary character, and `\\|` is that character now.
+  [[nodiscard]] constexpr std::vector<scan::tre::node> parse_format_branches(
+      std::vector<std::size_t>& groups_in_branch) {
+    std::vector<scan::tre::node> branches;
+    while (true) {
+      const std::size_t before = capture_count_;
+      branches.push_back(parse_format_sequence());
+      groups_in_branch.push_back(capture_count_ - before);
+      if (at_end()) break;
+      if (peek() != '|') throw "invalid scan format";
+      ++position_;
+    }
+    return branches;
   }
 
   [[nodiscard]] constexpr scan::tre::node parse_regex() {
@@ -43,7 +65,7 @@ class tre_parser {
   }
 
   [[nodiscard]] constexpr scan::tre::node parse_format_sequence() {
-    if (at_end()) return scan::tre::epsilon();
+    if (at_end() || peek() == '|') return scan::tre::epsilon();
     if (peek() == '\\') {
       if (peek(1) == '\0') throw "dangling format escape";
       const char literal = peek(1);
@@ -85,6 +107,13 @@ class tre_parser {
     }
   }
 
+ public:
+  [[nodiscard]] static constexpr scan::tre::node wrap_branch(
+      std::size_t capture, scan::tre::node body) {
+    return wrap_capture(capture, std::move(body));
+  }
+
+ private:
   [[nodiscard]] static constexpr scan::tre::node wrap_capture(
       std::size_t capture, scan::tre::node body) {
     return scan::tre::cat({scan::tre::tag(static_cast<scan::tre::tag_id>(capture * 2)),
@@ -362,7 +391,101 @@ template <std::size_t extent>
   return result;
 }
 
+// An output that is one of several shapes, and a format whose top level says
+// which. The alternatives of the variant and the branches of the format stand
+// in the same order, and each alternative's fields are that branch's groups.
+template <class type>
+inline constexpr bool scanned_as_variant = false;
+template <class... alternatives>
+inline constexpr bool scanned_as_variant<std::variant<alternatives...>> = true;
+
+template <class type>
+[[nodiscard]] consteval auto fields_of_each_alternative() {
+  return []<std::size_t... index>(std::index_sequence<index...>) {
+    return std::array<std::size_t, sizeof...(index)>{
+        boost::pfr::tuple_size_v<std::variant_alternative_t<index, type>>...};
+  }(std::make_index_sequence<std::variant_size_v<type>>{});
+}
+
+template <class type>
+[[nodiscard]] consteval std::size_t fields_of_all_alternatives() {
+  std::size_t total = 0;
+  for (std::size_t count : fields_of_each_alternative<type>()) total += count;
+  return total;
+}
+
+// The type of the field a group writes to, counting the fields of every
+// alternative one after another in the order the branches are written.
+template <std::size_t index, class... alternatives>
+struct flattened_field;
+template <std::size_t index, class first, class... rest>
+struct flattened_field<index, first, rest...> {
+  static constexpr std::size_t here = boost::pfr::tuple_size_v<first>;
+  using type = typename std::conditional_t<
+      (index < here),
+      std::type_identity<
+          boost::pfr::tuple_element_t<(index < here ? index : 0), first>>,
+      flattened_field<(index < here ? 0 : index - here), rest...>>::type;
+};
+
+template <class variant_type, std::size_t index>
+struct flattened_field_of;
+template <class... alternatives, std::size_t index>
+struct flattened_field_of<std::variant<alternatives...>, index> {
+  using type = typename flattened_field<index, alternatives...>::type;
+};
+
+template <class type, std::size_t extent, std::size_t... index>
+[[nodiscard]] constexpr auto variant_patterns(
+    const std::array<std::string_view, extent>& parameters,
+    std::index_sequence<index...>) {
+  const auto make_pattern = []<class field_type>(std::string_view given) {
+    pattern_buffer<> result;
+    const auto pattern = scanner_pattern<field_type>(given);
+    result.append(std::string_view{pattern});
+    return result;
+  };
+  return std::array<pattern_buffer<>, extent>{
+      make_pattern.template operator()<std::remove_cvref_t<
+          typename flattened_field_of<type, index>::type>>(
+          parameters[index])...};
+}
+
 template <class type, fixed_string format>
+  requires scanned_as_variant<type>
+[[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
+  constexpr std::size_t branch_count = std::variant_size_v<type>;
+  constexpr auto wanted = fields_of_each_alternative<type>();
+  constexpr std::size_t field_count = fields_of_all_alternatives<type>();
+  constexpr auto parameters = field_parameters<format, field_count>();
+  constexpr auto pattern_storage = variant_patterns<type>(
+      parameters, std::make_index_sequence<field_count>{});
+  const auto defaults = pattern_views(pattern_storage);
+  std::size_t captures = 0;
+  tre_parser parser(format.view(), defaults, captures);
+  std::vector<std::size_t> found;
+  std::vector<scan::tre::node> branches = parser.parse_format_branches(found);
+  if (branches.size() != branch_count) {
+    throw "the format must have one branch for each alternative";
+  }
+  for (std::size_t branch = 0; branch < branch_count; ++branch) {
+    if (found[branch] != wanted[branch]) {
+      throw "a branch has a different number of groups than its alternative";
+    }
+  }
+  // Each branch is wrapped in a group of its own, after the ones the format
+  // asked for. Nothing reads what it captured; that it captured anything at
+  // all is how the scan knows which branch the input took, and it is the only
+  // way to know for a branch that captures nothing itself.
+  for (std::size_t branch = 0; branch < branch_count; ++branch) {
+    branches[branch] = tre_parser::wrap_branch(captures + branch,
+                                               std::move(branches[branch]));
+  }
+  return scan::tre::compile_tnfa(scan::tre::alt(std::move(branches)));
+}
+
+template <class type, fixed_string format>
+  requires(!scanned_as_variant<type>)
 [[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
   constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
   constexpr auto parameters = field_parameters<format, field_count>();
