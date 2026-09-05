@@ -554,7 +554,7 @@ template <auto& automaton, unsigned char sentinel, bool in_words,
 // Where the states lead back into one another the request cannot be granted,
 // and is not: the compiler says so and carries on with a call, which is what a
 // pattern that loops has to pay anyway.
-template <class type, fixed_string format, int sentinel,
+template <class type, fixed_string format, int sentinel, bool terminated,
           std::size_t... index>
 [[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
@@ -602,14 +602,28 @@ template <class type, fixed_string format, int sentinel,
     // difference between reading a table and running code.
     const char* cursor = input.data();
     bool matched = false;
+    // Which terminator, if any.
+    //
+    // Asked for outright it is whatever the caller named, and it must be one
+    // the pattern rejects in every state, which is required here. Not asked
+    // for, it is still taken when the type of the input promises a null
+    // character past its last -- a `std::string` always does -- and when the
+    // pattern happens to reject that character. Where it does not, the loop
+    // that tests the end of the input runs, and the caller never has to know
+    // the question was asked.
+    //
     // Not `sentinel != 0`, which is what this used to ask. Zero is the
     // terminator of every `std::string`, and so the one worth asking for; it
     // is also what a defaulted template parameter of a character type is,
     // which meant that asking for it politely was the same as not asking. The
     // absence is its own value now.
-    if constexpr (sentinel >= 0) {
-      static_assert(is_safe_tagged_sentinel<automaton,
-                                            static_cast<unsigned char>(sentinel)>(),
+    constexpr unsigned char terminator =
+        sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
+    constexpr bool by_terminator =
+        sentinel >= 0 ||
+        (terminated && is_safe_tagged_sentinel<automaton, terminator>());
+    if constexpr (by_terminator) {
+      static_assert(is_safe_tagged_sentinel<automaton, terminator>(),
                     "the terminator must be rejected in every state");
       // Two machines, and the subject picks one. A field of five characters is
       // read faster one at a time than by a loop that first asks whether a
@@ -619,12 +633,12 @@ template <class type, fixed_string format, int sentinel,
       constexpr std::size_t worth_a_word = 32;
       if (input.size() >= worth_a_word) {
         [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
-            automaton, static_cast<unsigned char>(sentinel), true,
-            automaton.initial>(cursor, cursor + input.size(), registers);
+            automaton, terminator, true, automaton.initial>(
+            cursor, cursor + input.size(), registers);
       } else {
         [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
-            automaton, static_cast<unsigned char>(sentinel), false,
-            automaton.initial>(cursor, cursor + input.size(), registers);
+            automaton, terminator, false, automaton.initial>(
+            cursor, cursor + input.size(), registers);
       }
     } else {
       const char* const end = cursor + input.size();
@@ -663,10 +677,11 @@ template <class type, fixed_string format, int sentinel,
   }
 }
 
-template <class type, fixed_string format, int sentinel = -1>
+template <class type, fixed_string format, int sentinel = -1,
+          bool terminated = false>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
-  return scan_fields<type, format, sentinel>(
+  return scan_fields<type, format, sentinel, terminated>(
       input, std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
 }
 
