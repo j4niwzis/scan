@@ -48,9 +48,16 @@ TEST(both_paths_test, states_that_lead_back) {
 }
 
 TEST(both_paths_test, a_subject_that_does_not_match) {
-  EXPECT_THROW((void)scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
-                   std::string_view("alpha,bravo")),
-               std::exception);
+  // Read into the type, not cast away: a scan is done when something asks it
+  // for a value, so a discarded one never runs and never refuses.
+  EXPECT_THROW(
+      {
+        const five value =
+            scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+                std::string_view("alpha,bravo"));
+        (void)value;
+      },
+      std::exception);
 }
 
 TEST(both_paths_test, a_field_that_matches_nothing) {

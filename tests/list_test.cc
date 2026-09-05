@@ -48,7 +48,12 @@ TEST(list_test, written_as_exactly_two) {
 
 TEST(list_test, and_refused_a_third) {
   const std::string text = "4,5,6";
-  EXPECT_THROW((void)scan::scan<"{{}{*,?}}{2}">(text), std::exception);
+  EXPECT_THROW(
+      {
+        const row value = scan::scan<"{{}{*,?}}{2}">(text);
+        (void)value;
+      },
+      std::exception);
 }
 
 }  // namespace
