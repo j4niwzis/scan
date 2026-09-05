@@ -161,7 +161,7 @@ if(SCAN_BUILD_BENCHMARKS)
   scan_add_benchmark(csv)
   scan_add_benchmark(address)
   # Extraction: the fields are wanted, not only the answer.
-  scan_add_benchmark(captures NO_RE2C)
+  scan_add_benchmark(captures)
   # Neither: two loops written by hand, to price the shape itself.
   scan_add_benchmark(shape NO_RE2C)
 
