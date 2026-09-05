@@ -1503,8 +1503,32 @@ template <class type, fixed_string format, bool allocate = true>
                          shape.readings>(build_tdfa<type, format, allocate>());
 }
 
+// Whether an automaton is built while the program runs rather than while it is
+// compiled.
+//
+// The compiled form is the point of this library: a pattern becomes code, and
+// the code costs nothing to run. It is paid for while compiling -- one
+// constant evaluation of the whole determiniser per pattern, and one
+// instantiation per state of the machine that walks it. Building a test suite
+// is the one job where that trade is the wrong way round, so it can be turned
+// around: the same determiniser, called as an ordinary function on first use,
+// and an interpreter over what it returns.
+#if defined(SCAN_AUTOMATA_AT_RUNTIME) && SCAN_AUTOMATA_AT_RUNTIME
+inline constexpr bool automata_at_runtime = true;
+#else
+inline constexpr bool automata_at_runtime = false;
+#endif
+
 template <class type, fixed_string format>
 inline constexpr auto packed_automaton = pack_tdfa<type, format>();
+
+// Built once, on first use. The determiniser is the same one the compiled form
+// evaluates while compiling; asked at run time it answers in microseconds.
+template <class type, fixed_string format, bool allocate = true>
+[[nodiscard]] inline const scan::tre::tdfa& runtime_automaton() {
+  static const scan::tre::tdfa built = build_tdfa<type, format, allocate>();
+  return built;
+}
 
 template <class type, fixed_string format>
 inline constexpr auto streaming_automaton = pack_tdfa<type, format, false>();

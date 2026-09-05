@@ -119,6 +119,35 @@ if(SCAN_BYTECODE_CONSTANT_INTERPRETER)
     $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
 endif()
 
+# The automaton, built while the program runs rather than while it is compiled.
+#
+# A pattern here becomes code: one constant evaluation of the determiniser for
+# each pattern, and one instantiation for each state of the machine that walks
+# it. That is what makes a scan cost nothing when it runs, and it is what makes
+# a file with several patterns in it slow to build -- minutes, for a handful of
+# fields. Turned around, the same determiniser is called as an ordinary
+# function on first use and the walk is a loop over what it returns: the
+# compiler is asked for one function instead of one per state, and a scan costs
+# what reading a table costs.
+#
+# On when this repository is built by itself with the benchmarks off, which is
+# the build that runs the tests. Off for anyone who consumes the library, and
+# off wherever the benchmarks are -- there the compiled form is the thing being
+# measured.
+if(PROJECT_IS_TOP_LEVEL AND NOT SCAN_BUILD_BENCHMARKS)
+  set(scan_runtime_automata_default ON)
+else()
+  set(scan_runtime_automata_default OFF)
+endif()
+option(SCAN_AUTOMATA_AT_RUNTIME
+       "Build automata while the program runs, not while it is compiled"
+       ${scan_runtime_automata_default})
+if(SCAN_AUTOMATA_AT_RUNTIME)
+  # PUBLIC: the choice is written into the module this builds, and whoever
+  # imports it is reading the same one.
+  target_compile_definitions(scan PUBLIC SCAN_AUTOMATA_AT_RUNTIME=1)
+endif()
+
 enable_testing()
 add_executable(tre_tdfa_test tests/tre_test.cc tests/ctre_compat_test.cc)
 target_link_libraries(tre_tdfa_test PRIVATE scan gtest_main)

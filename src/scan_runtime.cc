@@ -645,13 +645,110 @@ template <auto& automaton, std::size_t state>
 
 // The head the pattern takes, or a view of nothing at all -- which is not the
 // same as an empty head, and is told apart by pointing nowhere.
+// The same walk, read out of the automaton instead of written into the code.
+//
+// Every state of the compiled form is an instantiation and every pattern is a
+// constant evaluation: that is what makes a scan cost nothing when it runs,
+// and a great deal when it is built. A test wants the answer and does not care
+// what it cost to arrange, so this reads the automaton as data -- a state in a
+// variable, a search through the transitions, a loop over the commands -- and
+// asks the compiler for one function instead of one per state.
+//
+// It is the interpreter the compiled form was written to replace, kept because
+// the two answer alike: the same determiniser, the same registers, the same
+// order of operations. Only the schedule differs.
+inline void execute_runtime_commands(
+    const std::vector<scan::tre::register_command>& commands,
+    std::vector<const char*>& registers, const char* here) {
+  // Every source is read before any destination is written: commands on one
+  // transition happen at once, and a copy must not see a register that another
+  // command in the same breath has already changed.
+  std::array<const char*, 64> room{};
+  std::vector<const char*> spill;
+  const bool roomy = commands.size() <= room.size();
+  if (!roomy) spill.resize(commands.size());
+  const auto source_at = [&](std::size_t which) -> const char*& {
+    return roomy ? room[which] : spill[which];
+  };
+  for (std::size_t which = 0; which < commands.size(); ++which) {
+    source_at(which) = commands[which].source
+                           ? registers[*commands[which].source]
+                           : nullptr;
+  }
+  for (std::size_t which = 0; which < commands.size(); ++which) {
+    const scan::tre::register_command& command = commands[which];
+    const char* value = command.source ? source_at(which) : nullptr;
+    if (!command.values.empty()) value = command.values.back() ? here : nullptr;
+    registers[command.destination] = value;
+  }
+}
+
+[[nodiscard]] inline bool run_tagged_runtime(const scan::tre::tdfa& automaton,
+                                             const char* cursor,
+                                             const char* end,
+                                             std::vector<const char*>& registers) {
+  execute_runtime_commands(automaton.initialize, registers, cursor);
+  std::size_t state = automaton.initial;
+  while (cursor != end) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
+    const scan::tre::tdfa_transition* taken = nullptr;
+    for (const scan::tre::tdfa_transition& transition :
+         automaton.states[state].transitions) {
+      if (transition.symbols.test(symbol)) {
+        taken = &transition;
+        break;
+      }
+    }
+    if (taken == nullptr) return false;
+    // The operations of a transition are the tags the state before it was
+    // holding back, so they are written with the place from before this
+    // symbol.
+    execute_runtime_commands(taken->commands, registers, cursor - 1);
+    state = taken->target;
+  }
+  const scan::tre::tdfa_state& reached = automaton.states[state];
+  if (!reached.accepting_slot.has_value()) return false;
+  execute_runtime_commands(reached.final_commands, registers, cursor);
+  return true;
+}
+
+// The longest head of the input the automaton accepts, or nothing.
+[[nodiscard]] inline const char* run_prefix_runtime(
+    const scan::tre::tdfa& automaton, const char* cursor, const char* end) {
+  std::size_t state = automaton.initial;
+  const char* best =
+      automaton.states[state].accepting_slot.has_value() ? cursor : nullptr;
+  while (cursor != end) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor);
+    const scan::tre::tdfa_transition* taken = nullptr;
+    for (const scan::tre::tdfa_transition& transition :
+         automaton.states[state].transitions) {
+      if (transition.symbols.test(symbol)) {
+        taken = &transition;
+        break;
+      }
+    }
+    if (taken == nullptr) break;
+    state = taken->target;
+    ++cursor;
+    if (automaton.states[state].accepting_slot.has_value()) best = cursor;
+  }
+  return best;
+}
+
 template <class type, fixed_string format>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view taken_prefix_or_none(
     std::string_view input) {
-  constexpr const auto& automaton = packed_automaton<type, format>;
   const char* const begin = input.data();
-  const char* const best = run_prefix_continuation<automaton, automaton.initial>(
-      begin, begin + input.size(), nullptr);
+  const char* best = nullptr;
+  if constexpr (automata_at_runtime) {
+    best = run_prefix_runtime(runtime_automaton<type, format>(), begin,
+                              begin + input.size());
+  } else {
+    constexpr const auto& automaton = packed_automaton<type, format>;
+    best = run_prefix_continuation<automaton, automaton.initial>(
+        begin, begin + input.size(), nullptr);
+  }
   if (best == nullptr) return {};
   return std::string_view(begin, static_cast<std::size_t>(best - begin));
 }
@@ -692,6 +789,29 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       if (begin < 0 || end < begin) throw scan_error("invalid capture group");
       return input.substr(static_cast<std::size_t>(begin),
                           static_cast<std::size_t>(end - begin));
+    };
+    return std::array{capture.template operator()<index>()...};
+  } else if constexpr (automata_at_runtime) {
+    // Nothing here is a constant: the automaton is a value built on first use
+    // and the walk is a loop over it. Not one instantiation per state, not one
+    // determinisation per pattern while compiling.
+    const scan::tre::tdfa& automaton = runtime_automaton<type, format>();
+    std::vector<const char*> registers(automaton.register_count, nullptr);
+    if (!run_tagged_runtime(automaton, input.data(),
+                            input.data() + input.size(), registers)) {
+      throw scan_error("input does not match scan expression");
+    }
+    const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
+      const char* const begin = registers[capture_index * 2];
+      const char* const end = registers[capture_index * 2 + 1];
+      if (begin == nullptr || end == nullptr) {
+        // A group that took no part is an error where every group was meant to
+        // take part, and the ordinary state of affairs where the format has
+        // branches and only one of them ran.
+        if constexpr (absent_is_empty) return std::string_view{};
+        throw scan_error("capture group did not participate in the match");
+      }
+      return std::string_view(begin, static_cast<std::size_t>(end - begin));
     };
     return std::array{capture.template operator()<index>()...};
   } else {

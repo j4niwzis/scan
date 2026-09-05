@@ -523,10 +523,15 @@ class each_scan {
 
   template <class type>
   [[nodiscard]] constexpr each_view<type, format> of() const {
-    static_assert(!detail::matches_nothing<
-                      detail::packed_automaton<type, format>>(),
-                  "this pattern is happy with nothing at all, so reading one "
-                  "match after another would never move");
+    // Asked of the compiled automaton, which is not built at all where they
+    // are built while the program runs. There the same pattern is refused by
+    // the reading itself, which cannot move and says so.
+    if constexpr (!detail::automata_at_runtime) {
+      static_assert(!detail::matches_nothing<
+                        detail::packed_automaton<type, format>>(),
+                    "this pattern is happy with nothing at all, so reading one "
+                    "match after another would never move");
+    }
     return each_view<type, format>(input_);
   }
 
