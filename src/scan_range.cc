@@ -34,6 +34,31 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
                                                  parameters[index])...};
 }
 
+// One alternative of a variant, built from the groups of its own branch.
+//
+// The groups of every branch stand in one row, in the order the branches are
+// written, so this alternative's fields are the few of them that begin at its
+// offset. The parameters were worked out over the same row and are indexed the
+// same way.
+template <class alternative, fixed_string format, std::size_t offset,
+          std::size_t total, std::size_t extent, std::size_t... index>
+[[nodiscard]] constexpr alternative convert_alternative(
+    const std::array<std::string_view, extent>& groups,
+    std::index_sequence<index...>) {
+  constexpr auto parameters = field_parameters<format, total>();
+  return alternative{parse_value<std::remove_cvref_t<
+      boost::pfr::tuple_element_t<index, alternative>>>(
+      groups[offset + index], parameters[offset + index])...};
+}
+
+template <class type, std::size_t branch>
+[[nodiscard]] consteval std::size_t groups_before_branch() {
+  constexpr auto counts = fields_of_each_alternative<type>();
+  std::size_t before = 0;
+  for (std::size_t index = 0; index < branch; ++index) before += counts[index];
+  return before;
+}
+
 template <fixed_string format, int sentinel = -1, bool terminated = false>
 class borrowed_result {
  public:
@@ -45,6 +70,35 @@ class borrowed_result {
     const auto fields = scan_fields<type, format, sentinel, terminated>(input_);
     return convert<type, format>(fields,
                       std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+  }
+
+  // The same scan, for a format that says the input may be one of several
+  // shapes. Which branch ran is read from the group each branch was wrapped in:
+  // exactly one of them took part, and the others point nowhere.
+  template <class type>
+    requires scanned_as_variant<type>
+  constexpr operator type() const {
+    constexpr std::size_t branches = std::variant_size_v<type>;
+    constexpr std::size_t total = fields_of_all_alternatives<type>();
+    const auto groups =
+        scan_branch_fields<type, format, sentinel, terminated>(input_);
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
+      std::optional<type> made;
+      const auto take = [&]<std::size_t which>() {
+        if (made || groups[total + which].data() == nullptr) return false;
+        using alternative = std::variant_alternative_t<which, type>;
+        made.emplace(
+            std::in_place_index<which>,
+            convert_alternative<alternative, format,
+                                groups_before_branch<type, which>(), total>(
+                groups,
+                std::make_index_sequence<boost::pfr::tuple_size_v<alternative>>{}));
+        return true;
+      };
+      (void)(take.template operator()<branch>() || ...);
+      if (!made) throw scan_error("no branch of the format took the input");
+      return std::move(*made);
+    }(std::make_index_sequence<branches>{});
   }
 
  private:
