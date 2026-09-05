@@ -449,17 +449,10 @@ regex_match(
         std::views::iota(std::size_t{0}, input.size()),
         [&](std::size_t position) {
           if (state == packed_range<0>::reject) return;
-          const auto& packed = automaton.states[state];
-          const auto symbol = static_cast<unsigned char>(input[position]);
-          // The ranges are in symbol order and do not overlap, so the one
-          // holding a symbol is the last that starts at or before it.
-          const auto found = std::ranges::find_if(
-              packed.ranges | std::views::take(packed.range_count),
-              [&](const auto& range) {
-                return symbol >= range.first && symbol <= range.last;
-              });
-          if (found ==
-              (packed.ranges | std::views::take(packed.range_count)).end()) {
+          const auto* found = find_range(
+              automaton.states[state],
+              static_cast<unsigned char>(input[position]));
+          if (found == nullptr) {
             state = packed_range<0>::reject;
             return;
           }
