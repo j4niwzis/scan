@@ -236,7 +236,11 @@ struct tdfa {
 }  // namespace tre
 
 namespace tre {
-namespace {
+// Not exported, and not in an unnamed namespace either: an entity there is
+// local to the translation unit, and naming one in the body of an exported
+// inline function exposes it -- which the standard forbids and clang warns
+// about. Without `export` these have module linkage instead: an importer
+// still cannot name them, and the interface may refer to them.
 
 struct fragment {
   state_id start;
@@ -481,7 +485,7 @@ struct path {
   return slot * tag_count + tag;
 }
 
-}  // namespace
+
 
 constexpr tnfa compile_tnfa(const node& expression) {
   return tnfa_builder{}.build(expression);
