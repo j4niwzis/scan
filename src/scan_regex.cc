@@ -78,10 +78,16 @@ namespace detail {
 
 #if defined(_MSC_VER)
 #define SCAN_REGEX_FORCE_INLINE __forceinline
+// A lambda takes the attribute but not the specifier: `inline` is not one of
+// the things a lambda-declarator may carry, and naming it there is not a
+// weaker request that compilers ignore -- it stops the parse.
+#define SCAN_REGEX_FORCE_INLINE_LAMBDA __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
 #define SCAN_REGEX_FORCE_INLINE [[gnu::always_inline]] inline
+#define SCAN_REGEX_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
 #else
 #define SCAN_REGEX_FORCE_INLINE inline
+#define SCAN_REGEX_FORCE_INLINE_LAMBDA
 #endif
 
 template <class state_type>
@@ -372,7 +378,7 @@ SCAN_REGEX_FORCE_INLINE constexpr void execute_static_transition_commands(
   constexpr const auto& transition =
       regex_automaton<pattern>.states[state].transitions[symbol];
   [&]<std::size_t... index>(std::index_sequence<index...>)
-      SCAN_REGEX_FORCE_INLINE {
+      SCAN_REGEX_FORCE_INLINE_LAMBDA {
         const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
             (transition.commands[index].source == packed_command::no_source
                  ? tre::negative_tag
@@ -389,7 +395,7 @@ SCAN_REGEX_FORCE_INLINE constexpr void execute_static_final_commands(
     std::ptrdiff_t position) {
   constexpr const auto& packed_state = regex_automaton<pattern>.states[state];
   [&]<std::size_t... index>(std::index_sequence<index...>)
-      SCAN_REGEX_FORCE_INLINE {
+      SCAN_REGEX_FORCE_INLINE_LAMBDA {
         const std::array<std::ptrdiff_t, sizeof...(index)> source_values{
             (packed_state.final_commands[index].source ==
                      packed_command::no_source
