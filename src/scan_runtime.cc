@@ -155,8 +155,8 @@ dispatch_tagged_transition(
       if constexpr (range.target == state) return false;
       execute_static_transition_commands<automaton, state, index>(registers,
                                                                 position);
-      return run_tagged_state_continuation<automaton, range.target>(
-          cursor, end, registers, position + 1);
+      [[clang::always_inline]] return run_tagged_state_continuation<
+          automaton, range.target>(cursor, end, registers, position + 1);
     }
     return dispatch_tagged_transition<automaton, state, register_count,
                                       index + 1>(symbol, cursor, end,
@@ -299,9 +299,8 @@ dispatch_tagged_sentinel_transition(
       if constexpr (range.target == state) return false;
       execute_static_transition_commands<automaton, state, index>(registers,
                                                                   position);
-      return run_tagged_sentinel_continuation<automaton, sentinel,
-                                              range.target>(cursor, registers,
-                                                            position + 1);
+      [[clang::always_inline]] return run_tagged_sentinel_continuation<
+          automaton, sentinel, range.target>(cursor, registers, position + 1);
     }
     return dispatch_tagged_sentinel_transition<automaton, sentinel, state,
                                                register_count, index + 1>(
@@ -335,9 +334,22 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
   }
 }
 
+// The machine belongs in this frame, not behind a call.
+//
+// The register file is a local array, and an array whose address is handed to a
+// function the compiler keeps at arm's length has to live in memory: nine
+// stores and ten loads for a five field subject, on a match that is over in
+// thirty. Inlined, the address escapes nowhere, the array becomes values in
+// registers, and the stack frame disappears entirely. It is asked for at the
+// step from one state to the next as well as at the entry, so the whole walk
+// arrives here and not just its first state.
+//
+// Where the states lead back into one another the request cannot be granted,
+// and is not: the compiler says so and carries on with a call, which is what a
+// pattern that loops has to pay anyway.
 template <class type, fixed_string format, int sentinel,
           std::size_t... index>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
+[[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
     const auto matched = scan::tre::simulate(build_tnfa<type, format>(), input);
@@ -392,13 +404,14 @@ template <class type, fixed_string format, int sentinel,
       static_assert(is_safe_tagged_sentinel<automaton,
                                             static_cast<unsigned char>(sentinel)>(),
                     "the terminator must be rejected in every state");
-      matched = run_tagged_sentinel_continuation<
+      [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
           automaton, static_cast<unsigned char>(sentinel), automaton.initial>(
           cursor, registers, 0);
     } else {
       const char* const end = cursor + input.size();
-      matched = run_tagged_state_continuation<automaton, automaton.initial>(
-          cursor, end, registers, 0);
+      [[clang::always_inline]] matched =
+          run_tagged_state_continuation<automaton, automaton.initial>(
+              cursor, end, registers, 0);
     }
     if (!matched) throw scan_error("input does not match scan expression");
     // Two of the three tests this used to make were asking whether the machine
