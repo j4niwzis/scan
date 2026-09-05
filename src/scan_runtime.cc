@@ -1036,23 +1036,41 @@ constexpr void advance_scanner(
   constexpr std::size_t closing = group * 2 + 1;
   using held_type = leaf_kind<type, group>;
   constexpr bool gathers_a_list = scanned_as_range<held_type>;
+  // A list is gathered where it began: the elements go on being added to the
+  // same list however the readings divide. A value is gathered where it ends,
+  // because that is what tells the readings apart. Two readings can hold the
+  // same opening and disagree about whether the group is still being read --
+  // one has met what follows it and one has not -- and one gathering cannot be
+  // both "bob" and "bob id=7". They never hold the same closing.
+  constexpr std::size_t gathered_at = gathers_a_list ? opening : closing;
   std::size_t command_index = 0;
   std::apply(
       [&](const auto&... command) {
         ([&] {
-          if (command_index++ >= count ||
-              automaton.register_tag[command.destination] != opening) {
-            return;
-          }
+          if (command_index++ >= count) return;
+          const std::uint32_t tag = automaton.register_tag[command.destination];
+          if (tag != gathered_at && tag != opening) return;
           if (command.source != packed_command::no_source &&
               command.value == -2) {
+            // A reading that divides carries its gathering with it.
+            if (tag != gathered_at) return;
             std::get<group>(states[command.destination]) =
                 std::get<group>(old_states[command.source]);
           } else if constexpr (gathers_a_list) {
+            if (tag != opening) return;
             std::get<group>(states[command.destination]) = held_type{};
-          } else {
-            std::get<group>(states[command.destination]) =
-                scanner_begin<held_type>(spread.parameters[group].view());
+          } else if (tag == opening) {
+            // The group has begun again. Every gathering that ends a reading
+            // this opening belongs to starts over.
+            const auto& entered = automaton.states[state];
+            for (std::size_t reading = 0; reading < entered.reading_count;
+                 ++reading) {
+              if (entered.readings[reading][opening] != command.destination) {
+                continue;
+              }
+              std::get<group>(states[entered.readings[reading][closing]]) =
+                  scanner_begin<held_type>(spread.parameters[group].view());
+            }
           }
         }(),
          ...);
@@ -1062,16 +1080,16 @@ constexpr void advance_scanner(
   // would discard nothing: what follows an `if constexpr` is not the branch it
   // did not take.
   if constexpr (!gathers_a_list) {
-    // Once each, however many readings share it: a register is one gathering.
+    // Once each, however many readings share it: a gathering is one closing.
     std::array<bool, register_count> filled{};
     const auto& packed = automaton.states[state];
     for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
-      if (filled[open]) continue;
+      if (filled[close]) continue;
       if (registers[open] < 0 || registers[close] >= registers[open]) continue;
-      filled[open] = true;
-      scanner_push<held_type>(std::get<group>(states[open]), symbol);
+      filled[close] = true;
+      scanner_push<held_type>(std::get<group>(states[close]), symbol);
     }
   }
 }
@@ -1244,7 +1262,9 @@ template <class root, class type, std::size_t offset, class reading_type,
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers) {
   if constexpr (scanned_as_leaf<type>) {
-    return scanner_finish<type>(std::get<offset>(states[reading[offset * 2]]));
+    // Gathered where it ends, so read from there.
+    return scanner_finish<type>(
+        std::get<offset>(states[reading[offset * 2 + 1]]));
   } else if constexpr (scanned_as_range<type>) {
     // What has been put in as each element ended, and then the one that was
     // still being read when the whole thing ended.
@@ -1337,8 +1357,9 @@ class stream_state {
   [[nodiscard]] constexpr const auto& gathering() const {
     const std::size_t here =
         state_ == packed_range<0>::reject ? automaton.initial : state_;
+    // Where the value ends is where it is gathered.
     return std::get<field>(
-        scanner_states_[automaton.states[here].readings[0][field * 2]]);
+        scanner_states_[automaton.states[here].readings[0][field * 2 + 1]]);
   }
 
   // Whether that field is being read right now: begun and not yet ended.
