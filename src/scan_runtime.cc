@@ -687,7 +687,7 @@ template <class type, fixed_string format, int sentinel = -1,
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
   return scan_fields<type, format, sentinel, terminated, false>(
-      input, std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+      input, std::make_index_sequence<groups_of<type>()>{});
 }
 
 // Every group of every branch, with the ones that took no part left empty.
