@@ -127,79 +127,43 @@ target_link_libraries(tre_runtime_test PRIVATE tre_tdfa gtest_main)
 add_test(NAME tre_runtime_test COMMAND tre_runtime_test)
 
 if(SCAN_BUILD_BENCHMARKS)
-  set(re2c_benchmark_source
-      "${CMAKE_CURRENT_BINARY_DIR}/generated/regex_re2c.cc")
-  add_custom_command(
-    OUTPUT "${re2c_benchmark_source}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/generated"
-    COMMAND $<TARGET_FILE:re2c> -W -o "${re2c_benchmark_source}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/regex_re2c.re"
-    DEPENDS re2c benchmarks/regex_re2c.re
-    VERBATIM
-  )
-  add_executable(regex_benchmark
-    benchmarks/regex_benchmark.cc
-    "${re2c_benchmark_source}"
-  )
-  target_include_directories(regex_benchmark PRIVATE benchmarks)
-  target_link_libraries(regex_benchmark PRIVATE
-    scan benchmark::benchmark_main ctre
-  )
-  target_compile_options(regex_benchmark PRIVATE
-    $<$<CONFIG:Release>:-O3>
-  )
+  # One pattern per benchmark, one benchmark per executable.
+  #
+  # Compiling a pattern is a constant evaluation and costs seconds; a
+  # translation unit holding ten of them costs ten times that, every time one
+  # of them is touched. Splitting them means looking at a single benchmark
+  # rebuilds a single pattern.
+  function(scan_add_benchmark name)
+    cmake_parse_arguments(PARSE_ARGV 1 arg "NO_RE2C" "" "")
+    set(sources "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/${name}_benchmark.cc")
+    if(NOT arg_NO_RE2C)
+      set(generated "${CMAKE_CURRENT_BINARY_DIR}/generated/${name}_re2c.cc")
+      add_custom_command(
+        OUTPUT "${generated}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${CMAKE_CURRENT_BINARY_DIR}/generated"
+        COMMAND $<TARGET_FILE:re2c> -W -o "${generated}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/re2c/${name}.re"
+        DEPENDS re2c "benchmarks/re2c/${name}.re"
+        VERBATIM)
+      list(APPEND sources "${generated}")
+    endif()
+    add_executable(${name}_benchmark ${sources})
+    target_include_directories(${name}_benchmark PRIVATE benchmarks)
+    target_link_libraries(${name}_benchmark
+      PRIVATE scan benchmark::benchmark_main ctre)
+    target_compile_options(${name}_benchmark PRIVATE $<$<CONFIG:Release>:-O3>)
+  endfunction()
 
-  set(codegen_re2c_source
-      "${CMAKE_CURRENT_BINARY_DIR}/generated/codegen_re2c.cc")
-  add_custom_command(
-    OUTPUT "${codegen_re2c_source}"
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            "${CMAKE_CURRENT_BINARY_DIR}/generated"
-    COMMAND $<TARGET_FILE:re2c> -W -o "${codegen_re2c_source}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/codegen_re2c.re"
-    DEPENDS re2c benchmarks/codegen_re2c.re
-    VERBATIM)
-  add_executable(codegen_benchmark
-    benchmarks/codegen_benchmark.cc
-    "${codegen_re2c_source}")
-  target_include_directories(codegen_benchmark PRIVATE benchmarks)
-  target_link_libraries(codegen_benchmark PRIVATE
-    scan benchmark::benchmark_main ctre)
-  target_compile_options(codegen_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-O3;-flto>)
-  target_link_options(codegen_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-flto>)
+  # Recognition: the whole input, matched and not taken apart.
+  scan_add_benchmark(word)
+  scan_add_benchmark(timestamp)
+  scan_add_benchmark(csv)
+  scan_add_benchmark(address)
+  # Extraction: the fields are wanted, not only the answer.
+  scan_add_benchmark(captures NO_RE2C)
 
-  add_executable(bounded_re2c_benchmark
-    benchmarks/bounded_re2c_benchmark.cc
-    "${re2c_benchmark_source}")
-  target_include_directories(bounded_re2c_benchmark PRIVATE benchmarks)
-  target_link_libraries(bounded_re2c_benchmark PRIVATE benchmark::benchmark_main)
-  target_compile_options(bounded_re2c_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-O3;-flto>)
-  target_link_options(bounded_re2c_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-flto>)
-
-  add_executable(sentinel_email_benchmark
-    benchmarks/sentinel_email_benchmark.cc
-    "${re2c_benchmark_source}")
-  target_include_directories(sentinel_email_benchmark PRIVATE benchmarks)
-  target_link_libraries(sentinel_email_benchmark PRIVATE
-    scan benchmark::benchmark_main)
-  target_compile_options(sentinel_email_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-O3;-flto>)
-  target_link_options(sentinel_email_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-flto>)
-
-  add_executable(capture_benchmark
-    benchmarks/capture_benchmark.cc
-    "${re2c_benchmark_source}")
-  target_include_directories(capture_benchmark PRIVATE benchmarks)
-  target_link_libraries(capture_benchmark PRIVATE
-    scan benchmark::benchmark_main)
-  target_compile_options(capture_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-O3;-flto>)
-  target_link_options(capture_benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-flto>)
+  add_custom_target(benchmarks DEPENDS
+    word_benchmark timestamp_benchmark csv_benchmark address_benchmark
+    captures_benchmark)
 endif()
