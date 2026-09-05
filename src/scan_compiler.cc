@@ -525,8 +525,54 @@ template <fixed_string pattern>
       tre::compile_tdfa(tre::compile_tnfa(parser.parse_regex()))));
 }
 
+// Which transition each symbol takes, or none. The symbol sets of a state's
+// transitions do not overlap, so this is a function, and consecutive symbols
+// that take the same transition are one range.
+[[nodiscard]] constexpr std::array<std::size_t, 256> transition_of_symbol(
+    const tre::tdfa_state& state) {
+  constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+  std::array<std::size_t, 256> result{};
+  std::ranges::fill(result, none);
+  std::ranges::for_each(
+      std::views::iota(std::size_t{0}, state.transitions.size()),
+      [&](std::size_t index) {
+        std::ranges::for_each(
+            std::views::iota(std::size_t{0}, std::size_t{256}),
+            [&](std::size_t symbol) {
+              if (state.transitions[index].symbols[symbol]) {
+                result[symbol] = index;
+              }
+            });
+      });
+  return result;
+}
+
+[[nodiscard]] constexpr std::size_t count_symbol_ranges(
+    const tre::tdfa_state& state) {
+  constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+  const std::array<std::size_t, 256> owner = transition_of_symbol(state);
+  std::size_t count = 0;
+  std::size_t previous = none;
+  bool started = false;
+  std::ranges::for_each(owner, [&](std::size_t index) {
+    if (index != none && (!started || index != previous)) ++count;
+    started = true;
+    previous = index;
+  });
+  return count;
+}
+
 struct packed_shape {
   std::size_t states = 0;
+  // The most ranges of consecutive symbols any one state needs. A state's
+  // transitions are stored as those ranges rather than as a cell per symbol:
+  // the automaton for an address pattern has fifteen states and ninety-nine
+  // ranges, where a cell per symbol is three thousand eight hundred and forty
+  // of them, each carrying a command array. Every one of those cells is an
+  // object the constant evaluator materialises and every consteval helper
+  // walks all of them, so the shape of the table is most of what compiling a
+  // pattern costs.
+  std::size_t ranges = 0;
   std::size_t registers = 0;
   std::size_t initial_commands = 0;
   std::size_t maximum_commands = 0;
@@ -549,6 +595,7 @@ struct packed_shape {
       shape.maximum_commands =
           std::max(shape.maximum_commands, transition.commands.size());
     });
+    shape.ranges = std::max(shape.ranges, count_symbol_ranges(state));
   });
   return shape;
 }
@@ -568,20 +615,28 @@ struct packed_command {
   std::int8_t value = -2;
 };
 
+// One transition, over the run of symbols that take it. A dispatch compares
+// the symbol against `first` and `last`, which is what the generated code
+// wanted from a cell-per-symbol table anyway -- it recovered these ranges from
+// it, once per instantiation, having paid to build the table first.
 template <std::size_t command_capacity>
-struct packed_transition {
+struct packed_range {
   static constexpr std::size_t reject =
       std::numeric_limits<std::size_t>::max();
+  unsigned char first = 0;
+  unsigned char last = 0;
   std::size_t target = reject;
   std::size_t command_count = 0;
   std::array<packed_command, command_capacity> commands{};
 };
 
-template <std::size_t command_capacity, std::size_t final_command_capacity>
+template <std::size_t command_capacity, std::size_t final_command_capacity,
+          std::size_t range_capacity>
 struct packed_state {
   static constexpr std::size_t not_accepting =
       std::numeric_limits<std::size_t>::max();
-  std::array<packed_transition<command_capacity>, 256> transitions{};
+  std::array<packed_range<command_capacity>, range_capacity> ranges{};
+  std::size_t range_count = 0;
   std::size_t accepting_slot = not_accepting;
   std::size_t final_command_count = 0;
   std::array<packed_command, final_command_capacity> final_commands{};
@@ -589,11 +644,13 @@ struct packed_state {
 
 template <std::size_t state_count, std::size_t register_extent,
           std::size_t initial_command_count, std::size_t command_count,
-          std::size_t final_command_count, std::size_t tag_extent>
+          std::size_t final_command_count, std::size_t tag_extent,
+          std::size_t range_count>
 struct packed_tdfa {
   std::size_t initial = 0;
   std::array<packed_command, initial_command_count> initialize{};
-  std::array<packed_state<command_count, final_command_count>, state_count>
+  std::array<packed_state<command_count, final_command_count, range_count>,
+             state_count>
       states{};
   static constexpr std::size_t register_count = register_extent;
   static constexpr std::size_t tag_count = tag_extent;
@@ -636,10 +693,11 @@ struct packed_captureless_tdfa {
 
 template <std::size_t state_count, std::size_t register_count,
           std::size_t initial_command_count, std::size_t command_count,
-          std::size_t final_command_count, std::size_t tag_count>
+          std::size_t final_command_count, std::size_t tag_count,
+          std::size_t range_count>
 [[nodiscard]] constexpr auto pack_tdfa_value(const tre::tdfa& tdfa) {
   packed_tdfa<state_count, register_count, initial_command_count,
-              command_count, final_command_count, tag_count>
+              command_count, final_command_count, tag_count, range_count>
       packed;
   packed.initial = tdfa.initial;
   std::ranges::transform(tdfa.initialize, packed.initialize.begin(),
@@ -650,27 +708,40 @@ template <std::size_t state_count, std::size_t register_count,
         const tre::tdfa_state& source = tdfa.states[state_index];
         auto& target = packed.states[state_index];
         target.accepting_slot = source.accepting_slot.value_or(
-            packed_state<command_count,
-                         final_command_count>::not_accepting);
+            packed_state<command_count, final_command_count,
+                         range_count>::not_accepting);
         target.final_command_count = source.final_commands.size();
         std::ranges::transform(source.final_commands,
                                target.final_commands.begin(), pack_command);
-        std::ranges::for_each(source.transitions,
-                              [&](const tre::tdfa_transition& transition) {
-          std::ranges::for_each(
-              std::views::iota(std::size_t{0}, transition.symbols.size()) |
-                  std::views::filter([&](std::size_t symbol) {
-                    return transition.symbols[symbol];
-                  }),
-              [&](std::size_t symbol) {
-                auto& packed_transition = target.transitions[symbol];
-                packed_transition.target = transition.target;
-                packed_transition.command_count = transition.commands.size();
-                std::ranges::transform(transition.commands,
-                                       packed_transition.commands.begin(),
-                                       pack_command);
-              });
-        });
+        // Consecutive symbols taking the same transition become one range.
+        constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+        const std::array<std::size_t, 256> owner =
+            transition_of_symbol(source);
+        std::size_t previous = none;
+        std::ranges::for_each(
+            std::views::iota(std::size_t{0}, std::size_t{256}),
+            [&](std::size_t symbol) {
+              const std::size_t index = owner[symbol];
+              if (index == none) {
+                previous = none;
+                return;
+              }
+              if (index == previous) {
+                target.ranges[target.range_count - 1].last =
+                    static_cast<unsigned char>(symbol);
+                return;
+              }
+              const tre::tdfa_transition& transition =
+                  source.transitions[index];
+              auto& range = target.ranges[target.range_count++];
+              range.first = static_cast<unsigned char>(symbol);
+              range.last = static_cast<unsigned char>(symbol);
+              range.target = transition.target;
+              range.command_count = transition.commands.size();
+              std::ranges::transform(transition.commands,
+                                     range.commands.begin(), pack_command);
+              previous = index;
+            });
       });
   return packed;
 }
@@ -680,8 +751,8 @@ template <class type, fixed_string format>
   constexpr packed_shape shape = compute_shape<type, format>();
   return pack_tdfa_value<shape.states, shape.registers,
                          shape.initial_commands, shape.maximum_commands,
-                         shape.maximum_final_commands,
-                         shape.tags>(build_tdfa<type, format>());
+                         shape.maximum_final_commands, shape.tags,
+                         shape.ranges>(build_tdfa<type, format>());
 }
 
 template <class type, fixed_string format>
@@ -726,7 +797,8 @@ template <fixed_string pattern>
   } else {
     return pack_tdfa_value<shape.states, shape.registers,
                            shape.initial_commands, shape.maximum_commands,
-                           shape.maximum_final_commands, shape.tags>(tdfa);
+                           shape.maximum_final_commands, shape.tags,
+                           shape.ranges>(tdfa);
   }
 }
 
