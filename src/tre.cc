@@ -437,7 +437,7 @@ struct path {
 [[nodiscard]] constexpr std::vector<path> closure(
     const tnfa& automaton, std::span<const path> seeds) {
   std::vector<path> result;
-  std::vector<bool> seen(automaton.transitions.size());
+  std::vector<char> seen(automaton.transitions.size());
   std::vector<path> work(seeds.rbegin(), seeds.rend());
   while (!work.empty()) {
     path current = std::move(work.back());
@@ -497,7 +497,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
   const auto close = [&](std::vector<configuration> seeds,
                          std::size_t position) {
     std::vector<configuration> output;
-    std::vector<bool> seen(automaton.transitions.size());
+    std::vector<char> seen(automaton.transitions.size());
     std::vector<configuration> work(seeds.rbegin(), seeds.rend());
     while (!work.empty()) {
       configuration item = std::move(work.back());
@@ -736,12 +736,12 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
 constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
   const auto optimize_registers = [&] {
     const std::size_t register_count = automaton.register_count;
-    std::vector<std::vector<bool>> live(
-        automaton.states.size(), std::vector<bool>(register_count));
+    std::vector<std::vector<char>> live(
+        automaton.states.size(), std::vector<char>(register_count));
 
-    const auto transfer = [&](const std::vector<bool>& output,
+    const auto transfer = [&](const std::vector<char>& output,
                               const std::vector<register_command>& commands) {
-      std::vector<bool> input = output;
+      std::vector<char> input = output;
       for (const register_command& command : commands) {
         if (output[command.destination]) input[command.destination] = false;
       }
@@ -752,7 +752,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       return input;
     };
 
-    std::vector<bool> final_live(register_count);
+    std::vector<char> final_live(register_count);
     std::ranges::fill(final_live | std::views::take(automaton.tag_count), true);
     for (std::size_t state :
          std::views::iota(std::size_t{0}, automaton.states.size())) {
@@ -804,9 +804,9 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       });
     }
 
-    std::vector<std::vector<bool>> interference(
-        register_count, std::vector<bool>(register_count));
-    for (const std::vector<bool>& state_live : live) {
+    std::vector<std::vector<char>> interference(
+        register_count, std::vector<char>(register_count));
+    for (const std::vector<char>& state_live : live) {
       for (std::size_t lhs :
            std::views::iota(std::size_t{0}, register_count) |
                std::views::filter([&](std::size_t reg) {
@@ -835,7 +835,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       while (parent[reg] != reg) reg = parent[reg];
       return reg;
     };
-    std::vector<bool> pinned(register_count);
+    std::vector<char> pinned(register_count);
     std::ranges::fill(pinned | std::views::take(automaton.tag_count), true);
     const auto can_merge = [&](std::size_t lhs, std::size_t rhs) {
       lhs = root(lhs);
