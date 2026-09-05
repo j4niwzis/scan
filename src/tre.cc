@@ -449,7 +449,7 @@ struct path {
     // carries a symbol set and a copy of it is an object the constant
     // evaluator tracks, where an index is a number.
     const std::vector<transition>& outgoing = automaton.transitions[current.state];
-    std::vector<std::size_t> order;
+    std::vector<std::uint32_t> order;
     for (std::size_t index = 0; index < outgoing.size(); ++index) {
       const transition& edge = outgoing[index];
       if (edge.kind != transition_kind::symbol &&
@@ -566,7 +566,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       std::array{path{.state = automaton.initial, .actions = {}}});
 
   std::vector<std::vector<state_id>> keys;
-  std::vector<std::size_t> pending;
+  std::vector<std::uint32_t> pending;
   std::size_t pending_index = 0;
   const auto add_state = [&](const std::vector<path>& closure) -> std::size_t {
     std::vector<state_id> key;
@@ -698,7 +698,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
         seed_paths.push_back(std::move(entry));
       }
       std::vector<path> target_paths = closure(automaton, seed_paths);
-      std::vector<std::size_t> source_slots;
+      std::vector<std::uint32_t> source_slots;
       source_slots.reserve(target_paths.size());
       for (const path& path : target_paths) {
         source_slots.push_back(seeds[path.origin].source_slot);
@@ -823,10 +823,10 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       }
     }
 
-    std::vector<std::size_t> parent(register_count);
+    std::vector<std::uint32_t> parent(register_count);
     std::ranges::copy(std::views::iota(std::size_t{0}, register_count),
                       parent.begin());
-    std::vector<std::vector<std::size_t>> members(register_count);
+    std::vector<std::vector<std::uint32_t>> members(register_count);
     for (std::size_t reg :
          std::views::iota(std::size_t{0}, register_count)) {
       members[reg].push_back(reg);
@@ -881,10 +881,10 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       }
     }
 
-    std::vector<std::size_t> renaming(register_count);
+    std::vector<std::uint32_t> renaming(register_count);
     if (allocate_registers) {
-      std::vector<std::size_t> compact(register_count,
-                                       std::numeric_limits<std::size_t>::max());
+      std::vector<std::uint32_t> compact(
+          register_count, std::numeric_limits<std::uint32_t>::max());
       std::ranges::copy(std::views::iota(std::size_t{0}, automaton.tag_count),
                         compact.begin());
       std::size_t next = automaton.tag_count;
@@ -892,7 +892,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
            std::views::iota(std::size_t{0}, register_count)) {
         const std::size_t representative = root(reg);
         if (compact[representative] ==
-            std::numeric_limits<std::size_t>::max()) {
+            std::numeric_limits<std::uint32_t>::max()) {
           compact[representative] = next++;
         }
         renaming[reg] = compact[representative];
