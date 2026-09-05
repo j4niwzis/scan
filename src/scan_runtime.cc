@@ -48,18 +48,11 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 }
 
 
-// The opposite request, for the entry that carries the scanning loop: inlined
-// into a caller it shares registers with everything alive there, and the loop
-// is encoded with the extended registers -- which is measurable, and which
-// changes when an unrelated function appears beside it. The recognition path
-// draws the same line at its entry.
-#if defined(_MSC_VER) && !defined(__clang__)
-#define SCAN_NEVER_INLINE __declspec(noinline)
-#elif defined(__GNUC__) || defined(__clang__)
-#define SCAN_NEVER_INLINE [[gnu::noinline]]
-#else
-#define SCAN_NEVER_INLINE
-#endif
+// Not inlining the entry that carries the loop is what the recognition path
+// does, and it was tried here: it made this slower, by about a tenth. The two
+// are not the same shape -- this one hands back a structure of views that the
+// caller takes apart field by field, and inlining that is worth more than the
+// registers the loop gives up. Measured, not assumed, and left as it was.
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #define SCAN_FORCE_INLINE_LAMBDA
@@ -277,7 +270,7 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
 
 template <class type, fixed_string format, unsigned char sentinel,
           std::size_t... index>
-[[nodiscard]] SCAN_NEVER_INLINE constexpr auto scan_fields(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
     const auto matched = tre::simulate(build_tnfa<type, format>(), input);
