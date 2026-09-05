@@ -827,56 +827,98 @@ template <class type, fixed_string format>
       std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
 }
 
-template <std::size_t field, class type, fixed_string format, class states_type,
-          std::size_t register_count, std::size_t command_count>
+// Following a reading instead of counting on the numbers.
+//
+// The machine stands in one state and in several readings of the input at once,
+// and the registers are how the readings are kept apart. A field's text cannot
+// be a piece of the subject here -- the subject is gone as it is read -- so it
+// is gathered as it arrives, one gathering per register that holds the opening
+// tag of that field. The gathering then goes where the register goes: a command
+// that copies a register copies it, a command that writes a fresh position
+// starts it again.
+//
+// Which register holds which tag, and which registers make up one reading, are
+// both said by the automaton. They used to be worked out by dividing a register
+// number by the number of tags, which was true of one way of handing registers
+// out and of nothing else.
+// Following a reading instead of counting on the numbers.
+//
+// The machine stands in one state and in several readings of the input at once,
+// and the registers are how the readings are kept apart. A field's text cannot
+// be a piece of the subject here -- the subject is gone as it is read -- so it
+// is gathered as it arrives, one gathering per register that holds the opening
+// tag of that field. The gathering goes where the register goes: a command that
+// copies a register copies it, a command that writes a fresh position starts it
+// again.
+//
+// The order is the whole of the correctness. The positions are written first,
+// then the gatherings are moved the way the positions moved, and only then does
+// the character go in -- so the character that opens a field is inside it and
+// the character that closes one is not, which is what the positions say once
+// they have been written and cannot be asked before.
+//
+// Which register holds which tag, and which registers make up one reading, are
+// both said by the automaton. They used to be worked out by dividing a register
+// number by the number of tags, which was true of one way of handing registers
+// out and of nothing else.
+template <std::size_t field, class type, fixed_string format, auto& automaton,
+          class states_type, std::size_t register_count,
+          std::size_t command_count>
 constexpr void advance_scanner(
-    char symbol, std::size_t tag_count,
+    char symbol, std::size_t state,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const states_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count) {
+  constexpr auto parameters =
+      field_parameters<format, boost::pfr::tuple_size_v<type>>();
+  constexpr std::size_t opening = field * 2;
+  constexpr std::size_t closing = field * 2 + 1;
   std::size_t command_index = 0;
   std::apply(
       [&](const auto&... command) {
         ([&] {
           if (command_index++ >= count ||
-              command.destination % tag_count != field * 2) {
+              automaton.register_tag[command.destination] != opening) {
             return;
           }
-          const std::size_t destination = command.destination / tag_count;
-          constexpr auto parameters =
-              field_parameters<format, boost::pfr::tuple_size_v<type>>();
-          auto value = scanner_begin<field_type<type, field>>(parameters[field]);
-          if (command.source != packed_command::no_source) {
-            const std::size_t source = command.source / tag_count;
-            value = std::get<field>(old_states[source]);
-            const auto begin = registers[source * tag_count + field * 2];
-            const auto end = registers[source * tag_count + field * 2 + 1];
-            if (begin >= 0 && begin > end) {
-              scanner_push<field_type<type, field>>(value, symbol);
-            }
+          if (command.source != packed_command::no_source &&
+              command.value == -2) {
+            std::get<field>(states[command.destination]) =
+                std::get<field>(old_states[command.source]);
+          } else {
+            std::get<field>(states[command.destination]) =
+                scanner_begin<field_type<type, field>>(parameters[field]);
           }
-          if (command.value != -2) {
-            value = scanner_begin<field_type<type, field>>(parameters[field]);
-          }
-          std::get<field>(states[destination]) = std::move(value);
         }(),
          ...);
       },
       commands);
+  // Once each, however many readings share it: a register is one gathering.
+  std::array<bool, register_count> filled{};
+  const auto& packed = automaton.states[state];
+  for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
+    const std::uint32_t open = packed.readings[reading][opening];
+    const std::uint32_t close = packed.readings[reading][closing];
+    if (filled[open]) continue;
+    if (registers[open] < 0 || registers[close] >= registers[open]) continue;
+    filled[open] = true;
+    scanner_push<field_type<type, field>>(std::get<field>(states[open]), symbol);
+  }
 }
 
-template <class type, fixed_string format, std::size_t register_count, class states_type,
+template <class type, fixed_string format, auto& automaton,
+          std::size_t register_count, class states_type,
           std::size_t command_count, std::size_t... field>
 constexpr void advance_scanners(
-    char symbol, std::size_t tag_count,
+    char symbol, std::size_t state,
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, std::index_sequence<field...>) {
   const states_type old_states = states;
-  (advance_scanner<field, type, format>(symbol, tag_count, registers, old_states,
-                                states, commands, count),
+  (advance_scanner<field, type, format, automaton>(
+       symbol, state, registers, old_states, states, commands, count),
    ...);
 }
 
@@ -891,6 +933,20 @@ template <class type, class state_type, std::size_t... index>
   return result;
 }
 
+// Each field taken from the gathering of the register that holds its opening
+// tag in the reading that accepted.
+template <class type, class reading_type, class states_type,
+          std::size_t... index>
+[[nodiscard]] constexpr type finish_reading(const reading_type& reading,
+                                            states_type& states,
+                                            std::index_sequence<index...>) {
+  type result{};
+  ((boost::pfr::get<index>(result) = scanner_finish<field_type<type, index>>(
+        std::move(std::get<index>(states[reading[index * 2]])))),
+   ...);
+  return result;
+}
+
 template <class type, fixed_string format>
 class stream_state {
  private:
@@ -898,8 +954,10 @@ class stream_state {
       streaming_automaton<type, format>;
   inline static constexpr std::size_t field_count =
       boost::pfr::tuple_size_v<type>;
-  inline static constexpr std::size_t slot_count =
-      automaton.register_count / automaton.tag_count;
+  // One gathering per register, because a gathering follows the register it
+  // belongs to and there is no arithmetic that says which registers go
+  // together.
+  inline static constexpr std::size_t slot_count = automaton.register_count;
   using field_states = decltype(make_scanner_state<type, format>());
 
  public:
@@ -922,12 +980,12 @@ class stream_state {
     if (state_ == packed_range<0>::reject) return false;
     const auto* transition = find_range(automaton.states[state_], static_cast<unsigned char>(symbol));
     if (transition == nullptr) return false;
-    advance_scanners<type, format>(
-        symbol, automaton.tag_count, registers_, scanner_states_,
-        transition->commands, transition->command_count,
-        std::make_index_sequence<field_count>{});
     execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
+    advance_scanners<type, format, automaton>(
+        symbol, transition->target, registers_, scanner_states_,
+        transition->commands, transition->command_count,
+        std::make_index_sequence<field_count>{});
     state_ = transition->target;
     return true;
   }
@@ -940,11 +998,10 @@ class stream_state {
     if (slot == packed_state<0, 0, 0>::not_accepting) {
       throw scan_error("input does not match scan expression");
     }
-    const std::size_t scanner_slot =
-        automaton.states[state_].final_commands.front().source /
-        automaton.tag_count;
-    return finish_scanners<type>(
-        std::move(scanner_states_[scanner_slot]),
+    // The reading that accepted says which register holds each field's opening
+    // tag, and that register holds its gathering.
+    return finish_reading<type>(
+        automaton.states[state_].readings[slot], scanner_states_,
         std::make_index_sequence<field_count>{});
   }
 
@@ -1034,11 +1091,15 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   std::optional<char> stopped;
   while (first != last) {
     const char symbol = static_cast<char>(*first);
-    ++first;
     if (!state.offer(symbol)) {
+      // Stop before stepping. Stepping is what reads the next character out of
+      // the stream, and one taken and not used is one lost -- the character
+      // that ended the match is already read and is handed back, and there is
+      // no reason to take another with it.
       stopped = symbol;
       break;
     }
+    ++first;
   }
   return {std::move(state).finish(), stopped};
 }

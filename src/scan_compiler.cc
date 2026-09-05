@@ -1100,6 +1100,10 @@ struct packed_shape {
   // walks all of them, so the shape of the table is most of what compiling a
   // pattern costs.
   std::size_t ranges = 0;
+  // The most readings any one state stands in at once. A machine that follows a
+  // reading rather than taking positions out at the end needs to be told which
+  // registers make each of them up.
+  std::size_t readings = 0;
   std::size_t registers = 0;
   std::size_t initial_commands = 0;
   std::size_t maximum_commands = 0;
@@ -1122,6 +1126,7 @@ struct packed_shape {
           std::max(shape.maximum_commands, transition.commands.size());
     }
     shape.ranges = std::max(shape.ranges, count_symbol_ranges(state));
+    shape.readings = std::max(shape.readings, state.readings.size());
   }
   return shape;
 }
@@ -1157,7 +1162,8 @@ struct packed_range {
 };
 
 template <std::size_t command_capacity, std::size_t final_command_capacity,
-          std::size_t range_capacity>
+          std::size_t range_capacity, std::size_t tag_capacity = 0,
+          std::size_t reading_capacity = 0>
 struct packed_state {
   static constexpr std::size_t not_accepting =
       std::numeric_limits<std::size_t>::max();
@@ -1166,6 +1172,11 @@ struct packed_state {
   std::size_t accepting_slot = not_accepting;
   std::size_t final_command_count = 0;
   std::array<packed_command, final_command_capacity> final_commands{};
+  // Which register holds which tag, in each reading this state stands in.
+  // Indexed the same way the accepting slot is.
+  std::size_t reading_count = 0;
+  std::array<std::array<std::uint32_t, tag_capacity>, reading_capacity>
+      readings{};
 };
 
 // The transition a symbol takes, or nothing at all. The ranges of a state are
@@ -1186,13 +1197,16 @@ template <class packed_state_type>
 template <std::size_t state_count, std::size_t register_extent,
           std::size_t initial_command_count, std::size_t command_count,
           std::size_t final_command_count, std::size_t tag_extent,
-          std::size_t range_count>
+          std::size_t range_count, std::size_t reading_count = 0>
 struct packed_tdfa {
   std::size_t initial = 0;
   std::array<packed_command, initial_command_count> initialize{};
-  std::array<packed_state<command_count, final_command_count, range_count>,
+  std::array<packed_state<command_count, final_command_count, range_count,
+                          tag_extent, reading_count>,
              state_count>
       states{};
+  // Which tag each register holds, said rather than worked out from the number.
+  std::array<std::uint32_t, register_extent> register_tag{};
   static constexpr std::size_t register_count = register_extent;
   static constexpr std::size_t tag_count = tag_extent;
 };
@@ -1235,20 +1249,33 @@ struct packed_captureless_tdfa {
 template <std::size_t state_count, std::size_t register_count,
           std::size_t initial_command_count, std::size_t command_count,
           std::size_t final_command_count, std::size_t tag_count,
-          std::size_t range_count>
+          std::size_t range_count, std::size_t reading_count = 0>
 [[nodiscard]] constexpr auto pack_tdfa_value(const scan::tre::tdfa& tdfa) {
   packed_tdfa<state_count, register_count, initial_command_count,
-              command_count, final_command_count, tag_count, range_count>
+              command_count, final_command_count, tag_count, range_count,
+              reading_count>
       packed;
   packed.initial = tdfa.initial;
+  for (std::size_t reg :
+       std::views::iota(std::size_t{0}, tdfa.register_tag.size())) {
+    packed.register_tag[reg] = tdfa.register_tag[reg];
+  }
   std::ranges::transform(tdfa.initialize, packed.initialize.begin(),
                          pack_command);
   for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
         const scan::tre::tdfa_state& source = tdfa.states[state_index];
         auto& target = packed.states[state_index];
         target.accepting_slot = source.accepting_slot.value_or(
-            packed_state<command_count, final_command_count,
-                         range_count>::not_accepting);
+            packed_state<command_count, final_command_count, range_count,
+                         tag_count, reading_count>::not_accepting);
+        target.reading_count = source.readings.size();
+        for (std::size_t reading :
+             std::views::iota(std::size_t{0}, source.readings.size())) {
+          for (std::size_t tag :
+               std::views::iota(std::size_t{0}, source.readings[reading].size())) {
+            target.readings[reading][tag] = source.readings[reading][tag];
+          }
+        }
         target.final_command_count = source.final_commands.size();
         std::ranges::transform(source.final_commands,
                                target.final_commands.begin(), pack_command);
@@ -1288,8 +1315,8 @@ template <class type, fixed_string format, bool allocate = true>
   constexpr packed_shape shape = compute_shape<type, format, allocate>();
   return pack_tdfa_value<shape.states, shape.registers,
                          shape.initial_commands, shape.maximum_commands,
-                         shape.maximum_final_commands, shape.tags,
-                         shape.ranges>(build_tdfa<type, format, allocate>());
+                         shape.maximum_final_commands, shape.tags, shape.ranges,
+                         shape.readings>(build_tdfa<type, format, allocate>());
 }
 
 template <class type, fixed_string format>

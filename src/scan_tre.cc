@@ -213,6 +213,13 @@ struct tdfa_state {
   std::vector<tdfa_transition> transitions;
   std::optional<std::size_t> accepting_slot;
   std::vector<register_command> final_commands;
+  // Which register holds which tag, for each of the readings this state is
+  // standing in at once. A deterministic tagged machine is in one state and
+  // several readings of the input, and the registers are how the readings are
+  // kept apart. Anything that has to follow a reading -- rather than take the
+  // positions out at the end -- needs to be told which registers make it up,
+  // and this is where it is told. Indexed the way the accepting slot is.
+  std::vector<std::vector<std::uint32_t>> readings;
 };
 
 struct tdfa {
@@ -221,6 +228,11 @@ struct tdfa {
   std::size_t register_count = 0;
   std::vector<register_command> initialize;
   std::vector<tdfa_state> states;
+  // Which tag each register holds. Every register is made for one tag and never
+  // holds another, and renaming keeps that true; guessing it from arithmetic on
+  // the number was a thing that happened to work under one way of handing them
+  // out.
+  std::vector<std::uint32_t> register_tag;
 };
 
 // Builds a deterministic tagged transducer. epsilon actions after a symbol are
@@ -588,7 +600,16 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
   // Registers 0..tags-1 are where a match leaves its answer. Everything the
   // automaton works with is allocated after them.
   std::size_t next_register = tags;
-  const auto fresh_register = [&] { return next_register++; };
+  // Every register is made for one tag, and is told so here rather than left to
+  // be worked out from its number afterwards.
+  std::vector<std::uint32_t> register_tag(tags);
+  for (tag_id tag = 0; tag < tags; ++tag) {
+    register_tag[tag] = static_cast<std::uint32_t>(tag);
+  }
+  const auto fresh_register = [&](tag_id tag) {
+    register_tag.push_back(static_cast<std::uint32_t>(tag));
+    return next_register++;
+  };
 
   // A value asked for twice is one register: the tag, the register the value
   // is built from, and what is appended to it.
@@ -621,7 +642,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       // nothing, and everything that runs one of these automata starts every
       // register holding nothing already: ten operations at the head of every
       // match said what was true before they ran.
-      entry.regs[tag] = static_cast<std::uint32_t>(fresh_register());
+      entry.regs[tag] = static_cast<std::uint32_t>(fresh_register(tag));
     }
     initial.push_back(std::move(entry));
   }
@@ -707,10 +728,14 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
     std::vector<state_id> key;
     key.reserve(entries.size());
     for (const configuration& entry : entries) key.push_back(entry.walk.state);
+    std::vector<std::vector<std::uint32_t>> readings;
+    readings.reserve(entries.size());
+    for (const configuration& entry : entries) readings.push_back(entry.regs);
     tdfa_state state{.nfa_states = std::move(key),
                      .transitions = {},
                      .accepting_slot = std::nullopt,
-                     .final_commands = {}};
+                     .final_commands = {},
+                     .readings = std::move(readings)};
     for (std::size_t index = 0; index < entries.size(); ++index) {
       if (entries[index].walk.state == automaton.final &&
           !state.accepting_slot.has_value()) {
@@ -842,7 +867,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
             }
           }
           if (!known) {
-            reg = fresh_register();
+            reg = fresh_register(tag);
             allocated.push_back(interned{
                 .tag = tag, .source = from, .values = values, .reg = reg});
             operations.push_back(register_command{
@@ -861,6 +886,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
     }
   }
   result.register_count = next_register;
+  result.register_tag = std::move(register_tag);
   return result;
 }
 
@@ -1050,6 +1076,13 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
         renaming[reg] = compact[representative];
       }
       automaton.register_count = next;
+      // Renaming moves a register's number and never what it holds, so the
+      // table that says which tag it holds moves with it.
+      std::vector<std::uint32_t> moved(next);
+      for (std::size_t reg : std::views::iota(std::size_t{0}, register_count)) {
+        moved[renaming[reg]] = automaton.register_tag[reg];
+      }
+      automaton.register_tag = std::move(moved);
     } else {
       std::ranges::copy(std::views::iota(std::size_t{0}, register_count),
                         renaming.begin());
@@ -1085,6 +1118,9 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       rename_commands(state.final_commands);
       for (tdfa_transition& transition : state.transitions) {
         rename_commands(transition.commands);
+      }
+      for (std::vector<std::uint32_t>& reading : state.readings) {
+        for (std::uint32_t& reg : reading) reg = renaming[reg];
       }
     }
   };
