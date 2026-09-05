@@ -2,8 +2,15 @@
 // subject rather than only recognised.
 //
 // All three engines take the fields out here. re2c does it with tags -- `@name`
-// binds the position where it stands -- so the comparison is between three
-// pieces of code doing the same work, not between extraction and recognition.
+// binds the position where it stands -- so this compares three pieces of code
+// doing the same work, rather than extraction against recognition.
+//
+// This library appears twice, because the two rows are different work. Into
+// `string_view`, the fields are positions in the subject and nothing is
+// allocated, which is what a contiguous input allows and what the other two
+// engines do. Into `string`, each field is a copy -- which is not waste but the
+// only thing possible when the input is a range that is read once and cannot be
+// pointed into afterwards.
 #include <benchmark/benchmark.h>
 #include <ctre.hpp>
 
@@ -16,10 +23,7 @@ import scan;
 
 bool re2c_captures(const char* cursor, const char** positions);
 
-// Views, not strings: re2c hands back positions and ctre hands back views, so
-// a row that copied each field into a string would be timing allocation and
-// calling it matching.
-struct fields {
+struct field_views {
   std::string_view first;
   std::string_view second;
   std::string_view third;
@@ -27,18 +31,43 @@ struct fields {
   std::string_view fifth;
 };
 
-static void scan_captures(benchmark::State& state) {
+struct field_strings {
+  std::string first;
+  std::string second;
+  std::string third;
+  std::string fourth;
+  std::string fifth;
+};
+
+static void scan_captures_views(benchmark::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view));
+      field_views value =
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view);
+      benchmark::DoNotOptimize(value);
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
 }
-BENCHMARK(scan_captures);
+BENCHMARK(scan_captures_views);
+
+static void scan_captures_strings(benchmark::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      benchmark::DoNotOptimize(view);
+      field_strings value =
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view);
+      benchmark::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
+}
+BENCHMARK(scan_captures_strings);
 
 static void ctre_captures(benchmark::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
@@ -46,7 +75,9 @@ static void ctre_captures(benchmark::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       benchmark::DoNotOptimize(view);
-      benchmark::DoNotOptimize(ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(view));
+      auto value =
+          ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(view);
+      benchmark::DoNotOptimize(value);
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
