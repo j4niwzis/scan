@@ -822,14 +822,12 @@ template <fixed_string pattern>
           const auto& source = tdfa.states[state_index];
           packed.accepting[state_index] = source.accepting_slot.has_value();
           for (const tre::tdfa_transition& transition : source.transitions) {
-                for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256}) |
-                        std::views::filter([&](std::size_t symbol) {
-                          return transition.symbols.test(symbol);
-                        })) {
-                      packed.transitions[state_index][symbol] =
-                          static_cast<typename decltype(packed)::state_type>(
-                              transition.target);
-                    }
+            for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+              if (!transition.symbols.test(symbol)) continue;
+              packed.transitions[state_index][symbol] =
+                  static_cast<typename decltype(packed)::state_type>(
+                      transition.target);
+            }
               }
         }
     return packed;

@@ -812,17 +812,14 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
 
     std::vector<std::vector<char>> interference(
         register_count, std::vector<char>(register_count));
+    // Plain loops with a test in the body, and no filter view: the predicate
+    // of one is a temporary of the range expression, and reading it back
+    // during constant evaluation is where this stopped being a constant.
     for (const std::vector<char>& state_live : live) {
-      for (std::size_t lhs :
-           std::views::iota(std::size_t{0}, register_count) |
-               std::views::filter([&](std::size_t reg) {
-                 return state_live[reg];
-               })) {
-        for (std::size_t rhs :
-             std::views::iota(lhs + 1, register_count) |
-                 std::views::filter([&](std::size_t reg) {
-                   return state_live[reg];
-                 })) {
+      for (std::size_t lhs = 0; lhs < register_count; ++lhs) {
+        if (!state_live[lhs]) continue;
+        for (std::size_t rhs = lhs + 1; rhs < register_count; ++rhs) {
+          if (!state_live[rhs]) continue;
           interference[lhs][rhs] = true;
           interference[rhs][lhs] = true;
         }
