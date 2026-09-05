@@ -183,10 +183,18 @@ if(SCAN_BUILD_BENCHMARKS)
       PRIVATE scan bench_harness bench_inputs ctre_module
               benchmark::benchmark_main)
     target_compile_options(${name}_benchmark PRIVATE $<$<CONFIG:Release>:-O3>)
-    if(SCAN_BYTECODE_CONSTANT_INTERPRETER)
-      target_compile_options(${name}_benchmark PRIVATE
-        $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
-    endif()
+    # And not the bytecode interpreter, whatever the option says.
+    #
+    # A benchmark imports this library, which is built against the `std`
+    # module, and also the harness and the other engine, which are modules
+    # wrapping their own headers. Two views of the standard library reach the
+    # translation unit that way, and the interpreter then reads values made
+    # inside a module as uninitialised -- every pattern in the file stops being
+    # a constant expression. Nothing here can arrange otherwise: those headers
+    # are what those libraries are.
+    #
+    # It costs nothing measured. Which evaluator compiles a pattern decides how
+    # long the compilation takes, not what runs afterwards.
   endfunction()
 
   # Recognition: the whole input, matched and not taken apart.
