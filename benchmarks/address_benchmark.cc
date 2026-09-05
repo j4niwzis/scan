@@ -7,6 +7,8 @@
 #include <benchmark/benchmark.h>
 #include <ctre.hpp>
 
+#include <string>
+
 #include "inputs.hpp"
 
 import scan;
@@ -14,25 +16,36 @@ import scan;
 bool re2c_address(const char* cursor);
 
 static void scan_address(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::address);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(bench::address));
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::address.size());
 }
 BENCHMARK(scan_address);
 
 static void ctre_address(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::address);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(bench::address));
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?">(view));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::address.size());
 }
 BENCHMARK(ctre_address);
 
 static void re2c_address_benchmark(benchmark::State& state) {
-  static const std::string subject(bench::address);
+  const std::string& text = bench::subject_of(bench::address);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(re2c_address(subject.c_str()));
+    const char* cursor = text.c_str();
+    benchmark::DoNotOptimize(cursor);
+    benchmark::DoNotOptimize(re2c_address(cursor));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::address.size());
 }

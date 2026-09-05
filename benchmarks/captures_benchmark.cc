@@ -23,20 +23,24 @@ struct fields {
 };
 
 static void scan_captures(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::csv);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(
-        scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
-            bench::csv));
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::csv.size());
 }
 BENCHMARK(scan_captures);
 
 static void ctre_captures(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::csv);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(
-        ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(
-            bench::csv));
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(view));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::csv.size());
 }

@@ -7,6 +7,8 @@
 #include <benchmark/benchmark.h>
 #include <ctre.hpp>
 
+#include <string>
+
 #include "inputs.hpp"
 
 import scan;
@@ -14,25 +16,36 @@ import scan;
 bool re2c_csv(const char* cursor);
 
 static void scan_csv(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::csv);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(bench::csv));
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::csv.size());
 }
 BENCHMARK(scan_csv);
 
 static void ctre_csv(benchmark::State& state) {
+  const std::string& text = bench::subject_of(bench::csv);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(bench::csv));
+    std::string_view view(text);
+    benchmark::DoNotOptimize(view);
+    benchmark::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::csv.size());
 }
 BENCHMARK(ctre_csv);
 
 static void re2c_csv_benchmark(benchmark::State& state) {
-  static const std::string subject(bench::csv);
+  const std::string& text = bench::subject_of(bench::csv);
   for (auto _ : state) {
-    benchmark::DoNotOptimize(re2c_csv(subject.c_str()));
+    const char* cursor = text.c_str();
+    benchmark::DoNotOptimize(cursor);
+    benchmark::DoNotOptimize(re2c_csv(cursor));
+    benchmark::ClobberMemory();
   }
   state.SetBytesProcessed(state.iterations() * bench::csv.size());
 }
