@@ -958,7 +958,13 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
   [&]<std::size_t... place>(std::index_sequence<place...>) {
     const auto one = [&]<std::size_t which>() {
       copy_until_kept_place(made, text, position);
-      if (position == text.size()) throw "format has fewer places than values";
+      // A place can hold another, and the one inside is a value of its own:
+      // `{{[a]+}}` is a group around a group, two values, one place at this
+      // level. The body is copied as it stands, so the places within it are
+      // still groups when the pattern is read, and the values they take are
+      // the ones this walk has no place left for. Running out here is that,
+      // and not a format with too little in it.
+      if (position == text.size()) return;
       const std::size_t close = end_of_place(text, position);
       using kind = typename place_chosen<type, within, which>::kind;
       std::string_view repetition;
