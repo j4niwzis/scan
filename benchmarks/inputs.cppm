@@ -31,11 +31,20 @@ inline const std::string& long_word(std::size_t length = 4096) {
 
 // Copies of the same subject at different addresses, so that a batch of calls
 // in one iteration cannot be answered once and reused.
+//
+// Kept per subject and not only per count: two rows in one file asking for the
+// same number of copies of different text would otherwise be handed whichever
+// text asked first, and would measure it instead of their own.
 inline const std::vector<std::string>& copies_of(std::string_view text,
                                                  std::size_t count) {
-  static std::vector<std::string> storage;
-  if (storage.size() != count) storage.assign(count, std::string(text));
-  return storage;
+  static std::map<std::pair<std::string, std::size_t>, std::vector<std::string>>
+      storage;
+  auto key = std::pair(std::string(text), count);
+  const auto position = storage.find(key);
+  if (position != storage.end()) return position->second;
+  return storage.emplace(std::move(key),
+                         std::vector<std::string>(count, std::string(text)))
+      .first->second;
 }
 
 }  // namespace bench
