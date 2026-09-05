@@ -23,14 +23,9 @@ import scan;
 
 bool re2c_captures(const char* cursor, const char** positions);
 
-struct field_views {
-  std::string_view first;
-  std::string_view second;
-  std::string_view third;
-  std::string_view fourth;
-  std::string_view fifth;
-};
-
+// Fields as views into the subject would allocate nothing, which is what the
+// other two engines do -- but asking for them does not compile today, so this
+// row is on hold until it does. See the note below the string row.
 struct field_strings {
   std::string first;
   std::string second;
@@ -39,20 +34,7 @@ struct field_strings {
   std::string fifth;
 };
 
-static void scan_captures_views(benchmark::State& state) {
-  const auto& texts = bench::copies_of(bench::csv, 32);
-  for (auto _ : state) {
-    for (const std::string& text : texts) {
-      std::string_view view(text);
-      benchmark::DoNotOptimize(view);
-      field_views value =
-          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(view);
-      benchmark::DoNotOptimize(value);
-    }
-  }
-  state.SetBytesProcessed(state.iterations() * texts.size() * bench::csv.size());
-}
-BENCHMARK(scan_captures_views);
+
 
 static void scan_captures_strings(benchmark::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
