@@ -36,17 +36,15 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
     std::ptrdiff_t position) {
   std::array<std::ptrdiff_t, command_count> source_values{};
   std::size_t index = 0;
-  std::ranges::for_each(commands | std::views::take(count),
-                        [&](const packed_command& command) {
+  for (const packed_command& command : commands | std::views::take(count)) {
     source_values[index++] = command.source == packed_command::no_source
                                  ? tre::negative_tag
                                  : registers[command.source];
-  });
+  }
   index = 0;
-  std::ranges::for_each(commands | std::views::take(count),
-                        [&](const packed_command& command) {
+  for (const packed_command& command : commands | std::views::take(count)) {
     execute_command(command, source_values[index++], registers, position);
-  });
+  }
 }
 
 template <class type, fixed_string format, std::size_t... index>
@@ -75,22 +73,20 @@ template <class type, fixed_string format, std::size_t... index>
     execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                      0);
     std::size_t state = automaton.initial;
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, input.size()),
-        [&](std::size_t position) {
-          if (state == packed_range<0>::reject) return;
+    for (std::size_t position : std::views::iota(std::size_t{0}, input.size())) {
+          if (state == packed_range<0>::reject) continue;
           const auto* transition = find_range(
               automaton.states[state],
               static_cast<unsigned char>(input[position]));
           if (transition == nullptr) {
             state = packed_range<0>::reject;
-            return;
+            continue;
           }
           execute_commands(transition->commands, transition->command_count,
                            registers,
                            static_cast<std::ptrdiff_t>(position + 1));
           state = transition->target;
-        });
+        }
     if (state == packed_range<0>::reject) {
       throw scan_error("input does not match scan expression");
     }
@@ -271,8 +267,7 @@ class stream_state {
 template <class type, fixed_string format, std::ranges::input_range range_type>
 [[nodiscard]] constexpr type scan_stream(range_type&& input) {
   stream_state<type, format> state;
-  std::ranges::for_each(input,
-                        [&](char symbol) { state.push(symbol); });
+  for (char symbol : input) { state.push(symbol); }
   return std::move(state).finish();
 }
 

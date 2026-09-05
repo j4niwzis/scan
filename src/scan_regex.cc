@@ -108,23 +108,21 @@ template <fixed_string pattern, std::size_t state>
   constexpr const auto& automaton = regex_automaton<pattern>;
   using state_type = typename std::remove_cvref_t<decltype(automaton)>::state_type;
   transition_ranges<state_type> result;
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, std::size_t{256}),
-      [&](std::size_t symbol) {
+  for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256})) {
         const state_type target = automaton.transitions[state][symbol];
-        if (target == std::remove_cvref_t<decltype(automaton)>::reject) return;
+        if (target == std::remove_cvref_t<decltype(automaton)>::reject) continue;
         if (result.size != 0 &&
             result.values[result.size - 1].target == target &&
             result.values[result.size - 1].last + 1 == symbol) {
           result.values[result.size - 1].last =
               static_cast<unsigned char>(symbol);
-          return;
+          continue;
         }
         result.values[result.size++] = {
             .first = static_cast<unsigned char>(symbol),
             .last = static_cast<unsigned char>(symbol),
             .target = target};
-      });
+      }
   return result;
 }
 
@@ -143,28 +141,23 @@ template <fixed_string pattern>
   std::array<std::size_t, state_count> distance{};
   std::ranges::fill(distance, unreachable);
   distance[automaton.initial] = 0;
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, state_count), [&](std::size_t) {
-        std::ranges::for_each(
-            std::views::iota(std::size_t{0}, state_count),
-            [&](std::size_t source) {
-              if (distance[source] == unreachable) return;
-              std::ranges::for_each(
-                  automaton.transitions[source], [&](auto target) {
-                    if (target == std::remove_cvref_t<
-                                      decltype(automaton)>::reject)
-                      return;
-                    distance[target] = std::min(distance[target],
-                                                distance[source] + 1);
-                  });
-            });
-      });
+  // As many rounds as there are states: a shortest path visits each at most
+  // once, so this is the distance to every state by then.
+  for (std::size_t round = 0; round < state_count; ++round) {
+    for (std::size_t source = 0; source < state_count; ++source) {
+      if (distance[source] == unreachable) continue;
+      for (const auto target : automaton.transitions[source]) {
+        if (target == std::remove_cvref_t<decltype(automaton)>::reject) continue;
+        distance[target] = std::min(distance[target], distance[source] + 1);
+      }
+    }
+  }
   auto result = unreachable;
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, state_count), [&](std::size_t state) {
-        if (automaton.accepting[state])
-          result = std::min(result, distance[state]);
-      });
+  for (std::size_t state = 0; state < state_count; ++state) {
+    if (automaton.accepting[state]) {
+      result = std::min(result, distance[state]);
+    }
+  }
   return result;
 }
 
@@ -450,21 +443,19 @@ regex_match(
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, 0);
     std::size_t state = automaton.initial;
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, input.size()),
-        [&](std::size_t position) {
-          if (state == packed_range<0>::reject) return;
+    for (std::size_t position : std::views::iota(std::size_t{0}, input.size())) {
+          if (state == packed_range<0>::reject) continue;
           const auto* found = find_range(
               automaton.states[state],
               static_cast<unsigned char>(input[position]));
           if (found == nullptr) {
             state = packed_range<0>::reject;
-            return;
+            continue;
           }
           execute_commands(found->commands, found->command_count, registers,
                            static_cast<std::ptrdiff_t>(position + 1));
           state = found->target;
-        });
+        }
     if (state == packed_range<0>::reject) return {};
     const std::size_t slot = automaton.states[state].accepting_slot;
     if (slot == packed_state<0, 0, 0>::not_accepting) return {};
@@ -473,18 +464,16 @@ regex_match(
                      static_cast<std::ptrdiff_t>(input.size()));
 
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, automaton.tag_count / 2),
-        [&](std::size_t capture) {
+    for (std::size_t capture : std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
           const auto begin =
               registers[capture * 2];
           const auto end =
               registers[capture * 2 + 1];
-          if (begin < 0 || end < begin) return;
+          if (begin < 0 || end < begin) continue;
           captures[capture] = regex_submatch(input.substr(
               static_cast<std::size_t>(begin),
               static_cast<std::size_t>(end - begin)));
-        });
+        }
     return {regex_submatch(input), captures};
   }
 }
@@ -508,32 +497,26 @@ template <fixed_string pattern>
 [[nodiscard]] constexpr regex_result_for<pattern> regex_starts_with(
     std::string_view input) {
   regex_result_for<pattern> result;
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, input.size() + 1) |
-          std::views::reverse,
-      [&](std::size_t size) {
+  for (std::size_t size : std::views::iota(std::size_t{0}, input.size() + 1) |
+          std::views::reverse) {
         if (!result) result = regex_match<pattern>(input.substr(0, size));
-      });
+      }
   return result;
 }
 
 template <fixed_string pattern>
 [[nodiscard]] constexpr regex_result_for<pattern> regex_search(std::string_view input) {
   regex_result_for<pattern> result;
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, input.size() + 1),
-      [&](std::size_t begin) {
-        if (result) return;
-        std::ranges::for_each(
-            std::views::iota(begin, input.size() + 1) |
-                std::views::reverse,
-            [&](std::size_t end) {
+  for (std::size_t begin : std::views::iota(std::size_t{0}, input.size() + 1)) {
+        if (result) continue;
+        for (std::size_t end : std::views::iota(begin, input.size() + 1) |
+                std::views::reverse) {
               if (!result) {
                 result = regex_match<pattern>(
                     input.substr(begin, end - begin));
               }
-            });
-      });
+            }
+      }
   return result;
 }
 

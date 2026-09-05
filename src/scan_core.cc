@@ -115,8 +115,7 @@ struct pattern_buffer {
   }
 
   constexpr void append(std::string_view value) {
-    std::ranges::for_each(value,
-                          [&](char symbol) { push_back(symbol); });
+    for (char symbol : value) { push_back(symbol); }
   }
 
   [[nodiscard]] constexpr std::string_view view() const noexcept {

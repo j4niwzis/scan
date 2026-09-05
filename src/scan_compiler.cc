@@ -252,10 +252,8 @@ class tre_parser {
     const auto begin = static_cast<unsigned char>(first);
     const auto end = static_cast<unsigned char>(last);
     if (begin > end) throw "reversed character class range";
-    std::ranges::for_each(
-        std::views::iota(static_cast<unsigned>(begin),
-                         static_cast<unsigned>(end) + 1),
-        [&](unsigned value) { symbols[value] = true; });
+    for (unsigned value : std::views::iota(static_cast<unsigned>(begin),
+                         static_cast<unsigned>(end) + 1)) { symbols[value] = true; }
   }
 
   [[nodiscard]] static constexpr std::array<bool, 256> range_bits(char first,
@@ -271,9 +269,9 @@ class tre_parser {
 
   [[nodiscard]] static constexpr tre::node make_set(std::string_view set) {
     std::array<bool, 256> symbols{};
-    std::ranges::for_each(set, [&](char value) {
+    for (char value : set) {
       symbols[static_cast<unsigned char>(value)] = true;
-    });
+    }
     return tre::character_class(symbols);
   }
 
@@ -573,17 +571,13 @@ template <fixed_string pattern>
   constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
   std::array<std::size_t, 256> result{};
   std::ranges::fill(result, none);
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, state.transitions.size()),
-      [&](std::size_t index) {
-        std::ranges::for_each(
-            std::views::iota(std::size_t{0}, std::size_t{256}),
-            [&](std::size_t symbol) {
+  for (std::size_t index : std::views::iota(std::size_t{0}, state.transitions.size())) {
+        for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256})) {
               if (state.transitions[index].symbols.test(symbol)) {
                 result[symbol] = index;
               }
-            });
-      });
+            }
+      }
   return result;
 }
 
@@ -594,11 +588,11 @@ template <fixed_string pattern>
   std::size_t count = 0;
   std::size_t previous = none;
   bool started = false;
-  std::ranges::for_each(owner, [&](std::size_t index) {
+  for (std::size_t index : owner) {
     if (index != none && (!started || index != previous)) ++count;
     started = true;
     previous = index;
-  });
+  }
   return count;
 }
 
@@ -627,16 +621,15 @@ struct packed_shape {
                      .maximum_commands = 0,
                      .maximum_final_commands = 0,
                      .tags = tdfa.tag_count};
-  std::ranges::for_each(tdfa.states, [&](const tre::tdfa_state& state) {
+  for (const tre::tdfa_state& state : tdfa.states) {
     shape.maximum_final_commands =
         std::max(shape.maximum_final_commands, state.final_commands.size());
-    std::ranges::for_each(state.transitions,
-                          [&](const tre::tdfa_transition& transition) {
+    for (const tre::tdfa_transition& transition : state.transitions) {
       shape.maximum_commands =
           std::max(shape.maximum_commands, transition.commands.size());
-    });
+    }
     shape.ranges = std::max(shape.ranges, count_symbol_ranges(state));
-  });
+  }
   return shape;
 }
 
@@ -757,9 +750,7 @@ template <std::size_t state_count, std::size_t register_count,
   packed.initial = tdfa.initial;
   std::ranges::transform(tdfa.initialize, packed.initialize.begin(),
                          pack_command);
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, tdfa.states.size()),
-      [&](std::size_t state_index) {
+  for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
         const tre::tdfa_state& source = tdfa.states[state_index];
         auto& target = packed.states[state_index];
         target.accepting_slot = source.accepting_slot.value_or(
@@ -773,18 +764,16 @@ template <std::size_t state_count, std::size_t register_count,
         const std::array<std::size_t, 256> owner =
             transition_of_symbol(source);
         std::size_t previous = none;
-        std::ranges::for_each(
-            std::views::iota(std::size_t{0}, std::size_t{256}),
-            [&](std::size_t symbol) {
+        for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256})) {
               const std::size_t index = owner[symbol];
               if (index == none) {
                 previous = none;
-                return;
+                continue;
               }
               if (index == previous) {
                 target.ranges[target.range_count - 1].last =
                     static_cast<unsigned char>(symbol);
-                return;
+                continue;
               }
               const tre::tdfa_transition& transition =
                   source.transitions[index];
@@ -796,8 +785,8 @@ template <std::size_t state_count, std::size_t register_count,
               std::ranges::transform(transition.commands,
                                      range.commands.begin(), pack_command);
               previous = index;
-            });
-      });
+            }
+      }
   return packed;
 }
 
@@ -826,28 +815,23 @@ template <fixed_string pattern>
     packed_captureless_tdfa<shape.states> packed;
     packed.initial = static_cast<typename decltype(packed)::state_type>(
         tdfa.initial);
-    std::ranges::for_each(packed.transitions, [](auto& transitions) {
+    for (auto& transitions : packed.transitions) {
       std::ranges::fill(transitions, decltype(packed)::reject);
-    });
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, tdfa.states.size()),
-        [&](std::size_t state_index) {
+    }
+    for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
           const auto& source = tdfa.states[state_index];
           packed.accepting[state_index] = source.accepting_slot.has_value();
-          std::ranges::for_each(
-              source.transitions, [&](const tre::tdfa_transition& transition) {
-                std::ranges::for_each(
-                    std::views::iota(std::size_t{0}, std::size_t{256}) |
+          for (const tre::tdfa_transition& transition : source.transitions) {
+                for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256}) |
                         std::views::filter([&](std::size_t symbol) {
                           return transition.symbols.test(symbol);
-                        }),
-                    [&](std::size_t symbol) {
+                        })) {
                       packed.transitions[state_index][symbol] =
                           static_cast<typename decltype(packed)::state_type>(
                               transition.target);
-                    });
-              });
-        });
+                    }
+              }
+        }
     return packed;
   } else {
     return pack_tdfa_value<shape.states, shape.registers,

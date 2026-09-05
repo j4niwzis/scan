@@ -89,18 +89,16 @@ struct format_details {
                               size);
     };
     format_details result{};
-    std::ranges::for_each(
-        text | std::views::split(':') |
+    for (const auto& chunk : text | std::views::split(':') |
             std::views::transform(to_string_view) | views::static_chunk<2> |
-            std::views::take(1),
-        [&](const auto& chunk) {
+            std::views::take(1)) {
           const auto [name, parameters] = chunk.as_ptr_tuple();
           result = {.name = *name,
                     .parameters =
                         parameters
                             ? std::optional<std::string_view>(*parameters)
                             : std::nullopt};
-        });
+        }
     return result;
   }
 

@@ -543,7 +543,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
   std::vector<configuration> active = close(
       {{automaton.initial, std::vector<tag_history>(automaton.tag_count)}}, 0);
   std::size_t position = 0;
-  std::ranges::for_each(input, [&](char symbol) {
+  for (char symbol : input) {
     std::vector<configuration> next;
     for (const auto& item : active) {
       for (const auto& edge : automaton.transitions[item.state]) {
@@ -560,7 +560,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
       }
     }
     active = close(std::move(next), ++position);
-  });
+  }
   for (auto& item : active) {
     if (item.state == automaton.final) {
       return {.matched = true, .tags = std::move(item.tags)};
@@ -600,16 +600,14 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
       }
     }
     if (state.accepting_slot) {
-      std::ranges::for_each(
-          std::views::iota(std::size_t{0}, automaton.tag_count),
-          [&](std::size_t tag) {
+      for (std::size_t tag : std::views::iota(std::size_t{0}, automaton.tag_count)) {
             state.final_commands.push_back(register_command{
                 .destination = tag,
                 .source = automaton.tag_count +
                           register_index(*state.accepting_slot, tag,
                                          automaton.tag_count),
                 .values = {}});
-          });
+          }
     }
     result.states.push_back(std::move(state));
     pending.push_back(id);
@@ -651,9 +649,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
     };
     std::vector<char> representatives;
     std::vector<symbol_set> symbol_classes;
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, std::size_t{256}),
-        [&](std::size_t value) {
+    for (std::size_t value : std::views::iota(std::size_t{0}, std::size_t{256})) {
           const char symbol = static_cast<char>(value);
           const bool active = std::ranges::any_of(
               source_states, [&](state_id state) {
@@ -662,7 +658,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
                       return edge_matches(edge, symbol);
                     });
               });
-          if (!active) return;
+          if (!active) continue;
           const auto found = std::ranges::find_if(
               representatives,
               [&](char representative) { return equivalent(symbol, representative); });
@@ -675,10 +671,8 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
                 std::ranges::distance(representatives.begin(), found));
             symbol_classes[index].set(value);
           }
-        });
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, representatives.size()),
-        [&](std::size_t class_index) {
+        }
+    for (std::size_t class_index : std::views::iota(std::size_t{0}, representatives.size())) {
       const char symbol = representatives[class_index];
       struct seed {
         path path;
@@ -740,7 +734,7 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
         }
       }
       result.states[current_state].transitions.push_back(std::move(transition));
-    });
+    }
   }
   return result;
 }

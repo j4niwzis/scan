@@ -20,9 +20,9 @@ struct conversion_spec {
                       });
   const auto width_length = static_cast<std::size_t>(std::ranges::distance(digits));
   std::size_t width = 0;
-  std::ranges::for_each(parameters.substr(0, width_length), [&](char value) {
+  for (char value : parameters.substr(0, width_length)) {
     width = width * 10 + static_cast<std::size_t>(value - '0');
-  });
+  }
   if (width_length != 0 && width == 0) throw "scan width must be positive";
   return {.width = width, .conversion = parameters.substr(width_length)};
 }
@@ -524,8 +524,7 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr auto parse(this const auto& self,
                                      std::string_view input) {
     auto state = self.begin();
-    std::ranges::for_each(input,
-                          [&](char value) { self.push(state, value); });
+    for (char value : input) { self.push(state, value); }
     return self.finish(std::move(state));
   }
 };
