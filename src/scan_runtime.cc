@@ -572,6 +572,88 @@ template <auto& automaton, unsigned char sentinel, bool in_words,
 // Where the states lead back into one another the request cannot be granted,
 // and is not: the compiler says so and carries on with a call, which is what a
 // pattern that loops has to pay anyway.
+// How much of the input the pattern takes, and nothing else about it.
+//
+// The walk that reads the fields is anchored: it answers whether the whole
+// subject is the pattern. Asking how much of the subject the pattern takes is a
+// different question and is asked here, by a walk that carries no registers,
+// writes nothing and remembers only the furthest place the machine stood in a
+// state that would have accepted. It is the same automaton and the same runs
+// read in words and vectors; it is a good deal less code because there is
+// nothing to record.
+//
+// Two passes over the head of the input, then -- one to find where it ends and
+// one to read the fields out of it. That is the price of not disturbing the
+// anchored walk, which is the one every other call goes through.
+template <auto& automaton, std::size_t state>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool stays_here(unsigned char symbol) {
+  constexpr const auto& packed = automaton.states[state];
+  return [&]<std::size_t... index>(std::index_sequence<index...>) {
+    return (false || ... ||
+            (packed.ranges[index].target == state &&
+             symbol >= packed.ranges[index].first &&
+             symbol <= packed.ranges[index].last));
+  }(std::make_index_sequence<packed.range_count>{});
+}
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] constexpr const char* run_prefix_continuation(
+    const char* cursor, const char* end, const char* best);
+
+template <auto& automaton, std::size_t state, std::size_t index = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr const char* dispatch_prefix(
+    unsigned char symbol, const char* cursor, const char* end,
+    const char* best) {
+  constexpr const auto& packed = automaton.states[state];
+  if constexpr (index == packed.range_count) {
+    return best;
+  } else if constexpr (packed.ranges[index].target == state) {
+    return dispatch_prefix<automaton, state, index + 1>(symbol, cursor, end,
+                                                        best);
+  } else {
+    constexpr const auto& range = packed.ranges[index];
+    if (symbol >= range.first && symbol <= range.last) {
+      [[clang::always_inline]] return run_prefix_continuation<
+          automaton, range.target>(cursor, end, best);
+    }
+    return dispatch_prefix<automaton, state, index + 1>(symbol, cursor, end,
+                                                        best);
+  }
+}
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] constexpr const char* run_prefix_continuation(
+    const char* cursor, const char* end, const char* best) {
+  if constexpr (runs_in_place<automaton, state>()) {
+    cursor = skip_class<staying_of<automaton, state>()>(cursor, end);
+  }
+  while (cursor != end &&
+         stays_here<automaton, state>(static_cast<unsigned char>(*cursor))) {
+    ++cursor;
+  }
+  // Standing in a state that accepts, the furthest place reached in it is the
+  // furthest the pattern has taken so far. Inside a run nothing changes but the
+  // cursor, so this is asked once when the run ends and not once a character.
+  if constexpr (automaton.states[state].accepting_slot !=
+                packed_state<0, 0, 0>::not_accepting) {
+    best = cursor;
+  }
+  if (cursor == end) return best;
+  return dispatch_prefix<automaton, state>(static_cast<unsigned char>(*cursor),
+                                           cursor + 1, end, best);
+}
+
+template <class type, fixed_string format>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view taken_prefix(
+    std::string_view input) {
+  constexpr const auto& automaton = packed_automaton<type, format>;
+  const char* const begin = input.data();
+  const char* const best = run_prefix_continuation<automaton, automaton.initial>(
+      begin, begin + input.size(), nullptr);
+  if (best == nullptr) throw scan_error("input does not begin with the pattern");
+  return std::string_view(begin, static_cast<std::size_t>(best - begin));
+}
+
 template <class type, fixed_string format, int sentinel, bool terminated,
           bool absent_is_empty, std::size_t... index>
 [[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(

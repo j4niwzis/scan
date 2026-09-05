@@ -216,6 +216,54 @@ template <fixed_string format, int sentinel = 0,
       std::ranges::data(input), std::ranges::size(input)));
 }
 
+// What a scan of the head of an input hands back: the values, and what is left.
+template <class type>
+struct taken {
+  type value;
+  std::string_view rest;
+};
+
+// The head of an input, and what follows it.
+//
+// The output type has to be named, and named here rather than deduced from
+// somewhere: how much of the input the pattern takes depends on the automaton,
+// the automaton depends on the format, and a place written `{}` takes its
+// pattern from the type of the value it stands for. There is nothing to work
+// out until the type is said.
+//
+// Assigning it to something is the ordinary scan of the head, with the rest
+// thrown away; `take` hands back both.
+template <fixed_string format>
+class prefix_scan {
+ public:
+  constexpr explicit prefix_scan(std::string_view input) : input_(input) {}
+
+  template <class type>
+  [[nodiscard]] constexpr taken<type> take() const {
+    const std::string_view head = detail::taken_prefix<type, format>(input_);
+    // By length, always: the head is a piece of the middle of something, and
+    // whatever terminator the whole input carried is not behind it.
+    return {detail::borrowed_result<format>(head), input_.substr(head.size())};
+  }
+
+  template <class type>
+    requires std::is_aggregate_v<type> || detail::scanned_as_variant<type>
+  constexpr operator type() const {
+    return take<type>().value;
+  }
+
+ private:
+  std::string_view input_;
+};
+
+// The head of the input that the pattern takes, and what follows it.
+template <fixed_string format, detail::contiguous_char_range range_type>
+  requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
+[[nodiscard]] constexpr auto scan_prefix(range_type&& input) {
+  return prefix_scan<format>(std::string_view(std::ranges::data(input),
+                                              std::ranges::size(input)));
+}
+
 // The proxy owns the view and consumes it once after the output type is known.
 template <fixed_string format, std::ranges::input_range range_type>
   requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
