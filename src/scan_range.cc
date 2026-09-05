@@ -34,7 +34,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
                                                  parameters[index])...};
 }
 
-template <fixed_string format, int sentinel = -1>
+template <fixed_string format, int sentinel = -1, bool terminated = false>
 class borrowed_result {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
@@ -42,7 +42,7 @@ class borrowed_result {
   template <class type>
     requires std::is_aggregate_v<type>
   constexpr operator type() const {
-    const auto fields = scan_fields<type, format, sentinel>(input_);
+    const auto fields = scan_fields<type, format, sentinel, terminated>(input_);
     return convert<type, format>(fields,
                       std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
   }
@@ -83,12 +83,32 @@ concept contiguous_char_range =
 
 export namespace scan {
 
+// Whether the type of the input promises a terminator past its last character.
+//
+// A `std::string` does, and has since the language said `data()` and `c_str()`
+// are the same thing: there is a null character at `data() + size()`. A string
+// literal does. A `string_view` into the middle of something does not, and
+// neither does a vector of characters.
+template <class range_type>
+concept terminated_char_range =
+    detail::contiguous_char_range<range_type> &&
+    (std::same_as<std::remove_cvref_t<range_type>, std::string> ||
+     std::same_as<std::remove_cvref_t<range_type>,
+                  std::basic_string<char, std::char_traits<char>,
+                                    std::allocator<char>>>);
+
 // This overload borrows the original contiguous storage and allocates nothing.
+//
+// Where the input is of a type that carries a terminator, this says so, and the
+// scan then runs the loop that tests only the character and not the end of the
+// input as well -- provided the pattern is one the terminator cannot appear in,
+// which is asked while the pattern is compiled and answered without the caller
+// having to know it was asked.
 template <fixed_string format, detail::contiguous_char_range range_type>
   requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
 [[nodiscard]] constexpr auto scan(range_type&& input) {
-  return detail::borrowed_result<format>(std::string_view(
-      std::ranges::data(input), std::ranges::size(input)));
+  return detail::borrowed_result<format, -1, terminated_char_range<range_type>>(
+      std::string_view(std::ranges::data(input), std::ranges::size(input)));
 }
 
 // The same, for input that carries a terminator the pattern never matches.
