@@ -146,6 +146,57 @@ template <unsigned char first, unsigned char last>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
     const char* cursor, const char* limit) {
   if (std::is_constant_evaluated()) return cursor;
+#if defined(__clang__) || defined(__GNUC__)
+  // Sixteen at a time first, where the compiler has a vector to put them in.
+  // Written as a vector type and not as anything named after an instruction
+  // set: on one machine this is a pair of SSE2 operations, on another a pair of
+  // NEON ones, and where there is no such register at all it is not compiled.
+  //
+  // The fast step does not ask which byte fell out of the class, only whether
+  // any did -- the answer is a pair of words anded together and compared with
+  // all ones. Finding the byte is the business of the word step below, which
+  // happens once at the end of a field rather than once every sixteen
+  // characters.
+  {
+    using lane [[gnu::vector_size(32)]] = unsigned char;
+    constexpr auto spread = [](unsigned char value) {
+      return lane{value, value, value, value, value, value, value, value,
+                  value, value, value, value, value, value, value, value,
+                  value, value, value, value, value, value, value, value,
+                  value, value, value, value, value, value, value, value};
+    };
+    constexpr lane low = spread(first);
+    constexpr lane span = spread(static_cast<unsigned char>(last - first));
+    while (limit - cursor >= 32) {
+      lane letters{};
+      __builtin_memcpy(&letters, cursor, 32);
+      const auto inside = (letters - low) <= span;
+      std::uint64_t quarters[4];
+      __builtin_memcpy(quarters, &inside, 32);
+      if ((quarters[0] & quarters[1] & quarters[2] & quarters[3]) !=
+          ~std::uint64_t{0}) {
+        break;
+      }
+      cursor += 32;
+    }
+    using half [[gnu::vector_size(16)]] = unsigned char;
+    constexpr auto spread_half = [](unsigned char value) {
+      return half{value, value, value, value, value, value, value, value,
+                  value, value, value, value, value, value, value, value};
+    };
+    constexpr half low_half = spread_half(first);
+    constexpr half span_half = spread_half(static_cast<unsigned char>(last - first));
+    while (limit - cursor >= 16) {
+      half letters{};
+      __builtin_memcpy(&letters, cursor, 16);
+      const auto inside = (letters - low_half) <= span_half;
+      std::uint64_t halves[2];
+      __builtin_memcpy(halves, &inside, 16);
+      if ((halves[0] & halves[1]) != ~std::uint64_t{0}) break;
+      cursor += 16;
+    }
+  }
+#endif
   constexpr std::uint64_t ones = 0x0101010101010101ull;
   constexpr std::uint64_t highs = 0x8080808080808080ull;
   while (limit - cursor >= 8) {
