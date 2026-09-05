@@ -53,6 +53,28 @@ void harness_floor(harness::State& state) {
                           bench::csv.size());
 }
 
+// The same floor for the row that returns strings: the five fields are already
+// known, and all this does is make strings of them. None is longer than seven
+// characters, so none of them should reach for the allocator at all, and this
+// row says what they cost when nothing is scanned.
+void harness_floor_strings(harness::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      field_strings value{std::string(view.substr(0, 5)),
+                          std::string(view.substr(6, 5)),
+                          std::string(view.substr(12, 7)),
+                          std::string(view.substr(20, 5)),
+                          std::string(view.substr(26, 4))};
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
 void scan_captures_views(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -134,6 +156,7 @@ void re2c_captures_benchmark(harness::State& state) {
 
 const int registered = [] {
   harness::RegisterBenchmark("harness_floor", harness_floor);
+  harness::RegisterBenchmark("harness_floor_strings", harness_floor_strings);
   harness::RegisterBenchmark("scan_captures_views", scan_captures_views);
   harness::RegisterBenchmark("scan_captures_views_sentinel",
                              scan_captures_views_sentinel);
