@@ -19,21 +19,24 @@ template <class type>
 // of which takes as many groups as it needs, in order. Nothing about the
 // nesting is written in the format: a structure of structures is spelled out
 // flat, because a product of products is flat.
-template <class type, fixed_string format, std::size_t offset,
-          std::size_t total, std::size_t extent>
+// The parameters come from the same spread the automaton was built from, so a
+// colon written at the place a value is read from reaches that value however
+// deeply it sits, and a format declared by a type is read against that type
+// here exactly as it was there.
+template <class root, class type, fixed_string format, std::size_t offset,
+          std::size_t extent>
 [[nodiscard]] constexpr type build_value(
     const std::array<std::string_view, extent>& groups) {
   if constexpr (scanned_as_leaf<type>) {
-    constexpr auto parameters = field_parameters<format, total>();
-    return parse_value<std::remove_cv_t<type>>(groups[offset],
-                                               parameters[offset]);
+    static constexpr auto spread = spread_of<root, format>();
+    return parse_value<std::remove_cv_t<type>>(
+        groups[offset], spread.parameters[offset].view());
   } else {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return type{
-          build_value<std::remove_cvref_t<
-                          boost::pfr::tuple_element_t<index, type>>,
-                      format, offset + groups_before_field<type, index>(),
-                      total>(groups)...};
+      return type{build_value<
+          root,
+          std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>, format,
+          offset + groups_before_field<type, index>()>(groups)...};
     }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
   }
 }
@@ -51,7 +54,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   // three times what initialising it once costs. It also demanded that every
   // field be default-constructible and assignable, which is more than an
   // aggregate has to be.
-  return build_value<type, format, 0, extent>(fields);
+  return build_value<type, type, format, 0>(fields);
 }
 
 template <class type, std::size_t branch>
@@ -91,9 +94,8 @@ class borrowed_result {
         if (made || groups[total + which].data() == nullptr) return false;
         using alternative = std::variant_alternative_t<which, type>;
         made.emplace(std::in_place_index<which>,
-                     build_value<alternative, format,
-                                 groups_before_branch<type, which>(), total>(
-                         groups));
+                     build_value<type, alternative, format,
+                                 groups_before_branch<type, which>()>(groups));
         return true;
       };
       (void)(take.template operator()<branch>() || ...);

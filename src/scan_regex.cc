@@ -345,17 +345,27 @@ regex_match(
       return {};
     return {regex_submatch(input), {}};
   } else {
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, scan::tre::negative_tag);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, 0);
-    // The generated form, as the captureless branch above uses.
+    // A register holds where in the subject something happened, and holds it as
+    // the address itself, so that nothing has to be added to it or taken from
+    // it. A slot that was never written holds nothing at all.
+    std::array<const char*, automaton.register_count> registers{};
     const char* cursor = input.data();
     const char* const end = cursor + input.size();
-    if (!run_tagged_state_continuation<automaton, automaton.initial>(
-            cursor, end, registers, 0)) {
-      return {};
-    }
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, cursor);
+    // The generated form, as the captureless branch above uses. Which of the
+    // two walks runs is decided once, on the length of the subject: a short one
+    // is read a character at a time, a long one in words and vectors.
+    constexpr std::size_t worth_a_word = 32;
+    const bool matched =
+        input.size() >= worth_a_word
+            ? run_tagged_state_continuation<automaton, true,
+                                            automaton.initial>(cursor, end,
+                                                               registers)
+            : run_tagged_state_continuation<automaton, false,
+                                            automaton.initial>(cursor, end,
+                                                               registers);
+    if (!matched) return {};
 
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
     for (std::size_t capture : std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
@@ -363,10 +373,9 @@ regex_match(
               registers[capture * 2];
           const auto end =
               registers[capture * 2 + 1];
-          if (begin < 0 || end < begin) continue;
-          captures[capture] = regex_submatch(input.substr(
-              static_cast<std::size_t>(begin),
-              static_cast<std::size_t>(end - begin)));
+          if (begin == nullptr || end == nullptr) continue;
+          captures[capture] =
+              regex_submatch(std::string_view(begin, static_cast<std::size_t>(end - begin)));
         }
     return {regex_submatch(input), captures};
   }

@@ -502,6 +502,14 @@ template <class type, fixed_string format>
 
 template <fixed_string format>
 struct aggregate_scanner {
+  // The format, said out loud, so that whatever reads this type can read it as
+  // a shape and not as a value: the places below stand for this type's fields,
+  // and a scan that knows that spreads them into its own automaton instead of
+  // matching the whole thing and taking it apart again afterwards. The members
+  // beneath still do the taking apart, for the paths that cannot spread -- an
+  // input that is read once and not looked at twice.
+  static constexpr auto scan_format = format;
+
   [[nodiscard]] constexpr auto pattern(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
     return detail::make_aggregate_pattern<type, format>();

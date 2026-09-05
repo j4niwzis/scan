@@ -376,10 +376,40 @@ template <fixed_string format, std::size_t field_count>
 // well formed for any type at all, because its declaration says nothing about
 // the body. Only asking for the size of `scanner<type>` makes the compiler
 // decide whether the specialisation is there.
+// A type may say how it is read as a format of its own, and then it is not a
+// leaf but a shape: the places in its format stand for its own fields, and its
+// groups are groups of whatever it is written into.
+template <class type>
+inline constexpr bool scanned_as_variant = false;
+template <class... alternatives>
+inline constexpr bool scanned_as_variant<std::variant<alternatives...>> = true;
+
+template <class type>
+concept scanned_by_format = requires {
+  scan::scanner<std::remove_cv_t<type>>::scan_format;
+};
+
 template <class type>
 concept scanned_as_leaf = requires {
   sizeof(scan::scanner<std::remove_cv_t<type>>);
-};
+} && !scanned_by_format<type>;
+
+// What one place in a format stands for. A leaf takes one; a type with a format
+// of its own takes one and spends it on the format it declared; anything else
+// is opened up and its fields take places of their own, which is why a
+// structure of structures can be written out flat.
+template <class type>
+[[nodiscard]] consteval std::size_t places_of() {
+  if constexpr (scanned_as_leaf<type> || scanned_by_format<type>) {
+    return 1;
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              places_of<std::remove_cvref_t<
+                  boost::pfr::tuple_element_t<index, type>>>());
+    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+  }
+}
 
 template <class type>
 [[nodiscard]] consteval std::size_t groups_of() {
@@ -405,6 +435,58 @@ template <class type, std::size_t field>
 
 // Which field of a product holds the group at this position, and where in that
 // field it falls.
+// Which field of a product holds the place at this position, and where in that
+// field it falls. The same walk as for groups, counting places.
+template <class subject>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_of_place(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        places_of<std::remove_cvref_t<
+            boost::pfr::tuple_element_t<field, subject>>>()...};
+  }(std::make_index_sequence<boost::pfr::tuple_size_v<subject>>{});
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (index < counts[field]) return {field, index};
+    index -= counts[field];
+  }
+  throw "format has more places than the output type has values";
+}
+
+template <class subject, std::size_t index,
+          bool = scanned_as_leaf<subject> || scanned_by_format<subject>>
+struct place_at;
+template <class subject, std::size_t index>
+struct place_at<subject, index, true> {
+  using kind = subject;
+};
+template <class subject, std::size_t index>
+struct place_at<subject, index, false> {
+  static constexpr auto where = field_of_place<subject>(index);
+  using next =
+      std::remove_cvref_t<boost::pfr::tuple_element_t<where.first, subject>>;
+  using kind = typename place_at<next, where.second>::kind;
+};
+
+template <class subject, std::size_t index>
+using place_kind = typename place_at<subject, index>::kind;
+
+// The places of a type's own format are its fields, not itself. A type that
+// declares a format is one place where it is used and a product of its fields
+// where that format is read, and the difference is the whole reason the reading
+// terminates.
+template <class subject>
+[[nodiscard]] consteval std::size_t places_within() {
+  return []<std::size_t... field>(std::index_sequence<field...>) {
+    return (std::size_t{0} + ... +
+            places_of<std::remove_cvref_t<
+                boost::pfr::tuple_element_t<field, subject>>>());
+  }(std::make_index_sequence<boost::pfr::tuple_size_v<subject>>{});
+}
+
+template <class subject, std::size_t index>
+using place_within_kind = typename place_at<subject, index, false>::kind;
+
 template <class subject>
 [[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_holding(
     std::size_t index) {
@@ -438,6 +520,162 @@ struct leaf_at<subject, index, false> {
 template <class subject, std::size_t index>
 using leaf_kind = typename leaf_at<subject, index>::kind;
 
+// Reading a format against the type it is scanned into, and writing out the one
+// the automaton is built from.
+//
+// A place standing for a leaf becomes that leaf's own pattern, with whatever
+// was written after the colon handed to it and kept for the reading afterwards.
+// A place standing for a type that declared a format becomes that format, read
+// against that type -- so the places inside it mean that type's fields and
+// nothing about where it was used. That is the whole of the hygiene: a format
+// is only ever read against the type it belongs to.
+struct spread_format {
+  pattern_buffer<2048> text{};
+  pattern_buffer<64> parameters[32]{};
+  std::size_t leaves = 0;
+};
+
+constexpr void copy_until_place(spread_format& made, std::string_view text,
+                                std::size_t& position) {
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      made.text.push_back(text[position]);
+      made.text.push_back(text[position + 1]);
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') return;
+    made.text.push_back(text[position]);
+    ++position;
+  }
+}
+
+// The body of a place, and where it ends. A brace inside a character class or a
+// repetition is not the end of one.
+[[nodiscard]] constexpr std::size_t end_of_place(std::string_view text,
+                                                 std::size_t open) {
+  std::size_t position = open + 1;
+  bool character_class = false;
+  while (position < text.size()) {
+    const char symbol = text[position];
+    if (symbol == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (symbol == '[') character_class = true;
+    if (symbol == ']') character_class = false;
+    if (!character_class && symbol == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (!character_class && symbol == '}') return position;
+    ++position;
+  }
+  throw "unterminated placeholder";
+}
+
+// Read outside a type, one place is the whole of it; read inside its own
+// format, one place is one of its fields. The same walk, told which it is.
+template <class type, bool within>
+constexpr void spread_into(spread_format& made, std::string_view text);
+
+template <class kind>
+constexpr void spread_place(spread_format& made, std::string_view body) {
+  if constexpr (scanned_by_format<kind>) {
+    if (!body.empty()) throw "a type that declares a format takes no body";
+    spread_into<kind, true>(
+        made, scan::scanner<std::remove_cv_t<kind>>::scan_format.view());
+  } else {
+    made.text.push_back('{');
+    if (body.empty() || body.front() == ':') {
+      const std::string_view given = body.empty() ? body : body.substr(1);
+      made.parameters[made.leaves].append(given);
+      const auto pattern = scanner_pattern<std::remove_cv_t<kind>>(given);
+      made.text.append(std::string_view{pattern});
+    } else {
+      made.text.append(body);
+    }
+    made.text.push_back('}');
+    ++made.leaves;
+  }
+}
+
+template <class type, bool within>
+constexpr void spread_into(spread_format& made, std::string_view text) {
+  std::size_t position = 0;
+  [&]<std::size_t... place>(std::index_sequence<place...>) {
+    const auto one = [&]<std::size_t which>() {
+      copy_until_place(made, text, position);
+      if (position == text.size()) throw "format has fewer places than values";
+      const std::size_t close = end_of_place(text, position);
+      using kind = std::conditional_t<within, place_within_kind<type, which>,
+                                      place_kind<type, which>>;
+      spread_place<kind>(made,
+                         text.substr(position + 1, close - position - 1));
+      position = close + 1;
+    };
+    (one.template operator()<place>(), ...);
+  }(std::make_index_sequence<within ? places_within<type>()
+                                    : places_of<type>()>{});
+  copy_until_place(made, text, position);
+  if (position != text.size()) throw "format has more places than values";
+}
+
+// Where the top level of a format has branches, each is read against the
+// alternative standing in the same place, and each one's places mean that
+// alternative's values.
+[[nodiscard]] constexpr std::array<std::pair<std::size_t, std::size_t>, 16>
+branches_of(std::string_view text, std::size_t& count) {
+  std::array<std::pair<std::size_t, std::size_t>, 16> found{};
+  std::size_t begin = 0;
+  std::size_t position = 0;
+  count = 0;
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (text[position] == '|') {
+      if (count == found.size()) throw "too many branches in a format";
+      found[count++] = {begin, position};
+      begin = position + 1;
+    }
+    ++position;
+  }
+  if (count == found.size()) throw "too many branches in a format";
+  found[count++] = {begin, text.size()};
+  return found;
+}
+
+template <class type, fixed_string format>
+[[nodiscard]] consteval spread_format spread_of() {
+  spread_format made;
+  if constexpr (scanned_as_variant<type>) {
+    std::size_t count = 0;
+    const auto text = format.view();
+    const auto found = branches_of(text, count);
+    if (count != std::variant_size_v<type>) {
+      throw "the format must have one branch for each alternative";
+    }
+    [&]<std::size_t... branch>(std::index_sequence<branch...>) {
+      const auto one = [&]<std::size_t which>() {
+        if constexpr (which != 0) made.text.push_back('|');
+        spread_into<std::variant_alternative_t<which, type>, false>(
+            made, text.substr(found[which].first,
+                              found[which].second - found[which].first));
+      };
+      (one.template operator()<branch>(), ...);
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else {
+    spread_into<type, false>(made, format.view());
+  }
+  return made;
+}
+
 template <class type, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr auto parameterized_patterns(
     const std::array<std::string_view, extent>& parameters,
@@ -449,10 +687,13 @@ template <class type, std::size_t extent, std::size_t... index>
     result.append(std::string_view{pattern});
     return result;
   };
+  // By field, and not by the values a field opens up into: this builds the
+  // pattern a whole aggregate matches for the paths that match it whole -- the
+  // streaming one -- and there a field that is itself a shape contributes its
+  // own pattern, recursively, rather than being spread out here.
   return std::array<pattern_buffer<>, extent>{
       make_pattern.template operator()<std::remove_cvref_t<
-          leaf_kind<type, index>>>(
-          parameters[index])...};
+          boost::pfr::tuple_element_t<index, type>>>(parameters[index])...};
 }
 
 template <std::size_t extent>
@@ -467,10 +708,6 @@ template <std::size_t extent>
 // An output that is one of several shapes, and a format whose top level says
 // which. The alternatives of the variant and the branches of the format stand
 // in the same order, and each alternative's fields are that branch's groups.
-template <class type>
-inline constexpr bool scanned_as_variant = false;
-template <class... alternatives>
-inline constexpr bool scanned_as_variant<std::variant<alternatives...>> = true;
 
 template <class type>
 [[nodiscard]] consteval auto fields_of_each_alternative() {
@@ -528,13 +765,9 @@ template <class type, fixed_string format>
 [[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
   constexpr std::size_t branch_count = std::variant_size_v<type>;
   constexpr auto wanted = fields_of_each_alternative<type>();
-  constexpr std::size_t field_count = fields_of_all_alternatives<type>();
-  constexpr auto parameters = field_parameters<format, field_count>();
-  constexpr auto pattern_storage = variant_patterns<type>(
-      parameters, std::make_index_sequence<field_count>{});
-  const auto defaults = pattern_views(pattern_storage);
+  constexpr auto spread = spread_of<type, format>();
   std::size_t captures = 0;
-  tre_parser parser(format.view(), defaults, captures);
+  tre_parser parser(spread.text.view(), {}, captures);
   std::vector<std::size_t> found;
   std::vector<scan::tre::node> branches = parser.parse_format_branches(found);
   if (branches.size() != branch_count) {
@@ -556,18 +789,20 @@ template <class type, fixed_string format>
   return scan::tre::compile_tnfa(scan::tre::alt(std::move(branches)));
 }
 
+// The automaton is built from the spread format, in which every place has
+// already become the pattern it stands for and every declared format has been
+// read against its own type. What is left is one flat format whose groups are
+// the values, in order.
 template <class type, fixed_string format>
   requires(!scanned_as_variant<type>)
 [[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
-  constexpr std::size_t field_count = groups_of<type>();
-  constexpr auto parameters = field_parameters<format, field_count>();
-  constexpr auto pattern_storage = parameterized_patterns<type>(
-      parameters, std::make_index_sequence<field_count>{});
-  const auto defaults = pattern_views(pattern_storage);
+  constexpr auto spread = spread_of<type, format>();
   std::size_t captures = 0;
-  tre_parser parser(format.view(), defaults, captures);
+  tre_parser parser(spread.text.view(), {}, captures);
   scan::tre::node expression = parser.parse_format();
-  if (captures != field_count) throw "capture count does not match output";
+  if (captures != groups_of<type>()) {
+    throw "capture count does not match output";
+  }
   return scan::tre::compile_tnfa(expression);
 }
 

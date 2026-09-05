@@ -159,19 +159,30 @@ template <class lane_type>
 // range exactly when subtracting the low end of it, in the arithmetic that
 // wraps, lands at or below the width of it -- which holds for every byte there
 // is, high bit or not.
+// Written so that no vector is ever returned from anything: a vector wider than
+// the machine has registers for is passed back through memory, and saying so is
+// a warning about the calling convention on every build. Everything here is
+// inlined and the accumulator never leaves the frame.
 template <staying_class klass, class lane_type>
-[[nodiscard]] SCAN_FORCE_INLINE auto outside_of(lane_type letters) {
-  const auto belongs = [&]<std::size_t index>() {
+SCAN_FORCE_INLINE void outside_of(lane_type letters,
+                                  decltype(std::declval<lane_type>() <
+                                           std::declval<lane_type>())& answer) {
+  const auto belongs = [&]<std::size_t index>(auto& into, bool first) {
     constexpr lane_type low = spread_over<lane_type>(klass.first[index]);
     constexpr lane_type span = spread_over<lane_type>(
         static_cast<unsigned char>(klass.last[index] - klass.first[index]));
-    return (letters - low) <= span;
+    const auto here = (letters - low) <= span;
+    if (first) {
+      into = here;
+    } else {
+      into = into | here;
+    }
   };
-  return [&]<std::size_t... index>(std::index_sequence<index...>) {
-    auto inside = belongs.template operator()<0>();
-    ((inside = inside | belongs.template operator()<index + 1>()), ...);
-    return ~inside;
+  [&]<std::size_t... index>(std::index_sequence<index...>) {
+    belongs.template operator()<0>(answer, true);
+    (belongs.template operator()<index + 1>(answer, false), ...);
   }(std::make_index_sequence<klass.count - 1>{});
+  answer = ~answer;
 }
 
 // Did any of them fall out of the class? Not which -- any. The comparison
@@ -216,13 +227,18 @@ template <staying_class klass>
         lane head{}, tail{};
         __builtin_memcpy(&head, cursor, 32);
         __builtin_memcpy(&tail, cursor + 32, 32);
-        if (any_of(outside_of<klass>(head) | outside_of<klass>(tail))) break;
+        decltype(head < head) head_out{}, tail_out{};
+        outside_of<klass>(head, head_out);
+        outside_of<klass>(tail, tail_out);
+        if (any_of(head_out | tail_out)) break;
         cursor += 64;
       }
       while (limit - cursor >= 32) {
         lane letters{};
         __builtin_memcpy(&letters, cursor, 32);
-        if (any_of(outside_of<klass>(letters))) break;
+        decltype(letters < letters) outside{};
+        outside_of<klass>(letters, outside);
+        if (any_of(outside)) break;
         cursor += 32;
       }
     }
@@ -231,7 +247,9 @@ template <staying_class klass>
       while (limit - cursor >= 16) {
         lane letters{};
         __builtin_memcpy(&letters, cursor, 16);
-        if (any_of(outside_of<klass>(letters))) break;
+        decltype(letters < letters) outside{};
+        outside_of<klass>(letters, outside);
+        if (any_of(outside)) break;
         cursor += 16;
       }
     }
