@@ -1026,7 +1026,7 @@ template <std::size_t group, class type, fixed_string format, auto& automaton,
           class states_type, std::size_t register_count,
           std::size_t command_count>
 constexpr void advance_scanner(
-    char symbol, std::size_t state,
+    char symbol, std::size_t state, std::ptrdiff_t position,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const states_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
@@ -1057,8 +1057,26 @@ constexpr void advance_scanner(
           if (command_index++ >= count) return;
           const std::uint32_t tag = automaton.register_tag[command.destination];
           if (tag != opening && tag != closing) return;
-          if (command.source != packed_command::no_source &&
-              command.value == -2) {
+          if (tag == closing && registers[command.destination] == position) {
+            // The group has closed on this step, however the closing came to
+            // be written -- a fresh position, or a copy of a register that is
+            // being written the same instant. Commands take their sources as
+            // they stood before any of them ran, which is right for positions
+            // and wrong for what was gathered: the copy would carry the empty
+            // slot the closing had a moment ago. What the field gathered is in
+            // the opening it was being added to.
+            const auto& entered = automaton.states[state];
+            for (std::size_t reading = 0; reading < entered.reading_count;
+                 ++reading) {
+              if (entered.readings[reading][closing] != command.destination) {
+                continue;
+              }
+              std::get<group>(states[command.destination]) =
+                  std::get<group>(states[entered.readings[reading][opening]]);
+              break;
+            }
+          } else if (command.source != packed_command::no_source &&
+                     command.value == -2) {
             // A reading that divides carries its gathering with it, whichever
             // of the two registers is being copied.
             std::get<group>(states[command.destination]) =
@@ -1069,19 +1087,6 @@ constexpr void advance_scanner(
             } else {
               std::get<group>(states[command.destination]) =
                   scanner_begin<held_type>(spread.parameters[group].view());
-            }
-          } else if constexpr (!gathers_a_list) {
-            // The group has closed in some reading. What it gathered is copied
-            // out of the opening it was being added to, and stops there.
-            const auto& entered = automaton.states[state];
-            for (std::size_t reading = 0; reading < entered.reading_count;
-                 ++reading) {
-              if (entered.readings[reading][closing] != command.destination) {
-                continue;
-              }
-              std::get<group>(states[command.destination]) =
-                  std::get<group>(states[entered.readings[reading][opening]]);
-              break;
             }
           }
         }(),
@@ -1222,7 +1227,7 @@ template <class type, fixed_string format, auto& automaton,
           std::size_t register_count, class states_type,
           std::size_t command_count, std::size_t... group>
 constexpr void advance_scanners(
-    char symbol, std::size_t state,
+    char symbol, std::size_t state, std::ptrdiff_t position,
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
@@ -1243,11 +1248,13 @@ constexpr void advance_scanners(
   if (copies) {
     const states_type old_states = states;
     (advance_scanner<group, type, format, automaton>(
-         symbol, state, registers, old_states, states, commands, count),
+         symbol, state, position, registers, old_states, states, commands,
+         count),
      ...);
   } else {
     (advance_scanner<group, type, format, automaton>(
-         symbol, state, registers, states, states, commands, count),
+         symbol, state, position, registers, states, states, commands,
+         count),
      ...);
   }
 }
@@ -1345,7 +1352,7 @@ class stream_state {
     execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
     advance_scanners<type, format, automaton>(
-        symbol, transition->target, registers_, scanner_states_,
+        symbol, transition->target, position_, registers_, scanner_states_,
         transition->commands, transition->command_count,
         std::make_index_sequence<field_count>{});
     state_ = transition->target;
