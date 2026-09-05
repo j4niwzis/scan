@@ -76,7 +76,7 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_state_continuation(
     const char* cursor, const char* end,
     std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position);
+    const char* origin);
 
 template <auto& automaton, std::size_t state, std::size_t range,
           std::size_t register_count>
@@ -145,7 +145,7 @@ template <auto& automaton, std::size_t state, std::size_t register_count,
 dispatch_tagged_transition(
     unsigned char symbol, const char* cursor, const char* end,
     std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    const char* origin) {
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
     return false;
@@ -153,14 +153,14 @@ dispatch_tagged_transition(
     constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target == state) return false;
-      execute_static_transition_commands<automaton, state, index>(registers,
-                                                                position);
+      execute_static_transition_commands<automaton, state, index>(
+          registers, cursor - origin - 1);
       [[clang::always_inline]] return run_tagged_state_continuation<
-          automaton, range.target>(cursor, end, registers, position + 1);
+          automaton, range.target>(cursor, end, registers, origin);
     }
     return dispatch_tagged_transition<automaton, state, register_count,
                                       index + 1>(symbol, cursor, end,
-                                                 registers, position);
+                                                 registers, origin);
   }
 }
 
@@ -168,25 +168,24 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_state_continuation(
     const char* cursor, const char* end,
     std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    const char* origin) {
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     // The operations of a transition are the tags the state before it was
     // holding back, so they are written with the position from before this
-    // symbol -- which is why the position advances after them, not before.
-    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
-                                                        position)) {
-      ++position;
+    // symbol, which is where the cursor stood one character ago.
+    if (execute_tagged_self_transition<automaton, state>(
+            symbol, registers, cursor - origin - 1)) {
       continue;
     }
-    return dispatch_tagged_transition<automaton, state>(
-        symbol, cursor, end, registers, position);
+    return dispatch_tagged_transition<automaton, state>(symbol, cursor, end,
+                                                        registers, origin);
   }
   if constexpr (automaton.states[state].accepting_slot ==
                 packed_state<0, 0, 0>::not_accepting) {
     return false;
   } else {
-    execute_static_final_commands<automaton, state>(registers, position);
+    execute_static_final_commands<automaton, state>(registers, cursor - origin);
     return true;
   }
 }
@@ -281,7 +280,7 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
     const char* cursor, std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position);
+    const char* origin);
 
 template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count, std::size_t index = 0>
@@ -289,7 +288,7 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
 dispatch_tagged_sentinel_transition(
     unsigned char symbol, const char* cursor,
     std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    const char* origin) {
   constexpr const auto& packed = automaton.states[state];
   if constexpr (index == packed.range_count) {
     return false;
@@ -297,14 +296,14 @@ dispatch_tagged_sentinel_transition(
     constexpr const auto& range = packed.ranges[index];
     if (symbol >= range.first && symbol <= range.last) {
       if constexpr (range.target == state) return false;
-      execute_static_transition_commands<automaton, state, index>(registers,
-                                                                  position);
+      execute_static_transition_commands<automaton, state, index>(
+          registers, cursor - origin - 1);
       [[clang::always_inline]] return run_tagged_sentinel_continuation<
-          automaton, sentinel, range.target>(cursor, registers, position + 1);
+          automaton, sentinel, range.target>(cursor, registers, origin);
     }
     return dispatch_tagged_sentinel_transition<automaton, sentinel, state,
                                                register_count, index + 1>(
-        symbol, cursor, registers, position);
+        symbol, cursor, registers, origin);
   }
 }
 
@@ -312,12 +311,11 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
           std::size_t register_count>
 [[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
     const char* cursor, std::array<std::ptrdiff_t, register_count>& registers,
-    std::ptrdiff_t position) {
+    const char* origin) {
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
-                                                         position)) {
-      ++position;
+    if (execute_tagged_self_transition<automaton, state>(
+            symbol, registers, cursor - origin - 1)) {
       continue;
     }
     if (symbol == sentinel) {
@@ -325,12 +323,13 @@ template <auto& automaton, unsigned char sentinel, std::size_t state,
                     packed_state<0, 0, 0>::not_accepting) {
         return false;
       } else {
-        execute_static_final_commands<automaton, state>(registers, position);
+        execute_static_final_commands<automaton, state>(registers,
+                                                        cursor - origin - 1);
         return true;
       }
     }
     return dispatch_tagged_sentinel_transition<automaton, sentinel, state>(
-        symbol, cursor, registers, position);
+        symbol, cursor, registers, origin);
   }
 }
 
@@ -406,12 +405,12 @@ template <class type, fixed_string format, int sentinel,
                     "the terminator must be rejected in every state");
       [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
           automaton, static_cast<unsigned char>(sentinel), automaton.initial>(
-          cursor, registers, 0);
+          cursor, registers, cursor);
     } else {
       const char* const end = cursor + input.size();
       [[clang::always_inline]] matched =
           run_tagged_state_continuation<automaton, automaton.initial>(
-              cursor, end, registers, 0);
+              cursor, end, registers, cursor);
     }
     if (!matched) throw scan_error("input does not match scan expression");
     // Two of the three tests this used to make were asking whether the machine
