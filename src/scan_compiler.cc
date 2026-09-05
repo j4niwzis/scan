@@ -19,6 +19,8 @@ inline constexpr char format_group_begin = '\x01';
 inline constexpr char format_group_end = '\x02';
 inline constexpr char format_branch = '\x03';
 inline constexpr char format_mark = '\x04';
+inline constexpr char format_raw_begin = '\x05';
+inline constexpr char format_raw_end = '\x06';
 
 class tre_parser {
  public:
@@ -108,6 +110,17 @@ class tre_parser {
       const std::size_t capture = capture_count_++;
       return scan::tre::cat(
           {wrap_capture(capture, scan::tre::epsilon()), parse_format_sequence()});
+    }
+    // A pattern that has to be matched and is not kept: the run of spaces
+    // between two fields, the field somebody else's format has and this output
+    // does not want. It captures nothing, so it is no group and no value, and
+    // the places on either side of it go on counting as if it were not there.
+    if (peek() == format_raw_begin) {
+      ++position_;
+      scan::tre::node body = parse_alternative(format_raw_end);
+      if (peek() != format_raw_end) throw "unterminated unkept pattern";
+      ++position_;
+      return scan::tre::cat({std::move(body), parse_format_sequence()});
     }
     if (peek() == '\\') {
       if (peek(1) == '\0') throw "dangling format escape";
@@ -679,6 +692,25 @@ branches_of(std::string_view text, std::size_t& count) {
   return found;
 }
 
+// Literal text, and any place that keeps nothing, up to the next place that
+// does. A place whose body begins with a star is matched and thrown away, the
+// way `%*d` is read and not stored, and it takes no value with it.
+constexpr void copy_until_kept_place(spread_format& made, std::string_view text,
+                                     std::size_t& position) {
+  while (true) {
+    copy_until_place(made, text, position);
+    if (position == text.size()) return;
+    const std::size_t close = end_of_place(text, position);
+    const std::string_view body =
+        text.substr(position + 1, close - position - 1);
+    if (body.empty() || body.front() != '*') return;
+    made.text.push_back(format_raw_begin);
+    made.text.append(body.substr(1));
+    made.text.push_back(format_raw_end);
+    position = close + 1;
+  }
+}
+
 template <class type, bool within>
 constexpr void spread_into(spread_format& made, std::string_view text);
 
@@ -745,7 +777,7 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
   std::size_t position = 0;
   [&]<std::size_t... place>(std::index_sequence<place...>) {
     const auto one = [&]<std::size_t which>() {
-      copy_until_place(made, text, position);
+      copy_until_kept_place(made, text, position);
       if (position == text.size()) throw "format has fewer places than values";
       const std::size_t close = end_of_place(text, position);
       using kind = typename place_chosen<type, within, which>::kind;
@@ -755,7 +787,7 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
     };
     (one.template operator()<place>(), ...);
   }(std::make_index_sequence<places_chosen<type, within>()>{});
-  copy_until_place(made, text, position);
+  copy_until_kept_place(made, text, position);
   if (position != text.size()) throw "format has more places than values";
 }
 
