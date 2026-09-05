@@ -291,7 +291,13 @@ template <class type, fixed_string format, unsigned char sentinel,
   } else {
     constexpr const auto& automaton = packed_automaton<type, format>;
     std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, tre::negative_tag);
+    // Only the tag slots are given the value that means "this field did not
+    // take part". Everything past them is a working register, and the optimiser
+    // leaves no operation that reads one before it has been written -- there is
+    // no initialisation left at all -- so filling them would be filling for
+    // nobody.
+    std::ranges::fill(registers | std::views::take(automaton.tag_count),
+                      tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                      0);
     // The generated form, not an interpreter.
