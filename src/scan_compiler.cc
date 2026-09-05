@@ -376,10 +376,14 @@ template <class type, fixed_string format>
   return tre::compile_tnfa(expression);
 }
 
+// Register allocation is on here, and it has to be: without it the register
+// file keeps one slot for every register determinisation ever handed out --
+// sixty-three of them for five fields -- and the scan begins by filling all of
+// them. With it the file is as wide as the tags, because the first slots are
+// pinned to the tags the fields are read from and the rest are coalesced away.
 template <class type, fixed_string format>
 [[nodiscard]] constexpr tre::tdfa build_tdfa() {
-  return tre::optimize_tdfa(tre::compile_tdfa(build_tnfa<type, format>()),
-                            false);
+  return tre::optimize_tdfa(tre::compile_tdfa(build_tnfa<type, format>()));
 }
 
 // Minimisation as Moore's refinement, with the two things that make it cheap:
