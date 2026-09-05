@@ -1036,40 +1036,52 @@ constexpr void advance_scanner(
   constexpr std::size_t closing = group * 2 + 1;
   using held_type = leaf_kind<type, group>;
   constexpr bool gathers_a_list = scanned_as_range<held_type>;
-  // A list is gathered where it began: the elements go on being added to the
-  // same list however the readings divide. A value is gathered where it ends,
-  // because that is what tells the readings apart. Two readings can hold the
-  // same opening and disagree about whether the group is still being read --
-  // one has met what follows it and one has not -- and one gathering cannot be
-  // both "bob" and "bob id=7". They never hold the same closing.
-  constexpr std::size_t gathered_at = gathers_a_list ? opening : closing;
+  // A field is gathered at the register holding its opening: nothing is written
+  // inside a field, so that register stands still while the characters arrive.
+  //
+  // It is read at the register holding its closing, and the two are joined by a
+  // copy made at the moment the group closes. Readings divide: two can hold the
+  // same opening and disagree about whether the field is still being read, one
+  // having met what follows it and one not, and one gathering cannot be both
+  // "bob" and "bob id=7". The one that goes on goes on adding to the opening;
+  // the one that has closed keeps the copy taken when it closed, and that is
+  // what it is read from.
+  //
+  // A list is gathered and read at its opening throughout. Its elements go on
+  // being added to the same list however the readings divide, and where it
+  // began is what says which list that is.
   std::size_t command_index = 0;
   std::apply(
       [&](const auto&... command) {
         ([&] {
           if (command_index++ >= count) return;
           const std::uint32_t tag = automaton.register_tag[command.destination];
-          if (tag != gathered_at && tag != opening) return;
+          if (tag != opening && tag != closing) return;
           if (command.source != packed_command::no_source &&
               command.value == -2) {
-            // A reading that divides carries its gathering with it.
-            if (tag != gathered_at) return;
+            // A reading that divides carries its gathering with it, whichever
+            // of the two registers is being copied.
             std::get<group>(states[command.destination]) =
                 std::get<group>(old_states[command.source]);
-          } else if constexpr (gathers_a_list) {
-            if (tag != opening) return;
-            std::get<group>(states[command.destination]) = held_type{};
           } else if (tag == opening) {
-            // The group has begun again. Every gathering that ends a reading
-            // this opening belongs to starts over.
+            if constexpr (gathers_a_list) {
+              std::get<group>(states[command.destination]) = held_type{};
+            } else {
+              std::get<group>(states[command.destination]) =
+                  scanner_begin<held_type>(spread.parameters[group].view());
+            }
+          } else if constexpr (!gathers_a_list) {
+            // The group has closed in some reading. What it gathered is copied
+            // out of the opening it was being added to, and stops there.
             const auto& entered = automaton.states[state];
             for (std::size_t reading = 0; reading < entered.reading_count;
                  ++reading) {
-              if (entered.readings[reading][opening] != command.destination) {
+              if (entered.readings[reading][closing] != command.destination) {
                 continue;
               }
-              std::get<group>(states[entered.readings[reading][closing]]) =
-                  scanner_begin<held_type>(spread.parameters[group].view());
+              std::get<group>(states[command.destination]) =
+                  std::get<group>(states[entered.readings[reading][opening]]);
+              break;
             }
           }
         }(),
@@ -1080,16 +1092,16 @@ constexpr void advance_scanner(
   // would discard nothing: what follows an `if constexpr` is not the branch it
   // did not take.
   if constexpr (!gathers_a_list) {
-    // Once each, however many readings share it: a gathering is one closing.
+    // Once each, however many readings share it: a register is one gathering.
     std::array<bool, register_count> filled{};
     const auto& packed = automaton.states[state];
     for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
-      if (filled[close]) continue;
+      if (filled[open]) continue;
       if (registers[open] < 0 || registers[close] >= registers[open]) continue;
-      filled[close] = true;
-      scanner_push<held_type>(std::get<group>(states[close]), symbol);
+      filled[open] = true;
+      scanner_push<held_type>(std::get<group>(states[open]), symbol);
     }
   }
 }
@@ -1206,6 +1218,46 @@ constexpr void collect_elements(
    ...);
 }
 
+// The copy a group's closing takes out of its opening, for the commands that
+// run when the input ends. Nothing arrives after them, so there is no character
+// to add and nothing to do but take the copy the reading will be read from.
+template <std::size_t group, class type, fixed_string format, auto& automaton,
+          class states_type, std::size_t command_count>
+constexpr void close_gathering(
+    std::size_t state, states_type& states,
+    const std::array<packed_command, command_count>& commands,
+    std::size_t count) {
+  using held_type = leaf_kind<type, group>;
+  if constexpr (!scanned_as_range<held_type>) {
+    constexpr std::size_t opening = group * 2;
+    constexpr std::size_t closing = group * 2 + 1;
+    const auto& entered = automaton.states[state];
+    for (std::size_t index = 0; index < count; ++index) {
+      const packed_command& command = commands[index];
+      if (command.value != 0) continue;
+      if (automaton.register_tag[command.destination] != closing) continue;
+      for (std::size_t reading = 0; reading < entered.reading_count;
+           ++reading) {
+        if (entered.readings[reading][closing] != command.destination) continue;
+        std::get<group>(states[command.destination]) =
+            std::get<group>(states[entered.readings[reading][opening]]);
+        break;
+      }
+    }
+  }
+}
+
+template <class type, fixed_string format, auto& automaton, class states_type,
+          std::size_t command_count, std::size_t... group>
+constexpr void close_gatherings(
+    std::size_t state, states_type& states,
+    const std::array<packed_command, command_count>& commands,
+    std::size_t count, std::index_sequence<group...>) {
+  (close_gathering<group, type, format, automaton>(state, states, commands,
+                                                   count),
+   ...);
+}
+
 template <class type, fixed_string format, auto& automaton,
           std::size_t register_count, class states_type,
           std::size_t command_count, std::size_t... group>
@@ -1262,7 +1314,8 @@ template <class root, class type, std::size_t offset, class reading_type,
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers) {
   if constexpr (scanned_as_leaf<type>) {
-    // Gathered where it ends, so read from there.
+    // Read where it ended: the copy taken when the group closed, which the
+    // readings that went on adding to the opening cannot have changed.
     return scanner_finish<type>(
         std::get<offset>(states[reading[offset * 2 + 1]]));
   } else if constexpr (scanned_as_range<type>) {
@@ -1408,10 +1461,15 @@ class stream_state {
     if (slot == packed_state<0, 0, 0>::not_accepting) {
       throw scan_error("input does not match scan expression");
     }
-    // The reading that accepted says which register holds each value's opening
-    // tag, and that register holds its gathering.
-    return finish_value<type, type, 0>(automaton.states[state_].readings[slot],
-                                       scanner_states_, registers_);
+    // The reading that accepted says which register holds each value, and the
+    // groups that close here have not had their copies taken yet: the commands
+    // that end the match run without a character to follow them.
+    const auto& reached = automaton.states[state_];
+    close_gatherings<type, format, automaton>(
+        state_, scanner_states_, reached.final_commands,
+        reached.final_command_count, std::make_index_sequence<field_count>{});
+    return finish_value<type, type, 0>(reached.readings[slot], scanner_states_,
+                                       registers_);
   }
 
  private:
