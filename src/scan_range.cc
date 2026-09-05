@@ -256,6 +256,133 @@ class prefix_scan {
   std::string_view input_;
 };
 
+// One match after another, off the front of what is left.
+//
+// The reading stops where the pattern stops taking, and what it did not take is
+// still there to be looked at -- so a loop that ends early can say why. The
+// values are read as the loop asks for them and never all at once.
+template <class type, fixed_string format>
+class each_view {
+ public:
+  constexpr explicit each_view(std::string_view input) : rest_(input) {}
+
+  class iterator {
+   public:
+    using value_type = type;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(each_view& owner) : owner_(&owner) {}
+
+    [[nodiscard]] constexpr const type& operator*() const {
+      return *owner_->value_;
+    }
+    constexpr iterator& operator++() {
+      owner_->advance();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return owner_ == nullptr || !owner_->value_.has_value();
+    }
+
+   private:
+    each_view* owner_ = nullptr;
+  };
+
+  [[nodiscard]] constexpr iterator begin() {
+    advance();
+    return iterator(*this);
+  }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+  // What the pattern did not take. Empty when everything was read.
+  [[nodiscard]] constexpr std::string_view rest() const { return rest_; }
+
+ private:
+  constexpr void advance() {
+    value_.reset();
+    if (rest_.empty()) return;
+    const std::string_view head =
+        detail::taken_prefix_or_none<type, format>(rest_);
+    if (head.data() == nullptr) return;
+    value_ = detail::borrowed_result<format>(head);
+    rest_ = rest_.substr(head.size());
+  }
+
+  std::string_view rest_;
+  std::optional<type> value_;
+};
+
+// The same off a range that is read as it comes.
+template <class type, fixed_string format, class range_type>
+class each_stream_view {
+ public:
+  constexpr explicit each_stream_view(range_type input)
+      : input_(std::move(input)),
+        first_(std::ranges::begin(input_)) {}
+
+  each_stream_view(each_stream_view&&) = default;
+  each_stream_view& operator=(each_stream_view&&) = default;
+  each_stream_view(const each_stream_view&) = delete;
+  each_stream_view& operator=(const each_stream_view&) = delete;
+
+  class iterator {
+   public:
+    using value_type = type;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(each_stream_view& owner) : owner_(&owner) {}
+
+    [[nodiscard]] constexpr const type& operator*() const {
+      return *owner_->value_;
+    }
+    constexpr iterator& operator++() {
+      owner_->advance();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return owner_ == nullptr || !owner_->value_.has_value();
+    }
+
+   private:
+    each_stream_view* owner_ = nullptr;
+  };
+
+  [[nodiscard]] constexpr iterator begin() {
+    advance();
+    return iterator(*this);
+  }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+  // The character that ended the last match, where one was read and could not
+  // be put back. Empty where the pattern ended by itself.
+  [[nodiscard]] constexpr std::optional<char> stopped() const {
+    return stopped_;
+  }
+
+ private:
+  constexpr void advance() {
+    value_.reset();
+    if (first_ == std::ranges::end(input_)) return;
+    try {
+      auto got = detail::scan_stream_prefix<type, format>(
+          first_, std::ranges::end(input_));
+      value_ = std::move(got.value);
+      stopped_ = got.stopped;
+    } catch (const scan_error&) {
+      value_.reset();
+    }
+  }
+
+  range_type input_;
+  std::ranges::iterator_t<range_type> first_;
+  std::optional<type> value_;
+  std::optional<char> stopped_;
+};
+
 // A machine fed one character at a time, for input that arrives rather than
 // waiting to be read.
 //
@@ -331,6 +458,70 @@ class prefix_stream_scan {
  private:
   range_type input_;
 };
+
+// One match after another. The output type is named where the reading starts,
+// for the same reason the head of an input names it: until it is said there is
+// nothing to work out.
+template <fixed_string format>
+class each_scan {
+ public:
+  constexpr explicit each_scan(std::string_view input) : input_(input) {}
+
+  template <class type>
+  [[nodiscard]] constexpr each_view<type, format> of() const {
+    static_assert(!detail::matches_nothing<
+                      detail::packed_automaton<type, format>>(),
+                  "this pattern is happy with nothing at all, so reading one "
+                  "match after another would never move");
+    return each_view<type, format>(input_);
+  }
+
+ private:
+  std::string_view input_;
+};
+
+template <fixed_string format, class range_type>
+class each_stream_scan {
+ public:
+  constexpr explicit each_stream_scan(range_type input)
+      : input_(std::move(input)) {}
+
+  each_stream_scan(each_stream_scan&&) = default;
+  each_stream_scan& operator=(each_stream_scan&&) = default;
+  each_stream_scan(const each_stream_scan&) = delete;
+  each_stream_scan& operator=(const each_stream_scan&) = delete;
+
+  template <class type>
+  [[nodiscard]] constexpr each_stream_view<type, format, range_type> of() && {
+    static_assert(!detail::matches_nothing<
+                      detail::streaming_automaton<type, format>>(),
+                  "this pattern is happy with nothing at all, so reading one "
+                  "match after another would never move");
+    return each_stream_view<type, format, range_type>(std::move(input_));
+  }
+
+ private:
+  range_type input_;
+};
+
+// One match after another, off a contiguous input.
+template <fixed_string format, detail::contiguous_char_range range_type>
+  requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
+[[nodiscard]] constexpr auto each(range_type&& input) {
+  return each_scan<format>(std::string_view(std::ranges::data(input),
+                                            std::ranges::size(input)));
+}
+
+// And off one that is read as it comes.
+template <fixed_string format, std::ranges::input_range range_type>
+  requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
+           (!detail::contiguous_char_range<range_type> ||
+            (!std::is_lvalue_reference_v<range_type&&> &&
+             !std::ranges::borrowed_range<range_type>))
+[[nodiscard]] constexpr auto each(range_type&& input) {
+  auto view = std::views::all(std::forward<range_type>(input));
+  return each_stream_scan<format, decltype(view)>(std::move(view));
+}
 
 // The head of the input that the pattern takes, and what follows it.
 template <fixed_string format, detail::contiguous_char_range range_type>

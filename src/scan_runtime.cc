@@ -643,15 +643,35 @@ template <auto& automaton, std::size_t state>
                                            cursor + 1, end, best);
 }
 
+// The head the pattern takes, or a view of nothing at all -- which is not the
+// same as an empty head, and is told apart by pointing nowhere.
 template <class type, fixed_string format>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view taken_prefix(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view taken_prefix_or_none(
     std::string_view input) {
   constexpr const auto& automaton = packed_automaton<type, format>;
   const char* const begin = input.data();
   const char* const best = run_prefix_continuation<automaton, automaton.initial>(
       begin, begin + input.size(), nullptr);
-  if (best == nullptr) throw scan_error("input does not begin with the pattern");
+  if (best == nullptr) return {};
   return std::string_view(begin, static_cast<std::size_t>(best - begin));
+}
+
+template <class type, fixed_string format>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view taken_prefix(
+    std::string_view input) {
+  const std::string_view head = taken_prefix_or_none<type, format>(input);
+  if (head.data() == nullptr) {
+    throw scan_error("input does not begin with the pattern");
+  }
+  return head;
+}
+
+// Whether the pattern is happy with nothing at all. Reading one match after
+// another, such a pattern never moves and the reading never ends.
+template <auto& automaton>
+[[nodiscard]] consteval bool matches_nothing() {
+  return automaton.states[automaton.initial].accepting_slot !=
+         packed_state<0, 0, 0>::not_accepting;
 }
 
 template <class type, fixed_string format, int sentinel, bool terminated,
@@ -1128,17 +1148,19 @@ struct taken_ahead {
   std::optional<char> stopped;
 };
 
-template <class type, fixed_string format, std::ranges::input_range range_type>
+// By iterators rather than by a range, so that whoever holds them can go on
+// from where this stopped -- which is what reading one match after another off
+// a stream is.
+template <class type, fixed_string format, class iterator_type,
+          class sentinel_type>
 [[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
-    range_type&& input) {
+    iterator_type& first, sentinel_type last) {
   static_assert(
       !can_walk_past_the_end<streaming_automaton<type, format>>(),
       "this pattern can walk past its own ending, and an input read once "
       "cannot be walked back: scan the head of something that can be looked at "
       "twice");
   stream_state<type, format> state;
-  auto first = std::ranges::begin(input);
-  const auto last = std::ranges::end(input);
   std::optional<char> stopped;
   while (first != last) {
     const char symbol = static_cast<char>(*first);
@@ -1156,6 +1178,13 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
     if (state.settled()) break;
   }
   return {std::move(state).finish(), stopped};
+}
+
+template <class type, fixed_string format, std::ranges::input_range range_type>
+[[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
+    range_type&& input) {
+  auto first = std::ranges::begin(input);
+  return scan_stream_prefix<type, format>(first, std::ranges::end(input));
 }
 
 #undef SCAN_FORCE_INLINE
