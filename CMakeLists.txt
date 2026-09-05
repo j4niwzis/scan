@@ -4,7 +4,7 @@ set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
     "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
 set(CMAKE_CXX_MODULE_STD ON)
 
-project(tre_tdfa LANGUAGES CXX)
+project(scan LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,15 +75,11 @@ CPMAddPackage(
   OPTIONS "BOOST_USE_MODULES ON" "BUILD_TESTING OFF"
 )
 
-add_library(tre_tdfa)
-target_sources(tre_tdfa PUBLIC FILE_SET CXX_MODULES FILES src/tre.cc)
-target_compile_features(tre_tdfa PUBLIC cxx_std_23)
-target_compile_options(tre_tdfa PRIVATE -Wall -Wextra -Wpedantic)
-
 add_library(scan)
 target_sources(
   scan
   PUBLIC FILE_SET CXX_MODULES FILES
+    src/scan_tre.cc
     src/scan_core.cc
     src/scan_views.cc
     src/scan_compiler.cc
@@ -94,7 +90,7 @@ target_sources(
     src/scan.cc
 )
 target_compile_features(scan PUBLIC cxx_std_23)
-target_link_libraries(scan PUBLIC tre_tdfa Boost::pfr)
+target_link_libraries(scan PUBLIC Boost::pfr)
 target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_options(scan PUBLIC
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=300000000>
@@ -121,17 +117,15 @@ if(SCAN_BYTECODE_CONSTANT_INTERPRETER)
   # constant expression.
   target_compile_options(scan PRIVATE
     $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
-  target_compile_options(tre_tdfa PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-fexperimental-new-constant-interpreter>)
 endif()
 
 enable_testing()
 add_executable(tre_tdfa_test tests/tre_test.cc tests/ctre_compat_test.cc)
-target_link_libraries(tre_tdfa_test PRIVATE tre_tdfa scan gtest_main)
+target_link_libraries(tre_tdfa_test PRIVATE scan gtest_main)
 add_test(NAME tre_tdfa_test COMMAND tre_tdfa_test)
 
 add_executable(tre_runtime_test tests/tre_runtime_test.cc)
-target_link_libraries(tre_runtime_test PRIVATE tre_tdfa gtest_main)
+target_link_libraries(tre_runtime_test PRIVATE scan gtest_main)
 add_test(NAME tre_runtime_test COMMAND tre_runtime_test)
 
 if(SCAN_BUILD_BENCHMARKS)

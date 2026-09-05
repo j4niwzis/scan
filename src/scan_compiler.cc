@@ -1,7 +1,7 @@
 export module scan.compiler;
 
 import std;
-import tre;
+import scan.tre;
 import boost.pfr;
 export import scan.core;
 export import scan.views;
@@ -20,14 +20,14 @@ class tre_parser {
         capture_count_(capture_count),
         capture_parentheses_(capture_parentheses) {}
 
-  [[nodiscard]] constexpr tre::node parse_format() {
-    tre::node result = parse_format_sequence();
+  [[nodiscard]] constexpr scan::tre::node parse_format() {
+    scan::tre::node result = parse_format_sequence();
     if (position_ != source_.size()) throw "invalid scan format";
     return result;
   }
 
-  [[nodiscard]] constexpr tre::node parse_regex() {
-    tre::node result = parse_alternative('\0');
+  [[nodiscard]] constexpr scan::tre::node parse_regex() {
+    scan::tre::node result = parse_alternative('\0');
     if (position_ != source_.size()) throw "invalid regular expression";
     return result;
   }
@@ -42,27 +42,27 @@ class tre_parser {
                                                 : '\0';
   }
 
-  [[nodiscard]] constexpr tre::node parse_format_sequence() {
-    if (at_end()) return tre::epsilon();
+  [[nodiscard]] constexpr scan::tre::node parse_format_sequence() {
+    if (at_end()) return scan::tre::epsilon();
     if (peek() == '\\') {
       if (peek(1) == '\0') throw "dangling format escape";
       const char literal = peek(1);
       position_ += 2;
-      return tre::cat({tre::symbol(literal), parse_format_sequence()});
+      return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
     }
     if (peek() == '{') {
-      tre::node capture = parse_capture();
-      return tre::cat({std::move(capture), parse_format_sequence()});
+      scan::tre::node capture = parse_capture();
+      return scan::tre::cat({std::move(capture), parse_format_sequence()});
     }
     const char literal = peek();
     ++position_;
-    return tre::cat({tre::symbol(literal), parse_format_sequence()});
+    return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
   }
 
-  [[nodiscard]] constexpr tre::node parse_capture() {
+  [[nodiscard]] constexpr scan::tre::node parse_capture() {
     ++position_;
     const std::size_t capture = capture_count_++;
-    tre::node body;
+    scan::tre::node body;
     if (peek() == '}' || peek() == ':') {
       if (capture >= defaults_.size()) throw "too many capture groups";
       if (peek() == ':') skip_parameters();
@@ -85,44 +85,44 @@ class tre_parser {
     }
   }
 
-  [[nodiscard]] static constexpr tre::node wrap_capture(
-      std::size_t capture, tre::node body) {
-    return tre::cat({tre::tag(static_cast<tre::tag_id>(capture * 2)),
+  [[nodiscard]] static constexpr scan::tre::node wrap_capture(
+      std::size_t capture, scan::tre::node body) {
+    return scan::tre::cat({scan::tre::tag(static_cast<scan::tre::tag_id>(capture * 2)),
                      std::move(body),
-                     tre::tag(static_cast<tre::tag_id>(capture * 2 + 1))});
+                     scan::tre::tag(static_cast<scan::tre::tag_id>(capture * 2 + 1))});
   }
 
-  [[nodiscard]] constexpr tre::node parse_alternative(char stop) {
-    tre::node left = parse_sequence(stop);
+  [[nodiscard]] constexpr scan::tre::node parse_alternative(char stop) {
+    scan::tre::node left = parse_sequence(stop);
     if (peek() != '|') return left;
     ++position_;
-    return tre::alt(
+    return scan::tre::alt(
         {std::move(left), parse_alternative(stop)});
   }
 
-  [[nodiscard]] constexpr tre::node parse_sequence(char stop) {
+  [[nodiscard]] constexpr scan::tre::node parse_sequence(char stop) {
     if (at_end() || peek() == stop || peek() == '|' || peek() == ')') {
-      return tre::epsilon();
+      return scan::tre::epsilon();
     }
-    tre::node head = parse_quantified();
-    return tre::cat({std::move(head), parse_sequence(stop)});
+    scan::tre::node head = parse_quantified();
+    return scan::tre::cat({std::move(head), parse_sequence(stop)});
   }
 
-  [[nodiscard]] constexpr tre::node parse_quantified() {
-    tre::node atom = parse_atom();
+  [[nodiscard]] constexpr scan::tre::node parse_quantified() {
+    scan::tre::node atom = parse_atom();
     if (peek() == '*') {
       ++position_;
       if (peek() == '+') ++position_;
-      return tre::star(std::move(atom));
+      return scan::tre::star(std::move(atom));
     }
     if (peek() == '+') {
       ++position_;
       if (peek() == '+') ++position_;
-      return tre::plus(std::move(atom));
+      return scan::tre::plus(std::move(atom));
     }
     if (peek() == '?') {
       ++position_;
-      return tre::optional(std::move(atom));
+      return scan::tre::optional(std::move(atom));
     }
     if (peek() == '{' && peek(1) >= '0' && peek(1) <= '9') {
       ++position_;
@@ -130,11 +130,11 @@ class tre_parser {
       std::size_t maximum = minimum;
       if (peek() == ',') {
         ++position_;
-        maximum = peek() == '}' ? tre::unbounded : parse_number(0);
+        maximum = peek() == '}' ? scan::tre::unbounded : parse_number(0);
       }
       if (peek() != '}') throw "invalid repetition";
       ++position_;
-      return tre::repeat(std::move(atom), minimum, maximum);
+      return scan::tre::repeat(std::move(atom), minimum, maximum);
     }
     return atom;
   }
@@ -146,7 +146,7 @@ class tre_parser {
     return parse_number(next);
   }
 
-  [[nodiscard]] constexpr tre::node parse_atom() {
+  [[nodiscard]] constexpr scan::tre::node parse_atom() {
     if (at_end()) throw "missing regular expression atom";
     if (peek() == '{') return parse_capture();
     if (peek() == '(') {
@@ -156,7 +156,7 @@ class tre_parser {
       const bool capturing = capture_parentheses_ && !noncapturing;
       const std::size_t capture =
           capturing ? capture_count_++ : std::size_t{0};
-      tre::node body = parse_alternative(')');
+      scan::tre::node body = parse_alternative(')');
       if (peek() != ')') throw "unterminated regular expression group";
       ++position_;
       return capturing ? wrap_capture(capture, std::move(body))
@@ -167,20 +167,20 @@ class tre_parser {
       ++position_;
       std::array<bool, 256> symbols{};
       std::ranges::fill(symbols, true);
-      return tre::character_class(symbols);
+      return scan::tre::character_class(symbols);
     }
     if (peek() == '\\') return parse_escape();
     const char symbol = peek();
     ++position_;
-    return tre::symbol(symbol);
+    return scan::tre::symbol(symbol);
   }
 
-  [[nodiscard]] constexpr tre::node parse_escape() {
+  [[nodiscard]] constexpr scan::tre::node parse_escape() {
     ++position_;
     if (at_end()) throw "dangling regular expression escape";
     const char escaped = peek();
     ++position_;
-    if (escaped == 'x') return tre::symbol(parse_hex_byte());
+    if (escaped == 'x') return scan::tre::symbol(parse_hex_byte());
     if (escaped == 'd') return make_range('0', '9');
     if (escaped == 's') return make_set(" \t\n\r\f\v");
     if (escaped == 'w') {
@@ -188,12 +188,12 @@ class tre_parser {
       add_range(symbols, 'A', 'Z');
       add_range(symbols, '0', '9');
       symbols[static_cast<unsigned char>('_')] = true;
-      return tre::character_class(symbols);
+      return scan::tre::character_class(symbols);
     }
-    return tre::symbol(escaped);
+    return scan::tre::symbol(escaped);
   }
 
-  [[nodiscard]] constexpr tre::node parse_character_class() {
+  [[nodiscard]] constexpr scan::tre::node parse_character_class() {
     ++position_;
     const bool negated = peek() == '^';
     if (negated) ++position_;
@@ -204,7 +204,7 @@ class tre_parser {
     if (negated) {
       std::ranges::transform(symbols, symbols.begin(), std::logical_not<>{});
     }
-    return tre::character_class(symbols);
+    return scan::tre::character_class(symbols);
   }
 
   constexpr void parse_class_items(std::array<bool, 256>& symbols) {
@@ -263,16 +263,16 @@ class tre_parser {
     return symbols;
   }
 
-  [[nodiscard]] static constexpr tre::node make_range(char first, char last) {
-    return tre::character_class(range_bits(first, last));
+  [[nodiscard]] static constexpr scan::tre::node make_range(char first, char last) {
+    return scan::tre::character_class(range_bits(first, last));
   }
 
-  [[nodiscard]] static constexpr tre::node make_set(std::string_view set) {
+  [[nodiscard]] static constexpr scan::tre::node make_set(std::string_view set) {
     std::array<bool, 256> symbols{};
     for (char value : set) {
       symbols[static_cast<unsigned char>(value)] = true;
     }
-    return tre::character_class(symbols);
+    return scan::tre::character_class(symbols);
   }
 
   std::string_view source_;
@@ -363,7 +363,7 @@ template <std::size_t extent>
 }
 
 template <class type, fixed_string format>
-[[nodiscard]] constexpr tre::tnfa build_tnfa() {
+[[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
   constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
   constexpr auto parameters = field_parameters<format, field_count>();
   constexpr auto pattern_storage = parameterized_patterns<type>(
@@ -371,9 +371,9 @@ template <class type, fixed_string format>
   const auto defaults = pattern_views(pattern_storage);
   std::size_t captures = 0;
   tre_parser parser(format.view(), defaults, captures);
-  tre::node expression = parser.parse_format();
+  scan::tre::node expression = parser.parse_format();
   if (captures != field_count) throw "capture count does not match output";
-  return tre::compile_tnfa(expression);
+  return scan::tre::compile_tnfa(expression);
 }
 
 // Register allocation is on here, and it has to be: without it the register
@@ -382,16 +382,16 @@ template <class type, fixed_string format>
 // them. With it the file is as wide as the tags, because the first slots are
 // pinned to the tags the fields are read from and the rest are coalesced away.
 template <class type, fixed_string format>
-[[nodiscard]] constexpr tre::tdfa build_tdfa() {
-  return tre::optimize_tdfa(tre::compile_tdfa(build_tnfa<type, format>()));
+[[nodiscard]] constexpr scan::tre::tdfa build_tdfa() {
+  return scan::tre::optimize_tdfa(scan::tre::compile_tdfa(build_tnfa<type, format>()));
 }
 
 // Minimisation as Moore's refinement, with the two things that make it cheap:
 // symbols that behave alike everywhere are one class, and a command sequence
 // is compared as the number it was interned to rather than by copying it.
 [[nodiscard]] constexpr bool same_command_list(
-    const std::vector<tre::register_command>& lhs,
-    const std::vector<tre::register_command>& rhs) {
+    const std::vector<scan::tre::register_command>& lhs,
+    const std::vector<scan::tre::register_command>& rhs) {
   if (lhs.size() != rhs.size()) return false;
   for (std::size_t index = 0; index < lhs.size(); ++index) {
     if (lhs[index].destination != rhs[index].destination) return false;
@@ -401,7 +401,7 @@ template <class type, fixed_string format>
   return true;
 }
 
-[[nodiscard]] constexpr tre::tdfa minimize_tdfa(tre::tdfa automaton) {
+[[nodiscard]] constexpr scan::tre::tdfa minimize_tdfa(scan::tre::tdfa automaton) {
   if (automaton.states.empty()) return automaton;
   const std::size_t count = automaton.states.size();
   const std::size_t none = std::numeric_limits<std::size_t>::max();
@@ -420,8 +420,8 @@ template <class type, fixed_string format>
 
   // Interned command sequences: equal sequences share a number, so the
   // refinement compares numbers.
-  std::vector<std::vector<tre::register_command>> pool;
-  const auto intern = [&](const std::vector<tre::register_command>& commands) {
+  std::vector<std::vector<scan::tre::register_command>> pool;
+  const auto intern = [&](const std::vector<scan::tre::register_command>& commands) {
     for (std::size_t index = 0; index < pool.size(); ++index) {
       if (same_command_list(pool[index], commands)) return index;
     }
@@ -536,11 +536,11 @@ template <class type, fixed_string format>
     classes = std::move(refined);
   }
 
-  tre::tdfa minimized{.initial = classes[automaton.initial],
+  scan::tre::tdfa minimized{.initial = classes[automaton.initial],
                       .tag_count = automaton.tag_count,
                       .register_count = automaton.register_count,
                       .initialize = std::move(automaton.initialize),
-                      .states = std::vector<tre::tdfa_state>(class_count)};
+                      .states = std::vector<scan::tre::tdfa_state>(class_count)};
   for (std::size_t result_class = 0; result_class < class_count; ++result_class) {
     const auto representative = std::ranges::find(classes, result_class);
     const auto& source =
@@ -549,9 +549,9 @@ template <class type, fixed_string format>
     destination.accepting_slot = source.accepting_slot;
     destination.final_commands = source.final_commands;
     destination.nfa_states = source.nfa_states;
-    for (const tre::tdfa_transition& transition : source.transitions) {
+    for (const scan::tre::tdfa_transition& transition : source.transitions) {
       destination.transitions.push_back(
-          tre::tdfa_transition{.symbols = transition.symbols,
+          scan::tre::tdfa_transition{.symbols = transition.symbols,
                                .target = classes[transition.target],
                                .commands = transition.commands});
     }
@@ -560,18 +560,18 @@ template <class type, fixed_string format>
 }
 
 template <fixed_string pattern>
-[[nodiscard]] consteval tre::tdfa build_regex_tdfa() {
+[[nodiscard]] consteval scan::tre::tdfa build_regex_tdfa() {
   std::size_t captures = 0;
   tre_parser parser(pattern.view(), {}, captures, true);
-  return minimize_tdfa(tre::optimize_tdfa(
-      tre::compile_tdfa(tre::compile_tnfa(parser.parse_regex()))));
+  return minimize_tdfa(scan::tre::optimize_tdfa(
+      scan::tre::compile_tdfa(scan::tre::compile_tnfa(parser.parse_regex()))));
 }
 
 // Which transition each symbol takes, or none. The symbol sets of a state's
 // transitions do not overlap, so this is a function, and consecutive symbols
 // that take the same transition are one range.
 [[nodiscard]] constexpr std::array<std::size_t, 256> transition_of_symbol(
-    const tre::tdfa_state& state) {
+    const scan::tre::tdfa_state& state) {
   constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
   std::array<std::size_t, 256> result{};
   std::ranges::fill(result, none);
@@ -586,7 +586,7 @@ template <fixed_string pattern>
 }
 
 [[nodiscard]] constexpr std::size_t count_symbol_ranges(
-    const tre::tdfa_state& state) {
+    const scan::tre::tdfa_state& state) {
   constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
   const std::array<std::size_t, 256> owner = transition_of_symbol(state);
   std::size_t count = 0;
@@ -618,17 +618,17 @@ struct packed_shape {
   std::size_t tags = 0;
 };
 
-[[nodiscard]] constexpr packed_shape compute_shape(const tre::tdfa& tdfa) {
+[[nodiscard]] constexpr packed_shape compute_shape(const scan::tre::tdfa& tdfa) {
   packed_shape shape{.states = tdfa.states.size(),
                      .registers = tdfa.register_count,
                      .initial_commands = tdfa.initialize.size(),
                      .maximum_commands = 0,
                      .maximum_final_commands = 0,
                      .tags = tdfa.tag_count};
-  for (const tre::tdfa_state& state : tdfa.states) {
+  for (const scan::tre::tdfa_state& state : tdfa.states) {
     shape.maximum_final_commands =
         std::max(shape.maximum_final_commands, state.final_commands.size());
-    for (const tre::tdfa_transition& transition : state.transitions) {
+    for (const scan::tre::tdfa_transition& transition : state.transitions) {
       shape.maximum_commands =
           std::max(shape.maximum_commands, transition.commands.size());
     }
@@ -639,7 +639,7 @@ struct packed_shape {
 
 template <class type, fixed_string format>
 [[nodiscard]] consteval packed_shape compute_shape() {
-  const tre::tdfa tdfa = build_tdfa<type, format>();
+  const scan::tre::tdfa tdfa = build_tdfa<type, format>();
   return compute_shape(tdfa);
 }
 
@@ -732,7 +732,7 @@ struct packed_captureless_tdfa {
 };
 
 [[nodiscard]] constexpr packed_command pack_command(
-    const tre::register_command& command) {
+    const scan::tre::register_command& command) {
   packed_command packed{
       .destination = command.destination,
       .source = command.source.value_or(packed_command::no_source),
@@ -747,7 +747,7 @@ template <std::size_t state_count, std::size_t register_count,
           std::size_t initial_command_count, std::size_t command_count,
           std::size_t final_command_count, std::size_t tag_count,
           std::size_t range_count>
-[[nodiscard]] constexpr auto pack_tdfa_value(const tre::tdfa& tdfa) {
+[[nodiscard]] constexpr auto pack_tdfa_value(const scan::tre::tdfa& tdfa) {
   packed_tdfa<state_count, register_count, initial_command_count,
               command_count, final_command_count, tag_count, range_count>
       packed;
@@ -755,7 +755,7 @@ template <std::size_t state_count, std::size_t register_count,
   std::ranges::transform(tdfa.initialize, packed.initialize.begin(),
                          pack_command);
   for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
-        const tre::tdfa_state& source = tdfa.states[state_index];
+        const scan::tre::tdfa_state& source = tdfa.states[state_index];
         auto& target = packed.states[state_index];
         target.accepting_slot = source.accepting_slot.value_or(
             packed_state<command_count, final_command_count,
@@ -779,7 +779,7 @@ template <std::size_t state_count, std::size_t register_count,
                     static_cast<unsigned char>(symbol);
                 continue;
               }
-              const tre::tdfa_transition& transition =
+              const scan::tre::tdfa_transition& transition =
                   source.transitions[index];
               auto& range = target.ranges[target.range_count++];
               range.first = static_cast<unsigned char>(symbol);
@@ -814,7 +814,7 @@ template <fixed_string pattern>
 template <fixed_string pattern>
 [[nodiscard]] consteval auto pack_regex_tdfa() {
   constexpr packed_shape shape = compute_regex_shape<pattern>();
-  const tre::tdfa tdfa = build_regex_tdfa<pattern>();
+  const scan::tre::tdfa tdfa = build_regex_tdfa<pattern>();
   if constexpr (shape.tags == 0) {
     packed_captureless_tdfa<shape.states> packed;
     packed.initial = static_cast<typename decltype(packed)::state_type>(
@@ -825,7 +825,7 @@ template <fixed_string pattern>
     for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
           const auto& source = tdfa.states[state_index];
           packed.accepting[state_index] = source.accepting_slot.has_value();
-          for (const tre::tdfa_transition& transition : source.transitions) {
+          for (const scan::tre::tdfa_transition& transition : source.transitions) {
             for (std::size_t symbol = 0; symbol < 256; ++symbol) {
               if (!transition.symbols.test(symbol)) continue;
               packed.transitions[state_index][symbol] =

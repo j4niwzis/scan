@@ -1,55 +1,55 @@
 import std;
-import tre;
+import scan.tre;
 import scan;
 import gtest;
 
 #include "gtest/gtest-macros.h"
 
 TEST(tre_test, tagged_automata) {
-  using tre::cat;
-  using tre::node;
-  using tre::star;
-  using tre::symbol;
-  using tre::tag;
+  using scan::tre::cat;
+  using scan::tre::node;
+  using scan::tre::star;
+  using scan::tre::symbol;
+  using scan::tre::tag;
 
   // The tags delimit the greedy a* submatch in a*b*.
   node expression = cat({tag(0), star(symbol('a')), tag(1),
                          star(symbol('b'))});
-  const tre::tnfa tnfa = tre::compile_tnfa(expression);
-  const tre::match interpreted = tre::simulate(tnfa, "aaabb");
+  const scan::tre::tnfa tnfa = scan::tre::compile_tnfa(expression);
+  const scan::tre::match interpreted = scan::tre::simulate(tnfa, "aaabb");
   ASSERT_TRUE(interpreted.matched);
-  EXPECT_EQ(interpreted.tags, std::vector<tre::tag_history>({{0}, {3}}));
+  EXPECT_EQ(interpreted.tags, std::vector<scan::tre::tag_history>({{0}, {3}}));
 
-  const tre::tdfa tdfa = tre::compile_tdfa(tnfa);
-  const tre::match compiled = tre::simulate(tdfa, "aaabb");
+  const scan::tre::tdfa tdfa = scan::tre::compile_tdfa(tnfa);
+  const scan::tre::match compiled = scan::tre::simulate(tdfa, "aaabb");
   ASSERT_TRUE(compiled.matched);
   EXPECT_EQ(compiled.tags, interpreted.tags);
-  EXPECT_FALSE(tre::simulate(tdfa, "aaabc").matched);
+  EXPECT_FALSE(scan::tre::simulate(tdfa, "aaabc").matched);
 
   // Earlier alternatives win when both consume the same input.
-  node alternative = tre::alt({cat({tag(0), symbol('a')}),
+  node alternative = scan::tre::alt({cat({tag(0), symbol('a')}),
                                cat({tag(1), symbol('a')})});
-  const auto ambiguous = tre::simulate(tre::compile_tdfa(
-      tre::compile_tnfa(alternative)), "a");
+  const auto ambiguous = scan::tre::simulate(scan::tre::compile_tdfa(
+      scan::tre::compile_tnfa(alternative)), "a");
   ASSERT_TRUE(ambiguous.matched);
-  EXPECT_EQ(ambiguous.tags[0], tre::tag_history({0}));
-  EXPECT_EQ(ambiguous.tags[1], tre::tag_history({tre::negative_tag}));
+  EXPECT_EQ(ambiguous.tags[0], scan::tre::tag_history({0}));
+  EXPECT_EQ(ambiguous.tags[1], scan::tre::tag_history({scan::tre::negative_tag}));
 
-  node optional = tre::optional(cat({tag(0), symbol('x'), tag(1)}));
-  const auto skipped = tre::simulate(
-      tre::compile_tdfa(tre::compile_tnfa(optional)), "");
+  node optional = scan::tre::optional(cat({tag(0), symbol('x'), tag(1)}));
+  const auto skipped = scan::tre::simulate(
+      scan::tre::compile_tdfa(scan::tre::compile_tnfa(optional)), "");
   ASSERT_TRUE(skipped.matched);
-  EXPECT_EQ(skipped.tags[0], tre::tag_history({tre::negative_tag}));
-  EXPECT_EQ(skipped.tags[1], tre::tag_history({tre::negative_tag}));
+  EXPECT_EQ(skipped.tags[0], scan::tre::tag_history({scan::tre::negative_tag}));
+  EXPECT_EQ(skipped.tags[1], scan::tre::tag_history({scan::tre::negative_tag}));
 }
 
 namespace {
 
-void expect_equivalent(const tre::node& expression, std::string_view input,
-                      const std::vector<tre::tag_history>& expected) {
-  const tre::tnfa tnfa = tre::compile_tnfa(expression);
-  const tre::match interpreted = tre::simulate(tnfa, input);
-  const tre::match compiled = tre::simulate(tre::compile_tdfa(tnfa), input);
+void expect_equivalent(const scan::tre::node& expression, std::string_view input,
+                      const std::vector<scan::tre::tag_history>& expected) {
+  const scan::tre::tnfa tnfa = scan::tre::compile_tnfa(expression);
+  const scan::tre::match interpreted = scan::tre::simulate(tnfa, input);
+  const scan::tre::match compiled = scan::tre::simulate(scan::tre::compile_tdfa(tnfa), input);
 
   ASSERT_TRUE(interpreted.matched);
   ASSERT_TRUE(compiled.matched);
@@ -62,9 +62,9 @@ void expect_equivalent(const tre::node& expression, std::string_view input,
 TEST(tre_test, leftmost_greedy_repetition_consumes_before_following_repetition) {
   // Both repetitions can consume every partition of "aaaa". Leftmost-greedy
   // gives all symbols to the first repetition and leaves the second empty.
-  const tre::node expression = tre::cat(
-      {tre::tag(0), tre::star(tre::symbol('a')), tre::tag(1), tre::tag(2),
-       tre::star(tre::symbol('a')), tre::tag(3)});
+  const scan::tre::node expression = scan::tre::cat(
+      {scan::tre::tag(0), scan::tre::star(scan::tre::symbol('a')), scan::tre::tag(1), scan::tre::tag(2),
+       scan::tre::star(scan::tre::symbol('a')), scan::tre::tag(3)});
 
   expect_equivalent(expression, "aaaa", {{0}, {4}, {4}, {4}});
 }
@@ -72,50 +72,50 @@ TEST(tre_test, leftmost_greedy_repetition_consumes_before_following_repetition) 
 TEST(tre_test, leftmost_alternative_wins_inside_greedy_repetition) {
   // At every position both `a` and `aa` may lead to a complete match. The
   // earlier `a` branch wins, so its tags record all four iterations.
-  const tre::node one =
-      tre::cat({tre::tag(0), tre::symbol('a'), tre::tag(1)});
-  const tre::node two = tre::cat(
-      {tre::tag(2), tre::symbol('a'), tre::symbol('a'), tre::tag(3)});
-  const tre::node expression = tre::star(tre::alt({one, two}));
+  const scan::tre::node one =
+      scan::tre::cat({scan::tre::tag(0), scan::tre::symbol('a'), scan::tre::tag(1)});
+  const scan::tre::node two = scan::tre::cat(
+      {scan::tre::tag(2), scan::tre::symbol('a'), scan::tre::symbol('a'), scan::tre::tag(3)});
+  const scan::tre::node expression = scan::tre::star(scan::tre::alt({one, two}));
 
   expect_equivalent(expression, "aaaa",
                    {{0, 1, 2, 3}, {1, 2, 3, 4},
-                    {tre::negative_tag, tre::negative_tag, tre::negative_tag,
-                     tre::negative_tag},
-                    {tre::negative_tag, tre::negative_tag, tre::negative_tag,
-                     tre::negative_tag}});
+                    {scan::tre::negative_tag, scan::tre::negative_tag, scan::tre::negative_tag,
+                     scan::tre::negative_tag},
+                    {scan::tre::negative_tag, scan::tre::negative_tag, scan::tre::negative_tag,
+                     scan::tre::negative_tag}});
 }
 
 TEST(tre_test, preserves_capture_history_across_repetitions) {
-  const tre::node expression = tre::star(
-      tre::cat({tre::tag(0), tre::symbol('x'), tre::tag(1)}));
+  const scan::tre::node expression = scan::tre::star(
+      scan::tre::cat({scan::tre::tag(0), scan::tre::symbol('x'), scan::tre::tag(1)}));
 
   expect_equivalent(expression, "xxx", {{0, 1, 2}, {1, 2, 3}});
 }
 
 TEST(tre_test, handles_bounded_greedy_repetition) {
-  const tre::node expression = tre::cat(
-      {tre::tag(0), tre::repeat(tre::symbol('a'), 2, 4), tre::tag(1),
-       tre::optional(tre::symbol('a'))});
+  const scan::tre::node expression = scan::tre::cat(
+      {scan::tre::tag(0), scan::tre::repeat(scan::tre::symbol('a'), 2, 4), scan::tre::tag(1),
+       scan::tre::optional(scan::tre::symbol('a'))});
 
   // Four repetitions are preferred, leaving the optional suffix empty.
   expect_equivalent(expression, "aaaa", {{0}, {4}});
-  EXPECT_FALSE(tre::simulate(tre::compile_tdfa(tre::compile_tnfa(expression)),
+  EXPECT_FALSE(scan::tre::simulate(scan::tre::compile_tdfa(scan::tre::compile_tnfa(expression)),
                              "a")
                    .matched);
-  EXPECT_FALSE(tre::simulate(tre::compile_tdfa(tre::compile_tnfa(expression)),
+  EXPECT_FALSE(scan::tre::simulate(scan::tre::compile_tdfa(scan::tre::compile_tnfa(expression)),
                              "aaaaaa")
                    .matched);
 }
 
 TEST(tre_test, optimizes_register_program_without_changing_captures) {
-  const tre::node expression = tre::star(tre::alt({
-      tre::cat({tre::tag(0), tre::symbol('a'), tre::tag(1)}),
-      tre::cat({tre::tag(2), tre::symbol('a'), tre::symbol('a'),
-                tre::tag(3)})}));
-  const tre::tdfa original = tre::compile_tdfa(tre::compile_tnfa(expression));
-  const tre::tdfa optimized = tre::optimize_tdfa(original);
-  const auto operation_count = [](const tre::tdfa& automaton) {
+  const scan::tre::node expression = scan::tre::star(scan::tre::alt({
+      scan::tre::cat({scan::tre::tag(0), scan::tre::symbol('a'), scan::tre::tag(1)}),
+      scan::tre::cat({scan::tre::tag(2), scan::tre::symbol('a'), scan::tre::symbol('a'),
+                scan::tre::tag(3)})}));
+  const scan::tre::tdfa original = scan::tre::compile_tdfa(scan::tre::compile_tnfa(expression));
+  const scan::tre::tdfa optimized = scan::tre::optimize_tdfa(original);
+  const auto operation_count = [](const scan::tre::tdfa& automaton) {
     return automaton.initialize.size() +
            std::ranges::fold_left(
                automaton.states | std::views::transform([](const auto& state) {
@@ -129,8 +129,8 @@ TEST(tre_test, optimizes_register_program_without_changing_captures) {
                std::size_t{0}, std::plus<>{});
   };
 
-  EXPECT_EQ(tre::simulate(optimized, "aaaa").tags,
-            tre::simulate(original, "aaaa").tags);
+  EXPECT_EQ(scan::tre::simulate(optimized, "aaaa").tags,
+            scan::tre::simulate(original, "aaaa").tags);
   EXPECT_LT(operation_count(optimized), operation_count(original));
 }
 

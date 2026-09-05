@@ -1,7 +1,7 @@
 export module scan.regex;
 
 import std;
-import tre;
+import scan.tre;
 export import scan.runtime;
 
 export namespace scan {
@@ -346,7 +346,7 @@ regex_match(
     return {regex_submatch(input), {}};
   } else {
     std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, tre::negative_tag);
+    std::ranges::fill(registers, scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, 0);
     // The generated form, as the captureless branch above uses.

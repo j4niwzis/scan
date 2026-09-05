@@ -1,8 +1,8 @@
-export module tre;
+export module scan.tre;
 
 import std;
 
-export namespace tre {
+export namespace scan::tre {
 
 // A set of symbols as four words rather than two hundred and fifty-six bools.
 //
@@ -233,9 +233,9 @@ struct tdfa {
 [[nodiscard]] constexpr match simulate(const tdfa& automaton,
                                        std::string_view input);
 
-}  // namespace tre
+}  // namespace scan::tre
 
-namespace tre {
+namespace scan::tre {
 // Not exported, and not in an unnamed namespace either: an entity there is
 // local to the translation unit, and naming one in the body of an exported
 // inline function exposes it -- which the standard forbids and clang warns
@@ -1192,4 +1192,4 @@ constexpr match simulate(const tdfa& automaton, std::string_view input) {
   return match;
 }
 
-}  // namespace tre
+}  // namespace scan::tre
