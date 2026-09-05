@@ -124,6 +124,35 @@ void scan_captures_strings(harness::State& state) {
                           bench::csv.size());
 }
 
+// The same work on a subject a thousand bytes long, for both engines. What a
+// row like this reports is a cost per byte, which is what the loop decides;
+// everything around the match is the same handful of nanoseconds it was, and is
+// now a fortieth of the total rather than half of it.
+void scan_captures_long(harness::State& state) {
+  const std::string& text = bench::long_csv();
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    field_views value =
+        scan::scan_sentinel<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+            view);
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
+void re2c_captures_long(harness::State& state) {
+  const std::string& text = bench::long_csv();
+  for (auto _ : state) {
+    const char* cursor = text.c_str();
+    const char* positions[10] = {};
+    harness::DoNotOptimize(cursor);
+    harness::DoNotOptimize(re2c_captures(cursor, positions));
+    harness::DoNotOptimize(positions);
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
 void ctre_captures(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -172,6 +201,8 @@ const int registered = [] {
   row("scan_captures_views", scan_captures_views);
   row("scan_captures_views_sentinel", scan_captures_views_sentinel);
   row("scan_captures_strings", scan_captures_strings);
+  row("scan_captures_long", scan_captures_long);
+  row("re2c_captures_long", re2c_captures_long);
   row("ctre_captures", ctre_captures);
   row("re2c_captures", re2c_captures_benchmark);
   return 0;
