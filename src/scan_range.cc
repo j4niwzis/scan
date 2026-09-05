@@ -15,12 +15,35 @@ template <class type>
   return scanner_parse<value_type>(text, parameters);
 }
 
+// A leaf is read from its one group; a product is built from its fields, each
+// of which takes as many groups as it needs, in order. Nothing about the
+// nesting is written in the format: a structure of structures is spelled out
+// flat, because a product of products is flat.
+template <class type, fixed_string format, std::size_t offset,
+          std::size_t total, std::size_t extent>
+[[nodiscard]] constexpr type build_value(
+    const std::array<std::string_view, extent>& groups) {
+  if constexpr (scanned_as_leaf<type>) {
+    constexpr auto parameters = field_parameters<format, total>();
+    return parse_value<std::remove_cv_t<type>>(groups[offset],
+                                               parameters[offset]);
+  } else {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return type{
+          build_value<std::remove_cvref_t<
+                          boost::pfr::tuple_element_t<index, type>>,
+                      format, offset + groups_before_field<type, index>(),
+                      total>(groups)...};
+    }(std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+  }
+}
 template <class type, fixed_string format, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr type convert(
     const std::array<std::string_view, extent>& fields,
     std::index_sequence<index...>) {
-  static_assert(boost::pfr::tuple_size_v<type> == extent,
-                "placeholder count must equal aggregate field count");
+  static_assert(groups_of<type>() == extent,
+                "placeholder count must equal the number of values the output "
+                "type reads");
   // Built, not built empty and then written over. The aggregate used to be
   // default-constructed and each field assigned a temporary afterwards, which
   // for a field that owns storage is a construction, a move-assignment that
@@ -28,27 +51,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   // three times what initialising it once costs. It also demanded that every
   // field be default-constructible and assignable, which is more than an
   // aggregate has to be.
-  constexpr auto parameters = field_parameters<format, extent>();
-  return type{parse_value<std::remove_cvref_t<
-      boost::pfr::tuple_element_t<index, type>>>(fields[index],
-                                                 parameters[index])...};
-}
-
-// One alternative of a variant, built from the groups of its own branch.
-//
-// The groups of every branch stand in one row, in the order the branches are
-// written, so this alternative's fields are the few of them that begin at its
-// offset. The parameters were worked out over the same row and are indexed the
-// same way.
-template <class alternative, fixed_string format, std::size_t offset,
-          std::size_t total, std::size_t extent, std::size_t... index>
-[[nodiscard]] constexpr alternative convert_alternative(
-    const std::array<std::string_view, extent>& groups,
-    std::index_sequence<index...>) {
-  constexpr auto parameters = field_parameters<format, total>();
-  return alternative{parse_value<std::remove_cvref_t<
-      boost::pfr::tuple_element_t<index, alternative>>>(
-      groups[offset + index], parameters[offset + index])...};
+  return build_value<type, format, 0, extent>(fields);
 }
 
 template <class type, std::size_t branch>
@@ -69,7 +72,7 @@ class borrowed_result {
   constexpr operator type() const {
     const auto fields = scan_fields<type, format, sentinel, terminated>(input_);
     return convert<type, format>(fields,
-                      std::make_index_sequence<boost::pfr::tuple_size_v<type>>{});
+                                 std::make_index_sequence<groups_of<type>()>{});
   }
 
   // The same scan, for a format that says the input may be one of several
@@ -87,12 +90,10 @@ class borrowed_result {
       const auto take = [&]<std::size_t which>() {
         if (made || groups[total + which].data() == nullptr) return false;
         using alternative = std::variant_alternative_t<which, type>;
-        made.emplace(
-            std::in_place_index<which>,
-            convert_alternative<alternative, format,
-                                groups_before_branch<type, which>(), total>(
-                groups,
-                std::make_index_sequence<boost::pfr::tuple_size_v<alternative>>{}));
+        made.emplace(std::in_place_index<which>,
+                     build_value<alternative, format,
+                                 groups_before_branch<type, which>(), total>(
+                         groups));
         return true;
       };
       (void)(take.template operator()<branch>() || ...);
