@@ -2080,8 +2080,6 @@ class read_once_split_view {
 template <fixed_string pattern, class held_type, class pieces_type>
 class pieces_search_view {
  public:
-  static constexpr std::size_t window = detail::longest_match_length<pattern>();
-
   constexpr explicit pieces_search_view(pieces_type input)
       : pieces_(std::move(input)) {}
 
@@ -2149,9 +2147,15 @@ class pieces_search_view {
       if (rest_.empty() && !refill()) return;
       const auto taken = detail::regex_search<pattern>(rest_);
       if (!taken) {
-        // Nothing here. What is at the end of this piece may still begin
-        // something the next one finishes, so that much is held back.
-        hold_the_tail();
+        // Nothing here, but what is at the end of this piece may still begin
+        // something the next one finishes -- so the rest of it is held back.
+        //
+        // The whole of it, not some fixed number of characters: which of them
+        // could still begin a match is what the automaton would have to be
+        // asked, and holding the rest is the answer that needs no asking. It
+        // grows to the distance between two matches, which is the scale of the
+        // answers themselves.
+        held_.append(rest_);
         rest_ = std::string_view{};
         continue;
       }
@@ -2171,24 +2175,24 @@ class pieces_search_view {
     }
   }
 
-  // What is held back at the end of a piece: no more than a match can be.
-  constexpr void hold_the_tail() {
-    const std::size_t keeping =
-        window == 0 ? 0 : std::min(rest_.size(), window - 1);
-    if (keeping == 0) return;
-    held_.assign(rest_.substr(rest_.size() - keeping));
-  }
-
   // A match that crosses a boundary, put together in the window this view
-  // keeps: filled to twice the longest a match can be, so that whatever is in
-  // it is settled.
+  // keeps and reuses.
+  //
+  // Filled a piece at a time until what is in it is settled: a match that ends
+  // before the end of what is held has nothing more to gain from what follows.
+  // Where the reading ends first, what is held is all there is.
   constexpr bool seek_across() {
-    while (held_.size() < window * 2) {
+    while (true) {
+      const std::string_view sofar(held_.data(), held_.size());
+      const auto ahead = detail::regex_search<pattern>(sofar);
+      const bool settled =
+          ahead && static_cast<std::size_t>(ahead.data() - sofar.data()) +
+                           ahead.size() <
+                       sofar.size();
+      if (settled) break;
       if (rest_.empty() && !refill()) break;
-      const std::size_t taking =
-          std::min(rest_.size(), window * 2 - held_.size());
-      held_.append(rest_.substr(0, taking));
-      rest_ = rest_.substr(taking);
+      held_.append(rest_);
+      rest_ = std::string_view{};
     }
     const std::string_view over(held_.data(), held_.size());
     const auto taken = detail::regex_search<pattern>(over);
@@ -2250,10 +2254,6 @@ struct search_all_closure
     requires(!detail::contiguous_char_range<pieces_type> &&
              !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
   [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    static_assert(detail::matches_a_bounded_length<pattern>(),
-                  "a match that crosses from one piece to the next has to be "
-                  "held while it is settled, and only a pattern that says how "
-                  "long a match can be says how much to hold");
     auto view = std::views::all(std::forward<pieces_type>(input));
     return pieces_search_view<pattern, held_type, decltype(view)>(
         std::move(view));
@@ -2339,8 +2339,6 @@ class split_view {
 template <fixed_string pattern, class held_type, class pieces_type>
 class pieces_split_view {
  public:
-  static constexpr std::size_t window = detail::longest_match_length<pattern>();
-
   constexpr explicit pieces_split_view(pieces_type input)
       : pieces_(std::move(input)) {}
 
@@ -2406,81 +2404,72 @@ class pieces_split_view {
   constexpr void seek() {
     piece_ = std::string_view{};
     held_.clear();
-    bool anything = false;
+    bool gathering = false;
     while (true) {
       if (rest_.empty() && !refill()) {
-        // The end of the reading: what has been gathered is the last piece,
-        // and there is one even where it is empty.
-        if (!held_.empty()) {
-          piece_ = std::string_view(held_.data(), held_.size());
-        }
+        // The reading has ended: what has been gathered is the last piece.
+        if (gathering) piece_ = std::string_view(held_.data(), held_.size());
         last_ = true;
-        done_ = !anything && held_.empty() && piece_.empty() && !gave_one_;
+        done_ = gave_one_ && !gathering && piece_.empty();
         gave_one_ = true;
         return;
       }
-      anything = true;
-      const auto taken = detail::regex_search<pattern>(rest_);
-      if (!taken) {
-        // No delimiter in what is left of this piece: all of it belongs to the
-        // piece being gathered, but for what could still begin one.
-        const std::size_t keeping =
-            window == 0 ? 0 : std::min(rest_.size(), window - 1);
-        held_.append(rest_.substr(0, rest_.size() - keeping));
-        if (keeping != 0) held_.append(rest_.substr(rest_.size() - keeping));
+      if (!gathering) {
+        const auto taken = detail::regex_search<pattern>(rest_);
+        const auto begins =
+            taken ? static_cast<std::size_t>(taken.data() - rest_.data()) : 0;
+        if (taken && begins + taken.size() < rest_.size()) {
+          // A delimiter whole inside this piece: what comes before it is a
+          // view into the piece, and nothing is copied.
+          piece_ = rest_.substr(0, begins);
+          rest_ = rest_.substr(begins + taken.size());
+          gave_one_ = true;
+          return;
+        }
+        // Either nothing here, or something that runs to the end and may not
+        // have ended. Either way what is left of this piece is held, because
+        // the piece itself will be gone.
+        held_.append(rest_);
         rest_ = std::string_view{};
+        gathering = true;
         continue;
       }
-      const auto begins =
-          static_cast<std::size_t>(taken.data() - rest_.data());
-      const std::size_t ends = begins + taken.size();
-      if (ends == rest_.size() && window != 0) {
-        // The delimiter runs to the end of the piece and may not have ended.
-        held_.append(rest_.substr(0, begins));
-        crossing_.assign(rest_.substr(begins));
-        rest_ = std::string_view{};
-        if (!settle()) continue;
+      // Gathering: the delimiter is looked for in what is held, which grows a
+      // piece at a time until it settles.
+      const std::string_view sofar(held_.data(), held_.size());
+      const auto taken = detail::regex_search<pattern>(sofar);
+      if (taken) {
+        const auto begins =
+            static_cast<std::size_t>(taken.data() - sofar.data());
+        const std::size_t ends = begins + taken.size();
+        if (ends < sofar.size()) {
+          piece_ = sofar.substr(0, begins);
+          // What follows the delimiter goes back in front of the reading, in a
+          // buffer of its own so that what was just handed back stays where it
+          // is.
+          left_.assign(sofar.substr(ends));
+          leftovers_ = std::string_view(left_.data(), left_.size());
+          rest_ = leftovers_;
+          gave_one_ = true;
+          return;
+        }
+      }
+      if (rest_.empty() && !refill()) {
         piece_ = std::string_view(held_.data(), held_.size());
+        if (taken) {
+          // It ran to the very end of the reading, so it was a delimiter after
+          // all, and what came before it is the piece.
+          const auto begins =
+              static_cast<std::size_t>(taken.data() - sofar.data());
+          piece_ = sofar.substr(0, begins);
+        }
+        last_ = true;
         gave_one_ = true;
         return;
       }
-      if (held_.empty()) {
-        // Nothing gathered and the delimiter is here: a view into the piece.
-        piece_ = rest_.substr(0, begins);
-      } else {
-        held_.append(rest_.substr(0, begins));
-        piece_ = std::string_view(held_.data(), held_.size());
-      }
-      rest_ = rest_.substr(ends);
-      gave_one_ = true;
-      return;
+      held_.append(rest_);
+      rest_ = std::string_view{};
     }
-  }
-
-  // A delimiter that crossed a boundary: filled until what is in hand settles
-  // it. True where it was a delimiter after all.
-  constexpr bool settle() {
-    while (crossing_.size() < window * 2) {
-      if (rest_.empty() && !refill()) break;
-      const std::size_t taking =
-          std::min(rest_.size(), window * 2 - crossing_.size());
-      crossing_.append(rest_.substr(0, taking));
-      rest_ = rest_.substr(taking);
-    }
-    const std::string_view over(crossing_.data(), crossing_.size());
-    const auto taken = detail::regex_search<pattern>(over);
-    if (!taken || taken.data() != over.data()) {
-      // What was held back is not a delimiter here: it belongs to the piece.
-      held_.append(over);
-      crossing_.clear();
-      return false;
-    }
-    left_.assign(over.substr(taken.size()));
-    crossing_.clear();
-    // What is left of the window goes back in front of the reading.
-    leftovers_ = std::string_view(left_.data(), left_.size());
-    rest_ = leftovers_;
-    return true;
   }
 
   pieces_type pieces_;
@@ -2530,10 +2519,6 @@ struct split_closure
     requires(!detail::contiguous_char_range<pieces_type> &&
              !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
   [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    static_assert(detail::matches_a_bounded_length<pattern>(),
-                  "a delimiter that crosses from one piece to the next has to "
-                  "be held while it is settled, and only a pattern that says "
-                  "how long a match can be says how much to hold");
     auto view = std::views::all(std::forward<pieces_type>(input));
     return pieces_split_view<pattern, held_type, decltype(view)>(
         std::move(view));
