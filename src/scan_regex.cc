@@ -35,11 +35,15 @@ class regex_submatch {
 
 template <std::size_t capture_count>
 class regex_result {
+  struct nothing {};
+  using captures_type =
+      std::conditional_t<capture_count == 0, nothing,
+                         std::array<regex_submatch, capture_count>>;
+
  public:
   constexpr regex_result() = default;
 
-  constexpr regex_result(regex_submatch whole,
-                         std::array<regex_submatch, capture_count> captures)
+  constexpr regex_result(regex_submatch whole, captures_type captures)
       : whole_(whole), captures_(captures) {}
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
@@ -70,8 +74,15 @@ class regex_result {
   }
 
  private:
+  // Where a pattern has no captures there is nothing to hold, and holding
+  // nothing costs nothing.
+  //
+  // An empty `std::array` is not empty: it keeps room for one element so that
+  // `data()` has something to point at, which here is another twenty-four
+  // bytes on a result of twenty-four -- zeroed on every match that never had a
+  // capture to put there.
   regex_submatch whole_;
-  std::array<regex_submatch, capture_count> captures_{};
+  [[no_unique_address]] captures_type captures_{};
 };
 
 namespace detail {
