@@ -1482,19 +1482,116 @@ struct collected_match_closure
         found, std::make_index_sequence<sizeof...(collectors)>{});
   }
 
+  // Fed a character at a time, with each character going to the collector of
+  // whatever group is open when it arrives.
+  //
+  // Nothing is kept but what is asked for: a group collected into a number
+  // keeps a number, and the subject is never held anywhere. What used to
+  // happen here was reading all of it into a string, walking that, and then
+  // handing pieces of it to the collectors -- room for the whole subject to
+  // build values that mostly do not want it.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
     using holder = held_type;
     using result_type =
         typed_result<holder, detail::collected_type<collectors, holder>...>;
-    held_type held = detail::read_once<held_type>(input);
-    const auto found = detail::regex_match<pattern>(
-        std::string_view(held.data(), held.size()));
-    if (!found) return result_type{};
-    auto made = build_values(found,
-                             std::make_index_sequence<sizeof...(collectors)>{});
-    return result_type{basic_submatch<holder>(std::move(held)),
-                       std::move(made)};
+
+    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    std::ranges::fill(registers, scan::tre::negative_tag);
+    detail::execute_commands(automaton.initialize,
+                             automaton.initialize.size(), registers,
+                             std::ptrdiff_t{0});
+    auto states = beginning(std::make_index_sequence<sizeof...(collectors)>{});
+
+    std::size_t here = automaton.initial;
+    std::ptrdiff_t position = 0;
+    held_type whole;
+    auto cursor = std::ranges::begin(input);
+    const auto last = std::ranges::end(input);
+    for (; cursor != last; ++cursor) {
+      const unsigned char symbol = static_cast<unsigned char>(*cursor);
+      const std::size_t run = detail::run_taken<pattern>(here, symbol);
+      if (run == detail::no_run) return result_type{};
+      const auto& taken = automaton.states[here].ranges[run];
+      detail::execute_commands(taken.commands, taken.command_count, registers,
+                               ++position);
+      here = taken.target;
+      whole.push_back(static_cast<char>(symbol));
+      offer(states, here, registers, static_cast<char>(symbol),
+            std::make_index_sequence<sizeof...(collectors)>{});
+    }
+    if (automaton.states[here].accepting_slot ==
+        detail::packed_state<0, 0, 0>::not_accepting) {
+      return result_type{};
+    }
+    return result_type{
+        basic_submatch<holder>(std::move(whole)),
+        finishing(std::move(states),
+                  std::make_index_sequence<sizeof...(collectors)>{})};
+  }
+
+
+  template <std::size_t... group>
+  [[nodiscard]] constexpr auto beginning(std::index_sequence<group...>) const {
+    return std::tuple{begin_one<group>()...};
+  }
+
+  template <std::size_t group>
+  [[nodiscard]] constexpr auto begin_one() const {
+    using collector =
+        std::tuple_element_t<group, std::tuple<collectors...>>;
+    if constexpr (std::same_as<collector, skip_collector> ||
+                  std::same_as<collector, text_collector>) {
+      return held_type{};
+    } else {
+      return std::get<group>(collectors_).begin_pushing(std::string_view{});
+    }
+  }
+
+  template <class states_type, class registers_type, std::size_t... group>
+  constexpr void offer(states_type& states, std::size_t here,
+                       const registers_type& registers, char letter,
+                       std::index_sequence<group...>) const {
+    (offer_one<group>(states, here, registers, letter), ...);
+  }
+
+  template <std::size_t group, class states_type, class registers_type>
+  constexpr void offer_one(states_type& states, std::size_t here,
+                           const registers_type& registers,
+                           char letter) const {
+    using collector =
+        std::tuple_element_t<group, std::tuple<collectors...>>;
+    if constexpr (std::same_as<collector, skip_collector>) {
+      return;
+    } else {
+      if (!detail::group_is_open<pattern, group>(here, registers)) return;
+      if constexpr (std::same_as<collector, text_collector>) {
+        std::get<group>(states).push_back(letter);
+      } else {
+        std::get<group>(collectors_).push_one(std::get<group>(states), letter);
+      }
+    }
+  }
+
+  template <class states_type, std::size_t... group>
+  [[nodiscard]] constexpr auto finishing(states_type states,
+                                         std::index_sequence<group...>) const {
+    return std::tuple<detail::collected_type<collectors, held_type>...>{
+        finish_one<group>(std::move(std::get<group>(states)))...};
+  }
+
+  template <std::size_t group, class state_type>
+  [[nodiscard]] constexpr auto finish_one(state_type state) const {
+    using collector =
+        std::tuple_element_t<group, std::tuple<collectors...>>;
+    if constexpr (std::same_as<collector, skip_collector>) {
+      return skipped{};
+    } else if constexpr (std::same_as<collector, text_collector>) {
+      return state;
+    } else {
+      return std::get<group>(collectors_).finish_pushed(std::move(state));
+    }
   }
 
  private:
