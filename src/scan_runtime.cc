@@ -1229,13 +1229,57 @@ template <class type, fixed_string format>
 // both said by the automaton. They used to be worked out by dividing a register
 // number by the number of tags, which was true of one way of handing registers
 // out and of nothing else.
+// The gatherings a transition's copies will read, and only those.
+//
+// A transition that copies a register needs that register's gathering as it
+// was before the transition, so what was here copied the whole set on every
+// character -- every register's gathering of every field, to be ready for a
+// copy of one or two of them. On a subject read a character at a time that was
+// most of what reading it cost.
+template <class states_type, std::size_t command_capacity>
+struct kept_gatherings {
+  using held_type = typename states_type::value_type;
+  std::array<std::size_t, command_capacity> which{};
+  std::array<held_type, command_capacity> held{};
+  std::size_t count = 0;
+
+  [[nodiscard]] constexpr const held_type& operator[](
+      std::size_t source) const {
+    for (std::size_t at = 0; at < count; ++at) {
+      if (which[at] == source) return held[at];
+    }
+    return held[0];
+  }
+};
+
+template <class states_type, std::size_t command_count>
+[[nodiscard]] constexpr auto keep_gatherings(
+    const states_type& states,
+    const std::array<packed_command, command_count>& commands,
+    std::size_t count) {
+  kept_gatherings<states_type, command_count> kept;
+  for (std::size_t index = 0; index < count; ++index) {
+    if (commands[index].source == packed_command::no_source) continue;
+    if (commands[index].value != -2) continue;
+    bool already = false;
+    for (std::size_t at = 0; at < kept.count; ++at) {
+      if (kept.which[at] == commands[index].source) already = true;
+    }
+    if (already) continue;
+    kept.which[kept.count] = commands[index].source;
+    kept.held[kept.count] = states[commands[index].source];
+    ++kept.count;
+  }
+  return kept;
+}
+
 template <std::size_t group, class type, fixed_string format, auto& automaton,
-          class states_type, std::size_t register_count,
+          class states_type, class kept_type, std::size_t register_count,
           std::size_t command_count>
 constexpr void advance_scanner(
     char symbol, std::size_t state, std::ptrdiff_t position,
     const std::array<std::ptrdiff_t, register_count>& registers,
-    const states_type& old_states, states_type& states,
+    const kept_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count) {
   static constexpr auto spread = spread_of<type, format>();
@@ -1470,7 +1514,7 @@ constexpr void advance_scanners(
     }
   }
   if (copies) {
-    const states_type old_states = states;
+    const auto old_states = keep_gatherings(states, commands, count);
     (advance_scanner<group, type, format, automaton>(
          symbol, state, position, registers, old_states, states, commands,
          count),
