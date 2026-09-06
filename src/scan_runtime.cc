@@ -627,6 +627,46 @@ template <auto& automaton, std::size_t state>
   return count;
 }
 
+// Input that arrives in pieces, each of them characters in a row.
+//
+// A subject read one character at a time gives up two things: the vectors,
+// which want the characters in a row, and every question the walk can answer
+// by looking ahead. Almost no subject is really like that -- a file arrives a
+// block at a time, a socket a datagram at a time -- and inside a piece the
+// characters do lie in a row.
+//
+// So the walk reads a piece the way it reads a string, and where it runs out
+// it asks for the next one and goes on in the state it is standing in. What it
+// cannot do is point at what it has read: a piece is gone when the next one
+// arrives, so the marks count characters and the fields gather as they go,
+// exactly as they do for a subject read one character at a time.
+template <class gatherer_type, class pieces_type>
+struct gathers_from_pieces : gatherer_type {
+  pieces_type pieces;
+  std::optional<std::ranges::iterator_t<pieces_type>> at;
+
+  constexpr explicit gathers_from_pieces(gatherer_type inner,
+                                         pieces_type given)
+      : gatherer_type(std::move(inner)), pieces(std::move(given)) {}
+
+  // The next piece, or nothing left. Empty pieces are passed over: a reading
+  // that hands one back has not ended, it has merely said nothing.
+  [[nodiscard]] constexpr bool refill(const char*& from, const char*& to) {
+    if (!at) at.emplace(std::ranges::begin(pieces));
+    while (*at != std::ranges::end(pieces)) {
+      auto piece = **at;
+      ++*at;
+      const char* const first = std::ranges::data(piece);
+      const auto size = std::ranges::size(piece);
+      if (size == 0) continue;
+      from = first;
+      to = first + size;
+      return true;
+    }
+    return false;
+  }
+};
+
 // Nothing gathered: what the walk hands over goes nowhere and costs nothing.
 struct gathers_nothing {
   template <std::size_t state, std::size_t move, class registers_type,
@@ -813,9 +853,26 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   // in a row and nobody is gathering them, because what is stepped over is not
   // read. A head may be read this way too: what is stepped over is a run that
   // keeps the machine here, and where it stops is where the run ends.
-  if constexpr (shape.in_words && by_place && !gathers &&
+  // Over the run this state keeps, in vectors.
+  //
+  // Wants the characters to lie in a row, which is a question about the
+  // reading and not about the marks: input that arrives in pieces is in a row
+  // inside a piece. Where somebody is gathering, what is stepped over is
+  // handed to them as a piece -- one append instead of one a character -- and
+  // where they cannot take a piece, the run is read a character at a time as
+  // before.
+  constexpr bool by_pointer = std::is_pointer_v<cursor_type>;
+  constexpr bool takes_a_piece = requires(gatherer& one, const char* from) {
+    one.template took_run<state>(from, from, registers, place);
+  };
+  if constexpr (shape.in_words && by_pointer && (!gathers || takes_a_piece) &&
                 runs_in_place<automaton, state>()) {
+    const cursor_type from = cursor;
     cursor = skip_class<staying_of<automaton, state>()>(cursor, last);
+    if constexpr (gathers && takes_a_piece) {
+      into.template took_run<state>(from, cursor, registers, place);
+      if constexpr (!by_place) place += cursor - from;
+    }
     if constexpr (shape.longest && accepts_here) best.at = cursor;
   }
   while (true) {
@@ -829,7 +886,17 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     constexpr bool counts_here =
         certain != 0 && !runs_in_place<automaton, state>();
     if constexpr (!shape.by_terminator && !counts_here) {
-      if (cursor == last) break;
+      if (cursor == last) {
+        // The reading ran out. Whoever is gathering may have more of it --
+        // input that arrives in pieces is contiguous inside a piece, and the
+        // walk goes on in the state it is standing in, because the state is
+        // where it stands in this code and not a number to be put back.
+        if constexpr (requires { into.refill(cursor, last); }) {
+          if (!into.refill(cursor, last)) break;
+        } else {
+          break;
+        }
+      }
     }
     // Where this symbol begins, which is where a head ends if the machine
     // cannot take it -- and which is only worth holding on to where a head is
@@ -2096,6 +2163,16 @@ class field_gatherer {
         std::make_index_sequence<field_count>{});
   }
 
+  // A run the walk stepped over in vectors: the fields that are open take all
+  // of it, which is one pass over the piece rather than one call a character.
+  template <std::size_t state, class registers_type>
+  constexpr void took_run(const char* from, const char* to,
+                          const registers_type& registers,
+                          std::ptrdiff_t position) {
+    hand_run<state>(from, to, registers,
+                    std::make_index_sequence<field_count>{});
+  }
+
   template <std::size_t state, std::size_t landed, class registers_type>
   constexpr void moved(std::size_t move, char letter,
                        const registers_type& registers,
@@ -2127,6 +2204,37 @@ class field_gatherer {
   [[nodiscard]] constexpr std::optional<type>& made() { return made_; }
 
  private:
+  template <std::size_t state, class registers_type, std::size_t... group>
+  constexpr void hand_run(const char* from, const char* to,
+                          const registers_type& registers,
+                          std::index_sequence<group...>) {
+    (hand_run_group<state, group>(from, to, registers), ...);
+  }
+
+  template <std::size_t state, std::size_t group, class registers_type>
+  constexpr void hand_run_group(const char* from, const char* to,
+                                const registers_type& registers) {
+    using held_type = leaf_kind<type, group>;
+    if constexpr (scanned_as_range<held_type>) {
+      return;
+    } else {
+      constexpr auto at = gathered_at<automaton, state, group>;
+      constexpr std::uint32_t closing =
+          automaton.states[state].reading_count == 0
+              ? 0
+              : automaton.states[state].readings[0][group * 2 + 1];
+      for (std::size_t which = 0; which < at.count; ++which) {
+        const std::uint32_t opening = at.at[which];
+        if (registers[opening] < 0) continue;
+        if (registers[closing] >= registers[opening]) continue;
+        auto& gathering = std::get<group>(states_[opening]);
+        for (const char* letter = from; letter != to; ++letter) {
+          scanner_push<held_type>(gathering, *letter);
+        }
+      }
+    }
+  }
+
   template <std::size_t landed, class registers_type, std::size_t... group>
   constexpr void hand_over(char letter, const registers_type& registers,
                            std::index_sequence<group...>) {

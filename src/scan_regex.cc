@@ -1349,6 +1349,14 @@ struct collected_match_closure
               class mark>
     constexpr void moving(const registers_type&, mark) const {}
 
+    // A run stepped over in vectors: whatever is open takes all of it.
+    template <std::size_t state, class registers_type, class mark>
+    constexpr void took_run(const char* from, const char* to,
+                            const registers_type& registers, mark) {
+      hand_run<state>(from, to, registers,
+                      std::make_index_sequence<sizeof...(collectors)>{});
+    }
+
     // A move was made: whatever groups are open where it lands take the
     // character.
     //
@@ -1366,6 +1374,40 @@ struct collected_match_closure
     constexpr void ended(const registers_type&) {}
 
    private:
+    template <std::size_t landed, class registers_type, std::size_t... group>
+    constexpr void hand_run(const char* from, const char* to,
+                            const registers_type& registers,
+                            std::index_sequence<group...>) {
+      (hand_run_group<landed, group>(from, to, registers), ...);
+    }
+
+    template <std::size_t landed, std::size_t group, class registers_type>
+    constexpr void hand_run_group(const char* from, const char* to,
+                                  const registers_type& registers) {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      if constexpr (std::same_as<collector, skip_collector>) {
+        return;
+      } else {
+        constexpr const auto& entered =
+            detail::regex_automaton<pattern>.states[landed];
+        if constexpr (entered.reading_count != 0) {
+          constexpr std::uint32_t opening = entered.readings[0][group * 2];
+          constexpr std::uint32_t closing = entered.readings[0][group * 2 + 1];
+          if (registers[opening] < 0) return;
+          if (registers[closing] >= registers[opening]) return;
+          for (const char* letter = from; letter != to; ++letter) {
+            if constexpr (std::same_as<collector, text_collector>) {
+              std::get<group>(states_).push_back(*letter);
+            } else {
+              std::get<group>(owner_.collectors_)
+                  .push_one(std::get<group>(states_), *letter);
+            }
+          }
+        }
+      }
+    }
+
     template <std::size_t landed, class registers_type, std::size_t... group>
     constexpr void hand_all(char letter, const registers_type& registers,
                             std::index_sequence<group...>) {
