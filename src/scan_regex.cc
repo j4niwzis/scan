@@ -567,10 +567,16 @@ template <fixed_string pattern>
   return {.longest_head = true, .budget = chain_budget<pattern>()};
 }
 
-// Whether the whole of the subject matched.
+// Whether the subject matched, and where the longest head ended for the walks
+// that look for one.
+//
+// The answer is filled in rather than handed back, because a reading of a
+// subject that arrives as it is read does not copy, and passing it along by
+// value would ask it to.
 template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
           class sentinel_type>
-[[nodiscard]] constexpr auto walk_over(cursor_type cursor, sentinel_type last) {
+[[nodiscard]] constexpr bool walk_over(cursor_type& cursor, sentinel_type last,
+                                       detail::walk_answer<cursor_type>& best) {
   constexpr const auto& automaton = detail::regex_automaton<pattern>;
   using mark_type =
       std::conditional_t<std::is_pointer_v<cursor_type>, const char*,
@@ -587,9 +593,17 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
                                   shape.longest_head
                                       ? 0
                                       : minimum_match_length<pattern>(),
-                                  mark_type>(
-      cursor, last, place, registers, nothing,
-      detail::walk_answer<cursor_type>{});
+                                  mark_type>(cursor, last, place, registers,
+                                             nothing, best);
+}
+
+// The same, where nobody is asking where it stopped.
+template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
+          class sentinel_type>
+[[nodiscard]] constexpr bool matched_over(cursor_type cursor,
+                                          sentinel_type last) {
+  detail::walk_answer<cursor_type> best;
+  return walk_over<pattern, shape>(cursor, last, best);
 }
 
 template <fixed_string pattern>
@@ -617,10 +631,9 @@ regex_match(
     constexpr std::size_t worth_a_vector = 64;
     const bool matched =
         input.size() >= worth_a_vector
-            ? walk_over<pattern, bounded_shape<pattern>(true)>(cursor, end)
-                  .matched
-            : walk_over<pattern, bounded_shape<pattern>(false)>(cursor, end)
-                  .matched;
+            ? matched_over<pattern, bounded_shape<pattern>(true)>(cursor, end)
+            : matched_over<pattern, bounded_shape<pattern>(false)>(cursor,
+                                                                   end);
     if (!matched) return {};
     return {regex_submatch(input), {}};
   } else {
@@ -671,12 +684,10 @@ regex_match_sentinel(std::string_view input) {
   constexpr std::size_t worth_a_vector = 64;
   const bool matched =
       input.size() >= worth_a_vector
-          ? walk_over<pattern, terminated_shape<pattern, sentinel>(true)>(
+          ? matched_over<pattern, terminated_shape<pattern, sentinel>(true)>(
                 input.data(), end)
-                .matched
-          : walk_over<pattern, terminated_shape<pattern, sentinel>(false)>(
-                input.data(), end)
-                .matched;
+          : matched_over<pattern, terminated_shape<pattern, sentinel>(false)>(
+                input.data(), end);
   if (!matched) return {};
   return {regex_submatch(input), {}};
 }
@@ -696,8 +707,11 @@ regex_match_sentinel(std::string_view input) {
 template <fixed_string pattern>
 [[nodiscard]] constexpr const char* longest_head(const char* cursor,
                                                  const char* end) {
-  const auto found = walk_over<pattern, head_shape<pattern>()>(cursor, end);
-  return found.matched ? *found.at : nullptr;
+  detail::walk_answer<const char*> best;
+  const char* walking = cursor;
+  const bool found =
+      walk_over<pattern, head_shape<pattern>()>(walking, end, best);
+  return found ? *best.at : nullptr;
 }
 
 template <fixed_string pattern>
@@ -1299,11 +1313,11 @@ struct collected_match_closure
 
     auto cursor = std::ranges::begin(input);
     std::ptrdiff_t position = 0;
+    detail::walk_answer<decltype(cursor)> best;
     if (!detail::run_continuation<automaton, detail::walk_shape{},
                                   automaton.initial, 0, 0, std::ptrdiff_t>(
-             cursor, std::ranges::end(input), position, registers, into,
-             detail::walk_answer<decltype(cursor)>{})
-             .matched) {
+            cursor, std::ranges::end(input), position, registers, into,
+            best)) {
       return result_type{};
     }
     return result_type{
@@ -1514,8 +1528,7 @@ struct match_closure
     const auto first = std::ranges::begin(input);
     const auto last = std::ranges::end(input);
     auto walking = first;
-    if (!detail::walk_over<pattern, detail::walk_shape{}>(walking, last)
-             .matched) {
+    if (!detail::matched_over<pattern, detail::walk_shape{}>(walking, last)) {
       return basic_result<holder, 0>{};
     }
     return basic_result<holder, 0>{
@@ -1540,11 +1553,10 @@ struct match_closure
     std::ranges::fill(registers, scan::tre::negative_tag);
     std::ptrdiff_t place = 0;
     auto cursor = std::ranges::begin(input);
+    detail::walk_answer<decltype(cursor)> best;
     if (!detail::run_continuation<automaton, detail::walk_shape{},
                                   automaton.initial, 0, 0, std::ptrdiff_t>(
-             cursor, std::ranges::end(input), place, registers, keep,
-             detail::walk_answer<decltype(cursor)>{})
-             .matched) {
+            cursor, std::ranges::end(input), place, registers, keep, best)) {
       return basic_result<held_type, 0>{};
     }
     return basic_result<held_type, 0>{
@@ -1612,11 +1624,12 @@ struct starts_with_closure
     using holder = detail::walked_holder<range_type>;
     auto walking = std::ranges::begin(input);
     const auto first = walking;
-    const auto found = detail::walk_over<pattern, detail::head_shape<pattern>()>(
-        walking, std::ranges::end(input));
-    if (!found.matched) return basic_result<holder, 0>{};
+    detail::walk_answer<decltype(walking)> best;
+    const bool found = detail::walk_over<pattern, detail::head_shape<pattern>()>(
+        walking, std::ranges::end(input), best);
+    if (!found) return basic_result<holder, 0>{};
     return basic_result<holder, 0>{
-        basic_submatch<holder>(holder(first, *found.at)), {}};
+        basic_submatch<holder>(holder(first, *best.at)), {}};
   }
 
   // The head of a subject read once.
