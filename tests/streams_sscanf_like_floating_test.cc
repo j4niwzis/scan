@@ -5,7 +5,6 @@ import gtest;
 
 #include "gtest/gtest-macros.h"
 
-
 namespace {
 
 void expect_equivalent(const scan::tre::node& expression, std::string_view input,
@@ -21,7 +20,6 @@ void expect_equivalent(const scan::tre::node& expression, std::string_view input
 }
 
 }  // namespace
-
 
 namespace {
 
@@ -105,25 +103,6 @@ struct floating_record {
   double scientific;
   double hexadecimal;
 };
-
-consteval bool scans_at_compile_time() {
-  constexpr std::string_view input = "name=alice id=42";
-  user user = scan::scan<"name={} id={}">(input);
-  return user.name == "alice" && user.id == 42;
-}
-
-static_assert(scans_at_compile_time());
-
-consteval bool scans_parameters_at_compile_time() {
-  constexpr std::string_view input = "hex=ff bin=101101 oct=17";
-  based_values values =
-      scan::scan<"hex={:hex} bin={:binary} oct={:octal}">(input);
-  return values.hexadecimal == 255 && values.binary == 45 &&
-         values.octal == 15;
-}
-
-static_assert(scans_parameters_at_compile_time());
-
 
 }  // namespace
 
@@ -250,7 +229,6 @@ struct scan::scanner<nested_record>
 
 static_assert(std::is_trivially_copyable_v<
               scan::scanner<roman_number>::state_type>);
-
 
 TEST(ScanTest, StreamsSscanfLikeFloatingConversions) {
   std::istringstream input("scientific=1.25e2 hex=0x1.8p1");

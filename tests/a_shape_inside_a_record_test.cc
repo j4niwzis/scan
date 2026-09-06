@@ -20,17 +20,7 @@ template <> struct scan::scanner<rectangle>
 
 namespace {
 
-struct wrapped_rectangle { rectangle bounds; };
 struct record { int id; rectangle bounds; };
-
-TEST(ShapeFormatTest, AShapeOfShapes) {
-  const std::string text = "[(1, 2) -> (3, 4)]";
-  const wrapped_rectangle value = scan::scan<"{}">(text);
-  EXPECT_EQ(value.bounds.corner.x, 1);
-  EXPECT_EQ(value.bounds.corner.y, 2);
-  EXPECT_EQ(value.bounds.opposite.x, 3);
-  EXPECT_EQ(value.bounds.opposite.y, 4);
-}
 
 TEST(ShapeFormatTest, AShapeInsideARecord) {
   const std::string text = "id=7 bounds=[(1, 2) -> (3, 4)]";

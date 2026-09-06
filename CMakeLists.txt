@@ -161,6 +161,8 @@ set(scan_tests
   a_head_off_a_stream_and_what_stopped_it_test
   a_scan_that_did_not_test
   a_scan_that_is_asked_for_test
+  a_shape_inside_a_record_test
+  a_shape_of_shapes_test
   a_subject_handed_to_a_search_test
   a_subject_handed_to_a_split_test
   a_subject_handed_to_each_test
@@ -198,8 +200,8 @@ set(scan_tests
   preserves_official_capture_and_range_test
   record_after_record_off_one_stream_test
   scanner_can_build_an_owning_pattern_test
+  scans_at_compile_time_test
   scans_borrowed_contiguous_range_test
-  shape_format_test
   states_that_lead_back_test
   streams_sscanf_like_floating_test
   streams_unbounded_custom_value_test
