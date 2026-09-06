@@ -304,8 +304,10 @@ template <fixed_string pattern, bool in_vectors, std::size_t state>
 [[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
                                                     const char* end);
 
-template <fixed_string pattern, unsigned char sentinel, std::size_t state>
-[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor);
+template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
+          std::size_t state>
+[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor,
+                                                       const char* end);
 
 template <fixed_string pattern, bool in_vectors, std::size_t state,
           std::size_t which = 0>
@@ -331,23 +333,25 @@ dispatch_transition(unsigned char symbol, const char* cursor,
   }
 }
 
-template <fixed_string pattern, unsigned char sentinel, std::size_t state,
-          std::size_t which = 0>
+template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
+          std::size_t state, std::size_t which = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_sentinel_transition(unsigned char symbol, const char* cursor) {
+dispatch_sentinel_transition(unsigned char symbol, const char* cursor,
+                             const char* end) {
   constexpr auto targets = make_transition_targets<pattern, state>();
   if constexpr (which == targets.size) {
     return false;
   } else if constexpr (targets.values[which] == state) {
-    return dispatch_sentinel_transition<pattern, sentinel, state, which + 1>(
-        symbol, cursor);
+    return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state,
+                                        which + 1>(symbol, cursor, end);
   } else {
     constexpr auto target = targets.values[which];
     if (moves_to<pattern, state, target>(symbol)) {
-      return run_sentinel_continuation<pattern, sentinel, target>(cursor);
+      return run_sentinel_continuation<pattern, sentinel, in_vectors, target>(
+          cursor, end);
     }
-    return dispatch_sentinel_transition<pattern, sentinel, state, which + 1>(
-        symbol, cursor);
+    return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state,
+                                        which + 1>(symbol, cursor, end);
   }
 }
 
@@ -428,8 +432,10 @@ template <fixed_string pattern, unsigned char sentinel>
   });
 }
 
-template <fixed_string pattern, unsigned char sentinel, std::size_t state>
-[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor) {
+template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
+          std::size_t state>
+[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor,
+                                                       const char* end) {
   // The class first, the sentinel afterwards.
   //
   // A sentinel is only accepted here when no state takes it, which
@@ -439,58 +445,73 @@ template <fixed_string pattern, unsigned char sentinel, std::size_t state>
   // after, it costs nothing until the loop ends anyway, and what is left in
   // the loop is a load, a subtraction, an increment, a comparison and a jump:
   // what a generated scanner emits.
+  //
+  // The end is carried for the vectors alone. The loop never asks about it --
+  // that is the whole point of a terminator -- but the skip has to know where
+  // the subject stops, and reading past it to fill a vector would read what
+  // this program does not own, whether or not the page is there. The caller
+  // knows the length; it is passed down rather than found again.
+  if constexpr (in_vectors && staying_class_of<pattern, state>().count != 0) {
+    cursor = skip_class<staying_class_of<pattern, state>()>(cursor, end);
+  }
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
     if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
-    return dispatch_sentinel_transition<pattern, sentinel, state>(symbol,
-                                                                  cursor);
+    return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state>(
+        symbol, cursor, end);
   }
 }
 
-template <fixed_string pattern, unsigned char sentinel, std::size_t state,
-          std::size_t budget>
+template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
+          std::size_t state, std::size_t budget>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-run_inlined_sentinel_continuation(const char* cursor);
+run_inlined_sentinel_continuation(const char* cursor, const char* end);
 
-template <fixed_string pattern, unsigned char sentinel, std::size_t state,
-          std::size_t budget, std::size_t which = 0>
+template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
+          std::size_t state, std::size_t budget, std::size_t which = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_inlined_sentinel_transition(unsigned char symbol,
-                                     const char* cursor) {
+dispatch_inlined_sentinel_transition(unsigned char symbol, const char* cursor,
+                                     const char* end) {
   constexpr auto targets = make_transition_targets<pattern, state>();
   if constexpr (which == targets.size) {
     return false;
   } else if constexpr (targets.values[which] == state) {
-    return dispatch_inlined_sentinel_transition<pattern, sentinel, state,
-                                                budget, which + 1>(symbol,
-                                                                   cursor);
+    return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
+                                                state, budget, which + 1>(
+        symbol, cursor, end);
   } else {
     constexpr auto target = targets.values[which];
     if (moves_to<pattern, state, target>(symbol)) {
       if constexpr (budget == 0) {
-        return run_sentinel_continuation<pattern, sentinel, target>(cursor);
+        return run_sentinel_continuation<pattern, sentinel, in_vectors,
+                                         target>(cursor, end);
       } else {
-        return run_inlined_sentinel_continuation<pattern, sentinel, target,
-                                                 budget - 1>(cursor);
+        return run_inlined_sentinel_continuation<pattern, sentinel, in_vectors,
+                                                 target, budget - 1>(cursor,
+                                                                     end);
       }
     }
-    return dispatch_inlined_sentinel_transition<pattern, sentinel, state,
-                                                budget, which + 1>(symbol,
-                                                                   cursor);
+    return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
+                                                state, budget, which + 1>(
+        symbol, cursor, end);
   }
 }
 
-template <fixed_string pattern, unsigned char sentinel, std::size_t state,
-          std::size_t budget>
+template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
+          std::size_t state, std::size_t budget>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-run_inlined_sentinel_continuation(const char* cursor) {
+run_inlined_sentinel_continuation(const char* cursor, const char* end) {
+  if constexpr (in_vectors && staying_class_of<pattern, state>().count != 0) {
+    cursor = skip_class<staying_class_of<pattern, state>()>(cursor, end);
+  }
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
     if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
-    return dispatch_inlined_sentinel_transition<pattern, sentinel, state,
-                                                budget>(symbol, cursor);
+    return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
+                                                state, budget>(symbol, cursor,
+                                                               end);
   }
 }
 
@@ -571,9 +592,17 @@ regex_match_sentinel(std::string_view input) {
   static_assert(is_safe_sentinel<pattern, sentinel>(),
                 "sentinel must be rejected in every automaton state");
   if (input.size() < minimum_match_length<pattern>()) return {};
-  if (!run_inlined_sentinel_continuation<pattern, sentinel,
-                                         automaton.initial, 1>(input.data()))
-    return {};
+  const char* const end = input.data() + input.size();
+  constexpr std::size_t worth_a_vector = 64;
+  const bool matched =
+      input.size() >= worth_a_vector
+          ? run_inlined_sentinel_continuation<pattern, sentinel, true,
+                                              automaton.initial, 1>(
+                input.data(), end)
+          : run_inlined_sentinel_continuation<pattern, sentinel, false,
+                                              automaton.initial, 1>(
+                input.data(), end);
+  if (!matched) return {};
   return {regex_submatch(input), {}};
 }
 
