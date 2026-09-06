@@ -1576,6 +1576,227 @@ template <fixed_string pattern>
   }
 }
 
+// Values built out of the groups a match left behind.
+//
+// This lived beside the format reader, which is the only thing that used it.
+// The pattern reader wants it too: where a group is written with the very
+// pattern a type declares for itself, the groups inside it are the type's own
+// values and the type is built from them -- no second automaton over the same
+// characters, and no reading of the same text twice.
+
+template <class type>
+[[nodiscard]] constexpr type parse_value(std::string_view text,
+                                         std::string_view parameters) {
+  using value_type = std::remove_cv_t<type>;
+  static_assert(requires { scanner_parse<value_type>(text); },
+                "scan::scanner<type> must provide parse(string_view)");
+  return scanner_parse<value_type>(text, parameters);
+}
+
+// Where a branch's mark stands, counting from the start of the variant: each
+// branch before it took a mark of its own and whatever its alternative reads.
+template <class type, std::size_t branch>
+[[nodiscard]] consteval std::size_t groups_before_branch() {
+  return []<std::size_t... which>(std::index_sequence<which...>) {
+    return (std::size_t{0} + ... +
+            (1 + groups_of<std::variant_alternative_t<which, type>>()));
+  }(std::make_index_sequence<branch>{});
+}
+
+// Whether a variant stands anywhere inside this output, at any depth. Where one
+// does, a group that took no part is the ordinary state of affairs rather than
+// a fault.
+template <class type>
+[[nodiscard]] consteval bool holds_a_variant() {
+  if constexpr (scanned_as_variant<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              holds_a_variant<typename parts_of<type>::template at<field>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// Whether a list stands anywhere inside this output.
+//
+// A list is read by gathering, and it has to be: the positions a match leaves
+// behind hold the last turn round the loop and nothing else, so an output with
+// a list in it cannot be put together by reading them afterwards, however well
+// they can be pointed at. It goes to the machine that gathers as it goes, over
+// the very same characters.
+template <class type>
+[[nodiscard]] consteval bool holds_a_range() {
+  if constexpr (scanned_as_range<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... ||
+              holds_a_range<std::variant_alternative_t<which, type>>());
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_range<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// A leaf is read from its one group; a product is built from its fields, each
+// of which takes as many groups as it needs, in order. Nothing about the
+// nesting is written in the format: a structure of structures is spelled out
+// flat, because a product of products is flat.
+// The parameters come from the same spread the automaton was built from, so a
+// colon written at the place a value is read from reaches that value however
+// deeply it sits, and a format declared by a type is read against that type
+// here exactly as it was there.
+// What a leaf was given after the colon, where anything was. A format says it
+// per place; a pattern written by hand says nothing at all.
+template <class root, fixed_string format>
+struct format_parameters {
+  [[nodiscard]] static constexpr std::string_view at(std::size_t place) {
+    static constexpr auto spread = spread_of<root, format>();
+    return spread.parameters[place].view();
+  }
+};
+
+struct no_parameters {
+  [[nodiscard]] static constexpr std::string_view at(std::size_t) { return {}; }
+};
+
+template <class parameters, class type, std::size_t offset, std::size_t extent>
+[[nodiscard]] constexpr type build_value(
+    const std::array<std::string_view, extent>& groups) {
+  if constexpr (scanned_as_leaf<type>) {
+    return parse_value<std::remove_cv_t<type>>(groups[offset],
+                                               parameters::at(offset));
+  } else if constexpr (scanned_as_variant<type>) {
+    // Exactly one branch ran, and its mark says so: a mark that took part
+    // points into the subject, and the others point nowhere.
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
+      std::optional<type> made;
+      const auto take = [&]<std::size_t which>() {
+        constexpr std::size_t mark = offset + groups_before_branch<type, which>();
+        if (made || groups[mark].data() == nullptr) return;
+        using alternative = std::variant_alternative_t<which, type>;
+        made.emplace(std::in_place_index<which>,
+                     build_value<parameters, alternative, mark + 1>(groups));
+      };
+      (take.template operator()<branch>(), ...);
+      if (!made) throw scan_error("no branch of the format took the input");
+      return std::move(*made);
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else if constexpr (scanned_from_values<type>) {
+    // Made by the call it named, out of the values its places stood for.
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return scan::scanner<std::remove_cv_t<type>>::parse(
+          build_value<parameters, typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...);
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  } else {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return type{build_value<parameters,
+                              typename parts_of<type>::template at<index>,
+                              offset + groups_before_field<type, index>()>(
+          groups)...};
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+[[nodiscard]] constexpr bool is_regex_meta(char value) {
+  return std::string_view(".^$|()[]*+?{}\\").contains(value);
+}
+
+constexpr void append_literal(pattern_buffer<>& output, char value) {
+  if (is_regex_meta(value)) output.push_back('\\');
+  output.push_back(value);
+}
+
+[[nodiscard]] constexpr std::size_t find_capture_end(
+    std::string_view format, std::size_t position, std::size_t depth = 0) {
+  if (position == format.size()) throw "unterminated aggregate capture";
+  if (format[position] == '\\') {
+    return find_capture_end(format, position + 2, depth);
+  }
+  if (format[position] == '{') {
+    return find_capture_end(format, position + 1, depth + 1);
+  }
+  if (format[position] == '}') {
+    return depth == 0
+               ? position
+               : find_capture_end(format, position + 1, depth - 1);
+  }
+  return find_capture_end(format, position + 1, depth);
+}
+
+template <class type, fixed_string format, fixed_string opening,
+          std::size_t field_count>
+constexpr void append_aggregate_pattern(
+    pattern_buffer<>& output,
+    const std::array<std::string_view, field_count>& defaults,
+    std::size_t position = 0, std::size_t field = 0) {
+  const std::string_view text = format.view();
+  if (position == text.size()) {
+    if (field != field_count) throw "aggregate format field count mismatch";
+    return;
+  }
+  if (text[position] == '\\') {
+    if (position + 1 == text.size()) throw "dangling aggregate escape";
+    append_literal(output, text[position + 1]);
+    append_aggregate_pattern<type, format, opening>(output, defaults,
+                                                    position + 2, field);
+    return;
+  }
+  if (text[position] != '{') {
+    append_literal(output, text[position]);
+    append_aggregate_pattern<type, format, opening>(output, defaults,
+                                                    position + 1, field);
+    return;
+  }
+  if (field == field_count) throw "too many aggregate captures";
+  const std::size_t end = find_capture_end(text, position + 1);
+  output.append(opening.view());
+  if (end == position + 1 || text[position + 1] == ':') {
+    output.append(defaults[field]);
+  } else {
+    output.append(text.substr(position + 1, end - position - 1));
+  }
+  output.push_back(')');
+  append_aggregate_pattern<type, format, opening>(output, defaults, end + 1,
+                                                  field + 1);
+}
+
+template <class type, fixed_string format, fixed_string opening = "(?:">
+[[nodiscard]] consteval pattern_buffer<> make_aggregate_pattern() {
+  constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
+  constexpr auto parameters = field_parameters<format, field_count>();
+  constexpr auto pattern_storage = parameterized_patterns<type>(
+      parameters, std::make_index_sequence<field_count>{});
+  const auto defaults = pattern_views(pattern_storage);
+  pattern_buffer<> output;
+  append_aggregate_pattern<type, format, opening>(output, defaults);
+  return output;
+}
+
+
+// The same pattern, written so that the values are groups.
+//
+// What a type declares for itself is written to match and nothing else, so its
+// places are `(?:...)`: the format layer puts its own marks around them and
+// has no use for groups. A pattern written by hand has no marks, so where one
+// stands for a type the values have to be groups -- and this is that pattern.
+template <class type>
+[[nodiscard]] consteval pattern_buffer<> capturing_pattern() {
+  return make_aggregate_pattern<
+      std::remove_cv_t<type>,
+      scan::scanner<std::remove_cv_t<type>>::scan_format, "(">();
+}
+
+
 template <fixed_string pattern>
 inline constexpr auto regex_automaton = pack_regex_tdfa<pattern>();
 

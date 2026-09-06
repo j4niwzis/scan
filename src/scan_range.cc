@@ -6,116 +6,6 @@ export import scan.runtime;
 
 export namespace scan::detail {
 
-template <class type>
-[[nodiscard]] constexpr type parse_value(std::string_view text,
-                                         std::string_view parameters) {
-  using value_type = std::remove_cv_t<type>;
-  static_assert(requires { scanner_parse<value_type>(text); },
-                "scan::scanner<type> must provide parse(string_view)");
-  return scanner_parse<value_type>(text, parameters);
-}
-
-// Where a branch's mark stands, counting from the start of the variant: each
-// branch before it took a mark of its own and whatever its alternative reads.
-template <class type, std::size_t branch>
-[[nodiscard]] consteval std::size_t groups_before_branch() {
-  return []<std::size_t... which>(std::index_sequence<which...>) {
-    return (std::size_t{0} + ... +
-            (1 + groups_of<std::variant_alternative_t<which, type>>()));
-  }(std::make_index_sequence<branch>{});
-}
-
-// Whether a variant stands anywhere inside this output, at any depth. Where one
-// does, a group that took no part is the ordinary state of affairs rather than
-// a fault.
-template <class type>
-[[nodiscard]] consteval bool holds_a_variant() {
-  if constexpr (scanned_as_variant<type>) {
-    return true;
-  } else if constexpr (scanned_as_leaf<type>) {
-    return false;
-  } else {
-    return []<std::size_t... field>(std::index_sequence<field...>) {
-      return (false || ... ||
-              holds_a_variant<typename parts_of<type>::template at<field>>());
-    }(std::make_index_sequence<parts_of<type>::count>{});
-  }
-}
-
-// Whether a list stands anywhere inside this output.
-//
-// A list is read by gathering, and it has to be: the positions a match leaves
-// behind hold the last turn round the loop and nothing else, so an output with
-// a list in it cannot be put together by reading them afterwards, however well
-// they can be pointed at. It goes to the machine that gathers as it goes, over
-// the very same characters.
-template <class type>
-[[nodiscard]] consteval bool holds_a_range() {
-  if constexpr (scanned_as_range<type>) {
-    return true;
-  } else if constexpr (scanned_as_leaf<type>) {
-    return false;
-  } else if constexpr (scanned_as_variant<type>) {
-    return []<std::size_t... which>(std::index_sequence<which...>) {
-      return (false || ... ||
-              holds_a_range<std::variant_alternative_t<which, type>>());
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
-  } else {
-    return []<std::size_t... part>(std::index_sequence<part...>) {
-      return (false || ... ||
-              holds_a_range<typename parts_of<type>::template at<part>>());
-    }(std::make_index_sequence<parts_of<type>::count>{});
-  }
-}
-
-// A leaf is read from its one group; a product is built from its fields, each
-// of which takes as many groups as it needs, in order. Nothing about the
-// nesting is written in the format: a structure of structures is spelled out
-// flat, because a product of products is flat.
-// The parameters come from the same spread the automaton was built from, so a
-// colon written at the place a value is read from reaches that value however
-// deeply it sits, and a format declared by a type is read against that type
-// here exactly as it was there.
-template <class root, class type, fixed_string format, std::size_t offset,
-          std::size_t extent>
-[[nodiscard]] constexpr type build_value(
-    const std::array<std::string_view, extent>& groups) {
-  if constexpr (scanned_as_leaf<type>) {
-    static constexpr auto spread = spread_of<root, format>();
-    return parse_value<std::remove_cv_t<type>>(
-        groups[offset], spread.parameters[offset].view());
-  } else if constexpr (scanned_as_variant<type>) {
-    // Exactly one branch ran, and its mark says so: a mark that took part
-    // points into the subject, and the others point nowhere.
-    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
-      std::optional<type> made;
-      const auto take = [&]<std::size_t which>() {
-        constexpr std::size_t mark = offset + groups_before_branch<type, which>();
-        if (made || groups[mark].data() == nullptr) return;
-        using alternative = std::variant_alternative_t<which, type>;
-        made.emplace(std::in_place_index<which>,
-                     build_value<root, alternative, format, mark + 1>(groups));
-      };
-      (take.template operator()<branch>(), ...);
-      if (!made) throw scan_error("no branch of the format took the input");
-      return std::move(*made);
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
-  } else if constexpr (scanned_from_values<type>) {
-    // Made by the call it named, out of the values its places stood for.
-    return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return scan::scanner<std::remove_cv_t<type>>::parse(
-          build_value<root, typename parts_of<type>::template at<index>, format,
-                      offset + groups_before_field<type, index>()>(groups)...);
-    }(std::make_index_sequence<parts_of<type>::count>{});
-  } else {
-    return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return type{build_value<root, typename parts_of<type>::template at<index>,
-                              format,
-                              offset + groups_before_field<type, index>()>(
-          groups)...};
-    }(std::make_index_sequence<parts_of<type>::count>{});
-  }
-}
 template <class type, fixed_string format, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr type convert(
     const std::array<std::string_view, extent>& fields,
@@ -130,7 +20,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   // three times what initialising it once costs. It also demanded that every
   // field be default-constructible and assignable, which is more than an
   // aggregate has to be.
-  return build_value<type, type, format, 0>(fields);
+  return build_value<format_parameters<type, format>, type, 0>(fields);
 }
 
 template <fixed_string format, int sentinel = -1, bool terminated = false>
@@ -159,7 +49,7 @@ class borrowed_result {
             return scan_fields<type, format, sentinel, terminated>(input_);
           }
         }();
-    return build_value<type, type, format, 0>(fields);
+    return build_value<format_parameters<type, format>, type, 0>(fields);
     }
   }
 
@@ -170,7 +60,7 @@ class borrowed_result {
   constexpr operator type() const {
     const auto groups =
         scan_branch_fields<type, format, sentinel, terminated>(input_);
-    return build_value<type, type, format, 0>(groups);
+    return build_value<format_parameters<type, format>, type, 0>(groups);
   }
 
   // The same scan, said rather than implied, and the same scan that does not

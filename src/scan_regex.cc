@@ -950,6 +950,82 @@ using walked_holder =
 
 }  // namespace detail
 
+namespace detail {
+
+// The text a capturing group was written with, counting groups from one.
+//
+// Read the way the pattern reader reads it: a backslash takes the character
+// after it whatever that is, a class runs to its closing bracket, and a
+// parenthesis that opens with a question mark captures nothing and is not
+// counted.
+template <fixed_string pattern>
+[[nodiscard]] consteval std::string_view group_text(std::size_t wanted) {
+  const std::string_view text = pattern.view();
+  const auto skip_class = [&](std::size_t at) {
+    ++at;
+    while (at < text.size() && text[at] != ']') {
+      if (text[at] == '\\') ++at;
+      ++at;
+    }
+    return at;
+  };
+  std::size_t seen = 0;
+  for (std::size_t at = 0; at < text.size(); ++at) {
+    if (text[at] == '\\') {
+      ++at;
+      continue;
+    }
+    if (text[at] == '[') {
+      at = skip_class(at);
+      continue;
+    }
+    if (text[at] != '(') continue;
+    if (at + 1 < text.size() && text[at + 1] == '?') continue;
+    ++seen;
+    if (seen != wanted) continue;
+    std::size_t depth = 0;
+    for (std::size_t end = at; end < text.size(); ++end) {
+      if (text[end] == '\\') {
+        ++end;
+        continue;
+      }
+      if (text[end] == '[') {
+        end = skip_class(end);
+        continue;
+      }
+      if (text[end] == '(') {
+        ++depth;
+      } else if (text[end] == ')') {
+        --depth;
+        if (depth == 0) return text.substr(at + 1, end - at - 1);
+      }
+    }
+    return {};
+  }
+  return {};
+}
+
+// Whether this group is written with the very pattern the type declares for
+// itself.
+//
+// Where it is, the groups inside it are the type's own values -- the big
+// machine has already found them -- and the type is built from them. Where it
+// is not, there is nothing to reuse: the characters are handed to the type to
+// read as it sees fit.
+template <class type, fixed_string pattern, std::size_t group>
+[[nodiscard]] consteval bool group_spells_out() {
+  if constexpr (groups_of<type>() <= 1) {
+    return false;
+  } else if constexpr (!scanned_by_format<std::remove_cv_t<type>>) {
+    return false;
+  } else {
+    constexpr auto declared = capturing_pattern<std::remove_cv_t<type>>();
+    return group_text<pattern>(group) == declared.view();
+  }
+}
+
+}  // namespace detail
+
 // What a group is turned into.
 //
 // A collector says how to make a value out of the characters a group stood on.
@@ -1148,15 +1224,34 @@ struct collected<text_collector, holder> {
 template <class collector, class holder>
 using collected_type = typename collected<collector, holder>::type;
 
-template <class collector, class holder, class submatch_type>
+// Every group of a match, as text, for the types that are built out of them.
+template <class found_type, std::size_t... group>
+[[nodiscard]] constexpr auto all_groups(const found_type& found,
+                                        std::index_sequence<group...>) {
+  return std::array<std::string_view, sizeof...(group)>{
+      found.template get<group + 1>().to_view()...};
+}
+
+template <fixed_string pattern, std::size_t group, class collector,
+          class holder, class found_type>
 [[nodiscard]] constexpr collected_type<collector, holder> collect_one(
-    const collector& one, const submatch_type& group) {
+    const collector& one, const found_type& found) {
   if constexpr (std::same_as<collector, skip_collector>) {
     return {};
   } else if constexpr (std::same_as<collector, text_collector>) {
-    return group.held();
+    return found.template get<group>().held();
+  } else if constexpr (group_spells_out<typename collector::value_type,
+                                        pattern, group>()) {
+    // The group is the type's own pattern, so the groups inside it are the
+    // type's own values and the machine has already found them. Nothing is
+    // read twice and no second automaton was ever built.
+    constexpr std::size_t count = regex_automaton<pattern>.tag_count / 2;
+    const auto groups = all_groups(found, std::make_index_sequence<count>{});
+    return build_value<no_parameters, typename collector::value_type, group>(
+        groups);
   } else {
-    return one.from_text(group.to_view(), std::string_view{});
+    return one.from_text(found.template get<group>().to_view(),
+                         std::string_view{});
   }
 }
 
@@ -1206,9 +1301,9 @@ struct collected_match_closure
         basic_submatch<holder>(found.whole()),
         std::tuple<detail::collected_type<collectors, holder>...>{
             detail::collect_one<
+                pattern, group + 1,
                 std::tuple_element_t<group, std::tuple<collectors...>>,
-                holder>(std::get<group>(collectors_),
-                        found.template get<group + 1>())...}};
+                holder>(std::get<group>(collectors_), found)...}};
   }
 
   template <class found_type, std::size_t... group>
@@ -1217,9 +1312,9 @@ struct collected_match_closure
     return std::tuple<
         detail::collected_type<collectors, held_type>...>{
         detail::collect_one<
+            pattern, group + 1,
             std::tuple_element_t<group, std::tuple<collectors...>>, held_type>(
-            std::get<group>(collectors_),
-            found.template get<group + 1>())...};
+            std::get<group>(collectors_), found)...};
   }
 
   std::tuple<collectors...> collectors_;
