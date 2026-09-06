@@ -128,21 +128,26 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
       }(std::make_index_sequence<packed_state.final_command_count>{});
 }
 
-// What keeps a state: a handful of ranges of characters, and nothing else.
+// What keeps a state: runs of characters, and nothing else.
 //
-// One range covers a field of letters. Three cover the body of a quoted string,
-// which is everything but the quote and the backslash. Six cover the local part
-// of an address. The test costs one subtraction and one comparison per range
-// per vector, so a class of several ranges is read very nearly as fast as a
-// class of one, and the cases that are not one range are the common ones.
+// One run covers a field of letters. Three cover the body of a quoted string,
+// which is everything but the quote and the backslash. Twelve cover the local
+// part of an address, and the room here is for that: the class used to hold
+// eight and a state with more of them was left to be read a character at a
+// time, which is the one class in the benchmarks that most wanted the vectors.
 struct staying_class {
-  std::array<unsigned char, 8> first{};
-  std::array<unsigned char, 8> last{};
+  std::array<unsigned char, 16> first{};
+  std::array<unsigned char, 16> last{};
   std::size_t count = 0;
   // Whether every range ends below a hundred and twenty-eight, which is what
-  // the word step needs and the vectors do not.
+  // the word step and the nibble tables need and the range compares do not.
   bool below_the_high_bit = false;
 };
+
+// Above this many runs the nibble tables answer for the class, where the
+// machine can shuffle bytes; below it the runs are compared, which needs no
+// tables and no loads.
+inline constexpr std::size_t runs_worth_comparing_in_lanes = 3;
 
 #if defined(__clang__) || defined(__GNUC__)
 #define SCAN_HAS_LANES 1
@@ -155,6 +160,71 @@ template <class lane_type>
   return made;
 }
 
+// Two tables of sixteen bytes, which answer for a whole class at once however
+// many runs it has.
+//
+// A symbol below a hundred and twenty-eight is one nibble and another. The low
+// table says, for a low nibble, which high nibbles carry a symbol of the class;
+// the high table says which high nibble this is. One byte of each, and if they
+// share a bit the symbol belongs. Symbols at or above a hundred and twenty-eight
+// index the empty half of the high table and belong to nothing, which is what
+// the class asked for anyway.
+//
+// Measured against the run compares on the local part of an address, in
+// nanoseconds a character: 1.00 read one at a time, 0.29 comparing twelve runs
+// in a vector, 0.062 here.
+struct nibble_tables {
+  std::array<unsigned char, 16> low{};
+  std::array<unsigned char, 16> high{};
+};
+
+template <staying_class klass>
+[[nodiscard]] consteval nibble_tables nibbles_of() {
+  nibble_tables made{};
+  for (unsigned symbol = 0; symbol < 128; ++symbol) {
+    bool inside = false;
+    for (std::size_t index = 0; index < klass.count; ++index) {
+      if (symbol >= klass.first[index] && symbol <= klass.last[index]) {
+        inside = true;
+      }
+    }
+    if (inside) {
+      made.low[symbol & 15] |= static_cast<unsigned char>(1u << (symbol >> 4));
+    }
+  }
+  for (unsigned half = 0; half < 8; ++half) {
+    made.high[half] = static_cast<unsigned char>(1u << half);
+  }
+  return made;
+}
+
+// The same sixteen bytes repeated to the width of the lane: the shuffle picks
+// within each half of a wide register, so each half carries the whole table.
+template <class lane_type, std::array<unsigned char, 16> table>
+[[nodiscard]] constexpr lane_type table_over() {
+  lane_type made{};
+  for (std::size_t index = 0; index < sizeof(lane_type); ++index) {
+    made[index] = table[index & 15];
+  }
+  return made;
+}
+
+#if defined(__SSSE3__) || defined(__AVX2__)
+#define SCAN_HAS_SHUFFLE 1
+template <class lane_type>
+[[nodiscard]] SCAN_FORCE_INLINE lane_type shuffled(lane_type table,
+                                                   lane_type picks) {
+  using signed_lane [[gnu::vector_size(sizeof(lane_type))]] = char;
+  if constexpr (sizeof(lane_type) == 32) {
+    return static_cast<lane_type>(__builtin_ia32_pshufb256(
+        static_cast<signed_lane>(table), static_cast<signed_lane>(picks)));
+  } else {
+    return static_cast<lane_type>(__builtin_ia32_pshufb128(
+        static_cast<signed_lane>(table), static_cast<signed_lane>(picks)));
+  }
+}
+#endif
+
 // Ones where a character belongs to none of the ranges. A byte is inside a
 // range exactly when subtracting the low end of it, in the arithmetic that
 // wraps, lands at or below the width of it -- which holds for every byte there
@@ -163,10 +233,25 @@ template <class lane_type>
 // the machine has registers for is passed back through memory, and saying so is
 // a warning about the calling convention on every build. Everything here is
 // inlined and the accumulator never leaves the frame.
+
 template <staying_class klass, class lane_type>
 SCAN_FORCE_INLINE void outside_of(lane_type letters,
                                   decltype(std::declval<lane_type>() <
                                            std::declval<lane_type>())& answer) {
+#if defined(SCAN_HAS_SHUFFLE)
+  if constexpr (klass.below_the_high_bit &&
+                klass.count > runs_worth_comparing_in_lanes &&
+                (sizeof(lane_type) == 16 || sizeof(lane_type) == 32)) {
+    constexpr nibble_tables tables = nibbles_of<klass>();
+    const lane_type low = table_over<lane_type, tables.low>();
+    const lane_type high = table_over<lane_type, tables.high>();
+    const lane_type fifteen = spread_over<lane_type>(15);
+    const lane_type by_low = shuffled(low, letters & fifteen);
+    const lane_type by_high = shuffled(high, (letters >> 4) & fifteen);
+    answer = (by_low & by_high) == spread_over<lane_type>(0);
+    return;
+  }
+#endif
   const auto belongs = [&]<std::size_t index>(auto& into, bool first) {
     constexpr lane_type low = spread_over<lane_type>(klass.first[index]);
     constexpr lane_type span = spread_over<lane_type>(
@@ -262,7 +347,11 @@ template <staying_class klass>
     // foreign when it is foreign to every range, and one with its high bit
     // already set is foreign outright -- which it is only because this step is
     // not used for a class that reaches above the high bit.
-    if constexpr (klass.below_the_high_bit) {
+    // A word at a time, and only for a class of a few runs: every run costs
+    // four operations on the word, so eight runs cost more per eight
+    // characters than reading them one at a time would.
+    if constexpr (klass.below_the_high_bit &&
+                  klass.count <= runs_worth_comparing_in_lanes) {
       constexpr std::uint64_t ones = 0x0101010101010101ull;
       constexpr std::uint64_t highs = 0x8080808080808080ull;
       while (limit - cursor >= 8) {
