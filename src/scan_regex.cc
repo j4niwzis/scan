@@ -1058,6 +1058,67 @@ template <fixed_string pattern>
          std::numeric_limits<std::size_t>::max();
 }
 
+// A match found in a window of a size known while compiling.
+//
+// A subject that can only be read once cannot be gone back over, so finding
+// the leftmost match means holding what has been read: the characters of an
+// attempt that fails belong to the attempt that starts one character later.
+// How many that can be is what the pattern says -- a match is at most so many
+// characters long -- and where the pattern says nothing, because it can match
+// any length at all, this is not offered.
+//
+// Within the window the machine walks forward and never back. Where it stands
+// in an accepting state it takes a note: how far it got, and what the
+// registers held, which is the backup the TDFA papers put on the transitions
+// out of a fallback state. Where it then dies, the note is the answer and the
+// registers are what they were -- no second walk over the same characters.
+template <fixed_string pattern, std::size_t window>
+struct window_match {
+  std::size_t length = 0;
+  bool matched = false;
+  std::array<std::ptrdiff_t, regex_automaton<pattern>.register_count>
+      registers{};
+};
+
+template <fixed_string pattern, std::size_t window>
+[[nodiscard]] constexpr window_match<pattern, window> match_in_window(
+    const std::array<char, window>& held, std::size_t count) {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  window_match<pattern, window> answer;
+  std::array<std::ptrdiff_t, automaton.register_count> registers{};
+  std::ranges::fill(registers, scan::tre::negative_tag);
+  execute_commands(automaton.initialize, automaton.initialize.size(),
+                   registers, std::ptrdiff_t{0});
+  std::size_t here = automaton.initial;
+  if (automaton.states[here].accepting_slot !=
+      packed_state<0, 0, 0>::not_accepting) {
+    answer.matched = true;
+    answer.registers = registers;
+  }
+  for (std::size_t at = 0; at < count; ++at) {
+    const auto symbol = static_cast<unsigned char>(held[at]);
+    const std::size_t run = run_taken<automaton>(here, symbol);
+    if (run == no_run) break;
+    const auto& taken = automaton.states[here].ranges[run];
+    execute_commands(taken.commands, taken.command_count, registers,
+                     static_cast<std::ptrdiff_t>(at + 1));
+    here = taken.target;
+    if (automaton.states[here].accepting_slot ==
+        packed_state<0, 0, 0>::not_accepting) {
+      continue;
+    }
+    // The note taken at every accepting place, which is what makes the death
+    // that follows cost nothing.
+    answer.length = at + 1;
+    answer.matched = true;
+    answer.registers = registers;
+    execute_commands(automaton.states[here].final_commands,
+                     automaton.states[here].final_command_count,
+                     answer.registers, static_cast<std::ptrdiff_t>(at + 1));
+  }
+  return answer;
+}
+
 // Whether the group is being read where the machine stands now.
 template <fixed_string pattern, std::size_t group, class registers_type>
 [[nodiscard]] constexpr bool group_is_open(std::size_t here,
@@ -1864,14 +1925,226 @@ class search_view {
 // ranges library knows how to hand a subject to. `search_all<p>(text)` is the
 // call; `text | search_all<p>` is the same thing said the other way round, and
 // both come from writing it once.
-template <fixed_string pattern>
+// One match after another off a subject that can only be read once.
+//
+// The window holds what has been read and not yet answered for: at most as
+// many characters as a match can be, which the pattern says while it is
+// compiled. Where a match is found at the head of the window it is handed over
+// and those characters are dropped; where none is, one character is dropped
+// and the window slides on.
+template <fixed_string pattern, class held_type, class range_type>
+class read_once_search_view {
+ public:
+  static constexpr std::size_t window = detail::longest_match_length<pattern>();
+
+  constexpr explicit read_once_search_view(range_type input)
+      : input_(std::move(input)) {}
+
+  read_once_search_view(read_once_search_view&&) = default;
+  read_once_search_view& operator=(read_once_search_view&&) = default;
+  read_once_search_view(const read_once_search_view&) = delete;
+  read_once_search_view& operator=(const read_once_search_view&) = delete;
+
+  class iterator {
+   public:
+    using value_type = basic_submatch<held_type>;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(read_once_search_view& owner) : owner_(&owner) {
+      seek();
+    }
+
+    [[nodiscard]] constexpr const value_type& operator*() const {
+      return found_;
+    }
+    constexpr iterator& operator++() {
+      seek();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return owner_ == nullptr || !static_cast<bool>(found_);
+    }
+
+   private:
+    constexpr void seek() {
+      found_ = value_type{};
+      while (true) {
+        owner_->fill();
+        if (owner_->count_ == 0) return;
+        const auto taken =
+            detail::match_in_window<pattern, window>(owner_->held_,
+                                                     owner_->count_);
+        if (taken.matched && taken.length != 0) {
+          held_type made;
+          for (std::size_t at = 0; at < taken.length; ++at) {
+            made.push_back(owner_->held_[at]);
+          }
+          owner_->drop(taken.length);
+          found_ = value_type(std::move(made));
+          return;
+        }
+        owner_->drop(1);
+      }
+    }
+
+    read_once_search_view* owner_ = nullptr;
+    value_type found_{};
+  };
+
+  [[nodiscard]] constexpr iterator begin() { return iterator(*this); }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+ private:
+  friend class iterator;
+  friend class read_once_split_view_access;
+
+  // An iterator of such a range need not be default-constructible, so it is
+  // made where the reading starts rather than kept empty until then.
+  constexpr void fill() {
+    if (!cursor_) cursor_.emplace(std::ranges::begin(input_));
+    while (count_ < window && *cursor_ != std::ranges::end(input_)) {
+      held_[count_++] = **cursor_;
+      ++*cursor_;
+    }
+  }
+
+  constexpr void drop(std::size_t many) {
+    for (std::size_t at = many; at < count_; ++at) held_[at - many] = held_[at];
+    count_ -= many;
+  }
+
+  range_type input_;
+  std::optional<std::ranges::iterator_t<range_type>> cursor_;
+  std::array<char, window> held_{};
+  std::size_t count_ = 0;
+};
+
+// The pieces between those matches, off the same kind of subject. A piece is
+// as long as it is, and it is the answer, so it is the only thing here that
+// grows.
+template <fixed_string pattern, class held_type, class range_type>
+class read_once_split_view {
+ public:
+  static constexpr std::size_t window = detail::longest_match_length<pattern>();
+
+  constexpr explicit read_once_split_view(range_type input)
+      : input_(std::move(input)) {}
+
+  read_once_split_view(read_once_split_view&&) = default;
+  read_once_split_view& operator=(read_once_split_view&&) = default;
+  read_once_split_view(const read_once_split_view&) = delete;
+  read_once_split_view& operator=(const read_once_split_view&) = delete;
+
+  class iterator {
+   public:
+    using value_type = held_type;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(read_once_split_view& owner)
+        : owner_(&owner), done_(false) {
+      seek();
+    }
+
+    [[nodiscard]] constexpr const held_type& operator*() const {
+      return piece_;
+    }
+    constexpr iterator& operator++() {
+      if (last_) {
+        done_ = true;
+        return *this;
+      }
+      seek();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return done_;
+    }
+
+   private:
+    constexpr void seek() {
+      piece_ = held_type{};
+      while (true) {
+        owner_->fill();
+        if (owner_->count_ == 0) {
+          last_ = true;
+          return;
+        }
+        const auto taken =
+            detail::match_in_window<pattern, window>(owner_->held_,
+                                                     owner_->count_);
+        if (taken.matched && taken.length != 0) {
+          owner_->drop(taken.length);
+          return;
+        }
+        piece_.push_back(owner_->held_[0]);
+        owner_->drop(1);
+      }
+    }
+
+    read_once_split_view* owner_ = nullptr;
+    held_type piece_{};
+    bool last_ = false;
+    bool done_ = true;
+  };
+
+  [[nodiscard]] constexpr iterator begin() { return iterator(*this); }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+ private:
+  friend class iterator;
+
+  // An iterator of such a range need not be default-constructible, so it is
+  // made where the reading starts rather than kept empty until then.
+  constexpr void fill() {
+    if (!cursor_) cursor_.emplace(std::ranges::begin(input_));
+    while (count_ < window && *cursor_ != std::ranges::end(input_)) {
+      held_[count_++] = **cursor_;
+      ++*cursor_;
+    }
+  }
+
+  constexpr void drop(std::size_t many) {
+    for (std::size_t at = many; at < count_; ++at) held_[at - many] = held_[at];
+    count_ -= many;
+  }
+
+  range_type input_;
+  std::optional<std::ranges::iterator_t<range_type>> cursor_;
+  std::array<char, window> held_{};
+  std::size_t count_ = 0;
+};
+
+template <fixed_string pattern, class held_type = std::string>
 struct search_all_closure
-    : std::ranges::range_adaptor_closure<search_all_closure<pattern>> {
+    : std::ranges::range_adaptor_closure<
+          search_all_closure<pattern, held_type>> {
+  template <class other>
+  [[nodiscard]] constexpr search_all_closure<pattern, other> into() const {
+    return {};
+  }
+
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr search_view<pattern> operator()(
       range_type&& input) const {
     return search_view<pattern>(std::string_view(std::ranges::data(input),
                                                  std::ranges::size(input)));
+  }
+
+  template <detail::read_once_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    static_assert(
+        detail::matches_a_bounded_length<pattern>(),
+        "a subject that can only be read once cannot be gone back over, and "
+        "the characters of a failed attempt belong to the attempt that starts "
+        "one character later: only a pattern that says how long a match can "
+        "be says how many of them to hold");
+    auto view = std::views::all(std::forward<range_type>(input));
+    return read_once_search_view<pattern, held_type, decltype(view)>(
+        std::move(view));
   }
 };
 
@@ -1945,14 +2218,31 @@ class split_view {
   std::string_view input_;
 };
 
-template <fixed_string pattern>
+template <fixed_string pattern, class held_type = std::string>
 struct split_closure
-    : std::ranges::range_adaptor_closure<split_closure<pattern>> {
+    : std::ranges::range_adaptor_closure<split_closure<pattern, held_type>> {
+  template <class other>
+  [[nodiscard]] constexpr split_closure<pattern, other> into() const {
+    return {};
+  }
+
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr split_view<pattern> operator()(
       range_type&& input) const {
     return split_view<pattern>(std::string_view(std::ranges::data(input),
                                                 std::ranges::size(input)));
+  }
+
+  template <detail::read_once_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    static_assert(
+        detail::matches_a_bounded_length<pattern>(),
+        "a subject that can only be read once cannot be gone back over: only "
+        "a delimiter that says how long it can be says how much to hold while "
+        "looking for it");
+    auto view = std::views::all(std::forward<range_type>(input));
+    return read_once_split_view<pattern, held_type, decltype(view)>(
+        std::move(view));
   }
 };
 
