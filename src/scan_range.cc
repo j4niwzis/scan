@@ -582,6 +582,9 @@ class each_stream_scan {
 // is the call, `text | each<f>` is the same thing said the other way round,
 // and the type each of them hands back is asked for the same way --
 // `.of<type>()`.
+template <class type, fixed_string format, class pieces_type>
+class each_pieces_view;
+
 template <fixed_string format, class pieces_type>
 class each_pieces_scan;
 
