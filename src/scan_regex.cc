@@ -191,6 +191,34 @@ template <fixed_string pattern, std::size_t state>
   return result;
 }
 
+// Whether the reading that accepts holds its groups where the first one does.
+//
+// A state stands in several readings at once, ordered by which the
+// disambiguation prefers, and they can disagree about which register holds a
+// group. A machine that gathers as it goes has one gathering per group and
+// fills it by the first reading, so what it hands back is right exactly where
+// the reading that accepted holds that group in the same registers.
+//
+// It usually does: the readings of a state differ about the tags that are
+// still undecided, not about the ones behind them. Where they differ, this
+// says so instead of answering out of a gathering that did not win.
+template <fixed_string pattern>
+[[nodiscard]] consteval bool accepts_where_the_first_reading_gathers() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr std::size_t group_count = automaton.tag_count / 2;
+  for (const auto& state : automaton.states) {
+    if (state.accepting_slot == packed_state<0, 0, 0>::not_accepting) continue;
+    if (state.reading_count == 0) continue;
+    for (std::size_t group = 0; group < group_count; ++group) {
+      const auto& accepted = state.readings[state.accepting_slot];
+      const auto& first = state.readings[0];
+      if (accepted[group * 2] != first[group * 2]) return false;
+      if (accepted[group * 2 + 1] != first[group * 2 + 1]) return false;
+    }
+  }
+  return true;
+}
+
 // The longest a match can be, or nothing at all where it can be any length.
 //
 // A pattern with no cycle in its automaton matches a bounded number of
@@ -858,12 +886,10 @@ regex_match(
     constexpr std::size_t worth_a_word = 32;
     const bool matched =
         input.size() >= worth_a_word
-            ? run_tagged_state_continuation<automaton, true,
-                                            automaton.initial>(cursor, end,
-                                                               registers)
-            : run_tagged_state_continuation<automaton, false,
-                                            automaton.initial>(cursor, end,
-                                                               registers);
+            ? run_from_here<automaton, true, automaton.initial>(cursor, end,
+                                                                registers)
+            : run_from_here<automaton, false, automaton.initial>(cursor, end,
+                                                                 registers);
     if (!matched) return {};
 
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
@@ -1540,6 +1566,12 @@ struct collected_match_closure
   // a number being read, and the subject is never held anywhere.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    static_assert(
+        detail::accepts_where_the_first_reading_gathers<pattern>(),
+        "this pattern accepts by a reading that holds a group in other "
+        "registers than the first reading does, and a subject that arrives as "
+        "it is read is gathered into one place per group: what came back "
+        "would be the gathering of a reading that did not win");
     constexpr const auto& automaton = detail::regex_automaton<pattern>;
     // The whole of the match is not kept: there is nothing left behind to
     // point at, and nobody asked for it -- what was asked for is what the
@@ -1559,8 +1591,9 @@ struct collected_match_closure
 
     auto cursor = std::ranges::begin(input);
     std::ptrdiff_t position = 0;
-    if (!detail::run_gathering_continuation<automaton, automaton.initial>(
-            cursor, std::ranges::end(input), registers, position, into)) {
+    if (!detail::run_continuation<automaton, false, automaton.initial,
+                                  std::ptrdiff_t>(
+            cursor, std::ranges::end(input), position, registers, into)) {
       return result_type{};
     }
     return result_type{
@@ -1584,9 +1617,16 @@ struct collected_match_closure
                              states_type& states)
         : owner_(owner), states_(states) {}
 
-    template <std::size_t state, class registers_type>
-    constexpr void arrived(char letter, const registers_type& registers) {
-      offer_all<state>(letter, registers,
+    // A move was made: whatever groups are open where it lands take the
+    // character.
+    //
+    // Which registers a group is held in are constants at the state the walk
+    // stands in, so this is two loads and a comparison rather than a lookup of
+    // the state, then of its readings, then of the registers.
+    template <std::size_t state, std::size_t landed, class registers_type>
+    constexpr void moved(std::size_t, char letter,
+                         const registers_type& registers, std::ptrdiff_t) {
+      hand_all<landed>(letter, registers,
                        std::make_index_sequence<sizeof...(collectors)>{});
     }
 
@@ -1594,26 +1634,27 @@ struct collected_match_closure
     constexpr void ended(const registers_type&) {}
 
    private:
-    template <std::size_t state, class registers_type, std::size_t... group>
-    constexpr void offer_all(char letter, const registers_type& registers,
-                             std::index_sequence<group...>) {
-      (offer_group<state, group>(letter, registers), ...);
+    template <std::size_t landed, class registers_type, std::size_t... group>
+    constexpr void hand_all(char letter, const registers_type& registers,
+                            std::index_sequence<group...>) {
+      (hand_group<landed, group>(letter, registers), ...);
     }
 
-    template <std::size_t state, std::size_t group, class registers_type>
-    constexpr void offer_group(char letter, const registers_type& registers) {
+    template <std::size_t landed, std::size_t group, class registers_type>
+    constexpr void hand_group(char letter,
+                              const registers_type& registers) {
       using collector =
           std::tuple_element_t<group, std::tuple<collectors...>>;
       if constexpr (std::same_as<collector, skip_collector>) {
         return;
       } else {
-        constexpr const auto& packed =
-            detail::regex_automaton<pattern>.states[state];
-        if constexpr (packed.reading_count == 0) {
+        constexpr const auto& entered =
+            detail::regex_automaton<pattern>.states[landed];
+        if constexpr (entered.reading_count == 0) {
           return;
         } else {
-          constexpr std::uint32_t opening = packed.readings[0][group * 2];
-          constexpr std::uint32_t closing = packed.readings[0][group * 2 + 1];
+          constexpr std::uint32_t opening = entered.readings[0][group * 2];
+          constexpr std::uint32_t closing = entered.readings[0][group * 2 + 1];
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
           if constexpr (std::same_as<collector, text_collector>) {
