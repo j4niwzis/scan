@@ -411,59 +411,170 @@ template <auto& automaton, std::size_t state>
   return staying_of<automaton, state>().count != 0;
 }
 
+// Whether two runs of a state go to the same place and write the same thing.
+//
+// The captureless walk groups a state's runs by where they lead, so that what
+// follows the move is written once for the place instead of once for the run.
+// Here a move is where it leads and what it writes on the way, so runs are
+// grouped by both -- a run that writes something of its own is a move of its
+// own.
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval bool runs_agree(std::size_t left, std::size_t right) {
+  const auto& packed = automaton.states[state];
+  const auto& one = packed.ranges[left];
+  const auto& other = packed.ranges[right];
+  if (one.target != other.target) return false;
+  if (one.command_count != other.command_count) return false;
+  for (std::size_t index = 0; index < one.command_count; ++index) {
+    if (one.commands[index].destination != other.commands[index].destination) {
+      return false;
+    }
+    if (one.commands[index].source != other.commands[index].source) {
+      return false;
+    }
+    if (one.commands[index].value != other.commands[index].value) return false;
+  }
+  return true;
+}
+
+template <std::size_t capacity>
+struct distinct_moves_of {
+  std::array<std::size_t, capacity> at{};
+  std::size_t count = 0;
+};
+
+// The moves a state can make, each named once by the first run that makes it.
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval auto distinct_moves() {
+  constexpr const auto& packed = automaton.states[state];
+  distinct_moves_of<packed.ranges.size()> made;
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    bool named = false;
+    for (std::size_t other = 0; other < made.count; ++other) {
+      if (runs_agree<automaton, state>(made.at[other], index)) named = true;
+    }
+    if (!named) made.at[made.count++] = index;
+  }
+  return made;
+}
+
+// How many runs make the same move.
+template <auto& automaton, std::size_t state, std::size_t move>
+[[nodiscard]] consteval std::size_t runs_making() {
+  constexpr const auto& packed = automaton.states[state];
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (runs_agree<automaton, state>(move, index)) ++count;
+  }
+  return count;
+}
+
+// Which symbols make this move, for a move that a handful of runs make.
+template <auto& automaton, std::size_t state, std::size_t move>
+inline constexpr auto move_table = [] consteval {
+  constexpr const auto& packed = automaton.states[state];
+  std::array<unsigned char, 256> made{};
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (!runs_agree<automaton, state>(move, index)) continue;
+    for (std::size_t symbol = packed.ranges[index].first;
+         symbol <= packed.ranges[index].last; ++symbol) {
+      made[symbol] = 1;
+    }
+  }
+  return made;
+}();
+
+template <auto& automaton, std::size_t state, std::size_t move,
+          std::size_t index = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool makes_move_by_runs(
+    unsigned char symbol) {
+  constexpr const auto& packed = automaton.states[state];
+  if constexpr (index == packed.range_count) {
+    return false;
+  } else if constexpr (!runs_agree<automaton, state>(move, index)) {
+    return makes_move_by_runs<automaton, state, move, index + 1>(symbol);
+  } else {
+    constexpr const auto& range = packed.ranges[index];
+    if (symbol >= range.first && symbol <= range.last) return true;
+    return makes_move_by_runs<automaton, state, move, index + 1>(symbol);
+  }
+}
+
+// Whether the symbol makes this move. Asked of a table where several runs make
+// it, and of the runs themselves where one or two do -- which is the same
+// bargain the captureless walk strikes, measured there.
+template <auto& automaton, std::size_t state, std::size_t move>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool makes_move(
+    unsigned char symbol) {
+  if constexpr (runs_making<automaton, state, move>() >
+                runs_worth_comparing_in_lanes) {
+    return move_table<automaton, state, move>[symbol] != 0;
+  } else {
+    return makes_move_by_runs<automaton, state, move>(symbol);
+  }
+}
+
 template <auto& automaton, std::size_t state, class mark,
-          std::size_t register_count, std::size_t index = 0>
+          std::size_t register_count, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 execute_tagged_self_transition(
     unsigned char symbol, std::array<mark, register_count>& registers,
     mark here) {
-  constexpr const auto& packed = automaton.states[state];
-  if constexpr (index == packed.range_count) {
+  constexpr auto moves = distinct_moves<automaton, state>();
+  if constexpr (which == moves.count) {
     return false;
-  } else if constexpr (packed.ranges[index].target != state) {
-    // A range that leads elsewhere is passed over without being compared
+  } else if constexpr (automaton.states[state].ranges[moves.at[which]].target !=
+                       state) {
+    // A move that leads elsewhere is passed over without being compared
     // against. It used to be compared and then declined, which put the test for
     // the comma that ends a field inside the loop that reads the field -- one
     // comparison and one branch on every letter, to find something that happens
-    // once. The ranges of a state do not overlap, so a symbol skipped here
-    // cannot match any of the others either, and the answer is the same.
+    // once. The runs of a state do not overlap, so a symbol skipped here
+    // cannot make any of the other moves either, and the answer is the same.
     return execute_tagged_self_transition<automaton, state, mark,
-                                          register_count, index + 1>(
+                                          register_count, which + 1>(
         symbol, registers, here);
   } else {
-    constexpr const auto& range = packed.ranges[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      execute_static_transition_commands<automaton, state, index>(registers,
-                                                                  here);
+    constexpr std::size_t move = moves.at[which];
+    if (makes_move<automaton, state, move>(symbol)) {
+      execute_static_transition_commands<automaton, state, move>(registers,
+                                                                 here);
       return true;
     }
     return execute_tagged_self_transition<automaton, state, mark,
-                                          register_count, index + 1>(
+                                          register_count, which + 1>(
         symbol, registers, here);
   }
 }
 
 template <auto& automaton, bool in_words, std::size_t state,
-          std::size_t register_count, std::size_t index = 0>
+          std::size_t register_count, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 dispatch_tagged_transition(
     unsigned char symbol, const char* cursor, const char* end,
     std::array<const char*, register_count>& registers) {
-  constexpr const auto& packed = automaton.states[state];
-  if constexpr (index == packed.range_count) {
+  constexpr auto moves = distinct_moves<automaton, state>();
+  if constexpr (which == moves.count) {
     return false;
   } else {
-    constexpr const auto& range = packed.ranges[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target == state) return false;
-      execute_static_transition_commands<automaton, state, index>(registers,
-                                                                  cursor - 1);
-      [[clang::always_inline]] return run_tagged_state_continuation<
-          automaton, in_words, range.target>(cursor, end, registers);
+    constexpr std::size_t move = moves.at[which];
+    constexpr const auto& range = automaton.states[state].ranges[move];
+    if constexpr (range.target == state) {
+      // Whether the symbol keeps the automaton here is asked before this.
+      return dispatch_tagged_transition<automaton, in_words, state,
+                                        register_count, which + 1>(
+          symbol, cursor, end, registers);
+    } else {
+      if (makes_move<automaton, state, move>(symbol)) {
+        execute_static_transition_commands<automaton, state, move>(registers,
+                                                                   cursor - 1);
+        [[clang::always_inline]] return run_tagged_state_continuation<
+            automaton, in_words, range.target>(cursor, end, registers);
+      }
+      return dispatch_tagged_transition<automaton, in_words, state,
+                                        register_count, which + 1>(
+          symbol, cursor, end, registers);
     }
-    return dispatch_tagged_transition<automaton, in_words, state,
-                                      register_count, index + 1>(
-        symbol, cursor, end, registers);
   }
 }
 
@@ -589,28 +700,35 @@ template <auto& automaton, unsigned char sentinel, bool in_words,
     std::array<const char*, register_count>& registers);
 
 template <auto& automaton, unsigned char sentinel, bool in_words,
-          std::size_t state, std::size_t register_count, std::size_t index = 0>
+          std::size_t state, std::size_t register_count, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 dispatch_tagged_sentinel_transition(
     unsigned char symbol, const char* cursor, const char* limit,
     std::array<const char*, register_count>& registers) {
-  constexpr const auto& packed = automaton.states[state];
-  if constexpr (index == packed.range_count) {
+  constexpr auto moves = distinct_moves<automaton, state>();
+  if constexpr (which == moves.count) {
     return false;
   } else {
-    constexpr const auto& range = packed.ranges[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target == state) return false;
-      execute_static_transition_commands<automaton, state, index>(registers,
-                                                                  cursor - 1);
-      [[clang::always_inline]] return run_tagged_sentinel_continuation<
-          automaton, sentinel, in_words, range.target>(cursor, limit,
-                                                       registers);
+    constexpr std::size_t move = moves.at[which];
+    constexpr const auto& range = automaton.states[state].ranges[move];
+    if constexpr (range.target == state) {
+      return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
+                                                 state, register_count,
+                                                 which + 1>(symbol, cursor,
+                                                            limit, registers);
+    } else {
+      if (makes_move<automaton, state, move>(symbol)) {
+        execute_static_transition_commands<automaton, state, move>(registers,
+                                                                   cursor - 1);
+        [[clang::always_inline]] return run_tagged_sentinel_continuation<
+            automaton, sentinel, in_words, range.target>(cursor, limit,
+                                                         registers);
+      }
+      return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
+                                                 state, register_count,
+                                                 which + 1>(symbol, cursor,
+                                                            limit, registers);
     }
-    return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
-                                               state, register_count,
-                                               index + 1>(symbol, cursor, limit,
-                                                          registers);
   }
 }
 
