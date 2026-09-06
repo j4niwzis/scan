@@ -1405,17 +1405,39 @@ template <auto& automaton, std::size_t state>
   return no_run;
 }
 
-template <auto& automaton, std::size_t state = 0>
-[[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
-                                              unsigned char symbol) {
+// Which run each symbol takes from each state, as a table.
+//
+// A machine whose state is a value has to ask about the state itself, and
+// asking by comparing against every state in turn is a walk down the states on
+// every character. A table is one load: the state indexes the row, the symbol
+// indexes the cell. This is the table a generated scanner uses when it is told
+// to be a table, and it is only built for the machines that need it -- the
+// walks over characters in a row never ask.
+template <auto& automaton>
+inline constexpr auto step_table = [] consteval {
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  if constexpr (state == state_count) {
-    return no_run;
-  } else {
-    if (here == state) return run_taken_in<automaton, state>(symbol);
-    return run_taken<automaton, state + 1>(here, symbol);
+  // A run index fits in two bytes: a state holds at most as many runs as there
+  // are symbols.
+  std::array<std::array<std::uint16_t, 256>, state_count> made{};
+  for (std::size_t state = 0; state < state_count; ++state) {
+    std::ranges::fill(made[state], std::uint16_t{0xffff});
+    const auto& packed = automaton.states[state];
+    for (std::size_t index = 0; index < packed.range_count; ++index) {
+      for (std::size_t symbol = packed.ranges[index].first;
+           symbol <= packed.ranges[index].last; ++symbol) {
+        made[state][symbol] = static_cast<std::uint16_t>(index);
+      }
+    }
   }
+  return made;
+}();
+
+template <auto& automaton>
+[[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
+                                              unsigned char symbol) {
+  const std::uint16_t run = step_table<automaton>[here][symbol];
+  return run == 0xffff ? no_run : run;
 }
 
 // The transition a symbol takes, or nothing at all. The ranges of a state are

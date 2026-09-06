@@ -704,38 +704,56 @@ run_inlined_sentinel_continuation(const char* cursor, const char* end) {
 // rests on that. This one rests on nothing: it asks the same questions of the
 // same automaton, one character at a time, and works wherever a character can
 // be read from. Contiguous input never comes here.
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel>
-[[nodiscard]] constexpr bool run_general(iterator cursor, sentinel last);
+// The same walk, told what to do with the characters it consumes.
+//
+// Nothing where the answer is only whether it matched; where the answer holds
+// the text, the text is built as the walk goes and never gathered twice.
+struct keeps_nothing {
+  constexpr void operator()(char) const {}
+};
 
 template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel, std::size_t which = 0>
+          class sentinel, class sink = keeps_nothing>
+[[nodiscard]] constexpr bool run_general(iterator& cursor, sentinel last,
+                                         sink& into);
+
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel, class sink, std::size_t which = 0>
 [[nodiscard]] constexpr bool dispatch_general(unsigned char symbol,
-                                              iterator cursor, sentinel last) {
+                                              iterator& cursor, sentinel last,
+                                              sink& into) {
   constexpr auto targets = make_transition_targets<pattern, state>();
   if constexpr (which == targets.size) {
     return false;
   } else if constexpr (targets.values[which] == state) {
-    return dispatch_general<pattern, state, iterator, sentinel, which + 1>(
-        symbol, cursor, last);
+    return dispatch_general<pattern, state, iterator, sentinel, sink,
+                            which + 1>(symbol, cursor, last, into);
   } else {
     constexpr auto target = targets.values[which];
     if (moves_to<pattern, state, target>(symbol)) {
-      return run_general<pattern, target>(cursor, last);
+      return run_general<pattern, target>(cursor, last, into);
     }
-    return dispatch_general<pattern, state, iterator, sentinel, which + 1>(
-        symbol, cursor, last);
+    return dispatch_general<pattern, state, iterator, sentinel, sink,
+                            which + 1>(symbol, cursor, last, into);
   }
 }
 
+// The cursor is passed along rather than copied: an iterator of a subject that
+// can only be read once is the reading, and there is only one of it.
+template <class type>
+concept walked_once = true;
+
 template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel>
-[[nodiscard]] constexpr bool run_general(iterator cursor, sentinel last) {
+          class sentinel, class sink>
+[[nodiscard]] constexpr bool run_general(iterator& cursor, sentinel last,
+                                         sink& into) {
   while (cursor != last) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
     ++cursor;
+    into(static_cast<char>(symbol));
     if (is_self_transition<pattern, state>(symbol)) continue;
-    return dispatch_general<pattern, state>(symbol, cursor, last);
+    return dispatch_general<pattern, state, iterator, sentinel, sink>(
+        symbol, cursor, last, into);
   }
   return accepts_here<pattern, state>();
 }
@@ -1697,8 +1715,10 @@ struct match_closure
     using holder = detail::walked_holder<range_type>;
     const auto first = std::ranges::begin(input);
     const auto last = std::ranges::end(input);
-    if (!detail::run_general<pattern, detail::regex_automaton<pattern>.initial>(first,
-                                                                       last)) {
+    detail::keeps_nothing nothing;
+    auto walking = first;
+    if (!detail::run_general<pattern, detail::regex_automaton<pattern>.initial>(
+            walking, last, nothing)) {
       return basic_result<holder, 0>{};
     }
     return basic_result<holder, 0>{
@@ -1706,29 +1726,21 @@ struct match_closure
         {}};
   }
 
-  // Fed a character at a time, and nothing kept but the answer.
+  // Walked by the same code that walks a list of characters, which is the
+  // same code that walks characters in a row -- only the reading differs.
   //
-  // The subject cannot be looked at twice, so it is not looked at twice: the
-  // machine is stepped as each character arrives and the characters go
-  // straight into what is handed back. What used to happen here was reading
-  // the whole subject into a string and then walking that -- two passes and
-  // room for all of it, whether or not the match died on the third character.
+  // A subject that arrives as it is read does not need a machine that can be
+  // stopped and started: this call owns the loop, so the walk is written out
+  // by the compiler as it is everywhere else, and the state is where it stands
+  // in that code rather than a number to look up. What it cannot have is the
+  // vectors, which want characters in a row.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
     held_type held;
-    std::size_t here = automaton.initial;
+    auto keep = [&held](char letter) { held.push_back(letter); };
     auto cursor = std::ranges::begin(input);
-    const auto last = std::ranges::end(input);
-    for (; cursor != last; ++cursor) {
-      const unsigned char symbol = static_cast<unsigned char>(*cursor);
-      const std::size_t run = detail::run_taken<detail::regex_automaton<pattern>>(here, symbol);
-      if (run == detail::no_run) return basic_result<held_type, 0>{};
-      here = automaton.states[here].ranges[run].target;
-      held.push_back(static_cast<char>(symbol));
-    }
-    if (automaton.states[here].accepting_slot ==
-        detail::packed_state<0, 0, 0>::not_accepting) {
+    if (!detail::run_general<pattern, detail::regex_automaton<pattern>.initial>(
+            cursor, std::ranges::end(input), keep)) {
       return basic_result<held_type, 0>{};
     }
     return basic_result<held_type, 0>{
