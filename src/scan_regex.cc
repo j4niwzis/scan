@@ -220,17 +220,49 @@ dispatch_sentinel_transition(unsigned char symbol, const char* cursor) {
   }
 }
 
-// Whether the symbol keeps the automaton where it is, decided by comparing it
-// against the ranges that do, rather than by reading a byte out of a table of
-// two hundred and fifty-six.
+// How many runs of symbols keep the automaton in the state it is in. A class
+// like [a-z] is one of them; the local part of an address is twelve.
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] consteval std::size_t self_range_count() {
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < ranges.size; ++index) {
+    if (ranges.values[index].target == state) ++count;
+  }
+  return count;
+}
+
+// Above this many runs the question is asked of a table instead of asked of
+// every run in turn. Measured on a long subject, in nanoseconds a character:
 //
-// The table costs a load from memory for every character of the subject. The
-// ranges are known while compiling and there are a handful of them -- one, for
-// a class like [a-z] -- so the same question is a compare against a constant,
-// which is what a generated scanner does.
+//     runs      1     2     3     4     6    12
+//     compares  1.13  1.51  1.70  1.14  1.51  5.35
+//     table     1.12  1.10  1.12  1.14  1.14  1.10
+//
+// The table is never behind, and by twelve runs it is five times ahead --
+// where the comparisons are, the compiler spreads one character across a
+// vector and compares it against four bounds at once, then folds the answer
+// back through the mask registers, which is twenty instructions to decide one
+// character. What keeps the comparisons here for one run and two is the short
+// subject: the table is a load from memory that a couple of compares against
+// constants do not need, and a match a few characters long never gets far
+// enough for the loop to matter.
+inline constexpr std::size_t runs_worth_comparing = 2;
+
+template <fixed_string pattern, std::size_t state>
+inline constexpr auto self_transition_table = [] consteval {
+  std::array<unsigned char, 256> result{};
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  std::ranges::transform(
+      automaton.transitions[state], result.begin(), [](auto target) {
+        return static_cast<unsigned char>(target == state);
+      });
+  return result;
+}();
+
 template <fixed_string pattern, std::size_t state, std::size_t index = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool is_self_transition(
-    unsigned char symbol) {
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
+is_self_transition_by_runs(unsigned char symbol) {
   constexpr auto ranges = make_transition_ranges<pattern, state>();
   if constexpr (index == ranges.size) {
     return false;
@@ -239,7 +271,18 @@ template <fixed_string pattern, std::size_t state, std::size_t index = 0>
     if constexpr (range.target == state) {
       if (symbol >= range.first && symbol <= range.last) return true;
     }
-    return is_self_transition<pattern, state, index + 1>(symbol);
+    return is_self_transition_by_runs<pattern, state, index + 1>(symbol);
+  }
+}
+
+// Whether the symbol keeps the automaton where it is.
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool is_self_transition(
+    unsigned char symbol) {
+  if constexpr (self_range_count<pattern, state>() > runs_worth_comparing) {
+    return self_transition_table<pattern, state>[symbol] != 0;
+  } else {
+    return is_self_transition_by_runs<pattern, state>(symbol);
   }
 }
 
