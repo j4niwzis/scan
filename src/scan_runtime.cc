@@ -2267,6 +2267,44 @@ class field_gatherer {
   std::optional<type> made_;
 };
 
+// One match off input that arrives in pieces, and where the next one starts.
+//
+// The head of the reading, in the sense the format reader means: the machine
+// takes what it takes and stops, and where it stopped is where the reading
+// goes on from -- which for pieces is a place in the piece it is holding, so
+// nothing has to be put back.
+template <class type, fixed_string format, class source_type>
+struct taken_from_pieces {
+  std::optional<type> value;
+  bool matched = false;
+};
+
+template <class type, fixed_string format, class source_type>
+[[nodiscard]] constexpr auto take_from_pieces(source_type& into,
+                                              const char*& cursor,
+                                              const char*& last,
+                                              std::ptrdiff_t& place) {
+  constexpr const auto& automaton = streaming_automaton<type, format>;
+  taken_from_pieces<type, format, source_type> said;
+  std::array<std::ptrdiff_t, automaton.register_count> registers{};
+  std::ranges::fill(registers, scan::tre::negative_tag);
+  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
+                   place);
+  walk_answer<const char*> best;
+  constexpr walk_shape shape{.in_words = true, .head = true};
+  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+                        std::ptrdiff_t>(cursor, last, place, registers, into,
+                                        best)) {
+    return said;
+  }
+  // Where the machine stopped is where the next reading begins: the character
+  // it could not take has been read, and here it can be handed back.
+  if (best.at) cursor = *best.at;
+  said.value = std::move(*into.made());
+  said.matched = true;
+  return said;
+}
+
 // A scan of input that arrives in pieces.
 //
 // The walk reads a piece the way it reads a string -- in words and vectors --
