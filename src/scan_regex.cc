@@ -1341,6 +1341,10 @@ struct collected_match_closure
                              states_type& states)
         : owner_(owner), states_(states) {}
 
+    template <std::size_t state, std::size_t move, class registers_type,
+              class mark>
+    constexpr void moving(const registers_type&, mark) const {}
+
     // A move was made: whatever groups are open where it lands take the
     // character.
     //

@@ -547,27 +547,31 @@ execute_tagged_self_transition(
 
 // Which move keeps the machine here, or none. The move is what the gatherer
 // needs: its commands are what a field's gathering follows.
-template <auto& automaton, std::size_t state, class mark,
+template <auto& automaton, std::size_t state, class gatherer, class mark,
           std::size_t register_count, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::size_t taken_self_move(
     unsigned char symbol, std::array<mark, register_count>& registers,
-    mark here) {
+    mark here, gatherer& into) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
     return no_run;
   } else if constexpr (automaton.states[state].ranges[moves.at[which]].target !=
                        state) {
-    return taken_self_move<automaton, state, mark, register_count, which + 1>(
-        symbol, registers, here);
+    return taken_self_move<automaton, state, gatherer, mark, register_count,
+                           which + 1>(symbol, registers, here, into);
   } else {
     constexpr std::size_t move = moves.at[which];
     if (makes_move<automaton, state, move>(symbol)) {
+      // What a move is about to write is asked before it writes it: a list
+      // takes in the turn that is ending, and what says the turn ended is the
+      // registers as they stand now.
+      into.template moving<state, move>(registers, here);
       execute_static_transition_commands<automaton, state, move>(registers,
                                                                  here);
       return move;
     }
-    return taken_self_move<automaton, state, mark, register_count, which + 1>(
-        symbol, registers, here);
+    return taken_self_move<automaton, state, gatherer, mark, register_count,
+                           which + 1>(symbol, registers, here, into);
   }
 }
 
@@ -625,6 +629,9 @@ template <auto& automaton, std::size_t state>
 
 // Nothing gathered: what the walk hands over goes nowhere and costs nothing.
 struct gathers_nothing {
+  template <std::size_t state, std::size_t move, class registers_type,
+            class mark>
+  constexpr void moving(const registers_type&, mark) const {}
   template <std::size_t state, std::size_t landed, class registers_type,
             class mark>
   constexpr void moved(std::size_t, char, const registers_type&, mark) const {}
@@ -638,6 +645,9 @@ template <class held_type>
 struct keeps_into {
   held_type& held;
 
+  template <std::size_t state, std::size_t move, class registers_type,
+            class mark>
+  constexpr void moving(const registers_type&, mark) const {}
   template <std::size_t state, std::size_t landed, class registers_type,
             class mark>
   constexpr void moved(std::size_t, char letter, const registers_type&,
@@ -726,6 +736,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           symbol, cursor, last, place, registers, into, best);
     } else {
       if (makes_move<automaton, state, move>(symbol)) {
+        into.template moving<state, move>(registers, place);
         execute_static_transition_commands<automaton, state, move>(registers,
                                                                    place);
         into.template moved<state, range.target>(
@@ -781,8 +792,13 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     // A character that is certainly there is read without asking whether it
     // is: the subject was measured against the shortest match before the first
     // one, so along a chain of states that each take one character the next is
-    // known to exist. A terminator answers the question by itself.
-    if constexpr (!shape.by_terminator && certain == 0) {
+    // known to exist. A state that can keep itself takes as many characters as
+    // it likes, and then the count no longer says anything -- so it is only
+    // spent where the state takes exactly one. A terminator answers the
+    // question by itself.
+    constexpr bool counts_here =
+        certain != 0 && !runs_in_place<automaton, state>();
+    if constexpr (!shape.by_terminator && !counts_here) {
       if (cursor == last) break;
     }
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
@@ -795,7 +811,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       ++place;
     }
     const std::size_t stayed =
-        taken_self_move<automaton, state>(symbol, registers, place);
+        taken_self_move<automaton, state, gatherer>(symbol, registers, place,
+                                                    into);
     if (stayed != no_run) {
       if constexpr (gathers) {
         into.template moved<state, state>(stayed, static_cast<char>(symbol),
@@ -823,7 +840,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
     }
     return dispatch_continuation<automaton, shape, state, budget,
-                                 certain == 0 ? 0 : certain - 1, mark>(
+                                 counts_here ? certain - 1 : 0, mark>(
         symbol, cursor, last, place, registers, into, best);
   }
   if constexpr (shape.longest_head) {
@@ -1973,6 +1990,16 @@ class field_gatherer {
 
   constexpr field_gatherer() {
     std::ranges::fill(states_, make_scanner_state<type, format>());
+  }
+
+  // A list takes in the turn that has just ended, and what says it ended is
+  // the registers as they stood before this move wrote anything.
+  template <std::size_t state, std::size_t move, class registers_type>
+  constexpr void moving(const registers_type& registers, std::ptrdiff_t) {
+    constexpr const auto& taken = automaton.states[state].ranges[move];
+    collect_elements<type, format, automaton>(
+        state, registers, states_, taken.commands, taken.command_count,
+        std::make_index_sequence<field_count>{});
   }
 
   template <std::size_t state, std::size_t landed, class registers_type>
