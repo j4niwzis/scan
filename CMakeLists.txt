@@ -168,6 +168,7 @@ set(scan_tests
   a_subject_handed_to_each_test
   a_tokenize_that_is_a_search_under_test
   a_value_for_each_group_test
+  a_walk_that_finds_nothing_test
   a_whole_subject_off_a_stream_test
   accepts_bounded_repetition_from_test
   applies_scanner_parameters_to_test
@@ -198,14 +199,18 @@ set(scan_tests
   nothing_where_nothing_matched_test
   optimized_register_program_preserves_test
   preserves_official_capture_and_range_test
+  reads_no_further_than_the_record_test
   record_after_record_off_one_stream_test
   scanner_can_build_an_owning_pattern_test
   scans_at_compile_time_test
   scans_borrowed_contiguous_range_test
+  splits_a_stream_on_spaces_test
   states_that_lead_back_test
   streams_sscanf_like_floating_test
   streams_unbounded_custom_value_test
   tagged_automata_test
+  the_first_accept_ends_the_record_test
+  the_first_accept_off_a_stream_test
   the_head_of_an_input_test
   the_leftmost_and_longest_test
   the_outer_branch_test
