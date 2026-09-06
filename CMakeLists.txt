@@ -177,7 +177,14 @@ set(scan_tests
   list_shape_test
   list_own_test
   expected_test
-  piped_test)
+  piped_test
+  collector_types_test
+  collector_arguments_test
+  collector_pusher_test
+  collector_scanner_test
+  collector_reuse_test
+  range_kinds_test
+  search_view_test)
 foreach(one IN LISTS scan_tests)
   add_executable(${one} tests/${one}.cc)
   target_link_libraries(${one} PRIVATE scan gtest_main)
