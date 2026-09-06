@@ -25,15 +25,28 @@ struct static_chunk_value {
 template <std::size_t extent>
 struct static_chunk_adaptor
     : std::ranges::range_adaptor_closure<static_chunk_adaptor<extent>> {
+  // Groups of `extent`, without std::views::chunk: a group is the source
+  // dropped by as many elements as the groups before it and taken up to
+  // `extent`, and the groups themselves are the iota of how many there are.
+  // Nothing is materialised until the group is asked for, and the source is
+  // walked once per group -- which is what a forward range is for, and what
+  // the two-element splits this adapts are small enough not to care about.
   template <std::ranges::viewable_range range_type>
+    requires std::ranges::forward_range<range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& range) const {
     using value_type = std::ranges::range_value_t<range_type>;
-    return std::forward<range_type>(range) | std::views::chunk(extent) |
-           std::views::transform([](auto chunk) {
+    auto view = std::views::all(std::forward<range_type>(range));
+    const auto count = static_cast<std::size_t>(std::ranges::distance(view));
+    return std::views::iota(std::size_t{0}, (count + extent - 1) / extent) |
+           std::views::transform([view](std::size_t group) mutable {
+             auto part = view |
+                         std::views::drop(static_cast<std::ptrdiff_t>(
+                             group * extent)) |
+                         std::views::take(static_cast<std::ptrdiff_t>(extent));
              static_chunk_value<value_type, extent> result;
-             result.size = static_cast<std::size_t>(
-                 std::ranges::distance(chunk));
-             std::ranges::copy(chunk, result.values.begin());
+             result.size =
+                 static_cast<std::size_t>(std::ranges::distance(part));
+             std::ranges::copy(part, result.values.begin());
              return result;
            });
   }
@@ -76,18 +89,16 @@ struct format_details {
                               size);
     };
     format_details result{};
-    std::ranges::for_each(
-        text | std::views::split(':') |
+    for (const auto& chunk : text | std::views::split(':') |
             std::views::transform(to_string_view) | views::static_chunk<2> |
-            std::views::take(1),
-        [&](const auto& chunk) {
+            std::views::take(1)) {
           const auto [name, parameters] = chunk.as_ptr_tuple();
           result = {.name = *name,
                     .parameters =
                         parameters
                             ? std::optional<std::string_view>(*parameters)
                             : std::nullopt};
-        });
+        }
     return result;
   }
 

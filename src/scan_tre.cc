@@ -1,8 +1,44 @@
-export module tre;
+export module scan.tre;
 
 import std;
 
-export namespace tre {
+export namespace scan::tre {
+
+// A set of symbols as four words rather than two hundred and fifty-six bools.
+//
+// It is the same information, but the constant evaluator counts objects, not
+// bytes: an array of two hundred and fifty-six bools is two hundred and fifty
+// six tracked objects, copied one at a time whenever a transition is copied --
+// and transitions are copied on every vector growth in the determinisation.
+// Four words are four objects.
+struct symbol_set {
+  std::array<std::uint64_t, 4> words{};
+
+  [[nodiscard]] constexpr bool test(std::size_t symbol) const {
+    return (words[symbol >> 6] >> (symbol & 63)) & 1;
+  }
+  constexpr void set(std::size_t symbol) {
+    words[symbol >> 6] |= std::uint64_t{1} << (symbol & 63);
+  }
+  constexpr void merge(const symbol_set& other) {
+    for (std::size_t index = 0; index < words.size(); ++index) {
+      words[index] |= other.words[index];
+    }
+  }
+  [[nodiscard]] constexpr bool any() const {
+    return words[0] != 0 || words[1] != 0 || words[2] != 0 || words[3] != 0;
+  }
+  [[nodiscard]] constexpr bool operator==(const symbol_set&) const = default;
+
+  [[nodiscard]] static constexpr symbol_set from_bools(
+      const std::array<bool, 256>& symbols) {
+    symbol_set result;
+    for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+      if (symbols[symbol]) result.set(symbol);
+    }
+    return result;
+  }
+};
 
 using state_id = std::uint32_t;
 using tag_id = std::uint32_t;
@@ -23,7 +59,7 @@ struct tag {
   tag_id id = 0;
 };
 struct character_class {
-  std::array<bool, 256> symbols{};
+  symbol_set symbols{};
 };
 struct alternative {
   std::vector<node> branches;
@@ -53,8 +89,13 @@ class node : public ast::node_variant {
 [[nodiscard]] constexpr node epsilon() { return ast::epsilon{}; }
 [[nodiscard]] constexpr node symbol(char value) { return ast::symbol{value}; }
 [[nodiscard]] constexpr node tag(tag_id id) { return ast::tag{id}; }
-[[nodiscard]] constexpr node character_class(std::array<bool, 256> symbols) {
+[[nodiscard]] constexpr node character_class(symbol_set symbols) {
   return ast::character_class{symbols};
+}
+
+[[nodiscard]] constexpr node character_class(
+    const std::array<bool, 256>& symbols) {
+  return ast::character_class{symbol_set::from_bools(symbols)};
 }
 [[nodiscard]] constexpr node alt(std::vector<node> branches) {
   return ast::alternative{std::move(branches)};
@@ -87,7 +128,7 @@ struct transition {
   state_id target = 0;
   transition_kind kind = transition_kind::epsilon;
   char symbol = 0;
-  std::array<bool, 256> symbols{};
+  symbol_set symbols{};
   tag_id tag = 0;
   bool negative = false;
   // Lower values have higher priority. Priority zero is the greedy branch.
@@ -122,15 +163,47 @@ template <std::size_t extent>
   return simulate(automaton, std::string_view(input, extent - 1));
 }
 
+// The values a command appends, and there are a handful of them at most: a bit
+// each, in one word, so a command is a fixed-size object. As a vector it was
+// an allocation per command -- and a command is made for every slot and every
+// tag of every transition, nearly all of them empty.
+struct tag_values {
+  std::uint32_t bits = 0;
+  std::uint8_t size = 0;
+
+  constexpr void push_back(bool value) {
+    if (size == 32) throw "a command appends more values than a word holds";
+    if (value) bits |= std::uint32_t{1} << size;
+    ++size;
+  }
+  [[nodiscard]] constexpr bool empty() const { return size == 0; }
+  [[nodiscard]] constexpr bool back() const {
+    return ((bits >> (size - 1)) & 1) != 0;
+  }
+  [[nodiscard]] constexpr bool operator==(const tag_values&) const = default;
+
+  struct iterator {
+    const tag_values* owner = nullptr;
+    std::uint8_t index = 0;
+    [[nodiscard]] constexpr bool operator*() const {
+      return ((owner->bits >> index) & 1) != 0;
+    }
+    constexpr iterator& operator++() { ++index; return *this; }
+    [[nodiscard]] constexpr bool operator==(const iterator&) const = default;
+  };
+  [[nodiscard]] constexpr iterator begin() const { return {this, 0}; }
+  [[nodiscard]] constexpr iterator end() const { return {this, size}; }
+};
+
 struct register_command {
   std::size_t destination = 0;
   std::optional<std::size_t> source;
   // Values are appended in order; true means current input position.
-  std::vector<bool> values;
+  tag_values values;
 };
 
 struct tdfa_transition {
-  std::array<bool, 256> symbols{};
+  symbol_set symbols{};
   std::size_t target = 0;
   std::vector<register_command> commands;
 };
@@ -140,6 +213,13 @@ struct tdfa_state {
   std::vector<tdfa_transition> transitions;
   std::optional<std::size_t> accepting_slot;
   std::vector<register_command> final_commands;
+  // Which register holds which tag, for each of the readings this state is
+  // standing in at once. A deterministic tagged machine is in one state and
+  // several readings of the input, and the registers are how the readings are
+  // kept apart. Anything that has to follow a reading -- rather than take the
+  // positions out at the end -- needs to be told which registers make it up,
+  // and this is where it is told. Indexed the way the accepting slot is.
+  std::vector<std::vector<std::uint32_t>> readings;
 };
 
 struct tdfa {
@@ -148,6 +228,11 @@ struct tdfa {
   std::size_t register_count = 0;
   std::vector<register_command> initialize;
   std::vector<tdfa_state> states;
+  // Which tag each register holds. Every register is made for one tag and never
+  // holds another, and renaming keeps that true; guessing it from arithmetic on
+  // the number was a thing that happened to work under one way of handing them
+  // out.
+  std::vector<std::uint32_t> register_tag;
 };
 
 // Builds a deterministic tagged transducer. epsilon actions after a symbol are
@@ -160,10 +245,14 @@ struct tdfa {
 [[nodiscard]] constexpr match simulate(const tdfa& automaton,
                                        std::string_view input);
 
-}  // namespace tre
+}  // namespace scan::tre
 
-namespace tre {
-namespace {
+namespace scan::tre {
+// Not exported, and not in an unnamed namespace either: an entity there is
+// local to the translation unit, and naming one in the body of an exported
+// inline function exposes it -- which the standard forbids and clang warns
+// about. Without `export` these have module linkage instead: an importer
+// still cannot name them, and the interface may refer to them.
 
 struct fragment {
   state_id start;
@@ -356,12 +445,15 @@ class tnfa_builder {
 struct path {
   state_id state = 0;
   std::vector<std::pair<tag_id, bool>> actions;
+  // Which seed this path grew from, so that the closure of a whole set can be
+  // taken at once and still say where each path came from.
+  std::size_t origin = 0;
 };
 
 [[nodiscard]] constexpr std::vector<path> closure(
     const tnfa& automaton, std::span<const path> seeds) {
   std::vector<path> result;
-  std::vector<bool> seen(automaton.transitions.size());
+  std::vector<char> seen(automaton.transitions.size());
   std::vector<path> work(seeds.rbegin(), seeds.rend());
   while (!work.empty()) {
     path current = std::move(work.back());
@@ -369,21 +461,30 @@ struct path {
     if (seen[current.state]) continue;
     seen[current.state] = true;
     result.push_back(current);
-    std::vector<transition> edges;
-    for (const transition& edge : automaton.transitions[current.state]) {
+    // The edges are ordered by priority without copying them: a transition
+    // carries a symbol set and a copy of it is an object the constant
+    // evaluator tracks, where an index is a number.
+    const std::vector<transition>& outgoing = automaton.transitions[current.state];
+    std::vector<std::uint32_t> order;
+    for (std::size_t index = 0; index < outgoing.size(); ++index) {
+      const transition& edge = outgoing[index];
       if (edge.kind != transition_kind::symbol &&
           edge.kind != transition_kind::character_class) {
-        edges.push_back(edge);
+        order.push_back(index);
       }
     }
-    std::ranges::sort(edges, [](const auto& lhs, const auto& rhs) {
-      return lhs.priority < rhs.priority;
+    std::ranges::sort(order, [&](std::size_t lhs, std::size_t rhs) {
+      return outgoing[lhs].priority < outgoing[rhs].priority;
     });
-    for (auto it = edges.rbegin(); it != edges.rend(); ++it) {
-      path next = current;
-      next.state = it->target;
-      if (it->kind == transition_kind::tag) {
-        next.actions.emplace_back(it->tag, it->negative);
+    // Lowest priority is pushed first, so the greedy branch is on top of the
+    // stack. The last one to be pushed is the one that may take the path it
+    // was built from rather than copy its actions.
+    for (std::size_t position = order.size(); position-- > 0;) {
+      const transition& edge = outgoing[order[position]];
+      path next = position == 0 ? std::move(current) : current;
+      next.state = edge.target;
+      if (edge.kind == transition_kind::tag) {
+        next.actions.emplace_back(edge.tag, edge.negative);
       }
       work.push_back(std::move(next));
     }
@@ -396,7 +497,7 @@ struct path {
   return slot * tag_count + tag;
 }
 
-}  // namespace
+
 
 constexpr tnfa compile_tnfa(const node& expression) {
   return tnfa_builder{}.build(expression);
@@ -412,7 +513,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
   const auto close = [&](std::vector<configuration> seeds,
                          std::size_t position) {
     std::vector<configuration> output;
-    std::vector<bool> seen(automaton.transitions.size());
+    std::vector<char> seen(automaton.transitions.size());
     std::vector<configuration> work(seeds.rbegin(), seeds.rend());
     while (!work.empty()) {
       configuration item = std::move(work.back());
@@ -420,22 +521,30 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
       if (seen[item.state]) continue;
       seen[item.state] = true;
       output.push_back(item);
-      std::vector<transition> edges;
-      for (const auto& edge : automaton.transitions[item.state]) {
+      // Indices, not copies of the transitions: sorting the transitions
+      // themselves moves their symbol sets about, and a sort assigns an
+      // element to itself -- which the bytecode interpreter reads as a copy
+      // between overlapping regions and refuses.
+      const std::vector<transition>& outgoing = automaton.transitions[item.state];
+      std::vector<std::uint32_t> order;
+      for (std::uint32_t index = 0; index < outgoing.size(); ++index) {
+        const transition& edge = outgoing[index];
         if (edge.kind != transition_kind::symbol &&
             edge.kind != transition_kind::character_class) {
-          edges.push_back(edge);
+          order.push_back(index);
         }
       }
-      std::ranges::sort(edges, [](const auto& a, const auto& b) {
-        return a.priority < b.priority;
+      std::ranges::sort(order, [&](std::uint32_t lhs, std::uint32_t rhs) {
+        return outgoing[lhs].priority < outgoing[rhs].priority;
       });
-      for (auto it = edges.rbegin(); it != edges.rend(); ++it) {
+      for (std::size_t position_in_order = order.size();
+           position_in_order-- > 0;) {
+        const transition& edge = outgoing[order[position_in_order]];
         configuration next = item;
-        next.state = it->target;
-        if (it->kind == transition_kind::tag) {
-          next.tags[it->tag].push_back(it->negative ? negative_tag
-                                                   : position);
+        next.state = edge.target;
+        if (edge.kind == transition_kind::tag) {
+          next.tags[edge.tag].push_back(edge.negative ? negative_tag
+                                                      : position);
         }
         work.push_back(std::move(next));
       }
@@ -446,7 +555,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
   std::vector<configuration> active = close(
       {{automaton.initial, std::vector<tag_history>(automaton.tag_count)}}, 0);
   std::size_t position = 0;
-  std::ranges::for_each(input, [&](char symbol) {
+  for (char symbol : input) {
     std::vector<configuration> next;
     for (const auto& item : active) {
       for (const auto& edge : automaton.transitions[item.state]) {
@@ -454,7 +563,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
             (edge.kind == transition_kind::symbol &&
              edge.symbol == symbol) ||
             (edge.kind == transition_kind::character_class &&
-             edge.symbols[static_cast<unsigned char>(symbol)]);
+             edge.symbols.test(static_cast<unsigned char>(symbol)));
         if (matches) {
           configuration moved = item;
           moved.state = edge.target;
@@ -463,7 +572,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
       }
     }
     active = close(std::move(next), ++position);
-  });
+  }
   for (auto& item : active) {
     if (item.state == automaton.final) {
       return {.matched = true, .tags = std::move(item.tags)};
@@ -474,185 +583,322 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
 }
 
 constexpr tdfa compile_tdfa(const tnfa& automaton) {
+  // Determinisation as Algorithm 3 of "A closer look at TDFA".
+  //
+  // A register belongs to a configuration, not to a slot. When a transition
+  // gives a tag a new value, a register is allocated for that value and
+  // remembered, so that the same value asked for again is the same register;
+  // when a tag is untouched, the configuration keeps the register it already
+  // had and nothing is copied. The previous scheme numbered registers by
+  // position -- slot times tags plus tag -- which made every transition copy
+  // the whole bank, including, for a state that loops on itself, on every
+  // character of the input.
+  const std::size_t tags = automaton.tag_count;
   tdfa result;
-  result.tag_count = automaton.tag_count;
-  const std::vector<path> initial = closure(
-      automaton,
-      std::array{path{.state = automaton.initial, .actions = {}}});
+  result.tag_count = tags;
 
-  std::vector<std::vector<state_id>> keys;
-  std::vector<std::size_t> pending;
+  // Registers 0..tags-1 are where a match leaves its answer. Everything the
+  // automaton works with is allocated after them.
+  std::size_t next_register = tags;
+  // Every register is made for one tag, and is told so here rather than left to
+  // be worked out from its number afterwards.
+  std::vector<std::uint32_t> register_tag(tags);
+  for (tag_id tag = 0; tag < tags; ++tag) {
+    register_tag[tag] = static_cast<std::uint32_t>(tag);
+  }
+  const auto fresh_register = [&](tag_id tag) {
+    register_tag.push_back(static_cast<std::uint32_t>(tag));
+    return next_register++;
+  };
+
+  // A value asked for twice is one register: the tag, the register the value
+  // is built from, and what is appended to it.
+  struct interned {
+    tag_id tag;
+    std::size_t source;
+    tag_values values;
+    std::size_t reg;
+  };
+
+  struct configuration {
+    path walk;
+    std::vector<std::uint32_t> regs;
+  };
+
+  const auto initial_paths = closure(
+      automaton, std::array{path{.state = automaton.initial, .actions = {}}});
+
+  // The initial configurations: a register per tag, set from nothing.
+  std::vector<configuration> initial;
+  initial.reserve(initial_paths.size());
+  for (const path& walk : initial_paths) {
+    configuration entry{.walk = walk, .regs = std::vector<std::uint32_t>(tags)};
+    for (tag_id tag = 0; tag < tags; ++tag) {
+      // A register, and no operation to go with it.
+      //
+      // What the initial closure found is held back like anything else, and
+      // written by the first transition -- or, if the input ends here, by the
+      // final operations. What is left to say is that the register holds
+      // nothing, and everything that runs one of these automata starts every
+      // register holding nothing already: ten operations at the head of every
+      // match said what was true before they ran.
+      entry.regs[tag] = static_cast<std::uint32_t>(fresh_register(tag));
+    }
+    initial.push_back(std::move(entry));
+  }
+
+  std::vector<std::vector<configuration>> configurations;
+  std::vector<std::uint32_t> pending;
   std::size_t pending_index = 0;
-  const auto add_state = [&](const std::vector<path>& closure) -> std::size_t {
-    std::vector<state_id> key;
-    for (const auto& path : closure) key.push_back(path.state);
-    const auto found = std::ranges::find(keys, key);
-    if (found != keys.end()) {
-      return static_cast<std::size_t>(std::ranges::distance(keys.begin(), found));
+
+  // Two states are the same when they hold the same TNFA states in the same
+  // order -- the order is the precedence, and states that disagree on it
+  // disagree about which parse wins. Registers may differ: `mapping` says
+  // whether they can be reconciled, and with which copies.
+  const auto mapping = [&](const std::vector<configuration>& existing,
+                           const std::vector<configuration>& fresh)
+      -> std::optional<std::vector<register_command>> {
+    if (existing.size() != fresh.size()) return std::nullopt;
+    for (std::size_t index = 0; index < existing.size(); ++index) {
+      if (existing[index].walk.state != fresh[index].walk.state) {
+        return std::nullopt;
+      }
+      if (existing[index].walk.actions != fresh[index].walk.actions) {
+        return std::nullopt;
+      }
+    }
+    // A bijection, checked both ways: one register may not stand for two.
+    std::vector<register_command> copies;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> bijection;
+    for (std::size_t index = 0; index < existing.size(); ++index) {
+      for (tag_id tag = 0; tag < tags; ++tag) {
+        const std::uint32_t from = fresh[index].regs[tag];
+        const std::uint32_t to = existing[index].regs[tag];
+        bool known = false;
+        for (const auto& [left, right] : bijection) {
+          if (left == from && right == to) { known = true; break; }
+          if (left == from || right == to) return std::nullopt;
+        }
+        if (!known) bijection.emplace_back(from, to);
+      }
+    }
+    for (const auto& [from, to] : bijection) {
+      if (from == to) continue;
+      copies.push_back(register_command{
+          .destination = to, .source = from, .values = {}});
+    }
+    return copies;
+  };
+
+  const auto add_state = [&](std::vector<configuration> entries,
+                             std::vector<register_command>& operations)
+      -> std::size_t {
+    for (std::size_t id = 0; id < configurations.size(); ++id) {
+      if (auto copies = mapping(configurations[id], entries)) {
+        // The copies go on the transition that leads here -- but a transition
+        // executes as one step: every source is read before any destination is
+        // written, which is what makes a permutation of registers work at all.
+        // So a copy may not be chained after an operation of the same
+        // transition; it would read the value from before it. Where the copy
+        // would take from a register this transition writes, the operation
+        // that writes it is repeated into the destination instead, and where
+        // the destination is already written there is nothing to do.
+        for (register_command& copy : *copies) {
+          const auto written = std::ranges::find_if(
+              operations, [&](const register_command& command) {
+                return command.destination == copy.destination;
+              });
+          if (written != operations.end()) continue;
+          const auto produces = std::ranges::find_if(
+              operations, [&](const register_command& command) {
+                return copy.source && command.destination == *copy.source;
+              });
+          if (produces != operations.end()) {
+            register_command repeated = *produces;
+            repeated.destination = copy.destination;
+            operations.push_back(std::move(repeated));
+          } else {
+            operations.push_back(std::move(copy));
+          }
+        }
+        return id;
+      }
     }
     const std::size_t id = result.states.size();
-    keys.push_back(key);
+    std::vector<state_id> key;
+    key.reserve(entries.size());
+    for (const configuration& entry : entries) key.push_back(entry.walk.state);
+    std::vector<std::vector<std::uint32_t>> readings;
+    readings.reserve(entries.size());
+    for (const configuration& entry : entries) readings.push_back(entry.regs);
     tdfa_state state{.nfa_states = std::move(key),
-                    .transitions = {},
-                    .accepting_slot = std::nullopt,
-                    .final_commands = {}};
-    for (std::size_t i = 0; i < closure.size(); ++i) {
-      if (closure[i].state == automaton.final &&
+                     .transitions = {},
+                     .accepting_slot = std::nullopt,
+                     .final_commands = {},
+                     .readings = std::move(readings)};
+    for (std::size_t index = 0; index < entries.size(); ++index) {
+      if (entries[index].walk.state == automaton.final &&
           !state.accepting_slot.has_value()) {
-        state.accepting_slot = i;
+        state.accepting_slot = index;
       }
     }
     if (state.accepting_slot) {
-      std::ranges::for_each(
-          std::views::iota(std::size_t{0}, automaton.tag_count),
-          [&](std::size_t tag) {
-            state.final_commands.push_back(register_command{
-                .destination = tag,
-                .source = automaton.tag_count +
-                          register_index(*state.accepting_slot, tag,
-                                         automaton.tag_count),
-                .values = {}});
-          });
+      const configuration& accepting = entries[*state.accepting_slot];
+      for (tag_id tag = 0; tag < tags; ++tag) {
+        // Held back until the end, and applied here with the position the
+        // input ended at.
+        tag_values values;
+        for (const auto& [action_tag, negative] : accepting.walk.actions) {
+          if (action_tag == tag) values.push_back(!negative);
+        }
+        state.final_commands.push_back(register_command{
+            .destination = tag,
+            .source = accepting.regs[tag],
+            .values = values});
+      }
     }
     result.states.push_back(std::move(state));
-    pending.push_back(id);
+    configurations.push_back(std::move(entries));
+    pending.push_back(static_cast<std::uint32_t>(id));
     return id;
   };
-  result.initial = add_state(initial);
-  result.register_count =
-      automaton.tag_count + initial.size() * automaton.tag_count;
-  for (std::size_t slot = 0; slot < initial.size(); ++slot) {
-    for (tag_id tag = 0; tag < automaton.tag_count; ++tag) {
-      register_command command{
-          .destination = automaton.tag_count +
-                         register_index(slot, tag, automaton.tag_count),
-          .source = std::nullopt,
-          .values = {}};
-      for (const auto& [action_tag, negative] : initial[slot].actions) {
-        if (action_tag == tag) command.values.push_back(!negative);
-      }
-      result.initialize.push_back(std::move(command));
-    }
+
+  {
+    std::vector<register_command> nothing;
+    result.initial = add_state(initial, nothing);
   }
 
   while (pending_index < pending.size()) {
-    const std::size_t current_state = pending[pending_index++];
-    const std::vector<state_id> source_states =
-        result.states[current_state].nfa_states;
+    const std::size_t current = pending[pending_index++];
+    const std::vector<configuration> source = configurations[current];
+    const std::vector<state_id> source_states = result.states[current].nfa_states;
+
     const auto edge_matches = [](const transition& edge, char symbol) {
       return (edge.kind == transition_kind::symbol && edge.symbol == symbol) ||
              (edge.kind == transition_kind::character_class &&
-              edge.symbols[static_cast<unsigned char>(symbol)]);
+              edge.symbols.test(static_cast<unsigned char>(symbol)));
     };
     const auto equivalent = [&](char lhs, char rhs) {
-      return std::ranges::all_of(source_states, [&](state_id state) {
-        return std::ranges::all_of(
-            automaton.transitions[state], [&](const transition& edge) {
-              return edge_matches(edge, lhs) == edge_matches(edge, rhs);
-            });
-      });
+      for (state_id state : source_states) {
+        for (const transition& edge : automaton.transitions[state]) {
+          if (edge_matches(edge, lhs) != edge_matches(edge, rhs)) return false;
+        }
+      }
+      return true;
     };
     std::vector<char> representatives;
-    std::vector<std::array<bool, 256>> symbol_classes;
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, std::size_t{256}),
-        [&](std::size_t value) {
-          const char symbol = static_cast<char>(value);
-          const bool active = std::ranges::any_of(
-              source_states, [&](state_id state) {
-                return std::ranges::any_of(
-                    automaton.transitions[state], [&](const transition& edge) {
-                      return edge_matches(edge, symbol);
-                    });
-              });
-          if (!active) return;
-          const auto found = std::ranges::find_if(
-              representatives,
-              [&](char representative) { return equivalent(symbol, representative); });
-          if (found == representatives.end()) {
-            representatives.push_back(symbol);
-            symbol_classes.emplace_back();
-            symbol_classes.back()[value] = true;
-          } else {
-            const auto index = static_cast<std::size_t>(
-                std::ranges::distance(representatives.begin(), found));
-            symbol_classes[index][value] = true;
-          }
-        });
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, representatives.size()),
-        [&](std::size_t class_index) {
+    std::vector<symbol_set> symbol_classes;
+    for (std::size_t value = 0; value < 256; ++value) {
+      const char symbol = static_cast<char>(value);
+      bool active = false;
+      for (state_id state : source_states) {
+        for (const transition& edge : automaton.transitions[state]) {
+          if (edge_matches(edge, symbol)) { active = true; break; }
+        }
+        if (active) break;
+      }
+      if (!active) continue;
+      std::size_t found = representatives.size();
+      for (std::size_t index = 0; index < representatives.size(); ++index) {
+        if (equivalent(symbol, representatives[index])) { found = index; break; }
+      }
+      if (found == representatives.size()) {
+        representatives.push_back(symbol);
+        symbol_classes.emplace_back();
+        symbol_classes.back().set(value);
+      } else {
+        symbol_classes[found].set(value);
+      }
+    }
+
+    for (std::size_t class_index = 0; class_index < representatives.size();
+         ++class_index) {
       const char symbol = representatives[class_index];
-      struct seed {
-        path path;
-        std::size_t source_slot;
-      };
-      std::vector<seed> seeds;
-      for (std::size_t slot = 0; slot < source_states.size(); ++slot) {
-        for (const auto& edge : automaton.transitions[source_states[slot]]) {
-          const bool matches =
-              (edge.kind == transition_kind::symbol &&
-               edge.symbol == symbol) ||
-              (edge.kind == transition_kind::character_class &&
-               edge.symbols[static_cast<unsigned char>(symbol)]);
-          if (matches) {
-            seeds.push_back(
-                {path{.state = edge.target, .actions = {}}, slot});
-          }
+      // Step on the symbol: the configurations that have a transition on it,
+      // each keeping the registers it arrived with.
+      std::vector<path> seeds;
+      std::vector<std::vector<std::uint32_t>> seed_regs;
+      std::vector<std::vector<std::pair<tag_id, bool>>> seed_actions;
+      for (std::size_t slot = 0; slot < source.size(); ++slot) {
+        for (const transition& edge : automaton.transitions[source_states[slot]]) {
+          if (!edge_matches(edge, symbol)) continue;
+          path seed{.state = edge.target, .actions = {}};
+          seed.origin = seeds.size();
+          seeds.push_back(std::move(seed));
+          seed_regs.push_back(source[slot].regs);
+          seed_actions.push_back(source[slot].walk.actions);
         }
       }
-      std::vector<path> target_paths;
-      std::vector<std::size_t> source_slots;
-      std::vector<bool> seen(automaton.transitions.size());
-      for (const seed& seed : seeds) {
-        const auto part = closure(automaton, std::span(&seed.path, 1));
-        for (const path& path : part) {
-          if (!seen[path.state]) {
-            seen[path.state] = true;
-            target_paths.push_back(path);
-            source_slots.push_back(seed.source_slot);
+      const std::vector<path> reached = closure(automaton, seeds);
+
+      // The operations of this transition, and the registers they leave the
+      // configurations holding.
+      std::vector<interned> allocated;
+      std::vector<register_command> operations;
+      std::vector<configuration> entries;
+      entries.reserve(reached.size());
+      for (const path& walk : reached) {
+        configuration entry{.walk = walk, .regs = seed_regs[walk.origin]};
+        // What this transition writes is what the source configuration was
+        // holding back -- the tags its closure found and did not apply -- and
+        // it writes them with the position from before this symbol. The tags
+        // this closure finds are held back in turn, and written by whichever
+        // transition is taken next.
+        //
+        // That is what a lookahead of one symbol buys. Inside a field every
+        // character reaches a configuration where the field could end, so
+        // applying tags as they are found writes the end of the field on every
+        // character; held back, the write happens once, on the transition that
+        // actually leaves.
+        for (tag_id tag = 0; tag < tags; ++tag) {
+          tag_values values;
+          for (const auto& [action_tag, negative] : seed_actions[walk.origin]) {
+            if (action_tag == tag) values.push_back(!negative);
           }
-        }
-      }
-      const std::size_t target = add_state(target_paths);
-      result.register_count = std::max(
-          result.register_count,
-          automaton.tag_count +
-              result.states[target].nfa_states.size() * automaton.tag_count);
-      tdfa_transition transition{.symbols = symbol_classes[class_index],
-                                .target = target,
-                                .commands = {}};
-      for (std::size_t slot = 0; slot < target_paths.size(); ++slot) {
-        for (tag_id tag = 0; tag < automaton.tag_count; ++tag) {
-          register_command command{
-              .destination = automaton.tag_count +
-                             register_index(slot, tag, automaton.tag_count),
-              .source = automaton.tag_count +
-                        register_index(source_slots[slot], tag,
-                                       automaton.tag_count),
-              .values = {}};
-          for (const auto& [action_tag, negative] :
-               target_paths[slot].actions) {
-            if (action_tag == tag) command.values.push_back(!negative);
+          if (values.empty()) continue;  // untouched: the register stands
+          const std::size_t from = entry.regs[tag];
+          std::size_t reg = 0;
+          bool known = false;
+          for (const interned& one : allocated) {
+            if (one.tag == tag && one.source == from && one.values == values) {
+              reg = one.reg;
+              known = true;
+              break;
+            }
           }
-          transition.commands.push_back(std::move(command));
+          if (!known) {
+            reg = fresh_register(tag);
+            allocated.push_back(interned{
+                .tag = tag, .source = from, .values = values, .reg = reg});
+            operations.push_back(register_command{
+                .destination = reg, .source = from, .values = values});
+          }
+          entry.regs[tag] = static_cast<std::uint32_t>(reg);
         }
+        entries.push_back(std::move(entry));
       }
-      result.states[current_state].transitions.push_back(std::move(transition));
-    });
+
+      const std::size_t target = add_state(std::move(entries), operations);
+      result.states[current].transitions.push_back(
+          tdfa_transition{.symbols = symbol_classes[class_index],
+                          .target = target,
+                          .commands = std::move(operations)});
+    }
   }
+  result.register_count = next_register;
+  result.register_tag = std::move(register_tag);
   return result;
 }
 
 constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
   const auto optimize_registers = [&] {
     const std::size_t register_count = automaton.register_count;
-    std::vector<std::vector<bool>> live(
-        automaton.states.size(), std::vector<bool>(register_count));
+    std::vector<std::vector<char>> live(
+        automaton.states.size(), std::vector<char>(register_count));
 
-    const auto transfer = [&](const std::vector<bool>& output,
+    const auto transfer = [&](const std::vector<char>& output,
                               const std::vector<register_command>& commands) {
-      std::vector<bool> input = output;
+      std::vector<char> input = output;
       for (const register_command& command : commands) {
         if (output[command.destination]) input[command.destination] = false;
       }
@@ -663,7 +909,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       return input;
     };
 
-    std::vector<bool> final_live(register_count);
+    std::vector<char> final_live(register_count);
     std::ranges::fill(final_live | std::views::take(automaton.tag_count), true);
     for (std::size_t state :
          std::views::iota(std::size_t{0}, automaton.states.size())) {
@@ -715,29 +961,50 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       });
     }
 
-    std::vector<std::vector<bool>> interference(
-        register_count, std::vector<bool>(register_count));
-    for (const std::vector<bool>& state_live : live) {
-      for (std::size_t lhs :
-           std::views::iota(std::size_t{0}, register_count) |
-               std::views::filter([&](std::size_t reg) {
-                 return state_live[reg];
-               })) {
-        for (std::size_t rhs :
-             std::views::iota(lhs + 1, register_count) |
-                 std::views::filter([&](std::size_t reg) {
-                   return state_live[reg];
-                 })) {
-          interference[lhs][rhs] = true;
-          interference[rhs][lhs] = true;
+    // Two registers interfere when one is written while the other is alive --
+    // not merely when both are alive somewhere.
+    //
+    // The coarser rule makes every pair that is ever alive together
+    // inseparable, and the whole point of the analysis is to separate them: a
+    // TDFA copies a bank of registers across a transition, and those copies
+    // can only be removed if the source and the destination may become one
+    // register. Which is the second half of the rule: a copy `x <- y` does not
+    // make x and y interfere, because after it they hold the same value. That
+    // exception is what a coalescing pass is for.
+    std::vector<std::vector<char>> interference(
+        register_count, std::vector<char>(register_count));
+    const auto note_interference = [&](std::size_t lhs, std::size_t rhs) {
+      if (lhs == rhs) return;
+      interference[lhs][rhs] = true;
+      interference[rhs][lhs] = true;
+    };
+    const auto interfere_over = [&](const std::vector<register_command>& commands,
+                                    const std::vector<char>& output) {
+      for (const register_command& command : commands) {
+        for (std::size_t reg = 0; reg < register_count; ++reg) {
+          if (!output[reg]) continue;
+          if (command.source && *command.source == reg &&
+              command.values.empty()) {
+            continue;  // a copy: the two hold one value from here on
+          }
+          note_interference(command.destination, reg);
         }
+      }
+    };
+    interfere_over(automaton.initialize, live[automaton.initial]);
+    for (std::size_t state = 0; state < automaton.states.size(); ++state) {
+      for (const tdfa_transition& transition : automaton.states[state].transitions) {
+        interfere_over(transition.commands, live[transition.target]);
+      }
+      if (automaton.states[state].accepting_slot) {
+        interfere_over(automaton.states[state].final_commands, final_live);
       }
     }
 
-    std::vector<std::size_t> parent(register_count);
+    std::vector<std::uint32_t> parent(register_count);
     std::ranges::copy(std::views::iota(std::size_t{0}, register_count),
                       parent.begin());
-    std::vector<std::vector<std::size_t>> members(register_count);
+    std::vector<std::vector<std::uint32_t>> members(register_count);
     for (std::size_t reg :
          std::views::iota(std::size_t{0}, register_count)) {
       members[reg].push_back(reg);
@@ -746,7 +1013,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       while (parent[reg] != reg) reg = parent[reg];
       return reg;
     };
-    std::vector<bool> pinned(register_count);
+    std::vector<char> pinned(register_count);
     std::ranges::fill(pinned | std::views::take(automaton.tag_count), true);
     const auto can_merge = [&](std::size_t lhs, std::size_t rhs) {
       lhs = root(lhs);
@@ -792,10 +1059,10 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       }
     }
 
-    std::vector<std::size_t> renaming(register_count);
+    std::vector<std::uint32_t> renaming(register_count);
     if (allocate_registers) {
-      std::vector<std::size_t> compact(register_count,
-                                       std::numeric_limits<std::size_t>::max());
+      std::vector<std::uint32_t> compact(
+          register_count, std::numeric_limits<std::uint32_t>::max());
       std::ranges::copy(std::views::iota(std::size_t{0}, automaton.tag_count),
                         compact.begin());
       std::size_t next = automaton.tag_count;
@@ -803,12 +1070,19 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
            std::views::iota(std::size_t{0}, register_count)) {
         const std::size_t representative = root(reg);
         if (compact[representative] ==
-            std::numeric_limits<std::size_t>::max()) {
+            std::numeric_limits<std::uint32_t>::max()) {
           compact[representative] = next++;
         }
         renaming[reg] = compact[representative];
       }
       automaton.register_count = next;
+      // Renaming moves a register's number and never what it holds, so the
+      // table that says which tag it holds moves with it.
+      std::vector<std::uint32_t> moved(next);
+      for (std::size_t reg : std::views::iota(std::size_t{0}, register_count)) {
+        moved[renaming[reg]] = automaton.register_tag[reg];
+      }
+      automaton.register_tag = std::move(moved);
     } else {
       std::ranges::copy(std::views::iota(std::size_t{0}, register_count),
                         renaming.begin());
@@ -845,11 +1119,36 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       for (tdfa_transition& transition : state.transitions) {
         rename_commands(transition.commands);
       }
+      for (std::vector<std::uint32_t>& reading : state.readings) {
+        for (std::uint32_t& reg : reading) reg = renaming[reg];
+      }
     }
   };
 
-  optimize_registers();
-  optimize_registers();
+  // Until it stops changing, rather than a fixed number of passes.
+  //
+  // Each pass removes operations that the previous one made dead and merges
+  // registers the previous one made mergeable, so the passes feed each other;
+  // two of them was a guess at where that stops. The bound is there because a
+  // guess about termination is not a proof.
+  if (allocate_registers) {
+    std::size_t previous = 0;
+    for (std::size_t pass = 0; pass < 8; ++pass) {
+      optimize_registers();
+      std::size_t commands = automaton.initialize.size();
+      for (const tdfa_state& state : automaton.states) {
+        commands += state.final_commands.size();
+        for (const tdfa_transition& transition : state.transitions) {
+          commands += transition.commands.size();
+        }
+      }
+      if (pass != 0 && commands == previous) break;
+      previous = commands;
+    }
+  } else {
+    optimize_registers();
+    optimize_registers();
+  }
 
   const auto same_commands = [](const auto& lhs, const auto& rhs) {
     return lhs.size() == rhs.size() &&
@@ -862,8 +1161,13 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
            });
   };
   for (tdfa_state& state : automaton.states) {
+    // Moved from where they are rather than copied into the loop: a
+    // transition carries a command list, and taking a copy of every one of
+    // them to decide whether it is a duplicate is the copy this loop exists
+    // to avoid making twice.
     std::vector<tdfa_transition> normalized;
-    for (tdfa_transition transition : state.transitions) {
+    normalized.reserve(state.transitions.size());
+    for (tdfa_transition& transition : state.transitions) {
       const auto equivalent = std::ranges::find_if(
           normalized, [&](const tdfa_transition& candidate) {
             return candidate.target == transition.target &&
@@ -873,8 +1177,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
         normalized.push_back(std::move(transition));
         continue;
       }
-      std::ranges::transform(equivalent->symbols, transition.symbols,
-                             equivalent->symbols.begin(), std::logical_or<>{});
+      equivalent->symbols.merge(transition.symbols);
     }
     state.transitions = std::move(normalized);
   }
@@ -902,13 +1205,13 @@ constexpr match simulate(const tdfa& automaton, std::string_view input) {
     const auto& transitions = automaton.states[state].transitions;
     const auto found = std::find_if(transitions.begin(), transitions.end(),
                                     [&](const auto& transition) {
-      return transition.symbols[static_cast<unsigned char>(input[i])];
+      return transition.symbols.test(static_cast<unsigned char>(input[i]));
     });
     if (found == transitions.end()) {
       return {.matched = false,
               .tags = std::vector<tag_history>(automaton.tag_count)};
     }
-    execute(found->commands, i + 1);
+    execute(found->commands, i);
     state = found->target;
   }
   const auto slot = automaton.states[state].accepting_slot;
@@ -925,4 +1228,4 @@ constexpr match simulate(const tdfa& automaton, std::string_view input) {
   return match;
 }
 
-}  // namespace tre
+}  // namespace scan::tre

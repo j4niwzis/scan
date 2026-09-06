@@ -2,6 +2,18 @@ export module scan.core;
 
 import std;
 
+export namespace scan::detail {
+
+// An input whose characters lie in a row and whose length is known, which is
+// what a view of a subject is made from.
+template <class range_type>
+concept contiguous_char_range =
+    std::ranges::contiguous_range<range_type> &&
+    std::ranges::sized_range<range_type> &&
+    std::same_as<std::ranges::range_value_t<range_type>, char>;
+
+}  // namespace scan::detail
+
 export namespace scan {
 
 template <std::size_t extent>
@@ -115,8 +127,7 @@ struct pattern_buffer {
   }
 
   constexpr void append(std::string_view value) {
-    std::ranges::for_each(value,
-                          [&](char symbol) { push_back(symbol); });
+    for (char symbol : value) { push_back(symbol); }
   }
 
   [[nodiscard]] constexpr std::string_view view() const noexcept {

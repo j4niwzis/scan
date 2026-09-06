@@ -1,13 +1,45 @@
 export module scan.compiler;
 
 import std;
-import tre;
+import scan.tre;
 import boost.pfr;
 export import scan.core;
 export import scan.views;
 
 export namespace scan::detail {
 
+
+// Three characters the spread writes and this parser reads, and which no format
+// anyone writes can contain. A format has no grouping of its own and no
+// alternation except at the top, and a variant standing in a field needs both:
+// its branches have to be held together and each one has to be marked, so that
+// which branch ran can be read off afterwards. Rather than give the written
+// language a syntax for that, the spread says it in a spelling of its own.
+inline constexpr char format_group_begin = '\x01';
+inline constexpr char format_group_end = '\x02';
+inline constexpr char format_branch = '\x03';
+inline constexpr char format_mark = '\x04';
+inline constexpr char format_raw_begin = '\x05';
+inline constexpr char format_raw_end = '\x06';
+inline constexpr char format_repeat = '\x07';
+
+// The characters a backslash names. Without these a format can only say a
+// newline by holding one, which means a pattern cannot be written on one line,
+// and a class can only say one as a number.
+[[nodiscard]] constexpr char named_character(char letter) {
+  switch (letter) {
+    case 'n': return '\n';
+    case 't': return '\t';
+    case 'r': return '\r';
+    case 'f': return '\f';
+    case 'v': return '\v';
+    case '0': return '\0';
+    case 'a': return '\a';
+    case 'b': return '\b';
+    case 'e': return '\x1b';
+    default: return letter;
+  }
+}
 
 class tre_parser {
  public:
@@ -20,14 +52,36 @@ class tre_parser {
         capture_count_(capture_count),
         capture_parentheses_(capture_parentheses) {}
 
-  [[nodiscard]] constexpr tre::node parse_format() {
-    tre::node result = parse_format_sequence();
+  [[nodiscard]] constexpr scan::tre::node parse_format() {
+    std::vector<std::size_t> groups;
+    std::vector<scan::tre::node> branches = parse_format_branches(groups);
     if (position_ != source_.size()) throw "invalid scan format";
-    return result;
+    if (branches.size() == 1) return std::move(branches.front());
+    return scan::tre::alt(std::move(branches));
   }
 
-  [[nodiscard]] constexpr tre::node parse_regex() {
-    tre::node result = parse_alternative('\0');
+  // The branches of a format, in order, with how many groups each one holds.
+  //
+  // A bar at the top level of a format separates one whole shape of input from
+  // another, the way it separates one rule of a lexer from the next. Inside a
+  // group it has always meant alternation; outside one it used to be an
+  // ordinary character, and `\\|` is that character now.
+  [[nodiscard]] constexpr std::vector<scan::tre::node> parse_format_branches(
+      std::vector<std::size_t>& groups_in_branch) {
+    std::vector<scan::tre::node> branches;
+    while (true) {
+      const std::size_t before = capture_count_;
+      branches.push_back(parse_format_sequence());
+      groups_in_branch.push_back(capture_count_ - before);
+      if (at_end()) break;
+      if (peek() != '|') throw "invalid scan format";
+      ++position_;
+    }
+    return branches;
+  }
+
+  [[nodiscard]] constexpr scan::tre::node parse_regex() {
+    scan::tre::node result = parse_alternative('\0');
     if (position_ != source_.size()) throw "invalid regular expression";
     return result;
   }
@@ -42,27 +96,112 @@ class tre_parser {
                                                 : '\0';
   }
 
-  [[nodiscard]] constexpr tre::node parse_format_sequence() {
-    if (at_end()) return tre::epsilon();
+  // A group of branches, held together, as the spread writes it.
+  [[nodiscard]] constexpr scan::tre::node parse_format_group() {
+    ++position_;
+    std::vector<scan::tre::node> branches;
+    while (true) {
+      branches.push_back(parse_format_sequence());
+      if (peek() != format_branch) break;
+      ++position_;
+    }
+    if (peek() != format_group_end) throw "unterminated group of branches";
+    ++position_;
+    if (branches.size() == 1) return std::move(branches.front());
+    return scan::tre::alt(std::move(branches));
+  }
+
+  [[nodiscard]] constexpr scan::tre::node parse_format_sequence() {
+    if (at_end() || peek() == '|' || peek() == format_group_end ||
+        peek() == format_branch) {
+      return scan::tre::epsilon();
+    }
+    if (peek() == format_group_begin) {
+      scan::tre::node group = parse_format_group();
+      return scan::tre::cat({std::move(group), parse_format_sequence()});
+    }
+    // A group that captures nothing and stands at the head of a branch. What it
+    // captured is never read; that it captured at all is how the branch is
+    // known to have run, and it is the only way to know for a branch whose
+    // alternative captures nothing of its own.
+    if (peek() == format_mark) {
+      ++position_;
+      const std::size_t capture = capture_count_++;
+      return scan::tre::cat(
+          {wrap_capture(capture, scan::tre::epsilon()), parse_format_sequence()});
+    }
+    // A pattern that has to be matched and is not kept: the run of spaces
+    // between two fields, the field somebody else's format has and this output
+    // does not want. It captures nothing, so it is no group and no value, and
+    // the places on either side of it go on counting as if it were not there.
+    // A group holding one or more of what follows, and holding it as a whole:
+    // the group is where the list is, and the places inside it are where each
+    // of its elements is, written over again on every turn round the loop.
+    if (peek() == format_repeat) {
+      ++position_;
+      const std::size_t capture = capture_count_++;
+      scan::tre::node body = parse_format_sequence();
+      if (peek() != format_group_end) throw "unterminated repeated group";
+      ++position_;
+      std::size_t least = 1;
+      std::size_t most = scan::tre::unbounded;
+      if (peek() == '*') { least = 0; ++position_; }
+      else if (peek() == '+') { ++position_; }
+      else if (peek() == '?') { least = 0; most = 1; ++position_; }
+      else if (peek() == '{') {
+        ++position_;
+        least = 0;
+        while (peek() >= '0' && peek() <= '9') {
+          least = least * 10 + static_cast<std::size_t>(peek() - '0');
+          ++position_;
+        }
+        most = least;
+        if (peek() == ',') {
+          ++position_;
+          if (peek() >= '0' && peek() <= '9') {
+            most = 0;
+            while (peek() >= '0' && peek() <= '9') {
+              most = most * 10 + static_cast<std::size_t>(peek() - '0');
+              ++position_;
+            }
+          } else {
+            most = scan::tre::unbounded;
+          }
+        }
+        if (peek() != '}') throw "unterminated repetition";
+        ++position_;
+      }
+      return scan::tre::cat(
+          {wrap_capture(capture,
+                        scan::tre::repeat(std::move(body), least, most)),
+           parse_format_sequence()});
+    }
+    if (peek() == format_raw_begin) {
+      ++position_;
+      scan::tre::node body = parse_alternative(format_raw_end);
+      if (peek() != format_raw_end) throw "unterminated unkept pattern";
+      ++position_;
+      return scan::tre::cat({std::move(body), parse_format_sequence()});
+    }
     if (peek() == '\\') {
       if (peek(1) == '\0') throw "dangling format escape";
-      const char literal = peek(1);
+      const char literal = named_character(peek(1));
       position_ += 2;
-      return tre::cat({tre::symbol(literal), parse_format_sequence()});
+      return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
     }
     if (peek() == '{') {
-      tre::node capture = parse_capture();
-      return tre::cat({std::move(capture), parse_format_sequence()});
+      scan::tre::node capture = parse_capture();
+      return scan::tre::cat({std::move(capture), parse_format_sequence()});
     }
     const char literal = peek();
     ++position_;
-    return tre::cat({tre::symbol(literal), parse_format_sequence()});
+    return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
   }
 
-  [[nodiscard]] constexpr tre::node parse_capture() {
+  [[nodiscard]] constexpr scan::tre::node parse_capture() {
     ++position_;
     const std::size_t capture = capture_count_++;
-    tre::node body;
+    scan::tre::node body;
     if (peek() == '}' || peek() == ':') {
       if (capture >= defaults_.size()) throw "too many capture groups";
       if (peek() == ':') skip_parameters();
@@ -85,44 +224,51 @@ class tre_parser {
     }
   }
 
-  [[nodiscard]] static constexpr tre::node wrap_capture(
-      std::size_t capture, tre::node body) {
-    return tre::cat({tre::tag(static_cast<tre::tag_id>(capture * 2)),
-                     std::move(body),
-                     tre::tag(static_cast<tre::tag_id>(capture * 2 + 1))});
+ public:
+  [[nodiscard]] static constexpr scan::tre::node wrap_branch(
+      std::size_t capture, scan::tre::node body) {
+    return wrap_capture(capture, std::move(body));
   }
 
-  [[nodiscard]] constexpr tre::node parse_alternative(char stop) {
-    tre::node left = parse_sequence(stop);
+ private:
+  [[nodiscard]] static constexpr scan::tre::node wrap_capture(
+      std::size_t capture, scan::tre::node body) {
+    return scan::tre::cat({scan::tre::tag(static_cast<scan::tre::tag_id>(capture * 2)),
+                     std::move(body),
+                     scan::tre::tag(static_cast<scan::tre::tag_id>(capture * 2 + 1))});
+  }
+
+  [[nodiscard]] constexpr scan::tre::node parse_alternative(char stop) {
+    scan::tre::node left = parse_sequence(stop);
     if (peek() != '|') return left;
     ++position_;
-    return tre::alt(
+    return scan::tre::alt(
         {std::move(left), parse_alternative(stop)});
   }
 
-  [[nodiscard]] constexpr tre::node parse_sequence(char stop) {
+  [[nodiscard]] constexpr scan::tre::node parse_sequence(char stop) {
     if (at_end() || peek() == stop || peek() == '|' || peek() == ')') {
-      return tre::epsilon();
+      return scan::tre::epsilon();
     }
-    tre::node head = parse_quantified();
-    return tre::cat({std::move(head), parse_sequence(stop)});
+    scan::tre::node head = parse_quantified();
+    return scan::tre::cat({std::move(head), parse_sequence(stop)});
   }
 
-  [[nodiscard]] constexpr tre::node parse_quantified() {
-    tre::node atom = parse_atom();
+  [[nodiscard]] constexpr scan::tre::node parse_quantified() {
+    scan::tre::node atom = parse_atom();
     if (peek() == '*') {
       ++position_;
       if (peek() == '+') ++position_;
-      return tre::star(std::move(atom));
+      return scan::tre::star(std::move(atom));
     }
     if (peek() == '+') {
       ++position_;
       if (peek() == '+') ++position_;
-      return tre::plus(std::move(atom));
+      return scan::tre::plus(std::move(atom));
     }
     if (peek() == '?') {
       ++position_;
-      return tre::optional(std::move(atom));
+      return scan::tre::optional(std::move(atom));
     }
     if (peek() == '{' && peek(1) >= '0' && peek(1) <= '9') {
       ++position_;
@@ -130,11 +276,11 @@ class tre_parser {
       std::size_t maximum = minimum;
       if (peek() == ',') {
         ++position_;
-        maximum = peek() == '}' ? tre::unbounded : parse_number(0);
+        maximum = peek() == '}' ? scan::tre::unbounded : parse_number(0);
       }
       if (peek() != '}') throw "invalid repetition";
       ++position_;
-      return tre::repeat(std::move(atom), minimum, maximum);
+      return scan::tre::repeat(std::move(atom), minimum, maximum);
     }
     return atom;
   }
@@ -146,7 +292,7 @@ class tre_parser {
     return parse_number(next);
   }
 
-  [[nodiscard]] constexpr tre::node parse_atom() {
+  [[nodiscard]] constexpr scan::tre::node parse_atom() {
     if (at_end()) throw "missing regular expression atom";
     if (peek() == '{') return parse_capture();
     if (peek() == '(') {
@@ -156,7 +302,7 @@ class tre_parser {
       const bool capturing = capture_parentheses_ && !noncapturing;
       const std::size_t capture =
           capturing ? capture_count_++ : std::size_t{0};
-      tre::node body = parse_alternative(')');
+      scan::tre::node body = parse_alternative(')');
       if (peek() != ')') throw "unterminated regular expression group";
       ++position_;
       return capturing ? wrap_capture(capture, std::move(body))
@@ -165,35 +311,39 @@ class tre_parser {
     if (peek() == '[') return parse_character_class();
     if (peek() == '.') {
       ++position_;
-      std::array<bool, 256> symbols;
+      std::array<bool, 256> symbols{};
       std::ranges::fill(symbols, true);
-      return tre::character_class(symbols);
+      return scan::tre::character_class(symbols);
     }
     if (peek() == '\\') return parse_escape();
     const char symbol = peek();
     ++position_;
-    return tre::symbol(symbol);
+    return scan::tre::symbol(symbol);
   }
 
-  [[nodiscard]] constexpr tre::node parse_escape() {
+  [[nodiscard]] constexpr scan::tre::node parse_escape() {
     ++position_;
     if (at_end()) throw "dangling regular expression escape";
     const char escaped = peek();
     ++position_;
-    if (escaped == 'x') return tre::symbol(parse_hex_byte());
+    if (escaped == 'x') return scan::tre::symbol(parse_hex_byte());
     if (escaped == 'd') return make_range('0', '9');
     if (escaped == 's') return make_set(" \t\n\r\f\v");
+    if (escaped == 'n' || escaped == 't' || escaped == 'r' || escaped == 'f' ||
+        escaped == 'v' || escaped == 'a' || escaped == 'e') {
+      return scan::tre::symbol(named_character(escaped));
+    }
     if (escaped == 'w') {
       auto symbols = range_bits('a', 'z');
       add_range(symbols, 'A', 'Z');
       add_range(symbols, '0', '9');
       symbols[static_cast<unsigned char>('_')] = true;
-      return tre::character_class(symbols);
+      return scan::tre::character_class(symbols);
     }
-    return tre::symbol(escaped);
+    return scan::tre::symbol(escaped);
   }
 
-  [[nodiscard]] constexpr tre::node parse_character_class() {
+  [[nodiscard]] constexpr scan::tre::node parse_character_class() {
     ++position_;
     const bool negated = peek() == '^';
     if (negated) ++position_;
@@ -204,7 +354,7 @@ class tre_parser {
     if (negated) {
       std::ranges::transform(symbols, symbols.begin(), std::logical_not<>{});
     }
-    return tre::character_class(symbols);
+    return scan::tre::character_class(symbols);
   }
 
   constexpr void parse_class_items(std::array<bool, 256>& symbols) {
@@ -228,6 +378,9 @@ class tre_parser {
         ++position_;
         return parse_hex_byte();
       }
+      const char value = named_character(peek());
+      ++position_;
+      return value;
     }
     const char value = peek();
     ++position_;
@@ -252,10 +405,8 @@ class tre_parser {
     const auto begin = static_cast<unsigned char>(first);
     const auto end = static_cast<unsigned char>(last);
     if (begin > end) throw "reversed character class range";
-    std::ranges::for_each(
-        std::views::iota(static_cast<unsigned>(begin),
-                         static_cast<unsigned>(end) + 1),
-        [&](unsigned value) { symbols[value] = true; });
+    for (unsigned value : std::views::iota(static_cast<unsigned>(begin),
+                         static_cast<unsigned>(end) + 1)) { symbols[value] = true; }
   }
 
   [[nodiscard]] static constexpr std::array<bool, 256> range_bits(char first,
@@ -265,16 +416,16 @@ class tre_parser {
     return symbols;
   }
 
-  [[nodiscard]] static constexpr tre::node make_range(char first, char last) {
-    return tre::character_class(range_bits(first, last));
+  [[nodiscard]] static constexpr scan::tre::node make_range(char first, char last) {
+    return scan::tre::character_class(range_bits(first, last));
   }
 
-  [[nodiscard]] static constexpr tre::node make_set(std::string_view set) {
+  [[nodiscard]] static constexpr scan::tre::node make_set(std::string_view set) {
     std::array<bool, 256> symbols{};
-    std::ranges::for_each(set, [&](char value) {
+    for (char value : set) {
       symbols[static_cast<unsigned char>(value)] = true;
-    });
-    return tre::character_class(symbols);
+    }
+    return scan::tre::character_class(symbols);
   }
 
   std::string_view source_;
@@ -338,6 +489,517 @@ template <fixed_string format, std::size_t field_count>
   return result;
 }
 
+// A type is a leaf when something knows how to read it out of text, and a
+// product when it does not and is an aggregate. A leaf takes one group; a
+// product takes as many as its fields take between them, in order, and its
+// fields may be products themselves. Nothing about that needs saying in the
+// format: a structure of structures is written out flat, because that is what
+// it is.
+// The question is whether a scanner has been written for this type, and it has
+// to be asked of the class and not of the call: naming `scanner_parse<type>` is
+// well formed for any type at all, because its declaration says nothing about
+// the body. Only asking for the size of `scanner<type>` makes the compiler
+// decide whether the specialisation is there.
+// A type may say how it is read as a format of its own, and then it is not a
+// leaf but a shape: the places in its format stand for its own fields, and its
+// groups are groups of whatever it is written into.
+template <class type>
+inline constexpr bool scanned_as_variant = false;
+template <class... alternatives>
+inline constexpr bool scanned_as_variant<std::variant<alternatives...>> = true;
+
+template <class type>
+concept scanned_by_format = requires {
+  scan::scanner<std::remove_cv_t<type>>::scan_format;
+};
+
+template <class type>
+concept scanned_as_leaf = requires {
+  sizeof(scan::scanner<std::remove_cv_t<type>>);
+} && !scanned_by_format<type>;
+
+// A type that says how it is read and also how it is made.
+//
+//   template <> struct scan::scanner<point> : scan::aggregate_scanner<"({}, {})"> {
+//     static constexpr point parse(int x, int y) { return point(x, y); }
+//   };
+//
+// The places of its format then stand for the arguments of that call rather
+// than for the fields of the type, and the type is built by making the call. So
+// it need not be an aggregate at all: it may have invariants to keep, members
+// nobody outside may touch, or an order of its own that has nothing to do with
+// the order it is written in.
+//
+// Both halves are required. A scanner with a `parse` and no format is an
+// ordinary leaf and reads itself from the text of one place; the format is what
+// says the places are the arguments.
+template <class type>
+concept scanned_from_values = scanned_by_format<type> && requires {
+  &scan::scanner<std::remove_cv_t<type>>::parse;
+};
+
+// A type that holds as many of something as the input turns out to have.
+//
+// Nothing in the format says how many; the type does, by being a range that can
+// be grown. The place stands for the whole list and its body is the format of
+// one element, read over again for as long as it goes on -- so a separator is
+// written the way anything matched and not kept is written, and the element may
+// be a value, a shape, a variant or another list.
+template <class type>
+concept scanned_as_range =
+    !scanned_as_leaf<type> && !scanned_by_format<type> &&
+    !scanned_as_variant<type> && std::ranges::range<type> &&
+    requires(type& into, std::ranges::range_value_t<type> element) {
+      into.push_back(std::move(element));
+    };
+
+template <class function_type>
+struct call_parameters;
+template <class result_type, class... argument_types>
+struct call_parameters<result_type (*)(argument_types...)> {
+  static constexpr std::size_t count = sizeof...(argument_types);
+  template <std::size_t index>
+  using at = std::remove_cvref_t<
+      std::tuple_element_t<index, std::tuple<argument_types...>>>;
+};
+
+// What a type is made of, for the purpose of reading it: the arguments of the
+// call that makes it, where there is one, and its fields otherwise.
+template <class type, bool = scanned_from_values<type>>
+struct parts_of;
+template <class type>
+  requires scanned_as_range<type>
+struct parts_of<type, false> {
+  static constexpr std::size_t count = 1;
+  template <std::size_t index>
+  using at = std::remove_cvref_t<std::ranges::range_value_t<type>>;
+};
+template <class type>
+struct parts_of<type, false> {
+  static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
+  template <std::size_t index>
+  using at = std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>;
+};
+template <class type>
+struct parts_of<type, true> {
+  using call = call_parameters<
+      decltype(&scan::scanner<std::remove_cv_t<type>>::parse)>;
+  static constexpr std::size_t count = call::count;
+  template <std::size_t index>
+  using at = typename call::template at<index>;
+};
+
+// What one place in a format stands for. A leaf takes one; a type with a format
+// of its own takes one and spends it on the format it declared; anything else
+// is opened up and its fields take places of their own, which is why a
+// structure of structures can be written out flat.
+template <class type>
+[[nodiscard]] consteval std::size_t places_of() {
+  if constexpr (scanned_as_leaf<type> || scanned_by_format<type> ||
+                scanned_as_variant<type> || scanned_as_range<type>) {
+    return 1;
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              places_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+template <class type>
+[[nodiscard]] consteval std::size_t groups_of() {
+  if constexpr (scanned_as_leaf<type>) {
+    return 1;
+  } else if constexpr (scanned_as_variant<type>) {
+    // A mark for each branch, and then whatever that branch's alternative
+    // reads, in the order the branches are written.
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (std::size_t{0} + ... +
+              (1 + groups_of<std::variant_alternative_t<which, type>>()));
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else if constexpr (scanned_as_range<type>) {
+    // One for the list itself, and then whatever one element reads -- written
+    // over again on every turn round the loop.
+    return 1 + groups_of<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              groups_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+template <class type, std::size_t field>
+[[nodiscard]] consteval std::size_t groups_before_field() {
+  return []<std::size_t... index>(std::index_sequence<index...>) {
+    return (std::size_t{0} + ... +
+            groups_of<typename parts_of<type>::template at<index>>());
+  }(std::make_index_sequence<field>{});
+}
+
+// Which field of a product holds the group at this position, and where in that
+// field it falls.
+// Which field of a product holds the place at this position, and where in that
+// field it falls. The same walk as for groups, counting places.
+template <class subject>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_of_place(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        places_of<typename parts_of<subject>::template at<field>>()...};
+  }(std::make_index_sequence<parts_of<subject>::count>{});
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (index < counts[field]) return {field, index};
+    index -= counts[field];
+  }
+  throw "format has more places than the output type has values";
+}
+
+template <class subject, std::size_t index,
+          bool = scanned_as_leaf<subject> || scanned_by_format<subject> ||
+                 scanned_as_variant<subject> || scanned_as_range<subject>>
+struct place_at;
+template <class subject, std::size_t index>
+struct place_at<subject, index, true> {
+  using kind = subject;
+};
+template <class subject, std::size_t index>
+struct place_at<subject, index, false> {
+  static constexpr auto where = field_of_place<subject>(index);
+  using next = typename parts_of<subject>::template at<where.first>;
+  using kind = typename place_at<next, where.second>::kind;
+};
+
+template <class subject, std::size_t index>
+using place_kind = typename place_at<subject, index>::kind;
+
+// The places of a type's own format are its fields, not itself. A type that
+// declares a format is one place where it is used and a product of its fields
+// where that format is read, and the difference is the whole reason the reading
+// terminates.
+template <class subject>
+[[nodiscard]] consteval std::size_t places_within() {
+  return []<std::size_t... field>(std::index_sequence<field...>) {
+    return (std::size_t{0} + ... +
+            places_of<typename parts_of<subject>::template at<field>>());
+  }(std::make_index_sequence<parts_of<subject>::count>{});
+}
+
+template <class subject, std::size_t index>
+using place_within_kind = typename place_at<subject, index, false>::kind;
+
+// Choosing between the two by a conditional would ask for both, and asking a
+// variant how many places its fields make is asking a variant for fields. Only
+// the one taken may be named.
+template <class subject, bool within>
+[[nodiscard]] consteval std::size_t places_chosen() {
+  if constexpr (within) {
+    return places_within<subject>();
+  } else {
+    return places_of<subject>();
+  }
+}
+
+template <class subject, bool within, std::size_t index>
+struct place_chosen {
+  static constexpr bool stands_alone =
+      within ? false
+             : (scanned_as_leaf<subject> || scanned_by_format<subject> ||
+                scanned_as_variant<subject> || scanned_as_range<subject>);
+  using kind = typename place_at<subject, index, stands_alone>::kind;
+};
+
+template <class subject>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_holding(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        groups_of<typename parts_of<subject>::template at<field>>()...};
+  }(std::make_index_sequence<parts_of<subject>::count>{});
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (index < counts[field]) return {field, index};
+    index -= counts[field];
+  }
+  throw "group index past the end of the output type";
+}
+
+template <class held_type>
+struct kind_is {
+  using kind = held_type;
+};
+
+// Which type gathers the value at this group. A list gathers at the group that
+// stands for the list itself -- the first of the ones it takes -- and its
+// element gathers at the ones after it, over and over.
+template <class subject, std::size_t index,
+          int = scanned_as_leaf<subject> ? 0 : (scanned_as_range<subject> ? 1 : 2)>
+struct leaf_at;
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 0> {
+  using kind = subject;
+};
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 1> {
+  using element = std::remove_cvref_t<std::ranges::range_value_t<subject>>;
+  using kind = typename std::conditional_t<
+      index == 0, kind_is<subject>,
+      leaf_at<element, (index == 0 ? 0 : index - 1)>>::kind;
+};
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 2> {
+  static constexpr auto where = field_holding<subject>(index);
+  using next = typename parts_of<subject>::template at<where.first>;
+  using kind = typename leaf_at<next, where.second>::kind;
+};
+
+template <class subject, std::size_t index>
+using leaf_kind = typename leaf_at<subject, index>::kind;
+
+// Reading a format against the type it is scanned into, and writing out the one
+// the automaton is built from.
+//
+// A place standing for a leaf becomes that leaf's own pattern, with whatever
+// was written after the colon handed to it and kept for the reading afterwards.
+// A place standing for a type that declared a format becomes that format, read
+// against that type -- so the places inside it mean that type's fields and
+// nothing about where it was used. That is the whole of the hygiene: a format
+// is only ever read against the type it belongs to.
+struct spread_format {
+  pattern_buffer<2048> text{};
+  pattern_buffer<64> parameters[32]{};
+  std::size_t leaves = 0;
+};
+
+constexpr void copy_until_place(spread_format& made, std::string_view text,
+                                std::size_t& position) {
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      made.text.push_back(text[position]);
+      made.text.push_back(text[position + 1]);
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') return;
+    made.text.push_back(text[position]);
+    ++position;
+  }
+}
+
+// The body of a place, and where it ends. A brace inside a character class or a
+// repetition is not the end of one.
+[[nodiscard]] constexpr std::size_t end_of_place(std::string_view text,
+                                                 std::size_t open) {
+  std::size_t position = open + 1;
+  bool character_class = false;
+  while (position < text.size()) {
+    const char symbol = text[position];
+    if (symbol == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (symbol == '[') character_class = true;
+    if (symbol == ']') character_class = false;
+    if (!character_class && symbol == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (!character_class && symbol == '}') return position;
+    ++position;
+  }
+  throw "unterminated placeholder";
+}
+
+// Read outside a type, one place is the whole of it; read inside its own
+// format, one place is one of its fields. The same walk, told which it is.
+// Where the top level of a format has branches, each is read against the
+// alternative standing in the same place, and each one's places mean that
+// alternative's values.
+[[nodiscard]] constexpr std::array<std::pair<std::size_t, std::size_t>, 16>
+branches_of(std::string_view text, std::size_t& count) {
+  std::array<std::pair<std::size_t, std::size_t>, 16> found{};
+  std::size_t begin = 0;
+  std::size_t position = 0;
+  count = 0;
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (text[position] == '|') {
+      if (count == found.size()) throw "too many branches in a format";
+      found[count++] = {begin, position};
+      begin = position + 1;
+    }
+    ++position;
+  }
+  if (count == found.size()) throw "too many branches in a format";
+  found[count++] = {begin, text.size()};
+  return found;
+}
+
+// Literal text, and any place that keeps nothing, up to the next place that
+// does. A place whose body begins with a star is matched and thrown away, the
+// way `%*d` is read and not stored, and it takes no value with it.
+constexpr void copy_until_kept_place(spread_format& made, std::string_view text,
+                                     std::size_t& position) {
+  while (true) {
+    copy_until_place(made, text, position);
+    if (position == text.size()) return;
+    const std::size_t close = end_of_place(text, position);
+    const std::string_view body =
+        text.substr(position + 1, close - position - 1);
+    if (body.empty() || body.front() != '*') return;
+    made.text.push_back(format_raw_begin);
+    made.text.append(body.substr(1));
+    made.text.push_back(format_raw_end);
+    position = close + 1;
+  }
+}
+
+template <class type, bool within>
+constexpr void spread_into(spread_format& made, std::string_view text);
+
+// How many turns a place is written to take, as it is written: a star, a plus,
+// a question mark or a count in braces. Nothing written at all is one or more,
+// which is what a list of something usually is.
+[[nodiscard]] constexpr std::string_view repetition_after(std::string_view text,
+                                                          std::size_t at) {
+  if (at >= text.size()) return {};
+  const char first = text[at];
+  if (first == '*' || first == '+' || first == '?') return text.substr(at, 1);
+  if (first != '{') return {};
+  if (at + 1 >= text.size() || text[at + 1] < '0' || text[at + 1] > '9') {
+    return {};
+  }
+  std::size_t close = at + 1;
+  while (close < text.size() && text[close] != '}') ++close;
+  if (close == text.size()) throw "unterminated repetition";
+  return text.substr(at, close - at + 1);
+}
+
+template <class kind>
+constexpr void spread_place(spread_format& made, std::string_view body,
+                            std::string_view repetition = {}) {
+  if constexpr (scanned_as_range<kind>) {
+    // The body is one element, and it is read for as long as it goes on. The
+    // group around it is the list; the places inside it are the element, and
+    // they are written over again on every turn.
+    made.text.push_back(format_repeat);
+    ++made.leaves;
+    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
+        made, body);
+    made.text.push_back(format_group_end);
+    made.text.append(repetition);
+  } else if constexpr (scanned_as_variant<kind>) {
+    // The branches, held together, each headed by a mark. Written out, the body
+    // of the place says them, one per alternative, separated by a bar. Left
+    // empty, each alternative is asked how it reads itself -- which it can
+    // answer if it declares a format or if something knows how to read it.
+    constexpr std::size_t count = std::variant_size_v<kind>;
+    std::size_t written = 0;
+    std::array<std::pair<std::size_t, std::size_t>, 16> parts{};
+    if (!body.empty()) {
+      parts = branches_of(body, written);
+      if (written != count) {
+        throw "a variant place must have one branch for each alternative";
+      }
+    }
+    made.text.push_back(format_group_begin);
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      const auto one = [&]<std::size_t branch>() {
+        if constexpr (branch != 0) made.text.push_back(format_branch);
+        made.text.push_back(format_mark);
+        using alternative = std::variant_alternative_t<branch, kind>;
+        if (body.empty()) {
+          spread_place<alternative>(made, std::string_view{});
+        } else {
+          spread_into<alternative, false>(
+              made, body.substr(parts[branch].first,
+                                parts[branch].second - parts[branch].first));
+        }
+      };
+      (one.template operator()<which>(), ...);
+    }(std::make_index_sequence<count>{});
+    made.text.push_back(format_group_end);
+  } else if constexpr (scanned_by_format<kind>) {
+    if (!body.empty()) throw "a type that declares a format takes no body";
+    spread_into<kind, true>(
+        made, scan::scanner<std::remove_cv_t<kind>>::scan_format.view());
+  } else if constexpr (!scanned_as_leaf<kind>) {
+    // Only reached by a variant place left empty, which asks each alternative
+    // how it reads itself. This one does not say.
+    throw "an alternative of a variant place left empty must say how it reads "
+          "itself -- give it a scanner or a format of its own, or write the "
+          "branches out with a bar between them";
+  } else {
+    made.text.push_back('{');
+    if (body.empty() || body.front() == ':') {
+      const std::string_view given = body.empty() ? body : body.substr(1);
+      made.parameters[made.leaves].append(given);
+      const auto pattern = scanner_pattern<std::remove_cv_t<kind>>(given);
+      made.text.append(std::string_view{pattern});
+    } else {
+      made.text.append(body);
+    }
+    made.text.push_back('}');
+    ++made.leaves;
+  }
+}
+
+template <class type, bool within>
+constexpr void spread_into(spread_format& made, std::string_view text) {
+  std::size_t position = 0;
+  [&]<std::size_t... place>(std::index_sequence<place...>) {
+    const auto one = [&]<std::size_t which>() {
+      copy_until_kept_place(made, text, position);
+      // A place can hold another, and the one inside is a value of its own:
+      // `{{[a]+}}` is a group around a group, two values, one place at this
+      // level. The body is copied as it stands, so the places within it are
+      // still groups when the pattern is read, and the values they take are
+      // the ones this walk has no place left for. Running out here is that,
+      // and not a format with too little in it.
+      if (position == text.size()) return;
+      const std::size_t close = end_of_place(text, position);
+      using kind = typename place_chosen<type, within, which>::kind;
+      std::string_view repetition;
+      if constexpr (scanned_as_range<kind>) {
+        repetition = repetition_after(text, close + 1);
+      }
+      spread_place<kind>(made, text.substr(position + 1, close - position - 1),
+                         repetition);
+      position = close + 1 + repetition.size();
+    };
+    (one.template operator()<place>(), ...);
+  }(std::make_index_sequence<places_chosen<type, within>()>{});
+  copy_until_kept_place(made, text, position);
+  if (position != text.size()) throw "format has more places than values";
+}
+
+template <class type, fixed_string format>
+[[nodiscard]] consteval spread_format spread_of() {
+  spread_format made;
+  if constexpr (scanned_as_variant<type>) {
+    // The whole format is the list of branches, which is what a place standing
+    // for a variant is written as anywhere else.
+    spread_place<type>(made, format.view());
+  } else {
+    // The type scanned into is always opened up: its fields are the places, and
+    // it is never itself one. A format of a single place standing for the whole
+    // output would read differently the day that type gained a scanner or lost
+    // one, without a word changing in the format, so it is not allowed to mean
+    // anything. Whoever wants it writes the wrapper themselves, and then the
+    // place is the field and says so.
+    spread_into<type, true>(made, format.view());
+  }
+  return made;
+}
+
 template <class type, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr auto parameterized_patterns(
     const std::array<std::string_view, extent>& parameters,
@@ -349,10 +1011,13 @@ template <class type, std::size_t extent, std::size_t... index>
     result.append(std::string_view{pattern});
     return result;
   };
+  // By field, and not by the values a field opens up into: this builds the
+  // pattern a whole aggregate matches for the paths that match it whole -- the
+  // streaming one -- and there a field that is itself a shape contributes its
+  // own pattern, recursively, rather than being spread out here.
   return std::array<pattern_buffer<>, extent>{
-      make_pattern.template operator()<std::remove_cvref_t<decltype(
-          boost::pfr::get<index>(std::declval<type&>()))>>(
-          parameters[index])...};
+      make_pattern.template operator()<std::remove_cvref_t<
+          boost::pfr::tuple_element_t<index, type>>>(parameters[index])...};
 }
 
 template <std::size_t extent>
@@ -364,169 +1029,286 @@ template <std::size_t extent>
   return result;
 }
 
+// The automaton is built from the spread format, in which every place has
+// already become the pattern it stands for, every declared format has been read
+// against its own type, and every variant has become branches with a mark at
+// the head of each. What is left is one format whose groups are the values, in
+// order.
 template <class type, fixed_string format>
-[[nodiscard]] constexpr tre::tnfa build_tnfa() {
-  constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
-  constexpr auto parameters = field_parameters<format, field_count>();
-  constexpr auto pattern_storage = parameterized_patterns<type>(
-      parameters, std::make_index_sequence<field_count>{});
-  const auto defaults = pattern_views(pattern_storage);
+[[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
+  constexpr auto spread = spread_of<type, format>();
   std::size_t captures = 0;
-  tre_parser parser(format.view(), defaults, captures);
-  tre::node expression = parser.parse_format();
-  if (captures != field_count) throw "capture count does not match output";
-  return tre::compile_tnfa(expression);
+  tre_parser parser(spread.text.view(), {}, captures);
+  scan::tre::node expression = parser.parse_format();
+  if (captures != groups_of<type>()) {
+    throw "capture count does not match output";
+  }
+  return scan::tre::compile_tnfa(expression);
 }
 
-template <class type, fixed_string format>
-[[nodiscard]] constexpr tre::tdfa build_tdfa() {
-  return tre::optimize_tdfa(tre::compile_tdfa(build_tnfa<type, format>()),
-                            false);
+// Register allocation is on here, and it has to be: without it the register
+// file keeps one slot for every register determinisation ever handed out --
+// sixty-three of them for five fields -- and the scan begins by filling all of
+// them. With it the file is as wide as the tags, because the first slots are
+// pinned to the tags the fields are read from and the rest are coalesced away.
+// Except for the machine that reads a range as it comes. That one keeps a set
+// of half-read fields for every way the tags could yet turn out, and it tells
+// those sets apart by dividing a register number by the number of tags -- which
+// is only a meaning at all while the registers are numbered as determinisation
+// handed them out. Allocation renumbers them and merges the ones that never
+// overlap, and the division stops meaning anything. So that machine is built
+// from the same pattern without allocation, and pays a wider register file for
+// it, which costs it nothing: it never fills the file, it walks it.
+template <class type, fixed_string format, bool allocate = true>
+[[nodiscard]] constexpr scan::tre::tdfa build_tdfa() {
+  return scan::tre::optimize_tdfa(
+      scan::tre::compile_tdfa(build_tnfa<type, format>()), allocate);
 }
 
-[[nodiscard]] constexpr tre::tdfa minimize_tdfa(tre::tdfa automaton) {
+// Minimisation as Moore's refinement, with the two things that make it cheap:
+// symbols that behave alike everywhere are one class, and a command sequence
+// is compared as the number it was interned to rather than by copying it.
+[[nodiscard]] constexpr bool same_command_list(
+    const std::vector<scan::tre::register_command>& lhs,
+    const std::vector<scan::tre::register_command>& rhs) {
+  if (lhs.size() != rhs.size()) return false;
+  for (std::size_t index = 0; index < lhs.size(); ++index) {
+    if (lhs[index].destination != rhs[index].destination) return false;
+    if (lhs[index].source != rhs[index].source) return false;
+    if (lhs[index].values != rhs[index].values) return false;
+  }
+  return true;
+}
+
+[[nodiscard]] constexpr scan::tre::tdfa minimize_tdfa(scan::tre::tdfa automaton) {
   if (automaton.states.empty()) return automaton;
+  const std::size_t count = automaton.states.size();
+  const std::size_t none = std::numeric_limits<std::size_t>::max();
 
-  const auto same_commands = [](const auto& lhs, const auto& rhs) {
-    return std::ranges::equal(
-        lhs, rhs, {},
-        [](const tre::register_command& command) {
-          return std::tuple(command.destination, command.source,
-                            command.values);
-        },
-        [](const tre::register_command& command) {
-          return std::tuple(command.destination, command.source,
-                            command.values);
-        });
+  // Which transition each symbol takes, per state, once.
+  std::vector<std::array<std::size_t, 256>> owner(count);
+  for (std::size_t state = 0; state < count; ++state) {
+    owner[state].fill(none);
+    const auto& transitions = automaton.states[state].transitions;
+    for (std::size_t index = 0; index < transitions.size(); ++index) {
+      for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+        if (transitions[index].symbols.test(symbol)) owner[state][symbol] = index;
+      }
+    }
+  }
+
+  // Interned command sequences: equal sequences share a number, so the
+  // refinement compares numbers.
+  std::vector<std::vector<scan::tre::register_command>> pool;
+  const auto intern = [&](const std::vector<scan::tre::register_command>& commands) {
+    for (std::size_t index = 0; index < pool.size(); ++index) {
+      if (same_command_list(pool[index], commands)) return index;
+    }
+    pool.push_back(commands);
+    return pool.size() - 1;
   };
+  std::vector<std::uint32_t> final_command_id(count);
+  std::vector<std::vector<std::uint32_t>> command_id(count);
+  for (std::size_t state = 0; state < count; ++state) {
+    final_command_id[state] = intern(automaton.states[state].final_commands);
+    command_id[state].resize(automaton.states[state].transitions.size());
+    for (std::size_t index = 0; index < command_id[state].size(); ++index) {
+      command_id[state][index] =
+          intern(automaton.states[state].transitions[index].commands);
+    }
+  }
 
-  const auto targets =
-      std::views::iota(std::size_t{0}, automaton.states.size()) |
-      std::views::transform([&](std::size_t state) {
-        return std::views::iota(std::size_t{0}, std::size_t{256}) |
-               std::views::transform([&](std::size_t symbol) {
-                 const auto& transitions = automaton.states[state].transitions;
-                 const auto found = std::ranges::find_if(
-                     transitions,
-                     [&](const tre::tdfa_transition& transition) {
-                       return transition.symbols[symbol];
-                     });
-                 return found == transitions.end() ? automaton.states.size()
-                                                   : found->target;
-               }) |
-               views::to_array<256>;
-      }) |
-      std::ranges::to<std::vector>();
+  // Symbols that take the same transition in every state, and carry the same
+  // commands, are one class: the refinement then walks classes, not bytes.
+  constexpr std::uint32_t no_class = std::numeric_limits<std::uint32_t>::max();
+  std::vector<std::uint32_t> symbol_class(256, no_class);
+  std::vector<std::uint32_t> representatives;
+  for (std::size_t symbol = 0; symbol < 256; ++symbol) {
+    for (std::size_t index = 0; index < representatives.size(); ++index) {
+      const std::size_t other = representatives[index];
+      bool alike = true;
+      for (std::size_t state = 0; state < count && alike; ++state) {
+        const std::size_t lhs = owner[state][symbol];
+        const std::size_t rhs = owner[state][other];
+        if (lhs == none || rhs == none) {
+          alike = lhs == rhs;
+        } else {
+          alike = automaton.states[state].transitions[lhs].target ==
+                      automaton.states[state].transitions[rhs].target &&
+                  command_id[state][lhs] == command_id[state][rhs];
+        }
+      }
+      if (alike) { symbol_class[symbol] = index; break; }
+    }
+    if (symbol_class[symbol] == no_class) {
+      symbol_class[symbol] = representatives.size();
+      representatives.push_back(symbol);
+    }
+  }
+  const std::size_t class_width = representatives.size();
 
-  std::vector<std::size_t> classes =
-      automaton.states |
-      std::views::transform([](const tre::tdfa_state& state) {
-        return static_cast<std::size_t>(state.accepting_slot.has_value());
-      }) |
-      std::ranges::to<std::vector>();
-
-  bool changed = true;
+  // Moore: refine until the partition stops changing. A state's signature is
+  // its own class and, per symbol class, the class it goes to with which
+  // commands.
+  std::vector<std::uint32_t> classes(count);
+  for (std::size_t state = 0; state < count; ++state) {
+    classes[state] = automaton.states[state].accepting_slot.has_value()
+                         ? final_command_id[state] + 1
+                         : 0;
+  }
   std::size_t class_count = 0;
-  while (changed) {
-    std::vector<std::size_t> refined(automaton.states.size());
-    class_count = 0;
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, automaton.states.size()),
-        [&](std::size_t state) {
-          const auto candidates = std::views::iota(std::size_t{0}, state);
-          const auto equivalent = std::ranges::find_if(
-              candidates,
-              [&](std::size_t candidate) {
-                if (automaton.states[state].accepting_slot.has_value() !=
-                    automaton.states[candidate].accepting_slot.has_value()) {
-                  return false;
-                }
-                if (!same_commands(automaton.states[state].final_commands,
-                                   automaton.states[candidate]
-                                       .final_commands)) {
-                  return false;
-                }
-                return std::ranges::all_of(
-                    std::views::iota(std::size_t{0}, std::size_t{256}),
-                    [&](std::size_t symbol) {
-                      const std::size_t lhs = targets[state][symbol];
-                      const std::size_t rhs = targets[candidate][symbol];
-                      if (lhs == automaton.states.size() ||
-                          rhs == automaton.states.size()) {
-                        return lhs == rhs;
-                      }
-                      if (classes[lhs] != classes[rhs]) return false;
-                      const auto& lhs_transitions =
-                          automaton.states[state].transitions;
-                      const auto& rhs_transitions =
-                          automaton.states[candidate].transitions;
-                      const auto lhs_transition = std::ranges::find_if(
-                          lhs_transitions, [&](const auto& transition) {
-                            return transition.symbols[symbol];
-                          });
-                      const auto rhs_transition = std::ranges::find_if(
-                          rhs_transitions, [&](const auto& transition) {
-                            return transition.symbols[symbol];
-                          });
-                      return same_commands(lhs_transition->commands,
-                                           rhs_transition->commands);
-                    });
-              });
-          if (equivalent == candidates.end()) {
-            refined[state] = class_count++;
-          } else {
-            refined[state] = refined[*equivalent];
-          }
-        });
-    changed = refined != classes;
+  for (;;) {
+    std::vector<std::vector<std::uint32_t>> signature(count);
+    for (std::size_t state = 0; state < count; ++state) {
+      // The marker for "no transition" inside a signature is the widest value
+      // of what a signature holds, not of what an index is elsewhere.
+      constexpr std::uint32_t no_target = std::numeric_limits<std::uint32_t>::max();
+      signature[state].reserve(1 + 2 * class_width);
+      signature[state].push_back(classes[state]);
+      // Readings are part of what a state is: merging two that hold their tags
+      // in different registers would make the answer to "which group is open"
+      // depend on which of them the merge happened to keep.
+      signature[state].push_back(automaton.states[state].readings.size());
+      for (const std::vector<std::uint32_t>& reading :
+           automaton.states[state].readings) {
+        for (const std::uint32_t held : reading) {
+          signature[state].push_back(held);
+        }
+      }
+      for (std::size_t index = 0; index < class_width; ++index) {
+        const std::size_t symbol = representatives[index];
+        const std::size_t transition = owner[state][symbol];
+        if (transition == none) {
+          signature[state].push_back(no_target);
+          signature[state].push_back(no_target);
+        } else {
+          signature[state].push_back(
+              classes[automaton.states[state].transitions[transition].target]);
+          signature[state].push_back(command_id[state][transition]);
+        }
+      }
+    }
+    // Number the classes by the first state that has them, which is the
+    // numbering the pairwise version produced.
+    std::vector<std::uint32_t> order(count);
+    for (std::size_t state = 0; state < count; ++state) order[state] = state;
+    std::ranges::sort(order, [&](std::size_t lhs, std::size_t rhs) {
+      if (signature[lhs] != signature[rhs]) return signature[lhs] < signature[rhs];
+      return lhs < rhs;
+    });
+    std::vector<std::uint32_t> group(count, no_class);
+    std::vector<std::uint32_t> first_state;
+    for (std::size_t index = 0; index < count; ++index) {
+      const std::size_t state = order[index];
+      if (index == 0 || signature[state] != signature[order[index - 1]]) {
+        first_state.push_back(state);
+      }
+      group[state] = first_state.size() - 1;
+    }
+    std::vector<std::uint32_t> group_order(first_state.size());
+    for (std::size_t index = 0; index < first_state.size(); ++index) {
+      group_order[index] = index;
+    }
+    std::ranges::sort(group_order, [&](std::size_t lhs, std::size_t rhs) {
+      return first_state[lhs] < first_state[rhs];
+    });
+    std::vector<std::uint32_t> renumber(first_state.size());
+    for (std::size_t index = 0; index < group_order.size(); ++index) {
+      renumber[group_order[index]] = index;
+    }
+    std::vector<std::uint32_t> refined(count);
+    for (std::size_t state = 0; state < count; ++state) {
+      refined[state] = renumber[group[state]];
+    }
+    class_count = first_state.size();
+    if (refined == classes) break;
     classes = std::move(refined);
   }
 
-  tre::tdfa minimized{.initial = classes[automaton.initial],
-                       .tag_count = automaton.tag_count,
-                       .register_count = automaton.register_count,
-                       .initialize = std::move(automaton.initialize),
-                       .states = std::vector<tre::tdfa_state>(class_count)};
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, class_count),
-      [&](std::size_t result_class) {
-        const auto representative = std::ranges::find(classes, result_class);
-        const auto& source = automaton.states[representative - classes.begin()];
-        auto& destination = minimized.states[result_class];
-        destination.accepting_slot = source.accepting_slot;
-        destination.final_commands = source.final_commands;
-        std::ranges::for_each(
-            source.transitions, [&](tre::tdfa_transition transition) {
-              transition.target = classes[transition.target];
-              const auto equivalent = std::ranges::find_if(
-                  destination.transitions,
-                  [&](const tre::tdfa_transition& candidate) {
-                    return candidate.target == transition.target &&
-                           same_commands(candidate.commands,
-                                         transition.commands);
-                  });
-              if (equivalent == destination.transitions.end()) {
-                destination.transitions.push_back(std::move(transition));
-              } else {
-                std::ranges::transform(
-                    equivalent->symbols, transition.symbols,
-                    equivalent->symbols.begin(), std::logical_or<>{});
-              }
-            });
-      });
+  scan::tre::tdfa minimized{.initial = classes[automaton.initial],
+                      .tag_count = automaton.tag_count,
+                      .register_count = automaton.register_count,
+                      .initialize = std::move(automaton.initialize),
+                      .states = std::vector<scan::tre::tdfa_state>(class_count)};
+  for (std::size_t result_class = 0; result_class < class_count; ++result_class) {
+    const auto representative = std::ranges::find(classes, result_class);
+    const auto& source =
+        automaton.states[static_cast<std::size_t>(representative - classes.begin())];
+    auto& destination = minimized.states[result_class];
+    destination.accepting_slot = source.accepting_slot;
+    destination.final_commands = source.final_commands;
+    destination.nfa_states = source.nfa_states;
+    // Which register holds which tag, in each reading this state stands in.
+    // Carried over, and told apart below: a machine that is fed a character at
+    // a time asks this to know which group is open, and two states that agree
+    // about everything else can disagree about that.
+    destination.readings = source.readings;
+    for (const scan::tre::tdfa_transition& transition : source.transitions) {
+      destination.transitions.push_back(
+          scan::tre::tdfa_transition{.symbols = transition.symbols,
+                               .target = classes[transition.target],
+                               .commands = transition.commands});
+    }
+  }
   return minimized;
 }
 
 template <fixed_string pattern>
-[[nodiscard]] consteval tre::tdfa build_regex_tdfa() {
+[[nodiscard]] consteval scan::tre::tdfa build_regex_tdfa() {
   std::size_t captures = 0;
   tre_parser parser(pattern.view(), {}, captures, true);
-  return minimize_tdfa(tre::optimize_tdfa(
-      tre::compile_tdfa(tre::compile_tnfa(parser.parse_regex()))));
+  return minimize_tdfa(scan::tre::optimize_tdfa(
+      scan::tre::compile_tdfa(scan::tre::compile_tnfa(parser.parse_regex()))));
+}
+
+// Which transition each symbol takes, or none. The symbol sets of a state's
+// transitions do not overlap, so this is a function, and consecutive symbols
+// that take the same transition are one range.
+[[nodiscard]] constexpr std::array<std::size_t, 256> transition_of_symbol(
+    const scan::tre::tdfa_state& state) {
+  constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+  std::array<std::size_t, 256> result{};
+  std::ranges::fill(result, none);
+  for (std::size_t index : std::views::iota(std::size_t{0}, state.transitions.size())) {
+        for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256})) {
+              if (state.transitions[index].symbols.test(symbol)) {
+                result[symbol] = index;
+              }
+            }
+      }
+  return result;
+}
+
+[[nodiscard]] constexpr std::size_t count_symbol_ranges(
+    const scan::tre::tdfa_state& state) {
+  constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+  const std::array<std::size_t, 256> owner = transition_of_symbol(state);
+  std::size_t count = 0;
+  std::size_t previous = none;
+  bool started = false;
+  for (std::size_t index : owner) {
+    if (index != none && (!started || index != previous)) ++count;
+    started = true;
+    previous = index;
+  }
+  return count;
 }
 
 struct packed_shape {
   std::size_t states = 0;
+  // The most ranges of consecutive symbols any one state needs. A state's
+  // transitions are stored as those ranges rather than as a cell per symbol:
+  // the automaton for an address pattern has fifteen states and ninety-nine
+  // ranges, where a cell per symbol is three thousand eight hundred and forty
+  // of them, each carrying a command array. Every one of those cells is an
+  // object the constant evaluator materialises and every consteval helper
+  // walks all of them, so the shape of the table is most of what compiling a
+  // pattern costs.
+  std::size_t ranges = 0;
+  // The most readings any one state stands in at once. A machine that follows a
+  // reading rather than taking positions out at the end needs to be told which
+  // registers make each of them up.
+  std::size_t readings = 0;
   std::size_t registers = 0;
   std::size_t initial_commands = 0;
   std::size_t maximum_commands = 0;
@@ -534,28 +1316,29 @@ struct packed_shape {
   std::size_t tags = 0;
 };
 
-[[nodiscard]] constexpr packed_shape compute_shape(const tre::tdfa& tdfa) {
+[[nodiscard]] constexpr packed_shape compute_shape(const scan::tre::tdfa& tdfa) {
   packed_shape shape{.states = tdfa.states.size(),
                      .registers = tdfa.register_count,
                      .initial_commands = tdfa.initialize.size(),
                      .maximum_commands = 0,
                      .maximum_final_commands = 0,
                      .tags = tdfa.tag_count};
-  std::ranges::for_each(tdfa.states, [&](const tre::tdfa_state& state) {
+  for (const scan::tre::tdfa_state& state : tdfa.states) {
     shape.maximum_final_commands =
         std::max(shape.maximum_final_commands, state.final_commands.size());
-    std::ranges::for_each(state.transitions,
-                          [&](const tre::tdfa_transition& transition) {
+    for (const scan::tre::tdfa_transition& transition : state.transitions) {
       shape.maximum_commands =
           std::max(shape.maximum_commands, transition.commands.size());
-    });
-  });
+    }
+    shape.ranges = std::max(shape.ranges, count_symbol_ranges(state));
+    shape.readings = std::max(shape.readings, state.readings.size());
+  }
   return shape;
 }
 
-template <class type, fixed_string format>
+template <class type, fixed_string format, bool allocate = true>
 [[nodiscard]] consteval packed_shape compute_shape() {
-  const tre::tdfa tdfa = build_tdfa<type, format>();
+  const scan::tre::tdfa tdfa = build_tdfa<type, format, allocate>();
   return compute_shape(tdfa);
 }
 
@@ -568,33 +1351,101 @@ struct packed_command {
   std::int8_t value = -2;
 };
 
+// One transition, over the run of symbols that take it. A dispatch compares
+// the symbol against `first` and `last`, which is what the generated code
+// wanted from a cell-per-symbol table anyway -- it recovered these ranges from
+// it, once per instantiation, having paid to build the table first.
 template <std::size_t command_capacity>
-struct packed_transition {
+struct packed_range {
   static constexpr std::size_t reject =
       std::numeric_limits<std::size_t>::max();
+  unsigned char first = 0;
+  unsigned char last = 0;
   std::size_t target = reject;
   std::size_t command_count = 0;
   std::array<packed_command, command_capacity> commands{};
 };
 
-template <std::size_t command_capacity, std::size_t final_command_capacity>
+template <std::size_t command_capacity, std::size_t final_command_capacity,
+          std::size_t range_capacity, std::size_t tag_capacity = 0,
+          std::size_t reading_capacity = 0>
 struct packed_state {
   static constexpr std::size_t not_accepting =
       std::numeric_limits<std::size_t>::max();
-  std::array<packed_transition<command_capacity>, 256> transitions{};
+  std::array<packed_range<command_capacity>, range_capacity> ranges{};
+  std::size_t range_count = 0;
   std::size_t accepting_slot = not_accepting;
   std::size_t final_command_count = 0;
   std::array<packed_command, final_command_capacity> final_commands{};
+  // Which register holds which tag, in each reading this state stands in.
+  // Indexed the same way the accepting slot is.
+  std::size_t reading_count = 0;
+  std::array<std::array<std::uint32_t, tag_capacity>, reading_capacity>
+      readings{};
 };
+
+
+// The same question asked of constants instead of searched for.
+//
+// `find_range` walks a state's runs while the program runs, comparing against
+// numbers it has to load. Where the automaton is known while compiling -- and
+// it always is, even for a machine whose state is a value -- the runs are
+// constants and the walk is a handful of compares the compiler lays out
+// itself. The state is still a value, so it is asked once, and from there the
+// runs of that state are constants.
+inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] constexpr std::size_t run_taken_in(unsigned char symbol) {
+  constexpr const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (symbol < packed.ranges[index].first) break;
+    if (symbol <= packed.ranges[index].last) return index;
+  }
+  return no_run;
+}
+
+template <auto& automaton, std::size_t state = 0>
+[[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
+                                              unsigned char symbol) {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  if constexpr (state == state_count) {
+    return no_run;
+  } else {
+    if (here == state) return run_taken_in<automaton, state>(symbol);
+    return run_taken<automaton, state + 1>(here, symbol);
+  }
+}
+
+// The transition a symbol takes, or nothing at all. The ranges of a state are
+// in symbol order and do not overlap, so the search stops at the first range
+// that starts past the symbol.
+template <class packed_state_type>
+[[nodiscard]] constexpr auto find_range(const packed_state_type& state,
+                                        unsigned char symbol)
+    -> const std::remove_cvref_t<decltype(state.ranges[0])>* {
+  for (std::size_t index = 0; index < state.range_count; ++index) {
+    const auto& range = state.ranges[index];
+    if (symbol < range.first) break;
+    if (symbol <= range.last) return &range;
+  }
+  return nullptr;
+}
 
 template <std::size_t state_count, std::size_t register_extent,
           std::size_t initial_command_count, std::size_t command_count,
-          std::size_t final_command_count, std::size_t tag_extent>
+          std::size_t final_command_count, std::size_t tag_extent,
+          std::size_t range_count, std::size_t reading_count = 0>
 struct packed_tdfa {
   std::size_t initial = 0;
   std::array<packed_command, initial_command_count> initialize{};
-  std::array<packed_state<command_count, final_command_count>, state_count>
+  std::array<packed_state<command_count, final_command_count, range_count,
+                          tag_extent, reading_count>,
+             state_count>
       states{};
+  // Which tag each register holds, said rather than worked out from the number.
+  std::array<std::uint32_t, register_extent> register_tag{};
   static constexpr std::size_t register_count = register_extent;
   static constexpr std::size_t tag_count = tag_extent;
 };
@@ -623,7 +1474,7 @@ struct packed_captureless_tdfa {
 };
 
 [[nodiscard]] constexpr packed_command pack_command(
-    const tre::register_command& command) {
+    const scan::tre::register_command& command) {
   packed_command packed{
       .destination = command.destination,
       .source = command.source.value_or(packed_command::no_source),
@@ -636,56 +1487,106 @@ struct packed_captureless_tdfa {
 
 template <std::size_t state_count, std::size_t register_count,
           std::size_t initial_command_count, std::size_t command_count,
-          std::size_t final_command_count, std::size_t tag_count>
-[[nodiscard]] constexpr auto pack_tdfa_value(const tre::tdfa& tdfa) {
+          std::size_t final_command_count, std::size_t tag_count,
+          std::size_t range_count, std::size_t reading_count = 0>
+[[nodiscard]] constexpr auto pack_tdfa_value(const scan::tre::tdfa& tdfa) {
   packed_tdfa<state_count, register_count, initial_command_count,
-              command_count, final_command_count, tag_count>
+              command_count, final_command_count, tag_count, range_count,
+              reading_count>
       packed;
   packed.initial = tdfa.initial;
+  for (std::size_t reg :
+       std::views::iota(std::size_t{0}, tdfa.register_tag.size())) {
+    packed.register_tag[reg] = tdfa.register_tag[reg];
+  }
   std::ranges::transform(tdfa.initialize, packed.initialize.begin(),
                          pack_command);
-  std::ranges::for_each(
-      std::views::iota(std::size_t{0}, tdfa.states.size()),
-      [&](std::size_t state_index) {
-        const tre::tdfa_state& source = tdfa.states[state_index];
+  for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
+        const scan::tre::tdfa_state& source = tdfa.states[state_index];
         auto& target = packed.states[state_index];
         target.accepting_slot = source.accepting_slot.value_or(
-            packed_state<command_count,
-                         final_command_count>::not_accepting);
+            packed_state<command_count, final_command_count, range_count,
+                         tag_count, reading_count>::not_accepting);
+        target.reading_count = source.readings.size();
+        for (std::size_t reading :
+             std::views::iota(std::size_t{0}, source.readings.size())) {
+          for (std::size_t tag :
+               std::views::iota(std::size_t{0}, source.readings[reading].size())) {
+            target.readings[reading][tag] = source.readings[reading][tag];
+          }
+        }
         target.final_command_count = source.final_commands.size();
         std::ranges::transform(source.final_commands,
                                target.final_commands.begin(), pack_command);
-        std::ranges::for_each(source.transitions,
-                              [&](const tre::tdfa_transition& transition) {
-          std::ranges::for_each(
-              std::views::iota(std::size_t{0}, transition.symbols.size()) |
-                  std::views::filter([&](std::size_t symbol) {
-                    return transition.symbols[symbol];
-                  }),
-              [&](std::size_t symbol) {
-                auto& packed_transition = target.transitions[symbol];
-                packed_transition.target = transition.target;
-                packed_transition.command_count = transition.commands.size();
-                std::ranges::transform(transition.commands,
-                                       packed_transition.commands.begin(),
-                                       pack_command);
-              });
-        });
-      });
+        // Consecutive symbols taking the same transition become one range.
+        constexpr std::size_t none = std::numeric_limits<std::size_t>::max();
+        const std::array<std::size_t, 256> owner =
+            transition_of_symbol(source);
+        std::size_t previous = none;
+        for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256})) {
+              const std::size_t index = owner[symbol];
+              if (index == none) {
+                previous = none;
+                continue;
+              }
+              if (index == previous) {
+                target.ranges[target.range_count - 1].last =
+                    static_cast<unsigned char>(symbol);
+                continue;
+              }
+              const scan::tre::tdfa_transition& transition =
+                  source.transitions[index];
+              auto& range = target.ranges[target.range_count++];
+              range.first = static_cast<unsigned char>(symbol);
+              range.last = static_cast<unsigned char>(symbol);
+              range.target = transition.target;
+              range.command_count = transition.commands.size();
+              std::ranges::transform(transition.commands,
+                                     range.commands.begin(), pack_command);
+              previous = index;
+            }
+      }
   return packed;
 }
 
-template <class type, fixed_string format>
+template <class type, fixed_string format, bool allocate = true>
 [[nodiscard]] consteval auto pack_tdfa() {
-  constexpr packed_shape shape = compute_shape<type, format>();
+  constexpr packed_shape shape = compute_shape<type, format, allocate>();
   return pack_tdfa_value<shape.states, shape.registers,
                          shape.initial_commands, shape.maximum_commands,
-                         shape.maximum_final_commands,
-                         shape.tags>(build_tdfa<type, format>());
+                         shape.maximum_final_commands, shape.tags, shape.ranges,
+                         shape.readings>(build_tdfa<type, format, allocate>());
 }
+
+// Whether an automaton is built while the program runs rather than while it is
+// compiled.
+//
+// The compiled form is the point of this library: a pattern becomes code, and
+// the code costs nothing to run. It is paid for while compiling -- one
+// constant evaluation of the whole determiniser per pattern, and one
+// instantiation per state of the machine that walks it. Building a test suite
+// is the one job where that trade is the wrong way round, so it can be turned
+// around: the same determiniser, called as an ordinary function on first use,
+// and an interpreter over what it returns.
+#if defined(SCAN_AUTOMATA_AT_RUNTIME) && SCAN_AUTOMATA_AT_RUNTIME
+inline constexpr bool automata_at_runtime = true;
+#else
+inline constexpr bool automata_at_runtime = false;
+#endif
 
 template <class type, fixed_string format>
 inline constexpr auto packed_automaton = pack_tdfa<type, format>();
+
+// Built once, on first use. The determiniser is the same one the compiled form
+// evaluates while compiling; asked at run time it answers in microseconds.
+template <class type, fixed_string format, bool allocate = true>
+[[nodiscard]] inline const scan::tre::tdfa& runtime_automaton() {
+  static const scan::tre::tdfa built = build_tdfa<type, format, allocate>();
+  return built;
+}
+
+template <class type, fixed_string format>
+inline constexpr auto streaming_automaton = pack_tdfa<type, format, false>();
 
 template <fixed_string pattern>
 [[nodiscard]] consteval packed_shape compute_regex_shape() {
@@ -694,41 +1595,242 @@ template <fixed_string pattern>
 
 template <fixed_string pattern>
 [[nodiscard]] consteval auto pack_regex_tdfa() {
+  // One shape for every pattern, tags or none.
+  //
+  // A pattern without tags used to be packed as a cell for every symbol of
+  // every state -- two hundred and fifty-six of them a state, recovered back
+  // into runs by whoever walked it, once per instantiation. The runs are what
+  // both walks want and what the tagged shape already holds, so both are that
+  // shape now: fewer numbers to carry through the module, and one set of
+  // questions to ask of either.
   constexpr packed_shape shape = compute_regex_shape<pattern>();
-  const tre::tdfa tdfa = build_regex_tdfa<pattern>();
-  if constexpr (shape.tags == 0) {
-    packed_captureless_tdfa<shape.states> packed;
-    packed.initial = static_cast<typename decltype(packed)::state_type>(
-        tdfa.initial);
-    std::ranges::for_each(packed.transitions, [](auto& transitions) {
-      std::ranges::fill(transitions, decltype(packed)::reject);
-    });
-    std::ranges::for_each(
-        std::views::iota(std::size_t{0}, tdfa.states.size()),
-        [&](std::size_t state_index) {
-          const auto& source = tdfa.states[state_index];
-          packed.accepting[state_index] = source.accepting_slot.has_value();
-          std::ranges::for_each(
-              source.transitions, [&](const tre::tdfa_transition& transition) {
-                std::ranges::for_each(
-                    std::views::iota(std::size_t{0}, transition.symbols.size()) |
-                        std::views::filter([&](std::size_t symbol) {
-                          return transition.symbols[symbol];
-                        }),
-                    [&](std::size_t symbol) {
-                      packed.transitions[state_index][symbol] =
-                          static_cast<typename decltype(packed)::state_type>(
-                              transition.target);
-                    });
-              });
-        });
-    return packed;
+  const scan::tre::tdfa tdfa = build_regex_tdfa<pattern>();
+  return pack_tdfa_value<shape.states, shape.registers,
+                         shape.initial_commands, shape.maximum_commands,
+                         shape.maximum_final_commands, shape.tags,
+                         shape.ranges, shape.readings>(tdfa);
+}
+
+// Values built out of the groups a match left behind.
+//
+// This lived beside the format reader, which is the only thing that used it.
+// The pattern reader wants it too: where a group is written with the very
+// pattern a type declares for itself, the groups inside it are the type's own
+// values and the type is built from them -- no second automaton over the same
+// characters, and no reading of the same text twice.
+
+template <class type>
+[[nodiscard]] constexpr type parse_value(std::string_view text,
+                                         std::string_view parameters) {
+  using value_type = std::remove_cv_t<type>;
+  static_assert(requires { scanner_parse<value_type>(text); },
+                "scan::scanner<type> must provide parse(string_view)");
+  return scanner_parse<value_type>(text, parameters);
+}
+
+// Where a branch's mark stands, counting from the start of the variant: each
+// branch before it took a mark of its own and whatever its alternative reads.
+template <class type, std::size_t branch>
+[[nodiscard]] consteval std::size_t groups_before_branch() {
+  return []<std::size_t... which>(std::index_sequence<which...>) {
+    return (std::size_t{0} + ... +
+            (1 + groups_of<std::variant_alternative_t<which, type>>()));
+  }(std::make_index_sequence<branch>{});
+}
+
+// Whether a variant stands anywhere inside this output, at any depth. Where one
+// does, a group that took no part is the ordinary state of affairs rather than
+// a fault.
+template <class type>
+[[nodiscard]] consteval bool holds_a_variant() {
+  if constexpr (scanned_as_variant<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
   } else {
-    return pack_tdfa_value<shape.states, shape.registers,
-                           shape.initial_commands, shape.maximum_commands,
-                           shape.maximum_final_commands, shape.tags>(tdfa);
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              holds_a_variant<typename parts_of<type>::template at<field>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
+
+// Whether a list stands anywhere inside this output.
+//
+// A list is read by gathering, and it has to be: the positions a match leaves
+// behind hold the last turn round the loop and nothing else, so an output with
+// a list in it cannot be put together by reading them afterwards, however well
+// they can be pointed at. It goes to the machine that gathers as it goes, over
+// the very same characters.
+template <class type>
+[[nodiscard]] consteval bool holds_a_range() {
+  if constexpr (scanned_as_range<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... ||
+              holds_a_range<std::variant_alternative_t<which, type>>());
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_range<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// A leaf is read from its one group; a product is built from its fields, each
+// of which takes as many groups as it needs, in order. Nothing about the
+// nesting is written in the format: a structure of structures is spelled out
+// flat, because a product of products is flat.
+// The parameters come from the same spread the automaton was built from, so a
+// colon written at the place a value is read from reaches that value however
+// deeply it sits, and a format declared by a type is read against that type
+// here exactly as it was there.
+// What a leaf was given after the colon, where anything was. A format says it
+// per place; a pattern written by hand says nothing at all.
+template <class root, fixed_string format>
+struct format_parameters {
+  [[nodiscard]] static constexpr std::string_view at(std::size_t place) {
+    static constexpr auto spread = spread_of<root, format>();
+    return spread.parameters[place].view();
+  }
+};
+
+struct no_parameters {
+  [[nodiscard]] static constexpr std::string_view at(std::size_t) { return {}; }
+};
+
+template <class parameters, class type, std::size_t offset, std::size_t extent>
+[[nodiscard]] constexpr type build_value(
+    const std::array<std::string_view, extent>& groups) {
+  if constexpr (scanned_as_leaf<type>) {
+    return parse_value<std::remove_cv_t<type>>(groups[offset],
+                                               parameters::at(offset));
+  } else if constexpr (scanned_as_variant<type>) {
+    // Exactly one branch ran, and its mark says so: a mark that took part
+    // points into the subject, and the others point nowhere.
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
+      std::optional<type> made;
+      const auto take = [&]<std::size_t which>() {
+        constexpr std::size_t mark = offset + groups_before_branch<type, which>();
+        if (made || groups[mark].data() == nullptr) return;
+        using alternative = std::variant_alternative_t<which, type>;
+        made.emplace(std::in_place_index<which>,
+                     build_value<parameters, alternative, mark + 1>(groups));
+      };
+      (take.template operator()<branch>(), ...);
+      if (!made) throw scan_error("no branch of the format took the input");
+      return std::move(*made);
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
+  } else if constexpr (scanned_from_values<type>) {
+    // Made by the call it named, out of the values its places stood for.
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return scan::scanner<std::remove_cv_t<type>>::parse(
+          build_value<parameters, typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...);
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  } else {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return type{build_value<parameters,
+                              typename parts_of<type>::template at<index>,
+                              offset + groups_before_field<type, index>()>(
+          groups)...};
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+[[nodiscard]] constexpr bool is_regex_meta(char value) {
+  return std::string_view(".^$|()[]*+?{}\\").contains(value);
+}
+
+constexpr void append_literal(pattern_buffer<>& output, char value) {
+  if (is_regex_meta(value)) output.push_back('\\');
+  output.push_back(value);
+}
+
+[[nodiscard]] constexpr std::size_t find_capture_end(
+    std::string_view format, std::size_t position, std::size_t depth = 0) {
+  if (position == format.size()) throw "unterminated aggregate capture";
+  if (format[position] == '\\') {
+    return find_capture_end(format, position + 2, depth);
+  }
+  if (format[position] == '{') {
+    return find_capture_end(format, position + 1, depth + 1);
+  }
+  if (format[position] == '}') {
+    return depth == 0
+               ? position
+               : find_capture_end(format, position + 1, depth - 1);
+  }
+  return find_capture_end(format, position + 1, depth);
+}
+
+template <class type, fixed_string format, fixed_string opening,
+          std::size_t field_count>
+constexpr void append_aggregate_pattern(
+    pattern_buffer<>& output,
+    const std::array<std::string_view, field_count>& defaults,
+    std::size_t position = 0, std::size_t field = 0) {
+  const std::string_view text = format.view();
+  if (position == text.size()) {
+    if (field != field_count) throw "aggregate format field count mismatch";
+    return;
+  }
+  if (text[position] == '\\') {
+    if (position + 1 == text.size()) throw "dangling aggregate escape";
+    append_literal(output, text[position + 1]);
+    append_aggregate_pattern<type, format, opening>(output, defaults,
+                                                    position + 2, field);
+    return;
+  }
+  if (text[position] != '{') {
+    append_literal(output, text[position]);
+    append_aggregate_pattern<type, format, opening>(output, defaults,
+                                                    position + 1, field);
+    return;
+  }
+  if (field == field_count) throw "too many aggregate captures";
+  const std::size_t end = find_capture_end(text, position + 1);
+  output.append(opening.view());
+  if (end == position + 1 || text[position + 1] == ':') {
+    output.append(defaults[field]);
+  } else {
+    output.append(text.substr(position + 1, end - position - 1));
+  }
+  output.push_back(')');
+  append_aggregate_pattern<type, format, opening>(output, defaults, end + 1,
+                                                  field + 1);
+}
+
+template <class type, fixed_string format, fixed_string opening = "(?:">
+[[nodiscard]] consteval pattern_buffer<> make_aggregate_pattern() {
+  constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
+  constexpr auto parameters = field_parameters<format, field_count>();
+  constexpr auto pattern_storage = parameterized_patterns<type>(
+      parameters, std::make_index_sequence<field_count>{});
+  const auto defaults = pattern_views(pattern_storage);
+  pattern_buffer<> output;
+  append_aggregate_pattern<type, format, opening>(output, defaults);
+  return output;
+}
+
+
+// The same pattern, written so that the values are groups.
+//
+// What a type declares for itself is written to match and nothing else, so its
+// places are `(?:...)`: the format layer puts its own marks around them and
+// has no use for groups. A pattern written by hand has no marks, so where one
+// stands for a type the values have to be groups -- and this is that pattern.
+template <class type>
+[[nodiscard]] consteval pattern_buffer<> capturing_pattern() {
+  return make_aggregate_pattern<
+      std::remove_cv_t<type>,
+      scan::scanner<std::remove_cv_t<type>>::scan_format, "(">();
+}
+
 
 template <fixed_string pattern>
 inline constexpr auto regex_automaton = pack_regex_tdfa<pattern>();

@@ -20,9 +20,9 @@ struct conversion_spec {
                       });
   const auto width_length = static_cast<std::size_t>(std::ranges::distance(digits));
   std::size_t width = 0;
-  std::ranges::for_each(parameters.substr(0, width_length), [&](char value) {
+  for (char value : parameters.substr(0, width_length)) {
     width = width * 10 + static_cast<std::size_t>(value - '0');
-  });
+  }
   if (width_length != 0 && width == 0) throw "scan width must be positive";
   return {.width = width, .conversion = parameters.substr(width_length)};
 }
@@ -93,6 +93,69 @@ struct scanner<std::string> {
   [[nodiscard]] static constexpr std::string parse(
       std::string_view text, std::string_view) {
     return std::string(text);
+  }
+};
+
+// A field of characters with nowhere to grow.
+//
+// A machine reading a range as it comes has to gather each field as it arrives,
+// and gathering into a `std::string` asks an allocator for room. Where there is
+// no allocator -- and where what has to be kept is small even though what has
+// to be matched may not be -- the room is said in advance and the gathering
+// stops at the brim rather than reaching for more.
+//
+// What overflows is dropped and remembered as having overflowed, because the
+// alternative is either an allocation or a lie.
+template <std::size_t capacity>
+struct held {
+  std::array<char, capacity> storage{};
+  std::size_t length = 0;
+  bool overflowed = false;
+
+  [[nodiscard]] constexpr std::string_view view() const noexcept {
+    return {storage.data(), length};
+  }
+  [[nodiscard]] constexpr operator std::string_view() const noexcept {
+    return view();
+  }
+  constexpr void push_back(char value) {
+    if (length == capacity) {
+      overflowed = true;
+      return;
+    }
+    storage[length++] = value;
+  }
+};
+
+template <std::size_t capacity>
+struct scanner<held<capacity>> {
+  [[nodiscard]] static constexpr std::string_view pattern() { return ".*"; }
+  using state_type = held<capacity>;
+
+  [[nodiscard]] static constexpr state_type begin() { return {}; }
+  [[nodiscard]] static constexpr state_type begin(std::string_view) {
+    return {};
+  }
+  static constexpr void push(state_type& state, char value) {
+    state.push_back(value);
+  }
+  [[nodiscard]] static constexpr held<capacity> finish(state_type state) {
+    return state;
+  }
+
+  [[nodiscard]] static constexpr held<capacity> parse(std::string_view text) {
+    held<capacity> made;
+    for (char value : text) made.push_back(value);
+    return made;
+  }
+
+  [[nodiscard]] static constexpr auto pattern(std::string_view parameters) {
+    return scanner<std::string>::pattern(parameters);
+  }
+
+  [[nodiscard]] static constexpr held<capacity> parse(std::string_view text,
+                                                      std::string_view) {
+    return parse(text);
   }
 };
 
@@ -424,84 +487,18 @@ struct scanner<type> {
 
 namespace detail {
 
-[[nodiscard]] constexpr bool is_regex_meta(char value) {
-  return std::string_view(".^$|()[]*+?{}\\").contains(value);
-}
-
-constexpr void append_literal(pattern_buffer<>& output, char value) {
-  if (is_regex_meta(value)) output.push_back('\\');
-  output.push_back(value);
-}
-
-[[nodiscard]] constexpr std::size_t find_capture_end(
-    std::string_view format, std::size_t position, std::size_t depth = 0) {
-  if (position == format.size()) throw "unterminated aggregate capture";
-  if (format[position] == '\\') {
-    return find_capture_end(format, position + 2, depth);
-  }
-  if (format[position] == '{') {
-    return find_capture_end(format, position + 1, depth + 1);
-  }
-  if (format[position] == '}') {
-    return depth == 0
-               ? position
-               : find_capture_end(format, position + 1, depth - 1);
-  }
-  return find_capture_end(format, position + 1, depth);
-}
-
-template <class type, fixed_string format, std::size_t field_count>
-constexpr void append_aggregate_pattern(
-    pattern_buffer<>& output,
-    const std::array<std::string_view, field_count>& defaults,
-    std::size_t position = 0, std::size_t field = 0) {
-  const std::string_view text = format.view();
-  if (position == text.size()) {
-    if (field != field_count) throw "aggregate format field count mismatch";
-    return;
-  }
-  if (text[position] == '\\') {
-    if (position + 1 == text.size()) throw "dangling aggregate escape";
-    append_literal(output, text[position + 1]);
-    append_aggregate_pattern<type, format>(output, defaults, position + 2,
-                                           field);
-    return;
-  }
-  if (text[position] != '{') {
-    append_literal(output, text[position]);
-    append_aggregate_pattern<type, format>(output, defaults, position + 1,
-                                           field);
-    return;
-  }
-  if (field == field_count) throw "too many aggregate captures";
-  const std::size_t end = find_capture_end(text, position + 1);
-  output.append("(?:");
-  if (end == position + 1 || text[position + 1] == ':') {
-    output.append(defaults[field]);
-  } else {
-    output.append(text.substr(position + 1, end - position - 1));
-  }
-  output.push_back(')');
-  append_aggregate_pattern<type, format>(output, defaults, end + 1,
-                                         field + 1);
-}
-
-template <class type, fixed_string format>
-[[nodiscard]] consteval pattern_buffer<> make_aggregate_pattern() {
-  constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
-  constexpr auto parameters = field_parameters<format, field_count>();
-  constexpr auto pattern_storage = parameterized_patterns<type>(
-      parameters, std::make_index_sequence<field_count>{});
-  const auto defaults = pattern_views(pattern_storage);
-  pattern_buffer<> output;
-  append_aggregate_pattern<type, format>(output, defaults);
-  return output;
-}
-
 }  // namespace detail
 
 template <fixed_string format>
 struct aggregate_scanner {
+  // The format, said out loud, so that whatever reads this type can read it as
+  // a shape and not as a value: the places below stand for this type's fields,
+  // and a scan that knows that spreads them into its own automaton instead of
+  // matching the whole thing and taking it apart again afterwards. The members
+  // beneath still do the taking apart, for the paths that cannot spread -- an
+  // input that is read once and not looked at twice.
+  static constexpr auto scan_format = format;
+
   [[nodiscard]] constexpr auto pattern(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
     return detail::make_aggregate_pattern<type, format>();
@@ -509,6 +506,12 @@ struct aggregate_scanner {
 
   [[nodiscard]] constexpr auto begin(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
+    static_assert(
+        !requires { &scanner<type>::parse; },
+        "a type made by the call it named is read by spreading its format into "
+        "the automaton, which a range that is read once is not scanned by: "
+        "read it from something contiguous, or give the type a scanner that "
+        "gathers it a character at a time");
     return detail::stream_state<type, format>{};
   }
 
@@ -524,8 +527,7 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr auto parse(this const auto& self,
                                      std::string_view input) {
     auto state = self.begin();
-    std::ranges::for_each(input,
-                          [&](char value) { self.push(state, value); });
+    for (char value : input) { self.push(state, value); }
     return self.finish(std::move(state));
   }
 };
