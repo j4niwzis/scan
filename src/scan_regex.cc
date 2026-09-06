@@ -564,7 +564,7 @@ template <fixed_string pattern, unsigned char terminator>
 
 template <fixed_string pattern>
 [[nodiscard]] consteval detail::walk_shape head_shape() {
-  return {.head = true, .budget = chain_budget<pattern>()};
+  return {.longest = true, .budget = chain_budget<pattern>()};
 }
 
 // Whether the subject matched, and where the longest head ended for the walks
@@ -588,9 +588,13 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
   detail::gathers_nothing nothing;
   mark_type place{};
   if constexpr (std::is_pointer_v<cursor_type>) place = cursor;
+  // How many characters are known to be there: the subject was measured
+  // against the shortest match before the first one was read. A walk after a
+  // head was given no such promise -- the head may be shorter than the whole
+  // of what it was handed.
   return detail::run_continuation<automaton, shape, automaton.initial,
                                   shape.budget,
-                                  shape.longest_head
+                                  shape.head || shape.longest
                                       ? 0
                                       : minimum_match_length<pattern>(),
                                   mark_type>(cursor, last, place, registers,

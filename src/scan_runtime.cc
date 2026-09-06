@@ -674,13 +674,20 @@ struct walk_shape {
   bool by_terminator = false;
   unsigned char terminator = 0;
   // Answer where the machine stopped rather than whether the whole of the
-  // subject matched.
-  //
-  // Not the longest match: this is a regular expression and not a lexer, so
-  // the machine takes what it takes and stops where it can go no further. If
-  // it stopped in a state that accepts, that is the head; if it did not, there
-  // is no head. Nothing is remembered along the way and nothing is given back.
+  // subject matched: the machine takes what it takes and stops where it can go
+  // no further, and if it stopped in a state that accepts, that is the head.
+  // Nothing is remembered along the way -- which is what reading a subject
+  // that arrives as it is read has always done.
   bool head = false;
+  // Answer where the machine last stood in a state that accepts.
+  //
+  // Greedy repetition can walk past a match and die: `(?:ab)+` on "ababa"
+  // takes four characters, steps onto the fifth and stops with nothing. That
+  // the subject begins with the pattern is still true, and this is what
+  // answers it. Only the place is remembered -- what the registers held there
+  // is not, so whoever wants the pieces of such a match reads them out of the
+  // head afterwards.
+  bool longest = false;
   // How far the chain of states is written out before the next one is reached
   // by a call.
   std::size_t budget = 0;
@@ -795,6 +802,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       automaton.states[state].accepting_slot !=
       packed_state<0, 0, 0>::not_accepting;
 
+  if constexpr (shape.longest && accepts_here) {
+    best.matched = true;
+    best.at = cursor;
+  }
   // Over the run this state keeps, in vectors -- only where the characters lie
   // in a row and nobody is gathering them, because what is stepped over is not
   // read. A head may be read this way too: what is stepped over is a run that
@@ -802,6 +813,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   if constexpr (shape.in_words && by_place && !gathers &&
                 runs_in_place<automaton, state>()) {
     cursor = skip_class<staying_of<automaton, state>()>(cursor, last);
+    if constexpr (shape.longest && accepts_here) best.at = cursor;
   }
   while (true) {
     // A character that is certainly there is read without asking whether it
@@ -836,6 +848,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         into.template moved<state, state>(stayed, static_cast<char>(symbol),
                                           registers, place);
       }
+      if constexpr (shape.longest && accepts_here) best.at = cursor;
       continue;
     }
     // Tested after the class, not before: a terminator no state takes cannot
@@ -860,7 +873,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   if constexpr (!accepts_here) {
     return best.matched;
   } else {
-    if constexpr (shape.head) {
+    if constexpr (shape.head || shape.longest) {
       best.matched = true;
       best.at = cursor;
     }
