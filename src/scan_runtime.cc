@@ -1906,6 +1906,26 @@ template <class root, class type, std::size_t offset, class reading_type,
                                                               registers));
     }
     return made;
+  } else if constexpr (scanned_as_variant<type>) {
+    // Exactly one branch ran, and its mark says so: the mark of the branch
+    // that took part was opened, and the others never were. The same question
+    // the subject that can be pointed at answers by whether the group points
+    // anywhere.
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
+      std::optional<type> made;
+      const auto take = [&]<std::size_t which>() {
+        constexpr std::size_t mark =
+            offset + groups_before_branch<type, which>();
+        if (made || registers[reading[mark * 2]] < 0) return;
+        using alternative = std::variant_alternative_t<which, type>;
+        made.emplace(std::in_place_index<which>,
+                     finish_value<root, alternative, mark + 1>(
+                         reading, states, registers));
+      };
+      (take.template operator()<branch>(), ...);
+      if (!made) throw scan_error("no branch of the format took the input");
+      return std::move(*made);
+    }(std::make_index_sequence<std::variant_size_v<type>>{});
   } else if constexpr (scanned_from_values<type>) {
     return finish_by_call<root, type, offset>(
         reading, states, registers,

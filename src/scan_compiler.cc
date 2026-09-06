@@ -730,11 +730,32 @@ struct kind_is {
   using kind = held_type;
 };
 
+// Which branch of a variant a group falls in, and where within it: nothing
+// means the mark that stands for the branch itself, and anything after it
+// belongs to what that branch reads.
+template <class type>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> branch_holding(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... which>(
+                              std::index_sequence<which...>) {
+    return std::array<std::size_t, sizeof...(which)>{
+        (1 + groups_of<std::variant_alternative_t<which, type>>())...};
+  }(std::make_index_sequence<std::variant_size_v<type>>{});
+  for (std::size_t branch = 0; branch < counts.size(); ++branch) {
+    if (index < counts[branch]) return {branch, index};
+    index -= counts[branch];
+  }
+  throw "group index past the end of the variant";
+}
+
 // Which type gathers the value at this group. A list gathers at the group that
 // stands for the list itself -- the first of the ones it takes -- and its
 // element gathers at the ones after it, over and over.
 template <class subject, std::size_t index,
-          int = scanned_as_leaf<subject> ? 0 : (scanned_as_range<subject> ? 1 : 2)>
+          int = scanned_as_leaf<subject> ? 0
+                : scanned_as_range<subject> ? 1
+                : scanned_as_variant<subject> ? 3
+                                              : 2>
 struct leaf_at;
 template <class subject, std::size_t index>
 struct leaf_at<subject, index, 0> {
@@ -752,6 +773,17 @@ struct leaf_at<subject, index, 2> {
   static constexpr auto where = field_holding<subject>(index);
   using next = typename parts_of<subject>::template at<where.first>;
   using kind = typename leaf_at<next, where.second>::kind;
+};
+
+// A variant is not a product and cannot be opened up like one: its groups are
+// a mark for each branch, followed by whatever that branch reads.
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 3> {
+  static constexpr auto where = branch_holding<subject>(index);
+  using branch = std::variant_alternative_t<where.first, subject>;
+  using kind = typename std::conditional_t<
+      where.second == 0, kind_is<branch_mark>,
+      leaf_at<branch, (where.second == 0 ? 0 : where.second - 1)>>::kind;
 };
 
 template <class subject, std::size_t index>

@@ -45,6 +45,23 @@ struct fixed_string {
 template <class type>
 struct scanner;
 
+// A group that is nothing but a mark.
+//
+// A variant standing in a format takes one group for each branch, around what
+// that branch reads, and which of those took part is how the reading says
+// which branch the input went down. Nothing is read out of the mark itself, so
+// nothing gathers it and nothing is kept.
+namespace detail {
+struct branch_mark {};
+}  // namespace detail
+
+template <>
+struct scanner<detail::branch_mark> {
+  static constexpr int begin() { return 0; }
+  static constexpr void push(int&, char) {}
+  static constexpr detail::branch_mark finish(int) { return {}; }
+};
+
 template <class customization>
 struct scanner_target;
 
