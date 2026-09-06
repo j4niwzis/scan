@@ -2079,52 +2079,6 @@ class stream_state {
   std::ptrdiff_t position_ = 0;
 };
 
-// Whether stopping where the machine stops can be the wrong place.
-//
-// Reading an input that is gone once it is read, there is no going back: what
-// the machine has taken, it has taken. That is right whenever leaving a state
-// that accepts cannot land anywhere that does not -- then being unable to go on
-// means the pattern ended here, and here is where it ended. Where a state that
-// accepts leads to one that does not, a pattern like a number with an optional
-// fraction can walk past its own ending and find nothing, and the answer would
-// be a place already thrown away. Those are read from something that can be
-// looked at twice.
-template <auto& automaton>
-[[nodiscard]] consteval bool can_walk_past_the_end() {
-  constexpr std::size_t count = automaton.states.size();
-  const auto accepts = [](std::size_t state) {
-    return automaton.states[state].accepting_slot !=
-           packed_state<0, 0, 0>::not_accepting;
-  };
-  std::array<bool, count> beyond{};
-  for (std::size_t state = 0; state < count; ++state) {
-    if (!accepts(state)) continue;
-    const auto& packed = automaton.states[state];
-    for (std::size_t index = 0; index < packed.range_count; ++index) {
-      if (packed.ranges[index].target != packed.ranges[index].reject) {
-        beyond[packed.ranges[index].target] = true;
-      }
-    }
-  }
-  for (bool changed = true; changed;) {
-    changed = false;
-    for (std::size_t state = 0; state < count; ++state) {
-      if (!beyond[state]) continue;
-      const auto& packed = automaton.states[state];
-      for (std::size_t index = 0; index < packed.range_count; ++index) {
-        const std::size_t target = packed.ranges[index].target;
-        if (target == packed.ranges[index].reject || beyond[target]) continue;
-        beyond[target] = true;
-        changed = true;
-      }
-    }
-  }
-  for (std::size_t state = 0; state < count; ++state) {
-    if (beyond[state] && !accepts(state)) return true;
-  }
-  return false;
-}
-
 // Which gatherings a group is added to where the machine stands.
 //
 // A state stands in several readings at once and they can share a register, so
@@ -2390,15 +2344,18 @@ struct taken_ahead {
 // By iterators rather than by a range, so that whoever holds them can go on
 // from where this stopped -- which is what reading one match after another off
 // a stream is.
+//
+// Nothing is refused here, and nothing is walked back. A head is where the
+// machine stopped and not the furthest place it ever accepted, so there is no
+// place to return to: it goes while it can go, and where it stops away from an
+// accepting state there is no match at all. That is the same answer, character
+// for character, that a subject which can be pointed at gives -- the only
+// thing this has to be careful about is the character that ended the record,
+// which is read and handed back rather than lost.
 template <class type, fixed_string format, class iterator_type,
           class sentinel_type>
 [[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
     iterator_type& first, sentinel_type last) {
-  static_assert(
-      !can_walk_past_the_end<streaming_automaton<type, format>>(),
-      "this pattern can walk past its own ending, and an input read once "
-      "cannot be walked back: scan the head of something that can be looked at "
-      "twice");
   stream_state<type, format> state;
   std::optional<char> stopped;
   while (first != last) {
