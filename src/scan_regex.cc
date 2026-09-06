@@ -6,64 +6,101 @@ export import scan.runtime;
 
 export namespace scan {
 
-class regex_submatch {
+// A piece of the subject a match stood on, however the subject is held.
+//
+// Contiguous input is pointed at -- a view of it costs nothing and outlives
+// the match, because the subject does. Input that is walked by iterators is
+// held as the pair of them. Input that can only be read once is held as text
+// of its own: there is nothing left behind to point at.
+template <class holder>
+class basic_submatch {
  public:
-  constexpr regex_submatch() = default;
-  constexpr regex_submatch(std::string_view view, bool matched = true)
-      : view_(view), matched_(matched) {}
+  constexpr basic_submatch() = default;
+  constexpr basic_submatch(holder held, bool matched = true)
+      : held_(std::move(held)), matched_(matched) {}
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return matched_;
   }
-  [[nodiscard]] constexpr std::string_view to_view() const noexcept {
-    return view_;
+
+  [[nodiscard]] constexpr const holder& held() const noexcept { return held_; }
+
+  [[nodiscard]] constexpr auto begin() const { return std::ranges::begin(held_); }
+  [[nodiscard]] constexpr auto end() const { return std::ranges::end(held_); }
+
+  [[nodiscard]] constexpr std::size_t size() const {
+    return static_cast<std::size_t>(std::ranges::size(held_));
   }
-  [[nodiscard]] constexpr const char* data() const noexcept {
-    return view_.data();
+
+  // Only where the characters lie in a row: a view has to point at something
+  // that is already there, and a subject read once is not.
+  [[nodiscard]] constexpr auto data() const
+    requires std::ranges::contiguous_range<const holder&>
+  {
+    return std::ranges::data(held_);
   }
-  [[nodiscard]] constexpr std::size_t size() const noexcept {
-    return view_.size();
+
+  [[nodiscard]] constexpr std::string_view to_view() const
+    requires std::ranges::contiguous_range<const holder&>
+  {
+    return std::string_view(std::ranges::data(held_),
+                            static_cast<std::size_t>(std::ranges::size(held_)));
   }
-  [[nodiscard]] constexpr operator std::string_view() const noexcept {
-    return view_;
+
+  [[nodiscard]] constexpr operator std::string_view() const
+    requires std::ranges::contiguous_range<const holder&>
+  {
+    return to_view();
   }
 
  private:
-  std::string_view view_;
+  holder held_{};
   bool matched_ = false;
 };
 
-template <std::size_t capture_count>
-class regex_result {
+using regex_submatch = basic_submatch<std::string_view>;
+
+template <class holder, std::size_t capture_count>
+class basic_result {
   struct nothing {};
   using captures_type =
       std::conditional_t<capture_count == 0, nothing,
-                         std::array<regex_submatch, capture_count>>;
+                         std::array<basic_submatch<holder>, capture_count>>;
 
  public:
-  constexpr regex_result() = default;
+  constexpr basic_result() = default;
 
-  constexpr regex_result(regex_submatch whole, captures_type captures)
-      : whole_(whole), captures_(captures) {}
+  constexpr basic_result(basic_submatch<holder> whole, captures_type captures)
+      : whole_(std::move(whole)), captures_(std::move(captures)) {}
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return static_cast<bool>(whole_);
   }
-  [[nodiscard]] constexpr std::string_view to_view() const noexcept {
-    return whole_.to_view();
+  [[nodiscard]] constexpr const basic_submatch<holder>& whole() const noexcept {
+    return whole_;
   }
-  [[nodiscard]] constexpr const char* data() const noexcept {
+  [[nodiscard]] constexpr auto begin() const { return whole_.begin(); }
+  [[nodiscard]] constexpr auto end() const { return whole_.end(); }
+  [[nodiscard]] constexpr std::size_t size() const { return whole_.size(); }
+
+  [[nodiscard]] constexpr auto data() const
+    requires std::ranges::contiguous_range<const holder&>
+  {
     return whole_.data();
   }
-  [[nodiscard]] constexpr std::size_t size() const noexcept {
-    return whole_.size();
+  [[nodiscard]] constexpr std::string_view to_view() const
+    requires std::ranges::contiguous_range<const holder&>
+  {
+    return whole_.to_view();
   }
-  [[nodiscard]] constexpr operator std::string_view() const noexcept {
+  [[nodiscard]] constexpr operator std::string_view() const
+    requires std::ranges::contiguous_range<const holder&>
+  {
     return to_view();
   }
 
   template <std::size_t index>
-  [[nodiscard]] constexpr regex_submatch get() const {
+  [[nodiscard]] constexpr basic_submatch<holder> get() const {
     if constexpr (index == 0) {
       return whole_;
     } else if constexpr (index > capture_count) {
@@ -81,9 +118,12 @@ class regex_result {
   // `data()` has something to point at, which here is another twenty-four
   // bytes on a result of twenty-four -- zeroed on every match that never had a
   // capture to put there.
-  regex_submatch whole_;
+  basic_submatch<holder> whole_;
   [[no_unique_address]] captures_type captures_{};
 };
+
+template <std::size_t capture_count>
+using regex_result = basic_result<std::string_view, capture_count>;
 
 namespace detail {
 
@@ -591,6 +631,99 @@ run_inlined_sentinel_continuation(const char* cursor, const char* end) {
   }
 }
 
+// The machine walked over any pair of iterators.
+//
+// The walks above take a pointer and give a pointer back, and everything they
+// do -- the vectors, the terminator, the chain written out without calls --
+// rests on that. This one rests on nothing: it asks the same questions of the
+// same automaton, one character at a time, and works wherever a character can
+// be read from. Contiguous input never comes here.
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel>
+[[nodiscard]] constexpr bool run_general(iterator cursor, sentinel last);
+
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel, std::size_t which = 0>
+[[nodiscard]] constexpr bool dispatch_general(unsigned char symbol,
+                                              iterator cursor, sentinel last) {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  if constexpr (which == targets.size) {
+    return false;
+  } else if constexpr (targets.values[which] == state) {
+    return dispatch_general<pattern, state, iterator, sentinel, which + 1>(
+        symbol, cursor, last);
+  } else {
+    constexpr auto target = targets.values[which];
+    if (moves_to<pattern, state, target>(symbol)) {
+      return run_general<pattern, target>(cursor, last);
+    }
+    return dispatch_general<pattern, state, iterator, sentinel, which + 1>(
+        symbol, cursor, last);
+  }
+}
+
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel>
+[[nodiscard]] constexpr bool run_general(iterator cursor, sentinel last) {
+  while (cursor != last) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor);
+    ++cursor;
+    if (is_self_transition<pattern, state>(symbol)) continue;
+    return dispatch_general<pattern, state>(symbol, cursor, last);
+  }
+  return regex_automaton<pattern>.accepting[state];
+}
+
+// The longest head, over any pair of iterators. Where nothing was accepted the
+// answer is empty.
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel>
+[[nodiscard]] constexpr std::optional<iterator> run_general_head(
+    iterator cursor, sentinel last);
+
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel, std::size_t which = 0>
+[[nodiscard]] constexpr std::optional<iterator> dispatch_general_head(
+    unsigned char symbol, iterator cursor, sentinel last,
+    std::optional<iterator> best) {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  if constexpr (which == targets.size) {
+    return best;
+  } else if constexpr (targets.values[which] == state) {
+    return dispatch_general_head<pattern, state, iterator, sentinel,
+                                 which + 1>(symbol, cursor, last,
+                                            std::move(best));
+  } else {
+    constexpr auto target = targets.values[which];
+    if (moves_to<pattern, state, target>(symbol)) {
+      auto found = run_general_head<pattern, target>(cursor, last);
+      return found ? found : best;
+    }
+    return dispatch_general_head<pattern, state, iterator, sentinel,
+                                 which + 1>(symbol, cursor, last,
+                                            std::move(best));
+  }
+}
+
+template <fixed_string pattern, std::size_t state, class iterator,
+          class sentinel>
+[[nodiscard]] constexpr std::optional<iterator> run_general_head(
+    iterator cursor, sentinel last) {
+  std::optional<iterator> best;
+  if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+  while (cursor != last) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor);
+    if (!is_self_transition<pattern, state>(symbol)) {
+      ++cursor;
+      return dispatch_general_head<pattern, state>(symbol, cursor, last,
+                                                   std::move(best));
+    }
+    ++cursor;
+    if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+  }
+  return best;
+}
+
 template <fixed_string pattern>
 using regex_result_for =
     regex_result<regex_automaton<pattern>.tag_count / 2>;
@@ -783,29 +916,191 @@ template <fixed_string pattern>
 
 }  // namespace detail
 
-template <fixed_string pattern>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr auto match(
-    std::string_view input) {
-  return detail::regex_match<pattern>(input);
+namespace detail {
+
+template <class range_type>
+concept forward_char_range =
+    std::ranges::forward_range<range_type> &&
+    std::same_as<std::ranges::range_value_t<range_type>, char> &&
+    !contiguous_char_range<range_type>;
+
+template <class range_type>
+concept read_once_char_range =
+    std::ranges::input_range<range_type> &&
+    std::same_as<std::ranges::range_value_t<range_type>, char> &&
+    !std::ranges::forward_range<range_type>;
+
+// A subject that can only be read once is read into text of its own, and
+// everything after that is the ordinary reading of contiguous characters --
+// with the answers owning what they stood on, because there is nothing else
+// left to point at.
+template <class held_type, class range_type>
+[[nodiscard]] constexpr held_type read_once(range_type&& input) {
+  held_type held;
+  auto cursor = std::ranges::begin(input);
+  const auto last = std::ranges::end(input);
+  for (; cursor != last; ++cursor) held.push_back(*cursor);
+  return held;
 }
+
+template <class range_type>
+using walked_holder =
+    std::ranges::subrange<std::ranges::iterator_t<range_type>,
+                          std::ranges::iterator_t<range_type>>;
+
+}  // namespace detail
+
+// The whole subject, matched.
+//
+// Three subjects and three answers. Characters that lie in a row are pointed
+// at, and the match is the fast walk over them. Characters reached by walking
+// are held as the pair of iterators they lie between, and the match is the
+// plain walk of the same automaton. Characters that can only be read once are
+// read into text of their own, and the answer owns it -- there is nothing left
+// behind to point at.
+template <fixed_string pattern, class held_type = std::string>
+struct match_closure
+    : std::ranges::range_adaptor_closure<match_closure<pattern, held_type>> {
+  // Where the answers are put, said rather than taken as it comes. What is
+  // named here is what a subject read once is read into, and what its pieces
+  // are handed back as.
+  template <class other>
+  [[nodiscard]] constexpr match_closure<pattern, other> into() const {
+    return {};
+  }
+
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return detail::regex_match<pattern>(std::string_view(
+        std::ranges::data(input), std::ranges::size(input)));
+  }
+
+  template <detail::forward_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    static_assert(detail::regex_automaton<pattern>.tag_count == 0,
+                  "a pattern that captures wants the subject in one piece: "
+                  "read it into a string first");
+    using holder = detail::walked_holder<range_type>;
+    const auto first = std::ranges::begin(input);
+    const auto last = std::ranges::end(input);
+    if (!detail::run_general<pattern, detail::regex_automaton<pattern>.initial>(first,
+                                                                       last)) {
+      return basic_result<holder, 0>{};
+    }
+    return basic_result<holder, 0>{
+        basic_submatch<holder>(holder(first, std::ranges::next(first, last))),
+        {}};
+  }
+
+  template <detail::read_once_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    held_type held = detail::read_once<held_type>(input);
+    const bool matched = static_cast<bool>(detail::regex_match<pattern>(
+        std::string_view(held.data(), held.size())));
+    if (!matched) return basic_result<held_type, 0>{};
+    return basic_result<held_type, 0>{
+        basic_submatch<held_type>(std::move(held)), {}};
+  }
+};
+
+template <fixed_string pattern>
+inline constexpr match_closure<pattern> match{};
+
+template <fixed_string pattern, unsigned char sentinel = 0,
+          class held_type = std::string>
+struct match_sentinel_closure
+    : std::ranges::range_adaptor_closure<
+          match_sentinel_closure<pattern, sentinel, held_type>> {
+  template <class other>
+  [[nodiscard]] constexpr match_sentinel_closure<pattern, sentinel, other>
+  into() const {
+    return {};
+  }
+
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return detail::regex_match_sentinel<pattern, sentinel>(std::string_view(
+        std::ranges::data(input), std::ranges::size(input)));
+  }
+
+  // A terminator is what saves the walk a comparison, and a subject walked by
+  // iterators has none to promise -- so these read it as any other subject.
+  template <detail::forward_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return match_closure<pattern, held_type>{}(std::forward<range_type>(input));
+  }
+
+  template <detail::read_once_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return match_closure<pattern, held_type>{}(std::forward<range_type>(input));
+  }
+};
 
 template <fixed_string pattern, unsigned char sentinel = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr auto match_sentinel(
-    std::string_view input) {
-  return detail::regex_match_sentinel<pattern, sentinel>(input);
-}
+inline constexpr match_sentinel_closure<pattern, sentinel> match_sentinel{};
+
+// The head of the subject the pattern takes.
+template <fixed_string pattern, class held_type = std::string>
+struct starts_with_closure
+    : std::ranges::range_adaptor_closure<
+          starts_with_closure<pattern, held_type>> {
+  template <class other>
+  [[nodiscard]] constexpr starts_with_closure<pattern, other> into() const {
+    return {};
+  }
+
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return detail::regex_starts_with<pattern>(std::string_view(
+        std::ranges::data(input), std::ranges::size(input)));
+  }
+
+  template <detail::forward_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    static_assert(detail::regex_automaton<pattern>.tag_count == 0,
+                  "a pattern that captures wants the subject in one piece: "
+                  "read it into a string first");
+    using holder = detail::walked_holder<range_type>;
+    const auto first = std::ranges::begin(input);
+    const auto best =
+        detail::run_general_head<pattern, detail::regex_automaton<pattern>.initial>(
+            first, std::ranges::end(input));
+    if (!best) return basic_result<holder, 0>{};
+    return basic_result<holder, 0>{
+        basic_submatch<holder>(holder(first, *best)), {}};
+  }
+
+  template <detail::read_once_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    held_type held = detail::read_once<held_type>(input);
+    const auto found = detail::regex_starts_with<pattern>(
+        std::string_view(held.data(), held.size()));
+    if (!found) return basic_result<held_type, 0>{};
+    held_type head;
+    for (const char letter : found.to_view()) head.push_back(letter);
+    return basic_result<held_type, 0>{
+        basic_submatch<held_type>(std::move(head)), {}};
+  }
+};
 
 template <fixed_string pattern>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr auto starts_with(
-    std::string_view input) {
-  return detail::regex_starts_with<pattern>(input);
-}
+inline constexpr starts_with_closure<pattern> starts_with{};
+
+// The leftmost match. Only over characters that are already all there: finding
+// it asks the subject about places it has been past, which a subject that can
+// only be read once cannot answer.
+template <fixed_string pattern>
+struct search_closure
+    : std::ranges::range_adaptor_closure<search_closure<pattern>> {
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return detail::regex_search<pattern>(std::string_view(
+        std::ranges::data(input), std::ranges::size(input)));
+  }
+};
 
 template <fixed_string pattern>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr auto search(
-    std::string_view input) {
-  return detail::regex_search<pattern>(input);
-}
+inline constexpr search_closure<pattern> search{};
 
 // One match after another, found as they are asked for.
 //
