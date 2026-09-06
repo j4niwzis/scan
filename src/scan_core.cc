@@ -2,6 +2,18 @@ export module scan.core;
 
 import std;
 
+export namespace scan::detail {
+
+// An input whose characters lie in a row and whose length is known, which is
+// what a view of a subject is made from.
+template <class range_type>
+concept contiguous_char_range =
+    std::ranges::contiguous_range<range_type> &&
+    std::ranges::sized_range<range_type> &&
+    std::same_as<std::ranges::range_value_t<range_type>, char>;
+
+}  // namespace scan::detail
+
 export namespace scan {
 
 template <std::size_t extent>

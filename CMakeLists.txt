@@ -176,7 +176,8 @@ set(scan_tests
   list_test
   list_shape_test
   list_own_test
-  expected_test)
+  expected_test
+  piped_test)
 foreach(one IN LISTS scan_tests)
   add_executable(${one} tests/${one}.cc)
   target_link_libraries(${one} PRIVATE scan gtest_main)

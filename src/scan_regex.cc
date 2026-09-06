@@ -868,21 +868,31 @@ class search_view {
   std::string_view input_;
 };
 
+// Said as a name rather than called, so that it can be either.
+//
+// Each of these is an object with a call in it, and one that the pipe of the
+// ranges library knows how to hand a subject to. `search_all<p>(text)` is the
+// call; `text | search_all<p>` is the same thing said the other way round, and
+// both come from writing it once.
 template <fixed_string pattern>
-[[nodiscard]] constexpr search_view<pattern> search_all(
-    std::string_view input) {
-  return search_view<pattern>(input);
-}
+struct search_all_closure
+    : std::ranges::range_adaptor_closure<search_all_closure<pattern>> {
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr search_view<pattern> operator()(
+      range_type&& input) const {
+    return search_view<pattern>(std::string_view(std::ranges::data(input),
+                                                 std::ranges::size(input)));
+  }
+};
 
 template <fixed_string pattern>
-[[nodiscard]] constexpr search_view<pattern> iterator(std::string_view input) {
-  return search_all<pattern>(input);
-}
+inline constexpr search_all_closure<pattern> search_all{};
 
 template <fixed_string pattern>
-[[nodiscard]] constexpr search_view<pattern> tokenize(std::string_view input) {
-  return search_all<pattern>(input);
-}
+inline constexpr search_all_closure<pattern> iterator{};
+
+template <fixed_string pattern>
+inline constexpr search_all_closure<pattern> tokenize{};
 
 // The pieces between the matches, found as they are asked for.
 template <fixed_string pattern>
@@ -946,15 +956,22 @@ class split_view {
 };
 
 template <fixed_string pattern>
-[[nodiscard]] constexpr split_view<pattern> split(std::string_view input) {
-  return split_view<pattern>(input);
-}
+struct split_closure
+    : std::ranges::range_adaptor_closure<split_closure<pattern>> {
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr split_view<pattern> operator()(
+      range_type&& input) const {
+    return split_view<pattern>(std::string_view(std::ranges::data(input),
+                                                std::ranges::size(input)));
+  }
+};
+
+template <fixed_string pattern>
+inline constexpr split_closure<pattern> split{};
 
 template <fixed_string pattern>
 [[deprecated("use search_all")]]
-[[nodiscard]] constexpr search_view<pattern> range(std::string_view input) {
-  return search_all<pattern>(input);
-}
+inline constexpr search_all_closure<pattern> range{};
 
 #undef SCAN_REGEX_FORCE_INLINE
 

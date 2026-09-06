@@ -233,12 +233,6 @@ class streaming_result {
   range_type input_;
 };
 
-template <class range_type>
-concept contiguous_char_range =
-    std::ranges::contiguous_range<range_type> &&
-    std::ranges::sized_range<range_type> &&
-    std::same_as<std::ranges::range_value_t<range_type>, char>;
-
 
 }  // namespace scan::detail
 
@@ -643,24 +637,36 @@ class each_stream_scan {
   range_type input_;
 };
 
-// One match after another, off a contiguous input.
-template <fixed_string format, detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto each(range_type&& input) {
-  return each_scan<format>(std::string_view(std::ranges::data(input),
-                                            std::ranges::size(input)));
-}
+// One match after another, off a contiguous input or off one that is read as
+// it comes.
+//
+// Said as a name rather than called, so that it can be either: `each<f>(text)`
+// is the call, `text | each<f>` is the same thing said the other way round,
+// and the type each of them hands back is asked for the same way --
+// `.of<type>()`.
+template <fixed_string format>
+struct each_closure : std::ranges::range_adaptor_closure<each_closure<format>> {
+  template <detail::contiguous_char_range range_type>
+    requires(std::is_lvalue_reference_v<range_type&&> ||
+             std::ranges::borrowed_range<range_type>)
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    return each_scan<format>(std::string_view(std::ranges::data(input),
+                                              std::ranges::size(input)));
+  }
 
-// And off one that is read as it comes.
-template <fixed_string format, std::ranges::input_range range_type>
-  requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
-           (!detail::contiguous_char_range<range_type> ||
-            (!std::is_lvalue_reference_v<range_type&&> &&
-             !std::ranges::borrowed_range<range_type>))
-[[nodiscard]] constexpr auto each(range_type&& input) {
-  auto view = std::views::all(std::forward<range_type>(input));
-  return each_stream_scan<format, decltype(view)>(std::move(view));
-}
+  template <std::ranges::input_range range_type>
+    requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
+             (!detail::contiguous_char_range<range_type> ||
+              (!std::is_lvalue_reference_v<range_type&&> &&
+               !std::ranges::borrowed_range<range_type>))
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    auto view = std::views::all(std::forward<range_type>(input));
+    return each_stream_scan<format, decltype(view)>(std::move(view));
+  }
+};
+
+template <fixed_string format>
+inline constexpr each_closure<format> each{};
 
 // The head of the input that the pattern takes, and what follows it.
 template <fixed_string format, detail::contiguous_char_range range_type>
