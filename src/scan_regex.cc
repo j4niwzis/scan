@@ -1533,20 +1533,21 @@ struct collected_match_closure
         found, std::make_index_sequence<sizeof...(collectors)>{});
   }
 
-  // Fed a character at a time, with each character going to the collector of
-  // whatever group is open when it arrives.
+  // Walked by the same code that walks characters in a row, with the
+  // collectors gathering as it goes.
   //
-  // Nothing is kept but what is asked for: a group collected into a number
-  // keeps a number, and the subject is never held anywhere. What used to
-  // happen here was reading all of it into a string, walking that, and then
-  // handing pieces of it to the collectors -- room for the whole subject to
-  // build values that mostly do not want it.
+  // Nothing is kept but what is asked for: a group collected into a number is
+  // a number being read, and the subject is never held anywhere.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
     constexpr const auto& automaton = detail::regex_automaton<pattern>;
-    using holder = held_type;
+    // The whole of the match is not kept: there is nothing left behind to
+    // point at, and nobody asked for it -- what was asked for is what the
+    // collectors say. So the type says so too, and asking for the text of the
+    // whole match here does not compile rather than coming back empty.
+    using holder = skipped;
     using result_type =
-        typed_result<holder, detail::collected_type<collectors, holder>...>;
+        typed_result<holder, detail::collected_type<collectors, held_type>...>;
 
     std::array<std::ptrdiff_t, automaton.register_count> registers{};
     std::ranges::fill(registers, scan::tre::negative_tag);
@@ -1554,34 +1555,80 @@ struct collected_match_closure
                              automaton.initialize.size(), registers,
                              std::ptrdiff_t{0});
     auto states = beginning(std::make_index_sequence<sizeof...(collectors)>{});
+    gathering_into<decltype(states)> into(*this, states);
 
-    std::size_t here = automaton.initial;
-    std::ptrdiff_t position = 0;
-    held_type whole;
     auto cursor = std::ranges::begin(input);
-    const auto last = std::ranges::end(input);
-    for (; cursor != last; ++cursor) {
-      const unsigned char symbol = static_cast<unsigned char>(*cursor);
-      const std::size_t run = detail::run_taken<detail::regex_automaton<pattern>>(here, symbol);
-      if (run == detail::no_run) return result_type{};
-      const auto& taken = automaton.states[here].ranges[run];
-      detail::execute_commands(taken.commands, taken.command_count, registers,
-                               ++position);
-      here = taken.target;
-      whole.push_back(static_cast<char>(symbol));
-      offer(states, here, registers, static_cast<char>(symbol),
-            std::make_index_sequence<sizeof...(collectors)>{});
-    }
-    if (automaton.states[here].accepting_slot ==
-        detail::packed_state<0, 0, 0>::not_accepting) {
+    std::ptrdiff_t position = 0;
+    if (!detail::run_gathering_continuation<automaton, automaton.initial>(
+            cursor, std::ranges::end(input), registers, position, into)) {
       return result_type{};
     }
     return result_type{
-        basic_submatch<holder>(std::move(whole)),
+        basic_submatch<holder>(skipped{}),
         finishing(std::move(states),
                   std::make_index_sequence<sizeof...(collectors)>{})};
   }
 
+
+  // What the walk hands characters to: the collectors of the groups that are
+  // open where it stands.
+  //
+  // The state is where the walk stands in its own code, so the registers a
+  // group is held in are constants here, and asking whether it is open is two
+  // loads and a comparison -- not a lookup of the state, then of its readings,
+  // then of the registers.
+  template <class states_type>
+  class gathering_into {
+   public:
+    constexpr gathering_into(const collected_match_closure& owner,
+                             states_type& states)
+        : owner_(owner), states_(states) {}
+
+    template <std::size_t state, class registers_type>
+    constexpr void arrived(char letter, const registers_type& registers) {
+      offer_all<state>(letter, registers,
+                       std::make_index_sequence<sizeof...(collectors)>{});
+    }
+
+    template <std::size_t state, class registers_type>
+    constexpr void ended(const registers_type&) {}
+
+   private:
+    template <std::size_t state, class registers_type, std::size_t... group>
+    constexpr void offer_all(char letter, const registers_type& registers,
+                             std::index_sequence<group...>) {
+      (offer_group<state, group>(letter, registers), ...);
+    }
+
+    template <std::size_t state, std::size_t group, class registers_type>
+    constexpr void offer_group(char letter, const registers_type& registers) {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      if constexpr (std::same_as<collector, skip_collector>) {
+        return;
+      } else {
+        constexpr const auto& packed =
+            detail::regex_automaton<pattern>.states[state];
+        if constexpr (packed.reading_count == 0) {
+          return;
+        } else {
+          constexpr std::uint32_t opening = packed.readings[0][group * 2];
+          constexpr std::uint32_t closing = packed.readings[0][group * 2 + 1];
+          if (registers[opening] < 0) return;
+          if (registers[closing] >= registers[opening]) return;
+          if constexpr (std::same_as<collector, text_collector>) {
+            std::get<group>(states_).push_back(letter);
+          } else {
+            std::get<group>(owner_.collectors_)
+                .push_one(std::get<group>(states_), letter);
+          }
+        }
+      }
+    }
+
+    const collected_match_closure& owner_;
+    states_type& states_;
+  };
 
   template <std::size_t... group>
   [[nodiscard]] constexpr auto beginning(std::index_sequence<group...>) const {

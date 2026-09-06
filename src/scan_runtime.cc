@@ -608,6 +608,88 @@ template <auto& automaton, bool in_words, std::size_t state,
 }
 
 
+// A walk that gathers as it goes, over any pair of iterators.
+//
+// This is the walk over pointers, with two differences and no third. It reads
+// through an iterator rather than a pointer, so it cannot step over a run in
+// vectors; and it hands every character to whoever is gathering, because a
+// subject that arrives as it is read leaves nothing behind to point at
+// afterwards.
+//
+// Everything else is the same, and that is the point of it: the state is where
+// it stands in this code, so a state's runs, its commands and the registers
+// its groups are held in are all constants. What the machine that can be
+// stopped and started has to look up on every character -- which state it is
+// in, which runs that state has, which registers hold this group -- is not
+// looked up here at all.
+template <auto& automaton, std::size_t state, class iterator, class sentinel,
+          std::size_t register_count, class gatherer>
+[[nodiscard]] constexpr bool run_gathering_continuation(
+    iterator& cursor, sentinel last,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t& position, gatherer& into);
+
+template <auto& automaton, std::size_t state, class iterator, class sentinel,
+          std::size_t register_count, class gatherer, std::size_t which = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool dispatch_gathering(
+    unsigned char symbol, iterator& cursor, sentinel last,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t& position, gatherer& into) {
+  constexpr auto moves = distinct_moves<automaton, state>();
+  if constexpr (which == moves.count) {
+    return false;
+  } else {
+    constexpr std::size_t move = moves.at[which];
+    constexpr const auto& range = automaton.states[state].ranges[move];
+    if constexpr (range.target == state) {
+      return dispatch_gathering<automaton, state, iterator, sentinel,
+                                register_count, gatherer, which + 1>(
+          symbol, cursor, last, registers, position, into);
+    } else {
+      if (makes_move<automaton, state, move>(symbol)) {
+        execute_static_transition_commands<automaton, state, move>(registers,
+                                                                   position);
+        into.template arrived<range.target>(static_cast<char>(symbol),
+                                            registers);
+        return run_gathering_continuation<automaton, range.target>(
+            cursor, last, registers, position, into);
+      }
+      return dispatch_gathering<automaton, state, iterator, sentinel,
+                                register_count, gatherer, which + 1>(
+          symbol, cursor, last, registers, position, into);
+    }
+  }
+}
+
+template <auto& automaton, std::size_t state, class iterator, class sentinel,
+          std::size_t register_count, class gatherer>
+[[nodiscard]] constexpr bool run_gathering_continuation(
+    iterator& cursor, sentinel last,
+    std::array<std::ptrdiff_t, register_count>& registers,
+    std::ptrdiff_t& position, gatherer& into) {
+  while (cursor != last) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor);
+    ++cursor;
+    ++position;
+    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
+                                                          position)) {
+      into.template arrived<state>(static_cast<char>(symbol), registers);
+      continue;
+    }
+    return dispatch_gathering<automaton, state, iterator, sentinel,
+                              register_count, gatherer>(
+        symbol, cursor, last, registers, position, into);
+  }
+  if constexpr (automaton.states[state].accepting_slot ==
+                packed_state<0, 0, 0>::not_accepting) {
+    return false;
+  } else {
+    execute_static_final_commands<automaton, state>(registers, position);
+    into.template ended<state>(registers);
+    return true;
+  }
+}
+
 // The same automaton walked without an end pointer.
 //
 // A terminator the automaton rejects in every state ends the match by failing
