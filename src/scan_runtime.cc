@@ -812,6 +812,36 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   }
 }
 
+// Walking characters in a row to a terminator, gathering nothing.
+template <auto& automaton, unsigned char terminator, bool in_words,
+          std::size_t state, std::size_t register_count>
+[[nodiscard]] constexpr bool run_to_terminator(
+    const char* cursor, const char* end,
+    std::array<const char*, register_count>& registers) {
+  gathers_nothing nothing;
+  const char* place = cursor;
+  constexpr walk_shape shape{
+      .in_words = in_words, .by_terminator = true, .terminator = terminator};
+  return run_continuation<automaton, shape, state, shape.budget, 0,
+                          const char*>(cursor, end, place, registers, nothing,
+                                       walk_answer<const char*>{})
+      .matched;
+}
+
+// The longest head of characters in a row, or nothing.
+template <auto& automaton, std::size_t state, std::size_t register_count>
+[[nodiscard]] constexpr const char* run_head(
+    const char* cursor, const char* end,
+    std::array<const char*, register_count>& registers) {
+  gathers_nothing nothing;
+  const char* place = cursor;
+  constexpr walk_shape shape{.longest_head = true};
+  const auto found =
+      run_continuation<automaton, shape, state, shape.budget, 0, const char*>(
+          cursor, end, place, registers, nothing, walk_answer<const char*>{});
+  return found.matched ? found.at : nullptr;
+}
+
 // Walking characters that lie in a row, gathering nothing: the shape almost
 // every caller wants, said once.
 template <auto& automaton, bool in_words, std::size_t state,
@@ -913,78 +943,7 @@ template <auto& automaton>
   return answer;
 }
 
-template <auto& automaton, unsigned char sentinel, bool in_words,
-          std::size_t state, std::size_t register_count>
-[[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
-    const char* cursor, const char* limit,
-    std::array<const char*, register_count>& registers);
 
-template <auto& automaton, unsigned char sentinel, bool in_words,
-          std::size_t state, std::size_t register_count, std::size_t which = 0>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr bool
-dispatch_tagged_sentinel_transition(
-    unsigned char symbol, const char* cursor, const char* limit,
-    std::array<const char*, register_count>& registers) {
-  constexpr auto moves = distinct_moves<automaton, state>();
-  if constexpr (which == moves.count) {
-    return false;
-  } else {
-    constexpr std::size_t move = moves.at[which];
-    constexpr const auto& range = automaton.states[state].ranges[move];
-    if constexpr (range.target == state) {
-      return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
-                                                 state, register_count,
-                                                 which + 1>(symbol, cursor,
-                                                            limit, registers);
-    } else {
-      if (makes_move<automaton, state, move>(symbol)) {
-        execute_static_transition_commands<automaton, state, move>(registers,
-                                                                   cursor - 1);
-        [[clang::always_inline]] return run_tagged_sentinel_continuation<
-            automaton, sentinel, in_words, range.target>(cursor, limit,
-                                                         registers);
-      }
-      return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
-                                                 state, register_count,
-                                                 which + 1>(symbol, cursor,
-                                                            limit, registers);
-    }
-  }
-}
-
-template <auto& automaton, unsigned char sentinel, bool in_words,
-          std::size_t state, std::size_t register_count>
-[[nodiscard]] constexpr bool run_tagged_sentinel_continuation(
-    const char* cursor, const char* limit,
-    std::array<const char*, register_count>& registers) {
-  // The limit is not what ends the match -- the terminator is -- and no
-  // character is compared against it. It says only how far a word may be read
-  // in one piece, which is a question about the subject and not about the
-  // pattern.
-  if constexpr (in_words && runs_in_place<automaton, state>()) {
-    cursor = skip_class<staying_of<automaton, state>()>(cursor, limit);
-  }
-  while (true) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    if (execute_tagged_self_transition<automaton, state>(symbol, registers,
-                                                         cursor - 1)) {
-      continue;
-    }
-    if (symbol == sentinel) {
-      if constexpr (automaton.states[state].accepting_slot ==
-                    packed_state<0, 0, 0>::not_accepting) {
-        return false;
-      } else {
-        execute_static_final_commands<automaton, state>(registers,
-                                                        cursor - 1);
-        return true;
-      }
-    }
-    return dispatch_tagged_sentinel_transition<automaton, sentinel, in_words,
-                                               state>(symbol, cursor, limit,
-                                                      registers);
-  }
-}
 
 // The machine belongs in this frame, not behind a call.
 //
@@ -1002,73 +961,13 @@ template <auto& automaton, unsigned char sentinel, bool in_words,
 // How much of the input the pattern takes, and nothing else about it.
 //
 // The walk that reads the fields is anchored: it answers whether the whole
-// subject is the pattern. Asking how much of the subject the pattern takes is a
-// different question and is asked here, by a walk that carries no registers,
-// writes nothing and remembers only the furthest place the machine stood in a
-// state that would have accepted. It is the same automaton and the same runs
-// read in words and vectors; it is a good deal less code because there is
-// nothing to record.
+// subject is the pattern. Asking how much of the subject the pattern takes is
+// a different question, and it is the same walk told to answer it -- the
+// longest place it stood in a state that would have accepted.
 //
-// Two passes over the head of the input, then -- one to find where it ends and
-// one to read the fields out of it. That is the price of not disturbing the
-// anchored walk, which is the one every other call goes through.
-template <auto& automaton, std::size_t state>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr bool stays_here(unsigned char symbol) {
-  constexpr const auto& packed = automaton.states[state];
-  return [&]<std::size_t... index>(std::index_sequence<index...>) {
-    return (false || ... ||
-            (packed.ranges[index].target == state &&
-             symbol >= packed.ranges[index].first &&
-             symbol <= packed.ranges[index].last));
-  }(std::make_index_sequence<packed.range_count>{});
-}
-
-template <auto& automaton, std::size_t state>
-[[nodiscard]] constexpr const char* run_prefix_continuation(
-    const char* cursor, const char* end, const char* best);
-
-template <auto& automaton, std::size_t state, std::size_t index = 0>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr const char* dispatch_prefix(
-    unsigned char symbol, const char* cursor, const char* end,
-    const char* best) {
-  constexpr const auto& packed = automaton.states[state];
-  if constexpr (index == packed.range_count) {
-    return best;
-  } else if constexpr (packed.ranges[index].target == state) {
-    return dispatch_prefix<automaton, state, index + 1>(symbol, cursor, end,
-                                                        best);
-  } else {
-    constexpr const auto& range = packed.ranges[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      [[clang::always_inline]] return run_prefix_continuation<
-          automaton, range.target>(cursor, end, best);
-    }
-    return dispatch_prefix<automaton, state, index + 1>(symbol, cursor, end,
-                                                        best);
-  }
-}
-
-template <auto& automaton, std::size_t state>
-[[nodiscard]] constexpr const char* run_prefix_continuation(
-    const char* cursor, const char* end, const char* best) {
-  if constexpr (runs_in_place<automaton, state>()) {
-    cursor = skip_class<staying_of<automaton, state>()>(cursor, end);
-  }
-  while (cursor != end &&
-         stays_here<automaton, state>(static_cast<unsigned char>(*cursor))) {
-    ++cursor;
-  }
-  // Standing in a state that accepts, the furthest place reached in it is the
-  // furthest the pattern has taken so far. Inside a run nothing changes but the
-  // cursor, so this is asked once when the run ends and not once a character.
-  if constexpr (automaton.states[state].accepting_slot !=
-                packed_state<0, 0, 0>::not_accepting) {
-    best = cursor;
-  }
-  if (cursor == end) return best;
-  return dispatch_prefix<automaton, state>(static_cast<unsigned char>(*cursor),
-                                           cursor + 1, end, best);
-}
+// Two passes over the head, still: one to find where it ends and one to read
+// the fields out of it. The walk that finds it now carries the registers, so
+// the second pass is a thing that could go rather than a thing that must stay.
 
 // The head the pattern takes, or a view of nothing at all -- which is not the
 // same as an empty head, and is told apart by pointing nowhere.
@@ -1173,8 +1072,9 @@ template <class type, fixed_string format>
                               begin + input.size());
   } else {
     constexpr const auto& automaton = packed_automaton<type, format>;
-    best = run_prefix_continuation<automaton, automaton.initial>(
-        begin, begin + input.size(), nullptr);
+    std::array<const char*, automaton.register_count> registers{};
+    best = run_head<automaton, automaton.initial>(begin, begin + input.size(),
+                                                  registers);
   }
   if (best == nullptr) return {};
   return std::string_view(begin, static_cast<std::size_t>(best - begin));
@@ -1303,13 +1203,15 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         // asking inside would cost one for every state it passes through.
         constexpr std::size_t worth_a_word = 32;
         if (input.size() >= worth_a_word) {
-          [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
-              automaton, terminator, true, automaton.initial>(
-              cursor, cursor + input.size(), registers);
+          [[clang::always_inline]] matched =
+              run_to_terminator<automaton, terminator, true,
+                                automaton.initial>(
+                  cursor, cursor + input.size(), registers);
     } else {
-          [[clang::always_inline]] matched = run_tagged_sentinel_continuation<
-              automaton, terminator, false, automaton.initial>(
-              cursor, cursor + input.size(), registers);
+          [[clang::always_inline]] matched =
+              run_to_terminator<automaton, terminator, false,
+                                automaton.initial>(
+                  cursor, cursor + input.size(), registers);
         }
     } else {
         const char* const end = cursor + input.size();
