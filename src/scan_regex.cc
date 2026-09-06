@@ -686,31 +686,99 @@ regex_match_sentinel(std::string_view input) {
   return {regex_submatch(input), {}};
 }
 
+// The longest head of the input the automaton accepts, or nothing.
+//
+// One pass, remembering the last place the machine stood in an accepting
+// state -- which is how the format layer has always read a head, and how a
+// scanner reads one. What was here instead tried every length in turn and ran
+// a whole anchored match for each, so a head of a hundred characters was a
+// hundred matches and a search over it was ten thousand.
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] constexpr const char* run_longest_head(const char* cursor,
+                                                     const char* end,
+                                                     const char* best);
+
+template <fixed_string pattern, std::size_t state, std::size_t which = 0>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr const char*
+dispatch_head_transition(unsigned char symbol, const char* cursor,
+                         const char* end, const char* best) {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  if constexpr (which == targets.size) {
+    return best;
+  } else if constexpr (targets.values[which] == state) {
+    return dispatch_head_transition<pattern, state, which + 1>(symbol, cursor,
+                                                               end, best);
+  } else {
+    constexpr auto target = targets.values[which];
+    if (moves_to<pattern, state, target>(symbol)) {
+      return run_longest_head<pattern, target>(cursor + 1, end, best);
+    }
+    return dispatch_head_transition<pattern, state, which + 1>(symbol, cursor,
+                                                               end, best);
+  }
+}
+
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] constexpr const char* run_longest_head(const char* cursor,
+                                                     const char* end,
+                                                     const char* best) {
+  if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+  while (cursor != end) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor);
+    if (!is_self_transition<pattern, state>(symbol)) break;
+    ++cursor;
+    if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+  }
+  if (cursor == end) return best;
+  return dispatch_head_transition<pattern, state>(
+      static_cast<unsigned char>(*cursor), cursor, end, best);
+}
+
+// The same question of whichever machine the pattern was given. A pattern that
+// captures is a tagged machine, and the runtime has read a head off one of
+// those since the format layer needed it.
 template <fixed_string pattern>
-[[nodiscard]] constexpr regex_result_for<pattern> regex_starts_with(
-    std::string_view input) {
-  regex_result_for<pattern> result;
-  for (std::size_t size : std::views::iota(std::size_t{0}, input.size() + 1) |
-          std::views::reverse) {
-        if (!result) result = regex_match<pattern>(input.substr(0, size));
-      }
-  return result;
+[[nodiscard]] constexpr const char* longest_head(const char* cursor,
+                                                 const char* end) {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  if constexpr (automaton.tag_count == 0) {
+    return run_longest_head<pattern, automaton.initial>(cursor, end, nullptr);
+  } else {
+    return run_prefix_continuation<automaton, automaton.initial>(cursor, end,
+                                                                 nullptr);
+  }
 }
 
 template <fixed_string pattern>
-[[nodiscard]] constexpr regex_result_for<pattern> regex_search(std::string_view input) {
-  regex_result_for<pattern> result;
-  for (std::size_t begin : std::views::iota(std::size_t{0}, input.size() + 1)) {
-        if (result) continue;
-        for (std::size_t end : std::views::iota(begin, input.size() + 1) |
-                std::views::reverse) {
-              if (!result) {
-                result = regex_match<pattern>(
-                    input.substr(begin, end - begin));
-              }
-            }
-      }
-  return result;
+[[nodiscard]] constexpr regex_result_for<pattern> regex_starts_with(
+    std::string_view input) {
+  const char* const begin = input.data();
+  const char* const best = longest_head<pattern>(begin, begin + input.size());
+  if (best == nullptr) return {};
+  // The head is known; the match over exactly that head is run again to fill
+  // in whatever the pattern captures, which one pass cannot carry.
+  return regex_match<pattern>(
+      input.substr(0, static_cast<std::size_t>(best - begin)));
+}
+
+// The leftmost match, and the longest one there.
+//
+// A head is read from every place in turn, and reading one stops at the first
+// character the machine will not take -- so a place that cannot begin a match
+// costs what it costs to find that out, and not a match of every length from
+// there.
+template <fixed_string pattern>
+[[nodiscard]] constexpr regex_result_for<pattern> regex_search(
+    std::string_view input) {
+  const char* const begin = input.data();
+  const char* const end = begin + input.size();
+  for (const char* from = begin; from <= end; ++from) {
+    const char* const best = longest_head<pattern>(from, end);
+    if (best == nullptr) continue;
+    return regex_match<pattern>(
+        std::string_view(from, static_cast<std::size_t>(best - from)));
+  }
+  return {};
 }
 
 }  // namespace detail
@@ -739,55 +807,152 @@ template <fixed_string pattern>
   return detail::regex_search<pattern>(input);
 }
 
+// One match after another, found as they are asked for.
+//
+// Nothing is collected: the view holds where to look next and finds the next
+// match when the loop asks for it. What was here built a vector of every match
+// in the input before the caller had looked at the first one.
 template <fixed_string pattern>
-[[nodiscard]] constexpr auto search_all(
-    std::string_view input) {
+class search_view {
+ public:
   using result_type = detail::regex_result_for<pattern>;
-  std::vector<result_type> results;
-  std::size_t offset = 0;
-  while (offset <= input.size()) {
-    result_type result = search<pattern>(input.substr(offset));
-    if (!result) break;
-    const auto relative = static_cast<std::size_t>(
-        result.data() - input.data() - static_cast<std::ptrdiff_t>(offset));
-    offset += relative;
-    const std::size_t length = result.size();
-    results.push_back(std::move(result));
-    offset += std::max(length, std::size_t{1});
-  }
-  return results;
+
+  constexpr explicit search_view(std::string_view input) : input_(input) {}
+
+  class iterator {
+   public:
+    using value_type = result_type;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(std::string_view input) : rest_(input) {
+      seek();
+    }
+
+    [[nodiscard]] constexpr const result_type& operator*() const {
+      return found_;
+    }
+    [[nodiscard]] constexpr const result_type* operator->() const {
+      return &found_;
+    }
+    constexpr iterator& operator++() {
+      // A match of nothing would be found again in the same place, so the
+      // search moves on by a character where it took none.
+      const std::size_t step = std::max(found_.size(), std::size_t{1});
+      const auto begin =
+          static_cast<std::size_t>(found_.data() - rest_.data());
+      rest_ = rest_.substr(std::min(begin + step, rest_.size()));
+      seek();
+      return *this;
+    }
+    constexpr iterator operator++(int) {
+      iterator held = *this;
+      ++*this;
+      return held;
+    }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return !static_cast<bool>(found_);
+    }
+
+   private:
+    constexpr void seek() { found_ = detail::regex_search<pattern>(rest_); }
+
+    std::string_view rest_;
+    result_type found_{};
+  };
+
+  [[nodiscard]] constexpr iterator begin() const { return iterator(input_); }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+ private:
+  std::string_view input_;
+};
+
+template <fixed_string pattern>
+[[nodiscard]] constexpr search_view<pattern> search_all(
+    std::string_view input) {
+  return search_view<pattern>(input);
 }
 
 template <fixed_string pattern>
-[[nodiscard]] constexpr auto iterator(
-    std::string_view input) {
+[[nodiscard]] constexpr search_view<pattern> iterator(std::string_view input) {
   return search_all<pattern>(input);
 }
 
 template <fixed_string pattern>
-[[nodiscard]] constexpr auto tokenize(
-    std::string_view input) {
+[[nodiscard]] constexpr search_view<pattern> tokenize(std::string_view input) {
   return search_all<pattern>(input);
 }
 
+// The pieces between the matches, found as they are asked for.
 template <fixed_string pattern>
-[[nodiscard]] constexpr std::vector<std::string_view> split(
-    std::string_view input) {
-  std::vector<std::string_view> pieces;
-  std::size_t offset = 0;
-  for (const auto& delimiter : search_all<pattern>(input)) {
-    const auto begin = static_cast<std::size_t>(delimiter.data() - input.data());
-    pieces.push_back(input.substr(offset, begin - offset));
-    offset = begin + delimiter.size();
-  }
-  pieces.push_back(input.substr(offset));
-  return pieces;
+class split_view {
+ public:
+  constexpr explicit split_view(std::string_view input) : input_(input) {}
+
+  class iterator {
+   public:
+    using value_type = std::string_view;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(std::string_view input)
+        : rest_(input), done_(false) {
+      seek();
+    }
+
+    [[nodiscard]] constexpr const std::string_view& operator*() const {
+      return piece_;
+    }
+    constexpr iterator& operator++() {
+      if (last_) {
+        done_ = true;
+        return *this;
+      }
+      seek();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return done_;
+    }
+
+   private:
+    constexpr void seek() {
+      const auto delimiter = detail::regex_search<pattern>(rest_);
+      if (!delimiter) {
+        piece_ = rest_;
+        last_ = true;
+        return;
+      }
+      const auto begin =
+          static_cast<std::size_t>(delimiter.data() - rest_.data());
+      piece_ = rest_.substr(0, begin);
+      const std::size_t step = std::max(delimiter.size(), std::size_t{1});
+      rest_ = rest_.substr(std::min(begin + step, rest_.size()));
+    }
+
+    std::string_view rest_;
+    std::string_view piece_;
+    bool last_ = false;
+    bool done_ = true;
+  };
+
+  [[nodiscard]] constexpr iterator begin() const { return iterator(input_); }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+ private:
+  std::string_view input_;
+};
+
+template <fixed_string pattern>
+[[nodiscard]] constexpr split_view<pattern> split(std::string_view input) {
+  return split_view<pattern>(input);
 }
 
 template <fixed_string pattern>
 [[deprecated("use search_all")]]
-[[nodiscard]] constexpr auto range(
-    std::string_view input) {
+[[nodiscard]] constexpr search_view<pattern> range(std::string_view input) {
   return search_all<pattern>(input);
 }
 
