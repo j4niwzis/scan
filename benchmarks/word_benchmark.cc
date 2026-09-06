@@ -20,7 +20,7 @@ void scan_word(harness::State& state) {
   for (auto _ : state) {
     std::string_view view(text);
     harness::DoNotOptimize(view);
-    harness::DoNotOptimize(scan::match<"[a-z]+">(view));
+    harness::DoNotOptimize(static_cast<bool>(scan::match<"[a-z]+">(view)));
   }
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
@@ -32,7 +32,7 @@ void scan_word_sentinel(harness::State& state) {
   for (auto _ : state) {
     std::string_view view(text);
     harness::DoNotOptimize(view);
-    harness::DoNotOptimize(scan::match_sentinel<"[a-z]+">(view));
+    harness::DoNotOptimize(static_cast<bool>(scan::match_sentinel<"[a-z]+">(view)));
   }
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
@@ -44,7 +44,7 @@ void ctre_word(harness::State& state) {
   for (auto _ : state) {
     std::string_view view(text);
     harness::DoNotOptimize(view);
-    harness::DoNotOptimize(ctre::match<"[a-z]+">(view));
+    harness::DoNotOptimize(static_cast<bool>(ctre::match<"[a-z]+">(view)));
   }
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));

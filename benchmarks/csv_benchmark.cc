@@ -17,7 +17,7 @@ void scan_csv(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+      harness::DoNotOptimize(static_cast<bool>(scan::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
@@ -30,7 +30,7 @@ void scan_csv_sentinel(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+      harness::DoNotOptimize(static_cast<bool>(scan::match_sentinel<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
@@ -43,7 +43,7 @@ void ctre_csv(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view));
+      harness::DoNotOptimize(static_cast<bool>(ctre::match<"[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *

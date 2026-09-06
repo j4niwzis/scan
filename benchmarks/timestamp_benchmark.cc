@@ -17,7 +17,7 @@ void scan_timestamp(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(scan::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
+      harness::DoNotOptimize(static_cast<bool>(scan::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
@@ -30,7 +30,7 @@ void scan_timestamp_sentinel(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(scan::match_sentinel<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
+      harness::DoNotOptimize(static_cast<bool>(scan::match_sentinel<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
@@ -43,7 +43,7 @@ void ctre_timestamp(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(ctre::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view));
+      harness::DoNotOptimize(static_cast<bool>(ctre::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *

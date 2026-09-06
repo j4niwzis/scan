@@ -26,7 +26,7 @@ void scan_address(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?">(view));
+      harness::DoNotOptimize(static_cast<bool>(scan::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
@@ -39,7 +39,7 @@ void scan_address_sentinel(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?">(view));
+      harness::DoNotOptimize(static_cast<bool>(scan::match_sentinel<"[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
@@ -52,7 +52,7 @@ void ctre_address(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?">(view));
+      harness::DoNotOptimize(static_cast<bool>(ctre::match<"[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?">(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *
