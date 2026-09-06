@@ -12,7 +12,7 @@ struct word { std::string_view text; };
 struct number { std::string_view digits; };
 struct line { int id; std::variant<word, number> value; };
 
-TEST(variant_field_test, a_word) {
+TEST(VariantFieldTest, AWord) {
   const std::string text = "7: hello";
   const line value = scan::scan<"{}: {{[a-z]+}|{[0-9]+}}">(text);
   EXPECT_EQ(value.id, 7);
@@ -20,7 +20,7 @@ TEST(variant_field_test, a_word) {
   EXPECT_EQ(std::get<0>(value.value).text, "hello");
 }
 
-TEST(variant_field_test, a_number) {
+TEST(VariantFieldTest, ANumber) {
   const std::string text = "42: 1234";
   const line value = scan::scan<"{}: {{[a-z]+}|{[0-9]+}}">(text);
   EXPECT_EQ(value.id, 42);

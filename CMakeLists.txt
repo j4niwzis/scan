@@ -149,42 +149,75 @@ if(SCAN_AUTOMATA_AT_RUNTIME)
 endif()
 
 enable_testing()
-add_executable(tre_tdfa_test tests/tre_test.cc tests/ctre_compat_test.cc)
-target_link_libraries(tre_tdfa_test PRIVATE scan gtest_main)
-add_test(NAME tre_tdfa_test COMMAND tre_tdfa_test)
-
-add_executable(tre_runtime_test tests/tre_runtime_test.cc)
-target_link_libraries(tre_runtime_test PRIVATE scan gtest_main)
-add_test(NAME tre_runtime_test COMMAND tre_runtime_test)
-
 # One pattern to a translation unit. A pattern is compiled while this file is
 # being compiled, so two patterns in one file is two waits in a row, and
 # separate files are two waits at once.
 set(scan_tests
-  both_paths_test
-  flat_shape_test
-  shape_format_test
-  values_call_test
-  variant_field_test
-  variant_nested_test
-  variant_default_test
-  unkept_place_test
-  prefix_test
-  stream_test
-  each_test
-  reader_test
-  list_test
-  list_shape_test
-  list_own_test
-  expected_test
-  piped_test
-  collector_types_test
+  a_field_that_matches_nothing_test
+  a_field_wider_than_the_room_it_was_test
+  a_head_and_what_follows_it_test
+  a_head_of_what_is_read_once_test
+  a_head_of_what_is_walked_test
+  a_head_off_a_stream_and_what_stopped_it_test
+  a_scan_that_did_not_test
+  a_scan_that_is_asked_for_test
+  a_subject_handed_to_a_search_test
+  a_subject_handed_to_a_split_test
+  a_subject_handed_to_each_test
+  a_tokenize_that_is_a_search_under_test
+  a_value_for_each_group_test
+  a_whole_subject_off_a_stream_test
+  accepts_bounded_repetition_from_test
+  applies_scanner_parameters_to_test
+  as_many_as_the_input_turned_out_to_have_test
+  assigned_with_the_rest_dropped_test
+  borrows_vector_and_span_storage_test
+  bounded_five_fields_test
+  captures_nested_groups_in_opening_order_test
+  characters_in_a_row_are_pointed_at_test
   collector_arguments_test
   collector_pusher_test
-  collector_scanner_test
   collector_reuse_test
-  range_kinds_test
-  search_view_test)
+  collector_scanner_test
+  commands_read_as_they_arrive_test
+  ctre_compat_alternation_test
+  ctre_compat_literals_test
+  ctre_compat_repetition_test
+  differential_short_input_corpus_test
+  every_command_off_a_stream_test
+  every_match_in_turn_test
+  every_record_of_a_contiguous_input_test
+  exposes_search_split_and_tokenize_test
+  flat_shape_test
+  handles_bounded_greedy_repetition_test
+  leftmost_alternative_wins_inside_test
+  list_own_test
+  list_shape_test
+  nothing_where_nothing_matched_test
+  optimized_register_program_preserves_test
+  preserves_official_capture_and_range_test
+  record_after_record_off_one_stream_test
+  scanner_can_build_an_owning_pattern_test
+  scans_borrowed_contiguous_range_test
+  shape_format_test
+  states_that_lead_back_test
+  streams_sscanf_like_floating_test
+  streams_unbounded_custom_value_test
+  tagged_automata_test
+  the_head_of_an_input_test
+  the_leftmost_and_longest_test
+  the_outer_branch_test
+  the_pieces_between_test
+  the_second_inner_branch_test
+  the_throwing_form_still_throws_test
+  unkept_place_test
+  uses_custom_scanner_test
+  uses_leftmost_greedy_for_adjacent_test
+  values_call_test
+  variant_default_test
+  variant_field_test
+  written_as_exactly_two_test
+  written_as_one_or_more_test)
 foreach(one IN LISTS scan_tests)
   add_executable(${one} tests/${one}.cc)
   target_link_libraries(${one} PRIVATE scan gtest_main)

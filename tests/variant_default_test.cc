@@ -19,14 +19,14 @@ namespace {
 
 struct row { std::variant<coordinates, int> value; };
 
-TEST(variant_default_test, the_shape) {
+TEST(VariantDefaultTest, TheShape) {
   const std::string text = "(1, 2)";
   const row value = scan::scan<"{}">(text);
   ASSERT_EQ(value.value.index(), 0u);
   EXPECT_EQ(std::get<0>(value.value).x, 1);
 }
 
-TEST(variant_default_test, the_value) {
+TEST(VariantDefaultTest, TheValue) {
   const std::string text = "-42";
   const row value = scan::scan<"{}">(text);
   ASSERT_EQ(value.value.index(), 1u);

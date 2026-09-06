@@ -11,7 +11,7 @@ namespace {
 struct point { int x; int y; };
 struct segment { point from; point to; };
 
-TEST(flat_shape_test, a_structure_of_structures) {
+TEST(FlatShapeTest, AStructureOfStructures) {
   const std::string text = "1,2 3,4";
   const segment value = scan::scan<"{},{} {},{}">(text);
   EXPECT_EQ(value.from.x, 1);

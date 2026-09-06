@@ -23,7 +23,7 @@ namespace {
 struct wrapped_rectangle { rectangle bounds; };
 struct record { int id; rectangle bounds; };
 
-TEST(shape_format_test, a_shape_of_shapes) {
+TEST(ShapeFormatTest, AShapeOfShapes) {
   const std::string text = "[(1, 2) -> (3, 4)]";
   const wrapped_rectangle value = scan::scan<"{}">(text);
   EXPECT_EQ(value.bounds.corner.x, 1);
@@ -32,7 +32,7 @@ TEST(shape_format_test, a_shape_of_shapes) {
   EXPECT_EQ(value.bounds.opposite.y, 4);
 }
 
-TEST(shape_format_test, a_shape_inside_a_record) {
+TEST(ShapeFormatTest, AShapeInsideARecord) {
   const std::string text = "id=7 bounds=[(1, 2) -> (3, 4)]";
   const record value = scan::scan<"id={} bounds={}">(text);
   EXPECT_EQ(value.id, 7);

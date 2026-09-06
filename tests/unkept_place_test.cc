@@ -10,7 +10,7 @@ namespace {
 
 struct pair { int left; int right; };
 
-TEST(unkept_place_test, a_run_of_spaces) {
+TEST(UnkeptPlaceTest, ARunOfSpaces) {
   for (std::string_view text : {"1 2", "1   2", "1\t2", "12"}) {
     const std::string subject(text);
     const pair value = scan::scan<"{}{*\\s*}{}">(subject);
@@ -19,7 +19,7 @@ TEST(unkept_place_test, a_run_of_spaces) {
   }
 }
 
-TEST(unkept_place_test, a_field_nobody_wants) {
+TEST(UnkeptPlaceTest, AFieldNobodyWants) {
   const std::string text = "keep=7 drop=abc keep=9";
   const pair value = scan::scan<"keep={} {*drop=[a-z]+} keep={}">(text);
   EXPECT_EQ(value.left, 7);

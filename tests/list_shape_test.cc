@@ -11,7 +11,7 @@ struct point { int x; int y; };
 struct path { std::vector<point> points; };
 struct named { scan::held<8> name; std::vector<int> marks; };
 
-TEST(list_shape_test, a_list_of_things_with_parts) {
+TEST(ListShapeTest, AListOfThingsWithParts) {
   const std::string text = "1:2 3:4 5:6";
   const path value = scan::scan<"{{}:{}{* ?}}+">(text);
   ASSERT_EQ(value.points.size(), 3u);
@@ -20,7 +20,7 @@ TEST(list_shape_test, a_list_of_things_with_parts) {
   EXPECT_EQ(value.points[2].y, 6);
 }
 
-TEST(list_shape_test, a_list_beside_something_else) {
+TEST(ListShapeTest, AListBesideSomethingElse) {
   const std::string text = "run 1,2,3";
   const named value = scan::scan<"{[a-z]+} {{}{*,?}}+">(text);
   EXPECT_EQ(value.name.view(), "run");

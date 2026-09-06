@@ -33,13 +33,13 @@ namespace {
 struct one_angle { angle value; };
 struct bearing { angle from; angle to; };
 
-TEST(values_call_test, made_by_the_call_it_named) {
+TEST(ValuesCallTest, MadeByTheCallItNamed) {
   const std::string text = "12d30m";
   const one_angle value = scan::scan<"{}">(text);
   EXPECT_EQ(value.value.total(), 12 * 60 + 30);
 }
 
-TEST(values_call_test, two_of_them_in_a_structure) {
+TEST(ValuesCallTest, TwoOfThemInAStructure) {
   const std::string text = "12d30m -> 40d15m";
   const bearing value = scan::scan<"{} -> {}">(text);
   EXPECT_EQ(value.from.total(), 750);

@@ -33,7 +33,7 @@ constexpr std::size_t how_many(std::string_view text) {
 static_assert(how_many("1:2") == 1);
 static_assert(how_many("1:2 3:4") == 2);
 
-TEST(list_own_test, a_list_of_the_users_own) {
+TEST(ListOwnTest, AListOfTheUsersOwn) {
   const std::string text = "1:2 3:4";
   const path value = scan::scan<"{{}:{}{* ?}}+">(text);
   ASSERT_EQ(value.points.size(), 2u);
