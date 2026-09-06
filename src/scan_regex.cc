@@ -219,51 +219,6 @@ template <fixed_string pattern>
   return true;
 }
 
-// The longest a match can be, or nothing at all where it can be any length.
-//
-// A pattern with no cycle in its automaton matches a bounded number of
-// characters: plain text, a count in braces, anything written out. One with a
-// cycle -- a star, a plus, an open-ended count -- matches as much as there is.
-//
-// This is what says whether a subject that can only be read once can be
-// searched. Finding the leftmost match means trying a place, failing, and
-// trying the next, and the characters of the failed attempt have already gone
-// by: they have to be held. Bounded, they are held in a window of a size known
-// here; unbounded, they would need a buffer that grows, and there is none.
-template <fixed_string pattern>
-[[nodiscard]] consteval std::size_t longest_match_length() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
-  // The longest walk from each state, found by relaxing as many times as there
-  // are states. A walk that is still growing after that many rounds is going
-  // round a cycle.
-  std::array<std::size_t, state_count> longest{};
-  for (std::size_t round = 0; round <= state_count; ++round) {
-    std::array<std::size_t, state_count> next{};
-    for (std::size_t state = 0; state < state_count; ++state) {
-      const auto& packed = automaton.states[state];
-      std::size_t best = 0;
-      for (std::size_t index = 0; index < packed.range_count; ++index) {
-        const std::size_t target = packed.ranges[index].target;
-        if (longest[target] == unbounded) return unbounded;
-        best = std::max(best, longest[target] + 1);
-      }
-      next[state] = best;
-    }
-    if (next == longest) return longest[automaton.initial];
-    longest = next;
-  }
-  return unbounded;
-}
-
-template <fixed_string pattern>
-[[nodiscard]] consteval bool matches_a_bounded_length() {
-  return longest_match_length<pattern>() !=
-         std::numeric_limits<std::size_t>::max();
-}
-
 template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t minimum_match_length() {
   constexpr const auto& automaton = regex_automaton<pattern>;
@@ -765,36 +720,30 @@ namespace detail {
 // Nothing is kept but what the answer is made of. The characters go into the
 // collectors of whatever groups are open as they arrive, and a collector that
 // holds no text holds nothing at all.
-// How far the machine can go past a match without finding another one.
+// The longest walk out of each state that never lands in a final state.
 //
-// This is the fallback of the TDFA papers, and the measure that matters for a
-// subject that can only be read once. A final state is a fallback state where
-// there are paths out of it that do not go through another final state; the
-// characters read along such a path are the characters that would have to be
-// given back when it dies, and there is nowhere to give them back to unless
-// they were held.
+// This one relaxation answers both of the questions a subject that can only
+// be read once has to ask, and they are the questions the TDFA papers ask
+// about fallback: not whether the automaton has a cycle -- that was too blunt
+// by half -- but how long a walk can be that finds nothing.
 //
-// So the question is not whether the automaton has a cycle -- that was too
-// blunt by half -- but how long the longest non-accepting walk out of a final
-// state is. For `[a-z]+` it is nothing at all: every letter out of the final
-// state lands in a final state, so wherever the machine stops it has a match
-// and nothing was ever read past one. For `abc|abd` it is two. For a pattern
-// with a cycle that never accepts, it is unbounded, and that is the only case
-// this refuses.
+// Out of a final state it is how far the machine can read past a match before
+// it dies, and out of the start it is how much an attempt that comes to
+// nothing can swallow. Only a cycle that never accepts has no answer.
 template <fixed_string pattern>
-[[nodiscard]] consteval std::size_t fallback_window() {
+[[nodiscard]] consteval auto barren_walks() {
   constexpr const auto& automaton = regex_automaton<pattern>;
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
+  struct answer_type {
+    bool bounded = true;
+    std::array<std::size_t, state_count> longest{};
+  };
+  answer_type answer;
   const auto accepts = [&](std::size_t state) {
     return automaton.states[state].accepting_slot !=
            packed_state<0, 0, 0>::not_accepting;
   };
-  // The longest walk from each state that never lands in a final state, found
-  // by relaxing as many times as there are states. Still growing after that
-  // many rounds means it is going round a cycle that never accepts.
-  std::array<std::size_t, state_count> longest{};
   for (std::size_t round = 0; round <= state_count; ++round) {
     std::array<std::size_t, state_count> next{};
     for (std::size_t state = 0; state < state_count; ++state) {
@@ -803,29 +752,65 @@ template <fixed_string pattern>
       for (std::size_t index = 0; index < packed.range_count; ++index) {
         const std::size_t target = packed.ranges[index].target;
         if (accepts(target)) continue;
-        if (longest[target] == unbounded) return unbounded;
-        best = std::max(best, longest[target] + 1);
+        best = std::max(best, answer.longest[target] + 1);
       }
       next[state] = best;
     }
-    if (next == longest) break;
-    longest = next;
-    if (round == state_count) return unbounded;
+    if (next == answer.longest) return answer;
+    answer.longest = next;
   }
-  // Only what can be read past a match counts, so only final states are asked.
+  // Still growing after as many rounds as there are states: it is going round
+  // a cycle that never accepts, and there is no number to name.
+  answer.bounded = false;
+  return answer;
+}
+
+// How far past a match the machine can read before it dies -- the fallback
+// window of the TDFA papers. For `a+` it is zero: every state the machine
+// stands in after a step is a final state, so wherever it stops it has a
+// match and nothing was ever read past one. For `abc|abd` it is two. For a
+// pattern with a cycle that never accepts, it is unbounded.
+template <fixed_string pattern>
+[[nodiscard]] consteval std::size_t fallback_window() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr auto walks = barren_walks<pattern>();
+  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
   std::size_t window = 0;
-  for (std::size_t state = 0; state < state_count; ++state) {
-    if (!accepts(state)) continue;
-    if (longest[state] == unbounded) return unbounded;
-    window = std::max(window, longest[state]);
+  for (std::size_t state = 0; state < walks.longest.size(); ++state) {
+    if (automaton.states[state].accepting_slot ==
+        packed_state<0, 0, 0>::not_accepting) {
+      continue;
+    }
+    window = std::max(window, walks.longest[state]);
   }
   return window;
+}
+
+// How many characters an attempt that comes to nothing can swallow -- the
+// longest walk out of the start that never reaches a final state. These are
+// the characters that have to be given back, because the attempt that starts
+// one character later needs them. For `\s+` it is zero: a space is already a
+// whole match, and anything else dies before it is taken. For `ab` it is one.
+// For `a+b` there is no such number, and that is the pattern this refuses.
+template <fixed_string pattern>
+[[nodiscard]] consteval std::size_t dead_end_window() {
+  constexpr auto walks = barren_walks<pattern>();
+  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
+  return walks.longest[regex_automaton<pattern>.initial];
 }
 
 template <fixed_string pattern>
 [[nodiscard]] consteval bool falls_back_a_bounded_way() {
   return fallback_window<pattern>() !=
          std::numeric_limits<std::size_t>::max();
+}
+
+// Whether a subject that can only be read once can be searched at all: what
+// has to be held is the failed attempt and the reading past a match, and both
+// have to be numbers.
+template <fixed_string pattern>
+[[nodiscard]] consteval bool holds_a_bounded_way() {
+  return barren_walks<pattern>().bounded;
 }
 
 // A match found in a window of a size known while compiling.
@@ -1872,18 +1857,151 @@ class search_view {
 // both come from writing it once.
 // One match after another off a subject that can only be read once.
 //
-// The window holds what has been read and not yet answered for: at most as
-// many characters as a match can be, which the pattern says while it is
-// compiled. Where a match is found at the head of the window it is handed over
-// and those characters are dropped; where none is, one character is dropped
-// and the window slides on.
+// Nothing here holds the answer. The characters of a match go into the
+// caller's collector as the machine becomes sure of them, one at a time, and
+// the characters before it go into whatever the caller wanted done with those
+// -- thrown away by a search, kept as the piece by a split.
+//
+// What is held is only what the machine is not yet sure of, and there are
+// exactly two such things, both of them numbers the pattern names while it is
+// compiled:
+//
+//   * the characters of an attempt that has not accepted anything yet, which
+//     have to be given back when it dies, because the attempt that starts one
+//     character later needs them -- at most `dead_end_window` of them;
+//   * the characters read past the last accepting place, which have to be
+//     given back when the machine dies past a match -- at most
+//     `fallback_window` of them.
+//
+// So the holding is a handful of characters no matter how long the subject or
+// the answer is. For `\s+` both numbers are zero and nothing is ever held at
+// all: every space is already a whole match, and the first character that is
+// not a space was never taken.
+template <fixed_string pattern, class range_type>
+class read_once_finder {
+ public:
+  static constexpr std::size_t dead_end = detail::dead_end_window<pattern>();
+  static constexpr std::size_t past_match = detail::fallback_window<pattern>();
+  // Where the pattern names no number the caller is told so; the size here is
+  // only kept sane so that the telling is what they see.
+  static constexpr std::size_t hold =
+      detail::holds_a_bounded_way<pattern>()
+          ? (dead_end > past_match ? dead_end : past_match) + 2
+          : 2;
+
+  constexpr explicit read_once_finder(range_type input)
+      : input_(std::move(input)) {}
+
+  read_once_finder(read_once_finder&&) = default;
+  read_once_finder& operator=(read_once_finder&&) = default;
+  read_once_finder(const read_once_finder&) = delete;
+  read_once_finder& operator=(const read_once_finder&) = delete;
+
+  // The next match, leftmost and as long as it goes. What comes before it is
+  // pushed into `skipped`, what it is made of into `made`. False where there
+  // is no next match: whatever was left of the subject has gone into
+  // `skipped` by then.
+  template <class skipped_type, class made_type>
+  constexpr bool next(skipped_type& skipped, made_type& made) {
+    constexpr const auto& automaton = regex_automaton<pattern>;
+    while (true) {
+      std::size_t here = automaton.initial;
+      std::size_t taken = 0;   // how much of the match is already in `made`
+      std::array<char, hold> ahead{};  // read since the last accepting place
+      std::size_t ahead_count = 0;
+      char symbol = 0;
+      while (take(symbol)) {
+        const std::size_t run =
+            run_taken<automaton>(here, static_cast<unsigned char>(symbol));
+        if (run == no_run) {
+          // Dead. What was read since the last accepting place was not part of
+          // anything, and neither was this character.
+          give_back(ahead, ahead_count, symbol);
+          ahead_count = 0;
+          break;
+        }
+        here = automaton.states[here].ranges[run].target;
+        ahead[ahead_count++] = symbol;
+        if (automaton.states[here].accepting_slot !=
+            packed_state<0, 0, 0>::not_accepting) {
+          // Sure of these now, so they go where the answer goes and are gone
+          // from here.
+          for (std::size_t at = 0; at < ahead_count; ++at) {
+            made.push_back(ahead[at]);
+          }
+          taken += ahead_count;
+          ahead_count = 0;
+        }
+      }
+      // The subject may have ended in the middle of what was being read; that
+      // is a death like any other.
+      if (ahead_count != 0) {
+        give_back(ahead, ahead_count);
+        ahead_count = 0;
+      }
+      if (taken != 0) return true;
+      // Nothing began here, so this character is not part of any match and the
+      // next attempt starts one later.
+      char first = 0;
+      if (!take(first)) return false;
+      skipped.push_back(first);
+    }
+  }
+
+ private:
+  constexpr bool take(char& symbol) {
+    if (count_ != 0) {
+      symbol = queue_[0];
+      for (std::size_t at = 1; at < count_; ++at) queue_[at - 1] = queue_[at];
+      --count_;
+      return true;
+    }
+    if (!cursor_) cursor_.emplace(std::ranges::begin(input_));
+    if (*cursor_ == std::ranges::end(input_)) return false;
+    symbol = **cursor_;
+    ++*cursor_;
+    return true;
+  }
+
+  // Put in front of the reading, in the order they were read. What is given
+  // back is exactly what this attempt took, so the queue never holds more than
+  // it held when the attempt began.
+  constexpr void give_back(const std::array<char, hold>& many,
+                           std::size_t how_many) {
+    for (std::size_t at = count_; at != 0; --at) {
+      queue_[at - 1 + how_many] = queue_[at - 1];
+    }
+    for (std::size_t at = 0; at < how_many; ++at) queue_[at] = many[at];
+    count_ += how_many;
+  }
+
+  constexpr void give_back(const std::array<char, hold>& many,
+                           std::size_t how_many, char last) {
+    const std::size_t all = how_many + 1;
+    for (std::size_t at = count_; at != 0; --at) {
+      queue_[at - 1 + all] = queue_[at - 1];
+    }
+    for (std::size_t at = 0; at < how_many; ++at) queue_[at] = many[at];
+    queue_[how_many] = last;
+    count_ += all;
+  }
+
+  range_type input_;
+  std::optional<std::ranges::iterator_t<range_type>> cursor_;
+  std::array<char, hold + 2> queue_{};
+  std::size_t count_ = 0;
+};
+
+// A place to push characters that are not wanted.
+struct nowhere {
+  constexpr void push_back(char) const noexcept {}
+};
+
 template <fixed_string pattern, class held_type, class range_type>
 class read_once_search_view {
  public:
-  static constexpr std::size_t window = detail::longest_match_length<pattern>();
-
   constexpr explicit read_once_search_view(range_type input)
-      : input_(std::move(input)) {}
+      : finder_(std::move(input)) {}
 
   read_once_search_view(read_once_search_view&&) = default;
   read_once_search_view& operator=(read_once_search_view&&) = default;
@@ -1914,23 +2032,12 @@ class read_once_search_view {
 
    private:
     constexpr void seek() {
-      found_ = value_type{};
-      while (true) {
-        owner_->fill();
-        if (owner_->count_ == 0) return;
-        const auto taken =
-            detail::match_in_window<pattern, window>(owner_->held_,
-                                                     owner_->count_);
-        if (taken.matched && taken.length != 0) {
-          held_type made;
-          for (std::size_t at = 0; at < taken.length; ++at) {
-            made.push_back(owner_->held_[at]);
-          }
-          owner_->drop(taken.length);
-          found_ = value_type(std::move(made));
-          return;
-        }
-        owner_->drop(1);
+      held_type made;
+      nowhere dropped;
+      if (owner_->finder_.next(dropped, made)) {
+        found_ = value_type(std::move(made));
+      } else {
+        found_ = value_type{};
       }
     }
 
@@ -1943,39 +2050,18 @@ class read_once_search_view {
 
  private:
   friend class iterator;
-  friend class read_once_split_view_access;
 
-  // An iterator of such a range need not be default-constructible, so it is
-  // made where the reading starts rather than kept empty until then.
-  constexpr void fill() {
-    if (!cursor_) cursor_.emplace(std::ranges::begin(input_));
-    while (count_ < window && *cursor_ != std::ranges::end(input_)) {
-      held_[count_++] = **cursor_;
-      ++*cursor_;
-    }
-  }
-
-  constexpr void drop(std::size_t many) {
-    for (std::size_t at = many; at < count_; ++at) held_[at - many] = held_[at];
-    count_ -= many;
-  }
-
-  range_type input_;
-  std::optional<std::ranges::iterator_t<range_type>> cursor_;
-  std::array<char, window> held_{};
-  std::size_t count_ = 0;
+  read_once_finder<pattern, range_type> finder_;
 };
 
-// The pieces between those matches, off the same kind of subject. A piece is
-// as long as it is, and it is the answer, so it is the only thing here that
-// grows.
+// The pieces between those matches, off the same kind of subject. The piece is
+// the answer and it is the caller's collector; the search that finds its end
+// holds a handful of characters and nothing more.
 template <fixed_string pattern, class held_type, class range_type>
 class read_once_split_view {
  public:
-  static constexpr std::size_t window = detail::longest_match_length<pattern>();
-
   constexpr explicit read_once_split_view(range_type input)
-      : input_(std::move(input)) {}
+      : finder_(std::move(input)) {}
 
   read_once_split_view(read_once_split_view&&) = default;
   read_once_split_view& operator=(read_once_split_view&&) = default;
@@ -2012,22 +2098,10 @@ class read_once_split_view {
    private:
     constexpr void seek() {
       piece_ = held_type{};
-      while (true) {
-        owner_->fill();
-        if (owner_->count_ == 0) {
-          last_ = true;
-          return;
-        }
-        const auto taken =
-            detail::match_in_window<pattern, window>(owner_->held_,
-                                                     owner_->count_);
-        if (taken.matched && taken.length != 0) {
-          owner_->drop(taken.length);
-          return;
-        }
-        piece_.push_back(owner_->held_[0]);
-        owner_->drop(1);
-      }
+      held_type gap;
+      // The piece is what comes before the delimiter, so it is written
+      // straight into the answer while the delimiter is being looked for.
+      if (!owner_->finder_.next(piece_, gap)) last_ = true;
     }
 
     read_once_split_view* owner_ = nullptr;
@@ -2042,25 +2116,7 @@ class read_once_split_view {
  private:
   friend class iterator;
 
-  // An iterator of such a range need not be default-constructible, so it is
-  // made where the reading starts rather than kept empty until then.
-  constexpr void fill() {
-    if (!cursor_) cursor_.emplace(std::ranges::begin(input_));
-    while (count_ < window && *cursor_ != std::ranges::end(input_)) {
-      held_[count_++] = **cursor_;
-      ++*cursor_;
-    }
-  }
-
-  constexpr void drop(std::size_t many) {
-    for (std::size_t at = many; at < count_; ++at) held_[at - many] = held_[at];
-    count_ -= many;
-  }
-
-  range_type input_;
-  std::optional<std::ranges::iterator_t<range_type>> cursor_;
-  std::array<char, window> held_{};
-  std::size_t count_ = 0;
+  read_once_finder<pattern, range_type> finder_;
 };
 
 // One match after another off input that arrives in pieces.
@@ -2238,11 +2294,11 @@ struct search_all_closure
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
     static_assert(
-        detail::matches_a_bounded_length<pattern>(),
-        "a subject that can only be read once cannot be gone back over, and "
-        "the characters of a failed attempt belong to the attempt that starts "
-        "one character later: only a pattern that says how long a match can "
-        "be says how many of them to hold");
+        detail::holds_a_bounded_way<pattern>(),
+        "a subject that can only be read once cannot be gone back over, so "
+        "the characters of an attempt that comes to nothing have to be held "
+        "until it does: a pattern that can swallow any number of them without "
+        "matching, like `a+b`, would have to hold the whole subject");
     auto view = std::views::all(std::forward<range_type>(input));
     return read_once_search_view<pattern, held_type, decltype(view)>(
         std::move(view));
@@ -2503,10 +2559,12 @@ struct split_closure
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
     static_assert(
-        detail::matches_a_bounded_length<pattern>(),
-        "a subject that can only be read once cannot be gone back over: only "
-        "a delimiter that says how long it can be says how much to hold while "
-        "looking for it");
+        detail::holds_a_bounded_way<pattern>(),
+        "a subject that can only be read once cannot be gone back over, so "
+        "the characters of an attempt at the delimiter that comes to nothing "
+        "have to be held until it does: a delimiter that can swallow any "
+        "number of them without matching, like `a+b`, would have to hold the "
+        "whole subject");
     auto view = std::views::all(std::forward<range_type>(input));
     return read_once_split_view<pattern, held_type, decltype(view)>(
         std::move(view));
