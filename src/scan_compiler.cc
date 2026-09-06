@@ -1225,11 +1225,16 @@ template <class type, fixed_string format, bool allocate = true>
     classes = std::move(refined);
   }
 
+  // Everything the automaton is, and not only the parts a walk over pointers
+  // happened to read: which tag each register holds is as much a part of it as
+  // the transitions, and leaving it behind made every register of every
+  // minimised pattern say it held tag nought.
   scan::tre::tdfa minimized{.initial = classes[automaton.initial],
                       .tag_count = automaton.tag_count,
                       .register_count = automaton.register_count,
                       .initialize = std::move(automaton.initialize),
-                      .states = std::vector<scan::tre::tdfa_state>(class_count)};
+                      .states = std::vector<scan::tre::tdfa_state>(class_count),
+                      .register_tag = std::move(automaton.register_tag)};
   for (std::size_t result_class = 0; result_class < class_count; ++result_class) {
     const auto representative = std::ranges::find(classes, result_class);
     const auto& source =
