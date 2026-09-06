@@ -602,6 +602,27 @@ template <auto& automaton, std::size_t state>
 // looked up here at all.
 
 
+// How many states a state can move to, not counting itself. One is a chain:
+// the machine goes there and nowhere else, and what follows can be written
+// where the move is. More than one is a fork, and writing what follows at the
+// fork would write it once per branch.
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval std::size_t forks_of() {
+  constexpr const auto& packed = automaton.states[state];
+  std::array<std::size_t, packed.ranges.size()> named{};
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    const std::size_t target = packed.ranges[index].target;
+    if (target == state) continue;
+    bool already = false;
+    for (std::size_t at = 0; at < count; ++at) {
+      if (named[at] == target) already = true;
+    }
+    if (!already) named[count++] = target;
+  }
+  return count;
+}
+
 // Nothing gathered: what the walk hands over goes nowhere and costs nothing.
 struct gathers_nothing {
   template <std::size_t state, std::size_t landed, class registers_type,

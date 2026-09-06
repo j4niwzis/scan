@@ -440,16 +440,6 @@ template <fixed_string pattern, std::size_t state>
 // the machine goes there and nowhere else, and what follows can be written
 // where the move is. More than one is a fork, and writing what follows at the
 // fork would write it once per branch.
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] consteval std::size_t forks_of() {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  std::size_t count = 0;
-  for (std::size_t which = 0; which < targets.size; ++which) {
-    if (targets.values[which] != state) ++count;
-  }
-  return count;
-}
-
 // How far a chain is followed before the next state is reached by a call.
 //
 // A timestamp is nineteen states in a row, each taking one character; a row of
@@ -1309,9 +1299,11 @@ struct collected_match_closure
 
     auto cursor = std::ranges::begin(input);
     std::ptrdiff_t position = 0;
-    if (!detail::run_continuation<automaton, false, automaton.initial,
-                                  std::ptrdiff_t>(
-            cursor, std::ranges::end(input), position, registers, into)) {
+    if (!detail::run_continuation<automaton, detail::walk_shape{},
+                                  automaton.initial, 0, 0, std::ptrdiff_t>(
+             cursor, std::ranges::end(input), position, registers, into,
+             detail::walk_answer<decltype(cursor)>{})
+             .matched) {
       return result_type{};
     }
     return result_type{
@@ -1522,7 +1514,8 @@ struct match_closure
     const auto first = std::ranges::begin(input);
     const auto last = std::ranges::end(input);
     auto walking = first;
-    if (!walk_over<pattern, detail::walk_shape{}>(walking, last).matched) {
+    if (!detail::walk_over<pattern, detail::walk_shape{}>(walking, last)
+             .matched) {
       return basic_result<holder, 0>{};
     }
     return basic_result<holder, 0>{
@@ -1619,7 +1612,7 @@ struct starts_with_closure
     using holder = detail::walked_holder<range_type>;
     auto walking = std::ranges::begin(input);
     const auto first = walking;
-    const auto found = walk_over<pattern, head_shape<pattern>()>(
+    const auto found = detail::walk_over<pattern, detail::head_shape<pattern>()>(
         walking, std::ranges::end(input));
     if (!found.matched) return basic_result<holder, 0>{};
     return basic_result<holder, 0>{
