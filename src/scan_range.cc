@@ -582,8 +582,21 @@ class each_stream_scan {
 // is the call, `text | each<f>` is the same thing said the other way round,
 // and the type each of them hands back is asked for the same way --
 // `.of<type>()`.
+template <fixed_string format, class pieces_type>
+class each_pieces_scan;
+
 template <fixed_string format>
 struct each_closure : std::ranges::range_adaptor_closure<each_closure<format>> {
+  // Off input that arrives in pieces: each piece read in words and vectors,
+  // and the reading held between matches.
+  template <detail::piecewise_char_range pieces_type>
+    requires(!detail::contiguous_char_range<pieces_type> &&
+             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
+  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
+    auto view = std::views::all(std::forward<pieces_type>(input));
+    return each_pieces_scan<format, decltype(view)>(std::move(view));
+  }
+
   template <detail::contiguous_char_range range_type>
     requires(std::is_lvalue_reference_v<range_type&&> ||
              std::ranges::borrowed_range<range_type>)
@@ -606,6 +619,99 @@ struct each_closure : std::ranges::range_adaptor_closure<each_closure<format>> {
 template <fixed_string format>
 inline constexpr each_closure<format> each{};
 
+// What `each` over pieces hands back until somebody says what it reads into.
+template <fixed_string format, class pieces_type>
+class each_pieces_scan {
+ public:
+  constexpr explicit each_pieces_scan(pieces_type input)
+      : input_(std::move(input)) {}
+
+  each_pieces_scan(each_pieces_scan&&) = default;
+  each_pieces_scan& operator=(each_pieces_scan&&) = default;
+  each_pieces_scan(const each_pieces_scan&) = delete;
+  each_pieces_scan& operator=(const each_pieces_scan&) = delete;
+
+  template <class type>
+  [[nodiscard]] constexpr each_pieces_view<type, format, pieces_type> of() && {
+    return each_pieces_view<type, format, pieces_type>(std::move(input_));
+  }
+
+ private:
+  pieces_type input_;
+};
+
+// One match after another off input that arrives in pieces.
+//
+// The reading is held between matches: where one stopped is where the next
+// begins, in the piece the walk is holding, so nothing is put back and nothing
+// is read twice. The gathering starts again for each match; the pieces do not.
+template <class type, fixed_string format, class pieces_type>
+class each_pieces_view {
+ public:
+  using automaton_type =
+      std::remove_cvref_t<decltype(detail::streaming_automaton<type, format>)>;
+  using gatherer_type =
+      detail::field_gatherer<type, format,
+                             detail::streaming_automaton<type, format>>;
+  using source_type = detail::gathers_from_pieces<gatherer_type, pieces_type>;
+
+  constexpr explicit each_pieces_view(pieces_type input)
+      : source_(gatherer_type{}, std::move(input)) {}
+
+  each_pieces_view(each_pieces_view&&) = default;
+  each_pieces_view& operator=(each_pieces_view&&) = default;
+  each_pieces_view(const each_pieces_view&) = delete;
+  each_pieces_view& operator=(const each_pieces_view&) = delete;
+
+  class iterator {
+   public:
+    using value_type = type;
+    using difference_type = std::ptrdiff_t;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(each_pieces_view& owner) : owner_(&owner) {
+      owner_->advance();
+    }
+
+    [[nodiscard]] constexpr const type& operator*() const {
+      return *owner_->value_;
+    }
+    constexpr iterator& operator++() {
+      owner_->advance();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return owner_ == nullptr || !owner_->value_.has_value();
+    }
+
+   private:
+    each_pieces_view* owner_ = nullptr;
+  };
+
+  [[nodiscard]] constexpr iterator begin() { return iterator(*this); }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+ private:
+  friend class iterator;
+
+  constexpr void advance() {
+    value_.reset();
+    // The gathering begins again; the reading does not.
+    static_cast<gatherer_type&>(source_) = gatherer_type{};
+    auto taken = detail::take_from_pieces<type, format>(source_, cursor_, last_,
+                                                       place_);
+    if (!taken.matched) return;
+    value_ = std::move(taken.value);
+  }
+
+  source_type source_;
+  const char* cursor_ = nullptr;
+  const char* last_ = nullptr;
+  std::ptrdiff_t place_ = 0;
+  std::optional<type> value_;
+};
+
 // The same scan, over input that arrives in pieces rather than all at once.
 //
 // Each piece is characters in a row, so the walk reads it in words and
@@ -614,7 +720,7 @@ inline constexpr each_closure<format> each{};
 // back owns whatever it holds.
 template <fixed_string format, detail::piecewise_char_range pieces_type>
   requires(!detail::contiguous_char_range<pieces_type>)
-[[nodiscard]] constexpr auto scan_over(pieces_type&& input) {
+[[nodiscard]] constexpr auto scan(pieces_type&& input) {
   return detail::pieces_result<format, pieces_type>(
       std::forward<pieces_type>(input));
 }

@@ -1285,6 +1285,44 @@ struct collected_match_closure
         found, std::make_index_sequence<sizeof...(collectors)>{});
   }
 
+  // Off input that arrives in pieces: each piece read in words and vectors,
+  // and the collectors gathering as the walk goes through them.
+  template <detail::piecewise_char_range pieces_type>
+    requires(!detail::contiguous_char_range<pieces_type> &&
+             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
+  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+    using holder = skipped;
+    using result_type =
+        typed_result<holder, detail::collected_type<collectors, held_type>...>;
+
+    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    std::ranges::fill(registers, scan::tre::negative_tag);
+    detail::execute_commands(automaton.initialize,
+                             automaton.initialize.size(), registers,
+                             std::ptrdiff_t{0});
+    auto states = beginning(std::make_index_sequence<sizeof...(collectors)>{});
+    auto view = std::views::all(std::forward<pieces_type>(input));
+    detail::gathers_from_pieces<gathering_into<decltype(states)>,
+                                decltype(view)>
+        into(gathering_into<decltype(states)>(*this, states), std::move(view));
+
+    const char* cursor = nullptr;
+    const char* last = nullptr;
+    std::ptrdiff_t place = 0;
+    detail::walk_answer<const char*> best;
+    constexpr detail::walk_shape shape{.in_words = true};
+    if (!detail::run_continuation<automaton, shape, automaton.initial,
+                                  shape.budget, 0, std::ptrdiff_t>(
+            cursor, last, place, registers, into, best)) {
+      return result_type{};
+    }
+    return result_type{
+        basic_submatch<holder>(skipped{}),
+        finishing(std::move(states),
+                  std::make_index_sequence<sizeof...(collectors)>{})};
+  }
+
   // Walked by the same code that walks characters in a row, with the
   // collectors gathering as it goes.
   //
@@ -1584,6 +1622,34 @@ struct match_closure
     return basic_result<holder, 0>{
         basic_submatch<holder>(holder(first, std::ranges::next(first, last))),
         {}};
+  }
+
+  // Off input that arrives in pieces: read in words and vectors inside a
+  // piece, and the answer owns what it kept, because a piece is gone once the
+  // walk has left it.
+  template <detail::piecewise_char_range pieces_type>
+    requires(!detail::contiguous_char_range<pieces_type> &&
+             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
+  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+    held_type held;
+    auto view = std::views::all(std::forward<pieces_type>(input));
+    detail::gathers_from_pieces<detail::keeps_into<held_type>, decltype(view)>
+        into(detail::keeps_into<held_type>{held}, std::move(view));
+    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    std::ranges::fill(registers, scan::tre::negative_tag);
+    const char* cursor = nullptr;
+    const char* last = nullptr;
+    std::ptrdiff_t place = 0;
+    detail::walk_answer<const char*> best;
+    constexpr detail::walk_shape shape{.in_words = true};
+    if (!detail::run_continuation<automaton, shape, automaton.initial,
+                                  shape.budget, 0, std::ptrdiff_t>(
+            cursor, last, place, registers, into, best)) {
+      return basic_result<held_type, 0>{};
+    }
+    return basic_result<held_type, 0>{
+        basic_submatch<held_type>(std::move(held)), {}};
   }
 
   // Walked by the same code that walks a list of characters, which is the
