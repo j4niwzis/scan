@@ -300,9 +300,51 @@ template <fixed_string pattern, std::size_t state>
   return answer;
 }
 
+// How many states a state can move to, not counting itself. One is a chain:
+// the machine goes there and nowhere else, and what follows can be written
+// where the move is. More than one is a fork, and writing what follows at the
+// fork would write it once per branch.
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] consteval std::size_t forks_of() {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  std::size_t count = 0;
+  for (std::size_t which = 0; which < targets.size; ++which) {
+    if (targets.values[which] != state) ++count;
+  }
+  return count;
+}
+
+// How far a chain is followed before the next state is reached by a call.
+//
+// A timestamp is nineteen states in a row, each taking one character; a row of
+// comma-separated fields is a dozen. Reaching each of them by a call is a call
+// for every character of the subject, which is what a generated scanner never
+// does -- so the chain is followed here, and the cap is only against a pattern
+// long enough to make one function of the whole of it.
+template <fixed_string pattern>
+[[nodiscard]] consteval std::size_t chain_budget() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.accepting)>>;
+  return state_count < 32 ? state_count : 32;
+}
+
+template <fixed_string pattern, bool in_vectors, std::size_t state,
+          std::size_t budget, std::size_t certain>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool run_state_continuation(
+    const char* cursor, const char* end);
+
+// The next state, reached by a call, with the chain ahead of it written out
+// again. Every state is entered this way once, and from there the chain that
+// follows it costs no calls at all.
 template <fixed_string pattern, bool in_vectors, std::size_t state>
-[[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
-                                                    const char* end);
+[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr bool run_state_from_here(
+    const char* cursor, const char* end) {
+  // Nothing is certain across a call: how many characters were read to get
+  // here is not known where it lands.
+  return run_state_continuation<pattern, in_vectors, state,
+                                chain_budget<pattern>(), 0>(cursor, end);
+}
 
 template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
           std::size_t state>
@@ -310,7 +352,7 @@ template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
                                                        const char* end);
 
 template <fixed_string pattern, bool in_vectors, std::size_t state,
-          std::size_t which = 0>
+          std::size_t budget, std::size_t certain, std::size_t which = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
 dispatch_transition(unsigned char symbol, const char* cursor,
                     const char* end) {
@@ -321,15 +363,20 @@ dispatch_transition(unsigned char symbol, const char* cursor,
     // Where the symbol keeps the automaton is asked before this, and runs do
     // not overlap, so a symbol that stays here belongs to no other target and
     // falls out of every test below.
-    return dispatch_transition<pattern, in_vectors, state, which + 1>(
-        symbol, cursor, end);
+    return dispatch_transition<pattern, in_vectors, state, budget, certain,
+                               which + 1>(symbol, cursor, end);
   } else {
     constexpr auto target = targets.values[which];
     if (moves_to<pattern, state, target>(symbol)) {
-      return run_state_continuation<pattern, in_vectors, target>(cursor, end);
+      if constexpr (budget != 0 && forks_of<pattern, state>() == 1) {
+        return run_state_continuation<pattern, in_vectors, target, budget - 1,
+                                      certain>(cursor, end);
+      } else {
+        return run_state_from_here<pattern, in_vectors, target>(cursor, end);
+      }
     }
-    return dispatch_transition<pattern, in_vectors, state, which + 1>(
-        symbol, cursor, end);
+    return dispatch_transition<pattern, in_vectors, state, budget, certain,
+                               which + 1>(symbol, cursor, end);
   }
 }
 
@@ -405,9 +452,27 @@ template <fixed_string pattern, std::size_t state>
   }
 }
 
-template <fixed_string pattern, bool in_vectors, std::size_t state>
-[[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
-                                                    const char* end) {
+template <fixed_string pattern, bool in_vectors, std::size_t state,
+          std::size_t budget, std::size_t certain>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool run_state_continuation(
+    const char* cursor, const char* end) {
+  // A character that is certainly there is read without asking whether it is.
+  //
+  // The subject was measured against the shortest match before the first
+  // character was read, so along a chain of states that each take exactly one
+  // character, the next character is known to exist -- for as many characters
+  // as the shortest match is long. A timestamp is nineteen such states and
+  // nineteen such characters, which is the whole of it.
+  //
+  // Asked anyway, the question does not cost a branch: the compiler folds it
+  // into the class test with a `sete` and an `or`, and that is a chain of
+  // dependent operations on every character where a well predicted branch
+  // would have been free. Twice the time, measured.
+  if constexpr (certain != 0 && staying_class_of<pattern, state>().count == 0) {
+    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
+    return dispatch_transition<pattern, in_vectors, state, budget,
+                               certain - 1>(symbol, cursor, end);
+  }
   // Over the run this state keeps, in vectors, once on the way in. What is
   // left after it is shorter than a vector and is read a character at a time,
   // which is what the loop below does anyway.
@@ -417,8 +482,8 @@ template <fixed_string pattern, bool in_vectors, std::size_t state>
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
-    return dispatch_transition<pattern, in_vectors, state>(symbol, cursor,
-                                                           end);
+    return dispatch_transition<pattern, in_vectors, state, budget, 0>(
+        symbol, cursor, end);
   }
   return regex_automaton<pattern>.accepting[state];
 }
@@ -540,10 +605,14 @@ regex_match(
     constexpr std::size_t worth_a_vector = 64;
     const bool matched =
         input.size() >= worth_a_vector
-            ? run_state_continuation<pattern, true, automaton.initial>(cursor,
+            ? run_state_continuation<pattern, true, automaton.initial,
+                                     chain_budget<pattern>(),
+                                     minimum_match_length<pattern>()>(cursor,
                                                                       end)
-            : run_state_continuation<pattern, false, automaton.initial>(cursor,
-                                                                       end);
+            : run_state_continuation<pattern, false, automaton.initial,
+                                     chain_budget<pattern>(),
+                                     minimum_match_length<pattern>()>(cursor,
+                                                                      end);
     if (!matched) return {};
     return {regex_submatch(input), {}};
   } else {
