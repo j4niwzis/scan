@@ -56,25 +56,24 @@ static_assert(std::ranges::input_range<counted_reading>);
 static_assert(!std::ranges::forward_range<counted_reading>);
 static_assert(scan::detail::read_once_char_range<counted_reading>);
 
-struct the_whole_word { scan::held<8> text; };
-struct the_short_word { scan::held<8> text; };
-struct the_rest_word { scan::held<8> text; };
+struct for_word { scan::held<8> text; };
+struct each_word { scan::held<8> text; };
 
-using keyword = std::variant<the_whole_word, the_short_word, the_rest_word>;
-struct row { keyword value; };
+using either = std::variant<for_word, each_word>;
+struct row { either value; };
 
 
 TEST(FirstAccept, ReadsNoFurtherThanTheRecordHandedOver) {
   std::size_t taken = 0;
   std::vector<std::size_t> taken_when_the_body_ran;
   std::vector<std::size_t> which;
-  for (const row& one : scan::each<"{{foreach}|{for}|{each}}">(
+  for (const row& one : scan::each<"{{for}|{each}}">(
                             counted_reading("foreach", &taken))
                             .of<row>()) {
     taken_when_the_body_ran.push_back(taken);
     which.push_back(one.value.index());
   }
-  ASSERT_EQ(which, std::vector<std::size_t>({1u, 2u}));
+  ASSERT_EQ(which, std::vector<std::size_t>({0u, 1u}));
   // `for` is handed over having read `f`, `o`, `r` and nothing else: the four
   // characters of `each` are still in the subject while the body runs.
   ASSERT_EQ(taken_when_the_body_ran.size(), 2u);

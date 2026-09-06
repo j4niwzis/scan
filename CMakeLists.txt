@@ -209,8 +209,6 @@ set(scan_tests
   streams_sscanf_like_floating_test
   streams_unbounded_custom_value_test
   tagged_automata_test
-  the_first_accept_ends_the_record_test
-  the_first_accept_off_a_stream_test
   the_head_of_an_input_test
   the_leftmost_and_longest_test
   the_outer_branch_test
@@ -223,6 +221,8 @@ set(scan_tests
   values_call_test
   variant_default_test
   variant_field_test
+  where_a_record_ends_off_a_stream_test
+  where_a_record_ends_test
   written_as_exactly_two_test
   written_as_one_or_more_test)
 foreach(one IN LISTS scan_tests)
