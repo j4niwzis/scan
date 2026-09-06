@@ -419,6 +419,15 @@ template <fixed_string pattern, bool in_vectors, std::size_t state>
   return regex_automaton<pattern>.accepting[state];
 }
 
+template <fixed_string pattern, unsigned char sentinel>
+[[nodiscard]] consteval bool is_safe_sentinel() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  return std::ranges::all_of(automaton.transitions, [](const auto& row) {
+    return row[sentinel] ==
+           std::remove_cvref_t<decltype(automaton)>::reject;
+  });
+}
+
 template <fixed_string pattern, unsigned char sentinel, std::size_t state>
 [[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor) {
   // The class first, the sentinel afterwards.
