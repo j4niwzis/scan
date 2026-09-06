@@ -673,9 +673,14 @@ struct walk_shape {
   // is one comparison a character instead of two.
   bool by_terminator = false;
   unsigned char terminator = 0;
-  // Answer where the longest match ended rather than whether the whole of it
-  // matched.
-  bool longest_head = false;
+  // Answer where the machine stopped rather than whether the whole of the
+  // subject matched.
+  //
+  // Not the longest match: this is a regular expression and not a lexer, so
+  // the machine takes what it takes and stops where it can go no further. If
+  // it stopped in a state that accepts, that is the head; if it did not, there
+  // is no head. Nothing is remembered along the way and nothing is given back.
+  bool head = false;
   // How far the chain of states is written out before the next one is reached
   // by a call.
   std::size_t budget = 0;
@@ -724,6 +729,24 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     walk_answer<cursor_type>& best) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
+    // Nowhere to go. For a walk that wants the whole of the subject that is a
+    // refusal; for one that wants a head, it is the head -- if this state
+    // accepts.
+    if constexpr (shape.head) {
+      constexpr bool accepts_here =
+          automaton.states[state].accepting_slot !=
+          packed_state<0, 0, 0>::not_accepting;
+      if constexpr (accepts_here) {
+        if constexpr (std::is_pointer_v<mark>) {
+          execute_static_final_commands<automaton, state>(registers, place);
+        } else {
+          execute_static_final_commands<automaton, state>(registers, place - 1);
+        }
+        into.template ended<state>(registers);
+        best.matched = true;
+        return true;
+      }
+    }
     return best.matched;
   } else {
     constexpr std::size_t move = moves.at[which];
@@ -772,21 +795,13 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       automaton.states[state].accepting_slot !=
       packed_state<0, 0, 0>::not_accepting;
 
-  if constexpr (shape.longest_head && accepts_here) {
-    best.matched = true;
-    best.at = cursor;
-  }
   // Over the run this state keeps, in vectors -- only where the characters lie
   // in a row and nobody is gathering them, because what is stepped over is not
-  // read. A walk looking for the longest head cannot step over a run either:
-  // it would step over the places it is looking for.
-  if constexpr (shape.in_words && by_place && !gathers && !shape.longest_head &&
+  // read. A head may be read this way too: what is stepped over is a run that
+  // keeps the machine here, and where it stops is where the run ends.
+  if constexpr (shape.in_words && by_place && !gathers &&
                 runs_in_place<automaton, state>()) {
     cursor = skip_class<staying_of<automaton, state>()>(cursor, last);
-    if constexpr (accepts_here && shape.longest_head) {
-      best.matched = true;
-      best.at = cursor;
-    }
   }
   while (true) {
     // A character that is certainly there is read without asking whether it
@@ -801,6 +816,9 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     if constexpr (!shape.by_terminator && !counts_here) {
       if (cursor == last) break;
     }
+    // Where this symbol begins, which is where a head ends if the machine
+    // cannot take it.
+    cursor_type before = cursor;
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
     ++cursor;
     // The operations of a transition are the tags the state before it was
@@ -818,10 +836,6 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         into.template moved<state, state>(stayed, static_cast<char>(symbol),
                                           registers, place);
       }
-      if constexpr (shape.longest_head && accepts_here) {
-        best.matched = true;
-        best.at = cursor;
-      }
       continue;
     }
     // Tested after the class, not before: a terminator no state takes cannot
@@ -829,7 +843,6 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     // branch to every character.
     if constexpr (shape.by_terminator) {
       if (symbol == shape.terminator) {
-        if constexpr (shape.longest_head) return best.matched;
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, place);
           into.template ended<state>(registers);
@@ -839,15 +852,18 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         }
       }
     }
+    if constexpr (shape.head) best.at = before;
     return dispatch_continuation<automaton, shape, state, budget,
                                  counts_here ? certain - 1 : 0, mark>(
         symbol, cursor, last, place, registers, into, best);
   }
-  if constexpr (shape.longest_head) {
-    return best.matched;
-  } else if constexpr (!accepts_here) {
+  if constexpr (!accepts_here) {
     return best.matched;
   } else {
+    if constexpr (shape.head) {
+      best.matched = true;
+      best.at = cursor;
+    }
     if constexpr (by_place) {
       execute_static_final_commands<automaton, state>(registers, cursor);
     } else {
@@ -874,7 +890,7 @@ template <auto& automaton, unsigned char terminator, bool in_words,
                                        best);
 }
 
-// The longest head of characters in a row, or nothing.
+// The head of characters in a row that the pattern takes, or nothing.
 template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr const char* run_head(
     const char* cursor, const char* end,
@@ -882,7 +898,7 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
-  constexpr walk_shape shape{.longest_head = true};
+  constexpr walk_shape shape{.head = true};
   const bool found =
       run_continuation<automaton, shape, state, shape.budget, 0, const char*>(
           cursor, end, place, registers, nothing, best);
@@ -1107,6 +1123,60 @@ inline void execute_runtime_commands(
     if (automaton.states[state].accepting_slot.has_value()) best = cursor;
   }
   return best;
+}
+
+// The head of the input and the fields out of it, in one walk.
+//
+// Finding where a head ends and reading what is in it were two walks over the
+// same characters: the first carried no registers and threw away everything
+// but the length, the second began again. The walk carries the registers, and
+// where it stops is where the head ends -- so what the second walk went to
+// fetch is already in hand.
+template <class type, fixed_string format, bool absent_is_empty = false>
+[[nodiscard]] constexpr auto taken_prefix_fields(std::string_view input) {
+  constexpr const auto& automaton = packed_automaton<type, format>;
+  constexpr std::size_t group_count = automaton.tag_count / 2;
+  struct answer {
+    std::string_view head;
+    std::array<std::string_view, group_count> groups{};
+    bool matched = false;
+  };
+  answer said;
+  const char* const begin = input.data();
+  std::array<const char*, automaton.register_count> registers{};
+  constexpr auto written_everywhere = tags_always_written<automaton>();
+  [&]<std::size_t... tag>(std::index_sequence<tag...>) {
+    ((written_everywhere[tag] ? void() : void(registers[tag] = nullptr)), ...);
+  }(std::make_index_sequence<automaton.tag_count>{});
+  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
+                   begin);
+
+  gathers_nothing nothing;
+  walk_answer<const char*> best;
+  const char* cursor = begin;
+  const char* place = begin;
+  constexpr walk_shape shape{.head = true};
+  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+                        const char*>(cursor, begin + input.size(), place,
+                                     registers, nothing, best)) {
+    return said;
+  }
+  said.matched = true;
+  said.head =
+      std::string_view(begin, static_cast<std::size_t>(*best.at - begin));
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ((said.groups[group] = [&]() -> std::string_view {
+        const char* const from = registers[group * 2];
+        const char* const to = registers[group * 2 + 1];
+        if (from == nullptr || to == nullptr) {
+          if constexpr (absent_is_empty) return std::string_view{};
+          throw scan_error("capture group did not participate in the match");
+        }
+        return std::string_view(from, static_cast<std::size_t>(to - from));
+      }()),
+     ...);
+  }(std::make_index_sequence<group_count>{});
+  return said;
 }
 
 template <class type, fixed_string format>

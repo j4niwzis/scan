@@ -195,10 +195,17 @@ class prefix_scan {
 
   template <class type>
   [[nodiscard]] constexpr taken<type> take() const {
-    const std::string_view head = detail::taken_prefix<type, format>(input_);
-    // By length, always: the head is a piece of the middle of something, and
-    // whatever terminator the whole input carried is not behind it.
-    return {detail::borrowed_result<format>(head), input_.substr(head.size())};
+    // One walk: where the head ends and what is in it come back together, out
+    // of the registers the walk was carrying anyway.
+    const auto found =
+        detail::taken_prefix_fields<type, format,
+                                    detail::holds_a_variant<type>()>(input_);
+    if (!found.matched) {
+      throw scan_error("input does not begin with the pattern");
+    }
+    return {detail::build_value<detail::format_parameters<type, format>, type,
+                                0>(found.groups),
+            input_.substr(found.head.size())};
   }
 
   // The head and what follows it, or what went wrong instead.
@@ -281,11 +288,15 @@ class each_view {
   constexpr void advance() {
     value_.reset();
     if (rest_.empty()) return;
-    const std::string_view head =
-        detail::taken_prefix_or_none<type, format>(rest_);
-    if (head.data() == nullptr) return;
-    value_ = detail::borrowed_result<format>(head);
-    rest_ = rest_.substr(head.size());
+    // One walk a match, not two: the walk that finds where this one ends is
+    // carrying what is in it.
+    const auto found =
+        detail::taken_prefix_fields<type, format,
+                                    detail::holds_a_variant<type>()>(rest_);
+    if (!found.matched) return;
+    value_ = detail::build_value<detail::format_parameters<type, format>, type,
+                                 0>(found.groups);
+    rest_ = rest_.substr(found.head.size());
   }
 
   std::string_view rest_;

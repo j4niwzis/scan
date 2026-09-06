@@ -564,7 +564,7 @@ template <fixed_string pattern, unsigned char terminator>
 
 template <fixed_string pattern>
 [[nodiscard]] consteval detail::walk_shape head_shape() {
-  return {.longest_head = true, .budget = chain_budget<pattern>()};
+  return {.head = true, .budget = chain_budget<pattern>()};
 }
 
 // Whether the subject matched, and where the longest head ended for the walks
