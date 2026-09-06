@@ -611,78 +611,156 @@ struct gathers_nothing {
   constexpr void ended(const registers_type&) const {}
 };
 
-// The walk, once, for every kind of subject.
+// A gatherer that keeps every character it is handed, which is what a match
+// over a subject read once hands back.
+template <class held_type>
+struct keeps_into {
+  held_type& held;
+
+  template <std::size_t state, std::size_t landed, class registers_type,
+            class mark>
+  constexpr void moved(std::size_t, char letter, const registers_type&,
+                       mark) const {
+    held.push_back(letter);
+  }
+  template <std::size_t state, class registers_type>
+  constexpr void ended(const registers_type&) const {}
+};
+
+// How a walk reads, and what it answers.
 //
-// What differs between reading characters that lie in a row and reading them
-// as they arrive is four things, and all four are parameters here: how a
-// character is read, what a mark is -- a place in the subject, or how many
-// characters have gone by -- whether anybody is gathering, and whether a run
-// can be stepped over in vectors. The rest is one body: the same runs, the same
-// moves, the same commands, the same end.
-template <auto& automaton, bool in_words, std::size_t state, class mark,
+// Every walk in this library is this walk. What used to be seven bodies is
+// seven settings: characters in a row or characters as they arrive, an end to
+// stop at or a terminator to stop on, an answer of yes or no or of where the
+// longest match ended, tags or none, a gatherer or nobody, vectors or not, and
+// how far to write the chain of states out without calling.
+struct walk_shape {
+  // Step over a run in vectors. Wants characters in a row and nobody
+  // gathering: what is stepped over is not read.
+  bool in_words = false;
+  // The reading ends on a symbol no state takes rather than at a limit, which
+  // is one comparison a character instead of two.
+  bool by_terminator = false;
+  unsigned char terminator = 0;
+  // Answer where the longest match ended rather than whether the whole of it
+  // matched.
+  bool longest_head = false;
+  // How far the chain of states is written out before the next one is reached
+  // by a call.
+  std::size_t budget = 0;
+};
+
+template <class cursor_type>
+struct walk_answer {
+  bool matched = false;
+  cursor_type at{};
+};
+
+template <auto& automaton, walk_shape shape, std::size_t state,
+          std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer>
-[[nodiscard]] constexpr bool run_continuation(
+[[nodiscard]] constexpr walk_answer<cursor_type> run_continuation(
     cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into);
+    std::array<mark, register_count>& registers, gatherer& into,
+    walk_answer<cursor_type> best);
 
-template <auto& automaton, bool in_words, std::size_t state, class mark,
+// Reached by a call, with the chain ahead of it written out again from there.
+template <auto& automaton, walk_shape shape, std::size_t state, class mark,
+          class cursor_type, class sentinel_type, std::size_t register_count,
+          class gatherer>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr walk_answer<cursor_type>
+run_from_state(cursor_type& cursor, sentinel_type last, mark& place,
+               std::array<mark, register_count>& registers, gatherer& into,
+               walk_answer<cursor_type> best) {
+  return run_continuation<automaton, shape, state, shape.budget, 0, mark>(
+      cursor, last, place, registers, into, best);
+}
+
+template <auto& automaton, walk_shape shape, std::size_t state,
+          std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, std::size_t which = 0>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr bool dispatch_continuation(
-    unsigned char symbol, cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into) {
+[[nodiscard]] SCAN_FORCE_INLINE constexpr walk_answer<cursor_type>
+dispatch_continuation(unsigned char symbol, cursor_type& cursor,
+                      sentinel_type last, mark& place,
+                      std::array<mark, register_count>& registers,
+                      gatherer& into, walk_answer<cursor_type> best) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
-    return false;
+    return best;
   } else {
     constexpr std::size_t move = moves.at[which];
     constexpr const auto& range = automaton.states[state].ranges[move];
     if constexpr (range.target == state) {
-      return dispatch_continuation<automaton, in_words, state, mark,
-                                   cursor_type, sentinel_type, register_count,
-                                   gatherer, which + 1>(symbol, cursor, last,
-                                                        place, registers, into);
+      // Whether the symbol keeps the machine here is asked before this.
+      return dispatch_continuation<automaton, shape, state, budget, certain,
+                                   mark, cursor_type, sentinel_type,
+                                   register_count, gatherer, which + 1>(
+          symbol, cursor, last, place, registers, into, best);
     } else {
       if (makes_move<automaton, state, move>(symbol)) {
         execute_static_transition_commands<automaton, state, move>(registers,
                                                                    place);
-        into.template moved<state, range.target>(move, static_cast<char>(symbol),
-                                                 registers, place);
-        [[clang::always_inline]] return run_continuation<
-            automaton, in_words, range.target, mark>(cursor, last, place,
-                                                     registers, into);
+        into.template moved<state, range.target>(
+            move, static_cast<char>(symbol), registers, place);
+        if constexpr (budget != 0 && forks_of<automaton, state>() == 1) {
+          return run_continuation<automaton, shape, range.target, budget - 1,
+                                  certain>(cursor, last, place, registers, into,
+                                           best);
+        } else {
+          return run_from_state<automaton, shape, range.target, mark>(
+              cursor, last, place, registers, into, best);
+        }
       }
-      return dispatch_continuation<automaton, in_words, state, mark,
-                                   cursor_type, sentinel_type, register_count,
-                                   gatherer, which + 1>(symbol, cursor, last,
-                                                        place, registers, into);
+      return dispatch_continuation<automaton, shape, state, budget, certain,
+                                   mark, cursor_type, sentinel_type,
+                                   register_count, gatherer, which + 1>(
+          symbol, cursor, last, place, registers, into, best);
     }
   }
 }
 
-template <auto& automaton, bool in_words, std::size_t state, class mark,
+template <auto& automaton, walk_shape shape, std::size_t state,
+          std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer>
-[[nodiscard]] constexpr bool run_continuation(
+[[nodiscard]] constexpr walk_answer<cursor_type> run_continuation(
     cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into) {
+    std::array<mark, register_count>& registers, gatherer& into,
+    walk_answer<cursor_type> best) {
   constexpr bool by_place = std::is_pointer_v<mark>;
   constexpr bool gathers = !std::same_as<gatherer, gathers_nothing>;
+  constexpr bool accepts_here =
+      automaton.states[state].accepting_slot !=
+      packed_state<0, 0, 0>::not_accepting;
+
+  if constexpr (shape.longest_head && accepts_here) {
+    best = {.matched = true, .at = cursor};
+  }
   // Over the run this state keeps, in vectors -- only where the characters lie
   // in a row and nobody is gathering them, because what is stepped over is not
-  // read.
-  if constexpr (in_words && by_place && !gathers &&
+  // read. A walk looking for the longest head cannot step over a run either:
+  // it would step over the places it is looking for.
+  if constexpr (shape.in_words && by_place && !gathers && !shape.longest_head &&
                 runs_in_place<automaton, state>()) {
     cursor = skip_class<staying_of<automaton, state>()>(cursor, last);
+    if constexpr (accepts_here && shape.longest_head) {
+      best = {.matched = true, .at = cursor};
+    }
   }
-  while (cursor != last) {
+  while (true) {
+    // A character that is certainly there is read without asking whether it
+    // is: the subject was measured against the shortest match before the first
+    // one, so along a chain of states that each take one character the next is
+    // known to exist. A terminator answers the question by itself.
+    if constexpr (!shape.by_terminator && certain == 0) {
+      if (cursor == last) break;
+    }
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
     ++cursor;
     // The operations of a transition are the tags the state before it was
-    // holding back, so they are written with the mark of this symbol: where it
-    // stood, for a subject that can be pointed at; how many have gone by, for
-    // one that cannot.
+    // holding back, so they are written with the mark of this symbol.
     if constexpr (by_place) {
       place = cursor - 1;
     } else {
@@ -695,15 +773,34 @@ template <auto& automaton, bool in_words, std::size_t state, class mark,
         into.template moved<state, state>(stayed, static_cast<char>(symbol),
                                           registers, place);
       }
+      if constexpr (shape.longest_head && accepts_here) {
+        best = {.matched = true, .at = cursor};
+      }
       continue;
     }
-    return dispatch_continuation<automaton, in_words, state, mark, cursor_type,
-                                 sentinel_type, register_count, gatherer>(
-        symbol, cursor, last, place, registers, into);
+    // Tested after the class, not before: a terminator no state takes cannot
+    // keep the machine where it is, so asking about it first would only add a
+    // branch to every character.
+    if constexpr (shape.by_terminator) {
+      if (symbol == shape.terminator) {
+        if constexpr (shape.longest_head) return best;
+        if constexpr (accepts_here) {
+          execute_static_final_commands<automaton, state>(registers, place);
+          into.template ended<state>(registers);
+          return {.matched = true, .at = cursor};
+        } else {
+          return best;
+        }
+      }
+    }
+    return dispatch_continuation<automaton, shape, state, budget,
+                                 certain == 0 ? 0 : certain - 1, mark>(
+        symbol, cursor, last, place, registers, into, best);
   }
-  if constexpr (automaton.states[state].accepting_slot ==
-                packed_state<0, 0, 0>::not_accepting) {
-    return false;
+  if constexpr (shape.longest_head) {
+    return best;
+  } else if constexpr (!accepts_here) {
+    return best;
   } else {
     if constexpr (by_place) {
       execute_static_final_commands<automaton, state>(registers, cursor);
@@ -711,7 +808,7 @@ template <auto& automaton, bool in_words, std::size_t state, class mark,
       execute_static_final_commands<automaton, state>(registers, place);
     }
     into.template ended<state>(registers);
-    return true;
+    return {.matched = true, .at = cursor};
   }
 }
 
@@ -724,8 +821,11 @@ template <auto& automaton, bool in_words, std::size_t state,
     std::array<const char*, register_count>& registers) {
   gathers_nothing nothing;
   const char* place = cursor;
-  return run_continuation<automaton, in_words, state, const char*>(
-      cursor, end, place, registers, nothing);
+  constexpr walk_shape shape{.in_words = in_words};
+  return run_continuation<automaton, shape, state, shape.budget, 0,
+                          const char*>(cursor, end, place, registers, nothing,
+                                       walk_answer<const char*>{})
+      .matched;
 }
 
 // The same automaton walked without an end pointer.
@@ -2016,8 +2116,12 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   field_gatherer<type, format, automaton> into;
   auto cursor = std::ranges::begin(input);
   std::ptrdiff_t position = 0;
-  if (!run_continuation<automaton, false, automaton.initial, std::ptrdiff_t>(
-          cursor, std::ranges::end(input), position, registers, into)) {
+  constexpr walk_shape shape{};
+  if (!run_continuation<automaton, shape, automaton.initial, 0, 0,
+                        std::ptrdiff_t>(cursor, std::ranges::end(input),
+                                        position, registers, into,
+                                        walk_answer<decltype(cursor)>{})
+           .matched) {
     throw scan_error("input does not match scan expression");
   }
   return std::move(*into.made());

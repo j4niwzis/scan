@@ -465,78 +465,7 @@ template <fixed_string pattern>
   return state_count < 32 ? state_count : 32;
 }
 
-template <fixed_string pattern, bool in_vectors, std::size_t state,
-          std::size_t budget, std::size_t certain>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool run_state_continuation(
-    const char* cursor, const char* end);
 
-// The next state, reached by a call, with the chain ahead of it written out
-// again. Every state is entered this way once, and from there the chain that
-// follows it costs no calls at all.
-template <fixed_string pattern, bool in_vectors, std::size_t state>
-[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr bool run_state_from_here(
-    const char* cursor, const char* end) {
-  // Nothing is certain across a call: how many characters were read to get
-  // here is not known where it lands.
-  return run_state_continuation<pattern, in_vectors, state,
-                                chain_budget<pattern>(), 0>(cursor, end);
-}
-
-template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
-          std::size_t state>
-[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor,
-                                                       const char* end);
-
-template <fixed_string pattern, bool in_vectors, std::size_t state,
-          std::size_t budget, std::size_t certain, std::size_t which = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_transition(unsigned char symbol, const char* cursor,
-                    const char* end) {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  if constexpr (which == targets.size) {
-    return false;
-  } else if constexpr (targets.values[which] == state) {
-    // Where the symbol keeps the automaton is asked before this, and runs do
-    // not overlap, so a symbol that stays here belongs to no other target and
-    // falls out of every test below.
-    return dispatch_transition<pattern, in_vectors, state, budget, certain,
-                               which + 1>(symbol, cursor, end);
-  } else {
-    constexpr auto target = targets.values[which];
-    if (moves_to<pattern, state, target>(symbol)) {
-      if constexpr (budget != 0 && forks_of<pattern, state>() == 1) {
-        return run_state_continuation<pattern, in_vectors, target, budget - 1,
-                                      certain>(cursor, end);
-      } else {
-        return run_state_from_here<pattern, in_vectors, target>(cursor, end);
-      }
-    }
-    return dispatch_transition<pattern, in_vectors, state, budget, certain,
-                               which + 1>(symbol, cursor, end);
-  }
-}
-
-template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
-          std::size_t state, std::size_t which = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_sentinel_transition(unsigned char symbol, const char* cursor,
-                             const char* end) {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  if constexpr (which == targets.size) {
-    return false;
-  } else if constexpr (targets.values[which] == state) {
-    return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state,
-                                        which + 1>(symbol, cursor, end);
-  } else {
-    constexpr auto target = targets.values[which];
-    if (moves_to<pattern, state, target>(symbol)) {
-      return run_sentinel_continuation<pattern, sentinel, in_vectors, target>(
-          cursor, end);
-    }
-    return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state,
-                                        which + 1>(symbol, cursor, end);
-  }
-}
 
 // How many runs of symbols keep the automaton in the state it is in. A class
 // like [a-z] is one of them; the local part of an address is twelve.
@@ -592,41 +521,6 @@ template <fixed_string pattern, std::size_t state>
   }
 }
 
-template <fixed_string pattern, bool in_vectors, std::size_t state,
-          std::size_t budget, std::size_t certain>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool run_state_continuation(
-    const char* cursor, const char* end) {
-  // A character that is certainly there is read without asking whether it is.
-  //
-  // The subject was measured against the shortest match before the first
-  // character was read, so along a chain of states that each take exactly one
-  // character, the next character is known to exist -- for as many characters
-  // as the shortest match is long. A timestamp is nineteen such states and
-  // nineteen such characters, which is the whole of it.
-  //
-  // Asked anyway, the question does not cost a branch: the compiler folds it
-  // into the class test with a `sete` and an `or`, and that is a chain of
-  // dependent operations on every character where a well predicted branch
-  // would have been free. Twice the time, measured.
-  if constexpr (certain != 0 && staying_class_of<pattern, state>().count == 0) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    return dispatch_transition<pattern, in_vectors, state, budget,
-                               certain - 1>(symbol, cursor, end);
-  }
-  // Over the run this state keeps, in vectors, once on the way in. What is
-  // left after it is shorter than a vector and is read a character at a time,
-  // which is what the loop below does anyway.
-  if constexpr (in_vectors && staying_class_of<pattern, state>().count != 0) {
-    cursor = skip_class<staying_class_of<pattern, state>()>(cursor, end);
-  }
-  while (cursor != end) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    if (is_self_transition<pattern, state>(symbol)) continue;
-    return dispatch_transition<pattern, in_vectors, state, budget, 0>(
-        symbol, cursor, end);
-  }
-  return accepts_here<pattern, state>();
-}
 
 template <fixed_string pattern, unsigned char sentinel>
 [[nodiscard]] consteval bool is_safe_sentinel() {
@@ -642,88 +536,8 @@ template <fixed_string pattern, unsigned char sentinel>
   return true;
 }
 
-template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
-          std::size_t state>
-[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor,
-                                                       const char* end) {
-  // The class first, the sentinel afterwards.
-  //
-  // A sentinel is only accepted here when no state takes it, which
-  // `is_safe_sentinel` has already required -- so it cannot be a symbol that
-  // keeps the automaton where it is, and testing for it before the class only
-  // adds a comparison and a branch to every character of the subject. Tested
-  // after, it costs nothing until the loop ends anyway, and what is left in
-  // the loop is a load, a subtraction, an increment, a comparison and a jump:
-  // what a generated scanner emits.
-  //
-  // The end is carried for the vectors alone. The loop never asks about it --
-  // that is the whole point of a terminator -- but the skip has to know where
-  // the subject stops, and reading past it to fill a vector would read what
-  // this program does not own, whether or not the page is there. The caller
-  // knows the length; it is passed down rather than found again.
-  if constexpr (in_vectors && staying_class_of<pattern, state>().count != 0) {
-    cursor = skip_class<staying_class_of<pattern, state>()>(cursor, end);
-  }
-  while (true) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    if (is_self_transition<pattern, state>(symbol)) continue;
-    if (symbol == sentinel) return accepts_here<pattern, state>();
-    return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state>(
-        symbol, cursor, end);
-  }
-}
 
-template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
-          std::size_t state, std::size_t budget>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-run_inlined_sentinel_continuation(const char* cursor, const char* end);
 
-template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
-          std::size_t state, std::size_t budget, std::size_t which = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_inlined_sentinel_transition(unsigned char symbol, const char* cursor,
-                                     const char* end) {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  if constexpr (which == targets.size) {
-    return false;
-  } else if constexpr (targets.values[which] == state) {
-    return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
-                                                state, budget, which + 1>(
-        symbol, cursor, end);
-  } else {
-    constexpr auto target = targets.values[which];
-    if (moves_to<pattern, state, target>(symbol)) {
-      if constexpr (budget == 0) {
-        return run_sentinel_continuation<pattern, sentinel, in_vectors,
-                                         target>(cursor, end);
-      } else {
-        return run_inlined_sentinel_continuation<pattern, sentinel, in_vectors,
-                                                 target, budget - 1>(cursor,
-                                                                     end);
-      }
-    }
-    return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
-                                                state, budget, which + 1>(
-        symbol, cursor, end);
-  }
-}
-
-template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
-          std::size_t state, std::size_t budget>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-run_inlined_sentinel_continuation(const char* cursor, const char* end) {
-  if constexpr (in_vectors && staying_class_of<pattern, state>().count != 0) {
-    cursor = skip_class<staying_class_of<pattern, state>()>(cursor, end);
-  }
-  while (true) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor++);
-    if (is_self_transition<pattern, state>(symbol)) continue;
-    if (symbol == sentinel) return accepts_here<pattern, state>();
-    return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
-                                                state, budget>(symbol, cursor,
-                                                               end);
-  }
-}
 
 // The machine walked over any pair of iterators.
 //
@@ -735,105 +549,57 @@ run_inlined_sentinel_continuation(const char* cursor, const char* end) {
 // The same walk, told what to do with the characters it consumes.
 //
 // Nothing where the answer is only whether it matched; where the answer holds
-// the text, the text is built as the walk goes and never gathered twice.
-struct keeps_nothing {
-  constexpr void operator()(char) const {}
-};
-
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel, class sink = keeps_nothing>
-[[nodiscard]] constexpr bool run_general(iterator& cursor, sentinel last,
-                                         sink& into);
-
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel, class sink, std::size_t which = 0>
-[[nodiscard]] constexpr bool dispatch_general(unsigned char symbol,
-                                              iterator& cursor, sentinel last,
-                                              sink& into) {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  if constexpr (which == targets.size) {
-    return false;
-  } else if constexpr (targets.values[which] == state) {
-    return dispatch_general<pattern, state, iterator, sentinel, sink,
-                            which + 1>(symbol, cursor, last, into);
-  } else {
-    constexpr auto target = targets.values[which];
-    if (moves_to<pattern, state, target>(symbol)) {
-      return run_general<pattern, target>(cursor, last, into);
-    }
-    return dispatch_general<pattern, state, iterator, sentinel, sink,
-                            which + 1>(symbol, cursor, last, into);
-  }
-}
-
-// The cursor is passed along rather than copied: an iterator of a subject that
-// can only be read once is the reading, and there is only one of it.
-template <class type>
-concept walked_once = true;
-
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel, class sink>
-[[nodiscard]] constexpr bool run_general(iterator& cursor, sentinel last,
-                                         sink& into) {
-  while (cursor != last) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor);
-    ++cursor;
-    into(static_cast<char>(symbol));
-    if (is_self_transition<pattern, state>(symbol)) continue;
-    return dispatch_general<pattern, state, iterator, sentinel, sink>(
-        symbol, cursor, last, into);
-  }
-  return accepts_here<pattern, state>();
-}
 
 // The longest head, over any pair of iterators. Where nothing was accepted the
 // answer is empty.
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel>
-[[nodiscard]] constexpr std::optional<iterator> run_general_head(
-    iterator cursor, sentinel last);
 
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel, std::size_t which = 0>
-[[nodiscard]] constexpr std::optional<iterator> dispatch_general_head(
-    unsigned char symbol, iterator cursor, sentinel last,
-    std::optional<iterator> best) {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  if constexpr (which == targets.size) {
-    return best;
-  } else if constexpr (targets.values[which] == state) {
-    return dispatch_general_head<pattern, state, iterator, sentinel,
-                                 which + 1>(symbol, cursor, last,
-                                            std::move(best));
-  } else {
-    constexpr auto target = targets.values[which];
-    if (moves_to<pattern, state, target>(symbol)) {
-      auto found = run_general_head<pattern, target>(cursor, last);
-      return found ? found : best;
-    }
-    return dispatch_general_head<pattern, state, iterator, sentinel,
-                                 which + 1>(symbol, cursor, last,
-                                            std::move(best));
-  }
+
+// Every reading of a pattern, said in terms of the one walk.
+//
+// What used to be five walks here -- bounded, terminated, terminated and
+// inlined, the longest head, and the walk over iterators -- is five shapes of
+// the same one.
+template <fixed_string pattern>
+[[nodiscard]] consteval detail::walk_shape bounded_shape(bool in_words) {
+  return {.in_words = in_words, .budget = chain_budget<pattern>()};
 }
 
-template <fixed_string pattern, std::size_t state, class iterator,
-          class sentinel>
-[[nodiscard]] constexpr std::optional<iterator> run_general_head(
-    iterator cursor, sentinel last) {
-  std::optional<iterator> best;
-  if constexpr (accepts_here<pattern, state>()) best = cursor;
-  while (cursor != last) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor);
-    if (!is_self_transition<pattern, state>(symbol)) {
-      ++cursor;
-      return dispatch_general_head<pattern, state>(symbol, cursor, last,
-                                                   std::move(best));
-    }
-    ++cursor;
-    if constexpr (accepts_here<pattern, state>()) best = cursor;
+template <fixed_string pattern, unsigned char terminator>
+[[nodiscard]] consteval detail::walk_shape terminated_shape(bool in_words) {
+  return {.in_words = in_words,
+          .by_terminator = true,
+          .terminator = terminator,
+          .budget = chain_budget<pattern>()};
+}
+
+template <fixed_string pattern>
+[[nodiscard]] consteval detail::walk_shape head_shape() {
+  return {.longest_head = true, .budget = chain_budget<pattern>()};
+}
+
+// Whether the whole of the subject matched.
+template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
+          class sentinel_type>
+[[nodiscard]] constexpr auto walk_over(cursor_type cursor, sentinel_type last) {
+  constexpr const auto& automaton = detail::regex_automaton<pattern>;
+  using mark_type =
+      std::conditional_t<std::is_pointer_v<cursor_type>, const char*,
+                         std::ptrdiff_t>;
+  std::array<mark_type, automaton.register_count> registers{};
+  if constexpr (!std::is_pointer_v<cursor_type>) {
+    std::ranges::fill(registers, scan::tre::negative_tag);
   }
-  return best;
+  detail::gathers_nothing nothing;
+  mark_type place{};
+  if constexpr (std::is_pointer_v<cursor_type>) place = cursor;
+  return detail::run_continuation<automaton, shape, automaton.initial,
+                                  shape.budget,
+                                  shape.longest_head
+                                      ? 0
+                                      : minimum_match_length<pattern>(),
+                                  mark_type>(
+      cursor, last, place, registers, nothing,
+      detail::walk_answer<cursor_type>{});
 }
 
 template <fixed_string pattern>
@@ -861,14 +627,10 @@ regex_match(
     constexpr std::size_t worth_a_vector = 64;
     const bool matched =
         input.size() >= worth_a_vector
-            ? run_state_continuation<pattern, true, automaton.initial,
-                                     chain_budget<pattern>(),
-                                     minimum_match_length<pattern>()>(cursor,
-                                                                      end)
-            : run_state_continuation<pattern, false, automaton.initial,
-                                     chain_budget<pattern>(),
-                                     minimum_match_length<pattern>()>(cursor,
-                                                                      end);
+            ? walk_over<pattern, bounded_shape<pattern>(true)>(cursor, end)
+                  .matched
+            : walk_over<pattern, bounded_shape<pattern>(false)>(cursor, end)
+                  .matched;
     if (!matched) return {};
     return {regex_submatch(input), {}};
   } else {
@@ -919,12 +681,12 @@ regex_match_sentinel(std::string_view input) {
   constexpr std::size_t worth_a_vector = 64;
   const bool matched =
       input.size() >= worth_a_vector
-          ? run_inlined_sentinel_continuation<pattern, sentinel, true,
-                                              automaton.initial, 1>(
+          ? walk_over<pattern, terminated_shape<pattern, sentinel>(true)>(
                 input.data(), end)
-          : run_inlined_sentinel_continuation<pattern, sentinel, false,
-                                              automaton.initial, 1>(
-                input.data(), end);
+                .matched
+          : walk_over<pattern, terminated_shape<pattern, sentinel>(false)>(
+                input.data(), end)
+                .matched;
   if (!matched) return {};
   return {regex_submatch(input), {}};
 }
@@ -936,46 +698,7 @@ regex_match_sentinel(std::string_view input) {
 // scanner reads one. What was here instead tried every length in turn and ran
 // a whole anchored match for each, so a head of a hundred characters was a
 // hundred matches and a search over it was ten thousand.
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] constexpr const char* run_longest_head(const char* cursor,
-                                                     const char* end,
-                                                     const char* best);
 
-template <fixed_string pattern, std::size_t state, std::size_t which = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr const char*
-dispatch_head_transition(unsigned char symbol, const char* cursor,
-                         const char* end, const char* best) {
-  constexpr auto targets = make_transition_targets<pattern, state>();
-  if constexpr (which == targets.size) {
-    return best;
-  } else if constexpr (targets.values[which] == state) {
-    return dispatch_head_transition<pattern, state, which + 1>(symbol, cursor,
-                                                               end, best);
-  } else {
-    constexpr auto target = targets.values[which];
-    if (moves_to<pattern, state, target>(symbol)) {
-      return run_longest_head<pattern, target>(cursor + 1, end, best);
-    }
-    return dispatch_head_transition<pattern, state, which + 1>(symbol, cursor,
-                                                               end, best);
-  }
-}
-
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] constexpr const char* run_longest_head(const char* cursor,
-                                                     const char* end,
-                                                     const char* best) {
-  if constexpr (accepts_here<pattern, state>()) best = cursor;
-  while (cursor != end) {
-    const unsigned char symbol = static_cast<unsigned char>(*cursor);
-    if (!is_self_transition<pattern, state>(symbol)) break;
-    ++cursor;
-    if constexpr (accepts_here<pattern, state>()) best = cursor;
-  }
-  if (cursor == end) return best;
-  return dispatch_head_transition<pattern, state>(
-      static_cast<unsigned char>(*cursor), cursor, end, best);
-}
 
 // The same question of whichever machine the pattern was given. A pattern that
 // captures is a tagged machine, and the runtime has read a head off one of
@@ -983,13 +706,8 @@ template <fixed_string pattern, std::size_t state>
 template <fixed_string pattern>
 [[nodiscard]] constexpr const char* longest_head(const char* cursor,
                                                  const char* end) {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  if constexpr (automaton.tag_count == 0) {
-    return run_longest_head<pattern, automaton.initial>(cursor, end, nullptr);
-  } else {
-    return run_prefix_continuation<automaton, automaton.initial>(cursor, end,
-                                                                 nullptr);
-  }
+  const auto found = walk_over<pattern, head_shape<pattern>()>(cursor, end);
+  return found.matched ? found.at : nullptr;
 }
 
 template <fixed_string pattern>
@@ -1803,10 +1521,8 @@ struct match_closure
     using holder = detail::walked_holder<range_type>;
     const auto first = std::ranges::begin(input);
     const auto last = std::ranges::end(input);
-    detail::keeps_nothing nothing;
     auto walking = first;
-    if (!detail::run_general<pattern, detail::regex_automaton<pattern>.initial>(
-            walking, last, nothing)) {
+    if (!walk_over<pattern, detail::walk_shape{}>(walking, last).matched) {
       return basic_result<holder, 0>{};
     }
     return basic_result<holder, 0>{
@@ -1824,11 +1540,18 @@ struct match_closure
   // vectors, which want characters in a row.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
     held_type held;
-    auto keep = [&held](char letter) { held.push_back(letter); };
+    detail::keeps_into<held_type> keep{held};
+    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    std::ranges::fill(registers, scan::tre::negative_tag);
+    std::ptrdiff_t place = 0;
     auto cursor = std::ranges::begin(input);
-    if (!detail::run_general<pattern, detail::regex_automaton<pattern>.initial>(
-            cursor, std::ranges::end(input), keep)) {
+    if (!detail::run_continuation<automaton, detail::walk_shape{},
+                                  automaton.initial, 0, 0, std::ptrdiff_t>(
+             cursor, std::ranges::end(input), place, registers, keep,
+             detail::walk_answer<decltype(cursor)>{})
+             .matched) {
       return basic_result<held_type, 0>{};
     }
     return basic_result<held_type, 0>{
@@ -1894,13 +1617,13 @@ struct starts_with_closure
                   "a pattern that captures wants the subject in one piece: "
                   "read it into a string first");
     using holder = detail::walked_holder<range_type>;
-    const auto first = std::ranges::begin(input);
-    const auto best =
-        detail::run_general_head<pattern, detail::regex_automaton<pattern>.initial>(
-            first, std::ranges::end(input));
-    if (!best) return basic_result<holder, 0>{};
+    auto walking = std::ranges::begin(input);
+    const auto first = walking;
+    const auto found = walk_over<pattern, head_shape<pattern>()>(
+        walking, std::ranges::end(input));
+    if (!found.matched) return basic_result<holder, 0>{};
     return basic_result<holder, 0>{
-        basic_submatch<holder>(holder(first, *best)), {}};
+        basic_submatch<holder>(holder(first, found.at)), {}};
   }
 
   // The head of a subject read once.
