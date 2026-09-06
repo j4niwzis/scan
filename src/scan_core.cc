@@ -6,6 +6,17 @@ export namespace scan::detail {
 
 // An input whose characters lie in a row and whose length is known, which is
 // what a view of a subject is made from.
+// Input that arrives in pieces: a reading of readings, each of them
+// characters in a row. A block of a file, a datagram, a page -- the shape
+// almost every real subject has.
+template <class range_type>
+concept piecewise_char_range =
+    std::ranges::input_range<range_type> &&
+    requires(std::ranges::range_reference_t<range_type> piece) {
+      { std::ranges::data(piece) } -> std::convertible_to<const char*>;
+      { std::ranges::size(piece) } -> std::convertible_to<std::size_t>;
+    };
+
 template <class range_type>
 concept contiguous_char_range =
     std::ranges::contiguous_range<range_type> &&

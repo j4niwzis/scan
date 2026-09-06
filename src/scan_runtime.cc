@@ -2267,6 +2267,36 @@ class field_gatherer {
   std::optional<type> made_;
 };
 
+// A scan of input that arrives in pieces.
+//
+// The walk reads a piece the way it reads a string -- in words and vectors --
+// and asks for the next one where it runs out. Nothing is buffered: what a
+// field gathers, it gathers as the characters go by, and a piece is not looked
+// at again once the walk has left it.
+template <class type, fixed_string format, piecewise_char_range pieces_type>
+[[nodiscard]] constexpr type scan_pieces(pieces_type&& pieces) {
+  constexpr const auto& automaton = streaming_automaton<type, format>;
+  std::array<std::ptrdiff_t, automaton.register_count> registers{};
+  std::ranges::fill(registers, scan::tre::negative_tag);
+  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
+                   std::ptrdiff_t{0});
+  auto view = std::views::all(std::forward<pieces_type>(pieces));
+  gathers_from_pieces<field_gatherer<type, format, automaton>, decltype(view)>
+      into(field_gatherer<type, format, automaton>{}, std::move(view));
+  // Nothing in hand to begin with, so the first thing the walk does is ask.
+  const char* cursor = nullptr;
+  const char* last = nullptr;
+  std::ptrdiff_t place = 0;
+  walk_answer<const char*> best;
+  constexpr walk_shape shape{.in_words = true};
+  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+                        std::ptrdiff_t>(cursor, last, place, registers, into,
+                                        best)) {
+    throw scan_error("input does not match scan expression");
+  }
+  return std::move(*into.made());
+}
+
 template <class type, fixed_string format, std::ranges::input_range range_type>
 [[nodiscard]] constexpr type scan_stream(range_type&& input) {
   constexpr const auto& automaton = streaming_automaton<type, format>;

@@ -88,6 +88,43 @@ class borrowed_result {
   std::string_view input_;
 };
 
+// What a scan over pieces hands back until somebody says what it is scanning
+// into.
+template <fixed_string format, class pieces_type>
+class pieces_result {
+ public:
+  constexpr explicit pieces_result(pieces_type input)
+      : input_(std::move(input)) {}
+
+  pieces_result(pieces_result&&) = default;
+  pieces_result& operator=(pieces_result&&) = default;
+  pieces_result(const pieces_result&) = delete;
+  pieces_result& operator=(const pieces_result&) = delete;
+
+  template <class type>
+    requires std::is_aggregate_v<type>
+  constexpr operator type() {
+    return scan_pieces<type, format>(std::move(input_));
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of() {
+    return static_cast<type>(*this);
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() {
+    try {
+      return static_cast<type>(*this);
+    } catch (const scan_error& failure) {
+      return std::unexpected(failure);
+    }
+  }
+
+ private:
+  pieces_type input_;
+};
+
 template <fixed_string format, std::ranges::input_range range_type>
 class streaming_result {
  public:
@@ -568,6 +605,19 @@ struct each_closure : std::ranges::range_adaptor_closure<each_closure<format>> {
 
 template <fixed_string format>
 inline constexpr each_closure<format> each{};
+
+// The same scan, over input that arrives in pieces rather than all at once.
+//
+// Each piece is characters in a row, so the walk reads it in words and
+// vectors; where a piece runs out it asks for the next one and goes on where
+// it stood. Nothing is buffered and no piece is looked at twice, so what comes
+// back owns whatever it holds.
+template <fixed_string format, detail::piecewise_char_range pieces_type>
+  requires(!detail::contiguous_char_range<pieces_type>)
+[[nodiscard]] constexpr auto scan_over(pieces_type&& input) {
+  return detail::pieces_result<format, pieces_type>(
+      std::forward<pieces_type>(input));
+}
 
 // The head of the input that the pattern takes, and what follows it.
 template <fixed_string format, detail::contiguous_char_range range_type>
