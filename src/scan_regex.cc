@@ -1903,7 +1903,7 @@ class read_once_finder {
   // `skipped` by then.
   template <class skipped_type, class made_type>
   constexpr bool next(skipped_type& skipped, made_type& made) {
-    constexpr const auto& automaton = regex_automaton<pattern>;
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
     while (true) {
       std::size_t here = automaton.initial;
       std::size_t taken = 0;   // how much of the match is already in `made`
@@ -1912,8 +1912,9 @@ class read_once_finder {
       char symbol = 0;
       while (take(symbol)) {
         const std::size_t run =
-            run_taken<automaton>(here, static_cast<unsigned char>(symbol));
-        if (run == no_run) {
+            detail::run_taken<automaton>(here,
+                                         static_cast<unsigned char>(symbol));
+        if (run == detail::no_run) {
           // Dead. What was read since the last accepting place was not part of
           // anything, and neither was this character.
           give_back(ahead, ahead_count, symbol);
@@ -1923,7 +1924,7 @@ class read_once_finder {
         here = automaton.states[here].ranges[run].target;
         ahead[ahead_count++] = symbol;
         if (automaton.states[here].accepting_slot !=
-            packed_state<0, 0, 0>::not_accepting) {
+            detail::packed_state<0, 0, 0>::not_accepting) {
           // Sure of these now, so they go where the answer goes and are gone
           // from here.
           for (std::size_t at = 0; at < ahead_count; ++at) {
