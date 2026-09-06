@@ -699,6 +699,9 @@ struct walk_shape {
 // arrives as it is read is an iterator that cannot be made out of nothing and
 // cannot be copied -- and such a subject is never asked where the longest head
 // ended, because keeping the place would mean keeping the characters.
+// Where a walk that is not looking for a head would have kept the place.
+struct nothing_kept {};
+
 template <class cursor_type>
 struct walk_answer {
   bool matched = false;
@@ -829,8 +832,16 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       if (cursor == last) break;
     }
     // Where this symbol begins, which is where a head ends if the machine
-    // cannot take it.
-    cursor_type before = cursor;
+    // cannot take it -- and which is only worth holding on to where a head is
+    // what is being looked for. A reading of a subject that arrives as it is
+    // read does not copy, and is never asked for a head.
+    auto before = [&] {
+      if constexpr (shape.head || shape.longest) {
+        return cursor;
+      } else {
+        return nothing_kept{};
+      }
+    }();
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
     ++cursor;
     // The operations of a transition are the tags the state before it was
