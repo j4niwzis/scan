@@ -171,67 +171,6 @@ template <fixed_string pattern>
   return result;
 }
 
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
-                                                    const char* end);
-
-template <fixed_string pattern, unsigned char sentinel, std::size_t state>
-[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor);
-
-template <fixed_string pattern, std::size_t state, std::size_t index = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_transition(unsigned char symbol, const char* cursor,
-                    const char* end) {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
-    return false;
-  } else {
-    constexpr auto range = ranges.values[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target == state) {
-        return false;
-      } else {
-        return run_state_continuation<pattern, range.target>(cursor, end);
-      }
-    }
-    return dispatch_transition<pattern, state, index + 1>(symbol, cursor, end);
-  }
-}
-
-template <fixed_string pattern, unsigned char sentinel, std::size_t state,
-          std::size_t index = 0>
-[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
-dispatch_sentinel_transition(unsigned char symbol, const char* cursor) {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
-    return false;
-  } else {
-    constexpr auto range = ranges.values[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target == state) {
-        return false;
-      } else {
-        return run_sentinel_continuation<pattern, sentinel, range.target>(
-            cursor);
-      }
-    }
-    return dispatch_sentinel_transition<pattern, sentinel, state, index + 1>(
-        symbol, cursor);
-  }
-}
-
-// How many runs of symbols keep the automaton in the state it is in. A class
-// like [a-z] is one of them; the local part of an address is twelve.
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] consteval std::size_t self_range_count() {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
-  std::size_t count = 0;
-  for (std::size_t index = 0; index < ranges.size; ++index) {
-    if (ranges.values[index].target == state) ++count;
-  }
-  return count;
-}
-
 // Above this many runs the question is asked of a table instead of asked of
 // every run in turn. Measured on a long subject, in nanoseconds a character:
 //
@@ -248,6 +187,149 @@ template <fixed_string pattern, std::size_t state>
 // constants do not need, and a match a few characters long never gets far
 // enough for the loop to matter.
 inline constexpr std::size_t runs_worth_comparing = 2;
+
+// The states a state can move to, each named once, in the order the runs of
+// symbols first mention them.
+//
+// A dozen runs that all lead to the same place are one entry here, and what
+// follows the move is written once for the place instead of once for the run.
+// The sentinel walk inlines what follows, so writing it per run made twelve
+// copies of the same loop of the local part of an address.
+template <class state_type>
+struct transition_targets {
+  std::array<state_type, 256> values{};
+  std::size_t size = 0;
+};
+
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] consteval auto make_transition_targets() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  using state_type =
+      typename std::remove_cvref_t<decltype(automaton)>::state_type;
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  transition_targets<state_type> result;
+  for (std::size_t index = 0; index < ranges.size; ++index) {
+    const state_type target = ranges.values[index].target;
+    bool named = false;
+    for (std::size_t other = 0; other < result.size; ++other) {
+      if (result.values[other] == target) named = true;
+    }
+    if (!named) result.values[result.size++] = target;
+  }
+  return result;
+}
+
+// How many runs of symbols lead from this state to that one.
+template <fixed_string pattern, std::size_t state, auto target>
+[[nodiscard]] consteval std::size_t runs_to_target() {
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < ranges.size; ++index) {
+    if (ranges.values[index].target == target) ++count;
+  }
+  return count;
+}
+
+// Where each symbol takes the automaton from this state, which is what the
+// automaton was built with and is read back here rather than rebuilt.
+template <fixed_string pattern, std::size_t state>
+inline constexpr auto transition_target_table = [] consteval {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  using state_type =
+      typename std::remove_cvref_t<decltype(automaton)>::state_type;
+  std::array<state_type, 256> result{};
+  std::ranges::copy(automaton.transitions[state], result.begin());
+  return result;
+}();
+
+template <fixed_string pattern, std::size_t state, auto target,
+          std::size_t index = 0>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool moves_to_by_runs(
+    unsigned char symbol) {
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  if constexpr (index == ranges.size) {
+    return false;
+  } else {
+    constexpr auto range = ranges.values[index];
+    if constexpr (range.target == target) {
+      if (symbol >= range.first && symbol <= range.last) return true;
+    }
+    return moves_to_by_runs<pattern, state, target, index + 1>(symbol);
+  }
+}
+
+// Whether the symbol moves the automaton from this state to that one.
+template <fixed_string pattern, std::size_t state, auto target>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool moves_to(
+    unsigned char symbol) {
+  if constexpr (runs_to_target<pattern, state, target>() >
+                runs_worth_comparing) {
+    return transition_target_table<pattern, state>[symbol] == target;
+  } else {
+    return moves_to_by_runs<pattern, state, target>(symbol);
+  }
+}
+
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
+                                                    const char* end);
+
+template <fixed_string pattern, unsigned char sentinel, std::size_t state>
+[[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor);
+
+template <fixed_string pattern, std::size_t state, std::size_t which = 0>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
+dispatch_transition(unsigned char symbol, const char* cursor,
+                    const char* end) {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  if constexpr (which == targets.size) {
+    return false;
+  } else if constexpr (targets.values[which] == state) {
+    // Where the symbol keeps the automaton is asked before this, and runs do
+    // not overlap, so a symbol that stays here belongs to no other target and
+    // falls out of every test below.
+    return dispatch_transition<pattern, state, which + 1>(symbol, cursor, end);
+  } else {
+    constexpr auto target = targets.values[which];
+    if (moves_to<pattern, state, target>(symbol)) {
+      return run_state_continuation<pattern, target>(cursor, end);
+    }
+    return dispatch_transition<pattern, state, which + 1>(symbol, cursor, end);
+  }
+}
+
+template <fixed_string pattern, unsigned char sentinel, std::size_t state,
+          std::size_t which = 0>
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
+dispatch_sentinel_transition(unsigned char symbol, const char* cursor) {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  if constexpr (which == targets.size) {
+    return false;
+  } else if constexpr (targets.values[which] == state) {
+    return dispatch_sentinel_transition<pattern, sentinel, state, which + 1>(
+        symbol, cursor);
+  } else {
+    constexpr auto target = targets.values[which];
+    if (moves_to<pattern, state, target>(symbol)) {
+      return run_sentinel_continuation<pattern, sentinel, target>(cursor);
+    }
+    return dispatch_sentinel_transition<pattern, sentinel, state, which + 1>(
+        symbol, cursor);
+  }
+}
+
+// How many runs of symbols keep the automaton in the state it is in. A class
+// like [a-z] is one of them; the local part of an address is twelve.
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] consteval std::size_t self_range_count() {
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  std::size_t count = 0;
+  for (std::size_t index = 0; index < ranges.size; ++index) {
+    if (ranges.values[index].target == state) ++count;
+  }
+  return count;
+}
+
 
 template <fixed_string pattern, std::size_t state>
 inline constexpr auto self_transition_table = [] consteval {
@@ -332,28 +414,29 @@ template <fixed_string pattern, unsigned char sentinel, std::size_t state,
 run_inlined_sentinel_continuation(const char* cursor);
 
 template <fixed_string pattern, unsigned char sentinel, std::size_t state,
-          std::size_t budget, std::size_t index = 0>
+          std::size_t budget, std::size_t which = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
 dispatch_inlined_sentinel_transition(unsigned char symbol,
                                      const char* cursor) {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
+  constexpr auto targets = make_transition_targets<pattern, state>();
+  if constexpr (which == targets.size) {
     return false;
+  } else if constexpr (targets.values[which] == state) {
+    return dispatch_inlined_sentinel_transition<pattern, sentinel, state,
+                                                budget, which + 1>(symbol,
+                                                                   cursor);
   } else {
-    constexpr auto range = ranges.values[index];
-    if (symbol >= range.first && symbol <= range.last) {
-      if constexpr (range.target == state) {
-        return false;
-      } else if constexpr (budget == 0) {
-        return run_sentinel_continuation<pattern, sentinel, range.target>(
-            cursor);
+    constexpr auto target = targets.values[which];
+    if (moves_to<pattern, state, target>(symbol)) {
+      if constexpr (budget == 0) {
+        return run_sentinel_continuation<pattern, sentinel, target>(cursor);
       } else {
-        return run_inlined_sentinel_continuation<
-            pattern, sentinel, range.target, budget - 1>(cursor);
+        return run_inlined_sentinel_continuation<pattern, sentinel, target,
+                                                 budget - 1>(cursor);
       }
     }
     return dispatch_inlined_sentinel_transition<pattern, sentinel, state,
-                                                budget, index + 1>(symbol,
+                                                budget, which + 1>(symbol,
                                                                    cursor);
   }
 }
