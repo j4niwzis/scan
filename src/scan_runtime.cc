@@ -671,10 +671,16 @@ struct walk_shape {
   std::size_t budget = 0;
 };
 
+// Where the walk stopped, for the walks that answer that.
+//
+// Held as a maybe rather than as a place, because a reading of a subject that
+// arrives as it is read is an iterator that cannot be made out of nothing and
+// cannot be copied -- and such a subject is never asked where the longest head
+// ended, because keeping the place would mean keeping the characters.
 template <class cursor_type>
 struct walk_answer {
   bool matched = false;
-  cursor_type at{};
+  std::optional<cursor_type> at{};
 };
 
 template <auto& automaton, walk_shape shape, std::size_t state,
@@ -757,7 +763,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       packed_state<0, 0, 0>::not_accepting;
 
   if constexpr (shape.longest_head && accepts_here) {
-    best = {.matched = true, .at = cursor};
+    best.matched = true;
+    best.at = cursor;
   }
   // Over the run this state keeps, in vectors -- only where the characters lie
   // in a row and nobody is gathering them, because what is stepped over is not
@@ -767,7 +774,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
                 runs_in_place<automaton, state>()) {
     cursor = skip_class<staying_of<automaton, state>()>(cursor, last);
     if constexpr (accepts_here && shape.longest_head) {
-      best = {.matched = true, .at = cursor};
+      best.matched = true;
+      best.at = cursor;
     }
   }
   while (true) {
@@ -795,7 +803,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
                                           registers, place);
       }
       if constexpr (shape.longest_head && accepts_here) {
-        best = {.matched = true, .at = cursor};
+        best.matched = true;
+        best.at = cursor;
       }
       continue;
     }
@@ -808,7 +817,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, place);
           into.template ended<state>(registers);
-          return {.matched = true, .at = cursor};
+          return {.matched = true};
         } else {
           return best;
         }
@@ -829,7 +838,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       execute_static_final_commands<automaton, state>(registers, place);
     }
     into.template ended<state>(registers);
-    return {.matched = true, .at = cursor};
+    return {.matched = true};
   }
 }
 
@@ -860,7 +869,7 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
   const auto found =
       run_continuation<automaton, shape, state, shape.budget, 0, const char*>(
           cursor, end, place, registers, nothing, walk_answer<const char*>{});
-  return found.matched ? found.at : nullptr;
+  return found.matched ? *found.at : nullptr;
 }
 
 // Walking characters that lie in a row, gathering nothing: the shape almost

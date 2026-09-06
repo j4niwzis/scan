@@ -697,7 +697,7 @@ template <fixed_string pattern>
 [[nodiscard]] constexpr const char* longest_head(const char* cursor,
                                                  const char* end) {
   const auto found = walk_over<pattern, head_shape<pattern>()>(cursor, end);
-  return found.matched ? found.at : nullptr;
+  return found.matched ? *found.at : nullptr;
 }
 
 template <fixed_string pattern>
@@ -1616,7 +1616,7 @@ struct starts_with_closure
         walking, std::ranges::end(input));
     if (!found.matched) return basic_result<holder, 0>{};
     return basic_result<holder, 0>{
-        basic_submatch<holder>(holder(first, found.at)), {}};
+        basic_submatch<holder>(holder(first, *found.at)), {}};
   }
 
   // The head of a subject read once.
