@@ -191,6 +191,51 @@ template <fixed_string pattern, std::size_t state>
   return result;
 }
 
+// The longest a match can be, or nothing at all where it can be any length.
+//
+// A pattern with no cycle in its automaton matches a bounded number of
+// characters: plain text, a count in braces, anything written out. One with a
+// cycle -- a star, a plus, an open-ended count -- matches as much as there is.
+//
+// This is what says whether a subject that can only be read once can be
+// searched. Finding the leftmost match means trying a place, failing, and
+// trying the next, and the characters of the failed attempt have already gone
+// by: they have to be held. Bounded, they are held in a window of a size known
+// here; unbounded, they would need a buffer that grows, and there is none.
+template <fixed_string pattern>
+[[nodiscard]] consteval std::size_t longest_match_length() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
+  // The longest walk from each state, found by relaxing as many times as there
+  // are states. A walk that is still growing after that many rounds is going
+  // round a cycle.
+  std::array<std::size_t, state_count> longest{};
+  for (std::size_t round = 0; round <= state_count; ++round) {
+    std::array<std::size_t, state_count> next{};
+    for (std::size_t state = 0; state < state_count; ++state) {
+      const auto& packed = automaton.states[state];
+      std::size_t best = 0;
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (longest[target] == unbounded) return unbounded;
+        best = std::max(best, longest[target] + 1);
+      }
+      next[state] = best;
+    }
+    if (next == longest) return longest[automaton.initial];
+    longest = next;
+  }
+  return unbounded;
+}
+
+template <fixed_string pattern>
+[[nodiscard]] consteval bool matches_a_bounded_length() {
+  return longest_match_length<pattern>() !=
+         std::numeric_limits<std::size_t>::max();
+}
+
 template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t minimum_match_length() {
   constexpr const auto& automaton = regex_automaton<pattern>;
@@ -939,6 +984,73 @@ template <fixed_string pattern>
 
 namespace detail {
 
+// The machine as an object, fed a character at a time.
+//
+// A subject that can only be read once cannot be walked twice, so the walk
+// cannot be a chain of calls -- where it stands has to be a value that
+// survives between characters. What is generated here is the step: which run a
+// symbol takes is asked of the state's own runs, compared against constants,
+// rather than searched for in a table at every character.
+//
+// Nothing is kept but what the answer is made of. The characters go into the
+// collectors of whatever groups are open as they arrive, and a collector that
+// holds no text holds nothing at all.
+// Whether the machine can go on once it has a match.
+//
+// Where no accepting state has a run leading anywhere, a match ends where the
+// machine stops and there is nothing to read past it. That is what lets the
+// head of a subject read once be found without holding characters back.
+template <fixed_string pattern>
+[[nodiscard]] consteval bool settles_where_it_accepts() {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  for (const auto& state : automaton.states) {
+    if (state.accepting_slot == packed_state<0, 0, 0>::not_accepting) continue;
+    if (state.range_count != 0) return false;
+  }
+  return true;
+}
+
+inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
+
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] constexpr std::size_t run_taken_by(
+    unsigned char symbol) {
+  constexpr const auto& packed = regex_automaton<pattern>.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (symbol >= packed.ranges[index].first &&
+        symbol <= packed.ranges[index].last) {
+      return index;
+    }
+  }
+  return no_run;
+}
+
+template <fixed_string pattern, std::size_t state = 0>
+[[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
+                                              unsigned char symbol) {
+  constexpr std::size_t state_count = std::tuple_size_v<
+      std::remove_cvref_t<decltype(regex_automaton<pattern>.states)>>;
+  if constexpr (state == state_count) {
+    return no_run;
+  } else {
+    if (here == state) return run_taken_by<pattern, state>(symbol);
+    return run_taken<pattern, state + 1>(here, symbol);
+  }
+}
+
+// Whether the group is being read where the machine stands now.
+template <fixed_string pattern, std::size_t group, class registers_type>
+[[nodiscard]] constexpr bool group_is_open(std::size_t here,
+                                           const registers_type& registers) {
+  constexpr const auto& automaton = regex_automaton<pattern>;
+  const auto& packed = automaton.states[here];
+  if (packed.reading_count == 0) return false;
+  const std::uint32_t opening = packed.readings[0][group * 2];
+  const std::uint32_t closing = packed.readings[0][group * 2 + 1];
+  return registers[opening] >= 0 && registers[closing] < registers[opening];
+}
+
+
 template <class range_type>
 concept forward_char_range =
     std::ranges::forward_range<range_type> &&
@@ -1108,6 +1220,30 @@ class as_collector {
     }
   }
 
+
+  // The characters of the group as they arrive, for a subject read once.
+  [[nodiscard]] constexpr auto begin_pushing_state(
+      std::string_view parameters) const {
+    return begin_pushing(parameters);
+  }
+
+  constexpr void push_one(auto& state, char letter) const {
+    if constexpr (requires { scanner_push<type>(state, letter); }) {
+      scanner_push<type>(state, letter);
+    } else {
+      state.push_back(letter);
+    }
+  }
+
+  [[nodiscard]] constexpr value_type finish_pushed(auto state) const {
+    if constexpr (requires {
+                    scanner_finish<type, decltype(state)>(state);
+                  }) {
+      return scanner_finish<type>(std::move(state));
+    } else {
+      return std::move(state);
+    }
+  }
  private:
   std::tuple<arguments...> arguments_;
 };
@@ -1392,12 +1528,31 @@ struct match_closure
         {}};
   }
 
+  // Fed a character at a time, and nothing kept but the answer.
+  //
+  // The subject cannot be looked at twice, so it is not looked at twice: the
+  // machine is stepped as each character arrives and the characters go
+  // straight into what is handed back. What used to happen here was reading
+  // the whole subject into a string and then walking that -- two passes and
+  // room for all of it, whether or not the match died on the third character.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    held_type held = detail::read_once<held_type>(input);
-    const bool matched = static_cast<bool>(detail::regex_match<pattern>(
-        std::string_view(held.data(), held.size())));
-    if (!matched) return basic_result<held_type, 0>{};
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+    held_type held;
+    std::size_t here = automaton.initial;
+    auto cursor = std::ranges::begin(input);
+    const auto last = std::ranges::end(input);
+    for (; cursor != last; ++cursor) {
+      const unsigned char symbol = static_cast<unsigned char>(*cursor);
+      const std::size_t run = detail::run_taken<pattern>(here, symbol);
+      if (run == detail::no_run) return basic_result<held_type, 0>{};
+      here = automaton.states[here].ranges[run].target;
+      held.push_back(static_cast<char>(symbol));
+    }
+    if (automaton.states[here].accepting_slot ==
+        detail::packed_state<0, 0, 0>::not_accepting) {
+      return basic_result<held_type, 0>{};
+    }
     return basic_result<held_type, 0>{
         basic_submatch<held_type>(std::move(held)), {}};
   }
@@ -1470,16 +1625,39 @@ struct starts_with_closure
         basic_submatch<holder>(holder(first, *best)), {}};
   }
 
+  // The head of a subject read once.
+  //
+  // The longest head is the last place the machine stood in an accepting
+  // state, and finding it means reading past that place -- and where the
+  // machine then dies, giving those characters back. There is nowhere to give
+  // them back to here, so this is only for a pattern that cannot go on once it
+  // has a match: then where it stops is where the head ends, and nothing is
+  // held.
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    held_type held = detail::read_once<held_type>(input);
-    const auto found = detail::regex_starts_with<pattern>(
-        std::string_view(held.data(), held.size()));
-    if (!found) return basic_result<held_type, 0>{};
-    held_type head;
-    for (const char letter : found.to_view()) head.push_back(letter);
+    static_assert(
+        detail::settles_where_it_accepts<pattern>(),
+        "a subject that can only be read once has nowhere to give back the "
+        "characters read past the head: this pattern can go on after it "
+        "matches, so finding its longest head would have to hold them");
+    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+    held_type held;
+    std::size_t here = automaton.initial;
+    auto cursor = std::ranges::begin(input);
+    const auto last = std::ranges::end(input);
+    for (; cursor != last; ++cursor) {
+      const unsigned char symbol = static_cast<unsigned char>(*cursor);
+      const std::size_t run = detail::run_taken<pattern>(here, symbol);
+      if (run == detail::no_run) break;
+      here = automaton.states[here].ranges[run].target;
+      held.push_back(static_cast<char>(symbol));
+    }
+    if (automaton.states[here].accepting_slot ==
+        detail::packed_state<0, 0, 0>::not_accepting) {
+      return basic_result<held_type, 0>{};
+    }
     return basic_result<held_type, 0>{
-        basic_submatch<held_type>(std::move(head)), {}};
+        basic_submatch<held_type>(std::move(held)), {}};
   }
 };
 
