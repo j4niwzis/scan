@@ -173,6 +173,27 @@ class borrowed_result {
     return build_value<type, type, format, 0>(groups);
   }
 
+  // The same scan, said rather than implied, and the same scan that does not
+  // throw.
+  //
+  // Assigning the result of a scan to something converts it, and a conversion
+  // has nowhere to put a failure but an exception. Named, it has: `of` is the
+  // conversion under another spelling, and `try_of` hands back what went wrong
+  // instead of throwing it.
+  template <class type>
+  [[nodiscard]] constexpr type of() const {
+    return static_cast<type>(*this);
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() const {
+    try {
+      return static_cast<type>(*this);
+    } catch (const scan_error& failure) {
+      return std::unexpected(failure);
+    }
+  }
+
  private:
   std::string_view input_;
 };
@@ -192,6 +213,20 @@ class streaming_result {
     requires std::is_aggregate_v<type>
   constexpr operator type() {
     return scan_stream<type, format>(input_);
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of() {
+    return static_cast<type>(*this);
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() {
+    try {
+      return static_cast<type>(*this);
+    } catch (const scan_error& failure) {
+      return std::unexpected(failure);
+    }
   }
 
  private:
@@ -282,10 +317,33 @@ class prefix_scan {
     return {detail::borrowed_result<format>(head), input_.substr(head.size())};
   }
 
+  // The head and what follows it, or what went wrong instead.
+  template <class type>
+  [[nodiscard]] constexpr std::expected<taken<type>, scan_error> try_take()
+      const {
+    try {
+      return take<type>();
+    } catch (const scan_error& failure) {
+      return std::unexpected(failure);
+    }
+  }
+
   template <class type>
     requires std::is_aggregate_v<type> || detail::scanned_as_variant<type>
   constexpr operator type() const {
     return take<type>().value;
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of() const {
+    return take<type>().value;
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() const {
+    auto got = try_take<type>();
+    if (!got) return std::unexpected(got.error());
+    return std::move(got->value);
   }
 
  private:
@@ -504,9 +562,31 @@ class prefix_stream_scan {
   }
 
   template <class type>
+  [[nodiscard]] constexpr std::expected<detail::taken_ahead<type>, scan_error>
+  try_take() {
+    try {
+      return take<type>();
+    } catch (const scan_error& failure) {
+      return std::unexpected(failure);
+    }
+  }
+
+  template <class type>
     requires std::is_aggregate_v<type>
   constexpr operator type() {
     return take<type>().value;
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of() {
+    return take<type>().value;
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() {
+    auto got = try_take<type>();
+    if (!got) return std::unexpected(got.error());
+    return std::move(got->value);
   }
 
  private:
