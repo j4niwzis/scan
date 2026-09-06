@@ -995,19 +995,67 @@ namespace detail {
 // Nothing is kept but what the answer is made of. The characters go into the
 // collectors of whatever groups are open as they arrive, and a collector that
 // holds no text holds nothing at all.
-// Whether the machine can go on once it has a match.
+// How far the machine can go past a match without finding another one.
 //
-// Where no accepting state has a run leading anywhere, a match ends where the
-// machine stops and there is nothing to read past it. That is what lets the
-// head of a subject read once be found without holding characters back.
+// This is the fallback of the TDFA papers, and the measure that matters for a
+// subject that can only be read once. A final state is a fallback state where
+// there are paths out of it that do not go through another final state; the
+// characters read along such a path are the characters that would have to be
+// given back when it dies, and there is nowhere to give them back to unless
+// they were held.
+//
+// So the question is not whether the automaton has a cycle -- that was too
+// blunt by half -- but how long the longest non-accepting walk out of a final
+// state is. For `[a-z]+` it is nothing at all: every letter out of the final
+// state lands in a final state, so wherever the machine stops it has a match
+// and nothing was ever read past one. For `abc|abd` it is two. For a pattern
+// with a cycle that never accepts, it is unbounded, and that is the only case
+// this refuses.
 template <fixed_string pattern>
-[[nodiscard]] consteval bool settles_where_it_accepts() {
+[[nodiscard]] consteval std::size_t fallback_window() {
   constexpr const auto& automaton = regex_automaton<pattern>;
-  for (const auto& state : automaton.states) {
-    if (state.accepting_slot == packed_state<0, 0, 0>::not_accepting) continue;
-    if (state.range_count != 0) return false;
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
+  const auto accepts = [&](std::size_t state) {
+    return automaton.states[state].accepting_slot !=
+           packed_state<0, 0, 0>::not_accepting;
+  };
+  // The longest walk from each state that never lands in a final state, found
+  // by relaxing as many times as there are states. Still growing after that
+  // many rounds means it is going round a cycle that never accepts.
+  std::array<std::size_t, state_count> longest{};
+  for (std::size_t round = 0; round <= state_count; ++round) {
+    std::array<std::size_t, state_count> next{};
+    for (std::size_t state = 0; state < state_count; ++state) {
+      const auto& packed = automaton.states[state];
+      std::size_t best = 0;
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (accepts(target)) continue;
+        if (longest[target] == unbounded) return unbounded;
+        best = std::max(best, longest[target] + 1);
+      }
+      next[state] = best;
+    }
+    if (next == longest) break;
+    longest = next;
+    if (round == state_count) return unbounded;
   }
-  return true;
+  // Only what can be read past a match counts, so only final states are asked.
+  std::size_t window = 0;
+  for (std::size_t state = 0; state < state_count; ++state) {
+    if (!accepts(state)) continue;
+    if (longest[state] == unbounded) return unbounded;
+    window = std::max(window, longest[state]);
+  }
+  return window;
+}
+
+template <fixed_string pattern>
+[[nodiscard]] consteval bool falls_back_a_bounded_way() {
+  return fallback_window<pattern>() !=
+         std::numeric_limits<std::size_t>::max();
 }
 
 inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
@@ -1636,10 +1684,10 @@ struct starts_with_closure
   template <detail::read_once_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
     static_assert(
-        detail::settles_where_it_accepts<pattern>(),
+        detail::fallback_window<pattern>() == 0,
         "a subject that can only be read once has nowhere to give back the "
-        "characters read past the head: this pattern can go on after it "
-        "matches, so finding its longest head would have to hold them");
+        "characters read past the head, and this pattern can walk away from a "
+        "match without finding another one: it would have to hold them");
     constexpr const auto& automaton = detail::regex_automaton<pattern>;
     held_type held;
     std::size_t here = automaton.initial;
