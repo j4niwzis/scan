@@ -1384,6 +1384,40 @@ struct packed_state {
       readings{};
 };
 
+
+// The same question asked of constants instead of searched for.
+//
+// `find_range` walks a state's runs while the program runs, comparing against
+// numbers it has to load. Where the automaton is known while compiling -- and
+// it always is, even for a machine whose state is a value -- the runs are
+// constants and the walk is a handful of compares the compiler lays out
+// itself. The state is still a value, so it is asked once, and from there the
+// runs of that state are constants.
+inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] constexpr std::size_t run_taken_in(unsigned char symbol) {
+  constexpr const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (symbol < packed.ranges[index].first) break;
+    if (symbol <= packed.ranges[index].last) return index;
+  }
+  return no_run;
+}
+
+template <auto& automaton, std::size_t state = 0>
+[[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
+                                              unsigned char symbol) {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  if constexpr (state == state_count) {
+    return no_run;
+  } else {
+    if (here == state) return run_taken_in<automaton, state>(symbol);
+    return run_taken<automaton, state + 1>(here, symbol);
+  }
+}
+
 // The transition a symbol takes, or nothing at all. The ranges of a state are
 // in symbol order and do not overlap, so the search stops at the first range
 // that starts past the symbol.

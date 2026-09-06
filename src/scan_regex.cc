@@ -1058,34 +1058,6 @@ template <fixed_string pattern>
          std::numeric_limits<std::size_t>::max();
 }
 
-inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
-
-template <fixed_string pattern, std::size_t state>
-[[nodiscard]] constexpr std::size_t run_taken_by(
-    unsigned char symbol) {
-  constexpr const auto& packed = regex_automaton<pattern>.states[state];
-  for (std::size_t index = 0; index < packed.range_count; ++index) {
-    if (symbol >= packed.ranges[index].first &&
-        symbol <= packed.ranges[index].last) {
-      return index;
-    }
-  }
-  return no_run;
-}
-
-template <fixed_string pattern, std::size_t state = 0>
-[[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
-                                              unsigned char symbol) {
-  constexpr std::size_t state_count = std::tuple_size_v<
-      std::remove_cvref_t<decltype(regex_automaton<pattern>.states)>>;
-  if constexpr (state == state_count) {
-    return no_run;
-  } else {
-    if (here == state) return run_taken_by<pattern, state>(symbol);
-    return run_taken<pattern, state + 1>(here, symbol);
-  }
-}
-
 // Whether the group is being read where the machine stands now.
 template <fixed_string pattern, std::size_t group, class registers_type>
 [[nodiscard]] constexpr bool group_is_open(std::size_t here,
@@ -1511,7 +1483,7 @@ struct collected_match_closure
     const auto last = std::ranges::end(input);
     for (; cursor != last; ++cursor) {
       const unsigned char symbol = static_cast<unsigned char>(*cursor);
-      const std::size_t run = detail::run_taken<pattern>(here, symbol);
+      const std::size_t run = detail::run_taken<detail::regex_automaton<pattern>>(here, symbol);
       if (run == detail::no_run) return result_type{};
       const auto& taken = automaton.states[here].ranges[run];
       detail::execute_commands(taken.commands, taken.command_count, registers,
@@ -1689,7 +1661,7 @@ struct match_closure
     const auto last = std::ranges::end(input);
     for (; cursor != last; ++cursor) {
       const unsigned char symbol = static_cast<unsigned char>(*cursor);
-      const std::size_t run = detail::run_taken<pattern>(here, symbol);
+      const std::size_t run = detail::run_taken<detail::regex_automaton<pattern>>(here, symbol);
       if (run == detail::no_run) return basic_result<held_type, 0>{};
       here = automaton.states[here].ranges[run].target;
       held.push_back(static_cast<char>(symbol));
@@ -1792,7 +1764,7 @@ struct starts_with_closure
     const auto last = std::ranges::end(input);
     for (; cursor != last; ++cursor) {
       const unsigned char symbol = static_cast<unsigned char>(*cursor);
-      const std::size_t run = detail::run_taken<pattern>(here, symbol);
+      const std::size_t run = detail::run_taken<detail::regex_automaton<pattern>>(here, symbol);
       if (run == detail::no_run) break;
       here = automaton.states[here].ranges[run].target;
       held.push_back(static_cast<char>(symbol));

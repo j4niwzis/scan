@@ -1568,8 +1568,10 @@ class stream_state {
   // that belongs to whatever comes next.
   [[nodiscard]] constexpr bool offer(char symbol) {
     if (state_ == packed_range<0>::reject) return false;
-    const auto* transition = find_range(automaton.states[state_], static_cast<unsigned char>(symbol));
-    if (transition == nullptr) return false;
+    const std::size_t run =
+        run_taken<automaton>(state_, static_cast<unsigned char>(symbol));
+    if (run == no_run) return false;
+    const auto* transition = &automaton.states[state_].ranges[run];
     collect_elements<type, format, automaton>(
         state_, registers_, scanner_states_, transition->commands,
         transition->command_count, std::make_index_sequence<field_count>{});
