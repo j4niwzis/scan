@@ -270,14 +270,45 @@ template <fixed_string pattern, std::size_t state, auto target>
   }
 }
 
+// The class of symbols that keeps a state, in the shape the vector skip wants.
+//
+// The tagged walk has had this for a while: where a state stays put over a run
+// of characters, the run is stepped over in vectors instead of being read one
+// character at a time. Nothing about it needs the tags -- a state that keeps
+// itself writes nothing while it does -- so the captureless walk asks the same
+// question of the same code.
 template <fixed_string pattern, std::size_t state>
+[[nodiscard]] consteval staying_class staying_class_of() {
+  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  staying_class answer;
+  answer.below_the_high_bit = true;
+  for (std::size_t index = 0; index < ranges.size; ++index) {
+    const auto& range = ranges.values[index];
+    if (range.target != state) continue;
+    if (answer.count == answer.first.size()) return staying_class{};
+    // Runs arrive in symbol order, so one that begins where the last ended is
+    // the same run written twice and is joined here rather than tested twice.
+    if (answer.count != 0 && answer.last[answer.count - 1] + 1 == range.first) {
+      answer.last[answer.count - 1] = range.last;
+    } else {
+      answer.first[answer.count] = range.first;
+      answer.last[answer.count] = range.last;
+      ++answer.count;
+    }
+    if (range.last >= 128) answer.below_the_high_bit = false;
+  }
+  return answer;
+}
+
+template <fixed_string pattern, bool in_vectors, std::size_t state>
 [[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
                                                     const char* end);
 
 template <fixed_string pattern, unsigned char sentinel, std::size_t state>
 [[nodiscard]] constexpr bool run_sentinel_continuation(const char* cursor);
 
-template <fixed_string pattern, std::size_t state, std::size_t which = 0>
+template <fixed_string pattern, bool in_vectors, std::size_t state,
+          std::size_t which = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
 dispatch_transition(unsigned char symbol, const char* cursor,
                     const char* end) {
@@ -288,13 +319,15 @@ dispatch_transition(unsigned char symbol, const char* cursor,
     // Where the symbol keeps the automaton is asked before this, and runs do
     // not overlap, so a symbol that stays here belongs to no other target and
     // falls out of every test below.
-    return dispatch_transition<pattern, state, which + 1>(symbol, cursor, end);
+    return dispatch_transition<pattern, in_vectors, state, which + 1>(
+        symbol, cursor, end);
   } else {
     constexpr auto target = targets.values[which];
     if (moves_to<pattern, state, target>(symbol)) {
-      return run_state_continuation<pattern, target>(cursor, end);
+      return run_state_continuation<pattern, in_vectors, target>(cursor, end);
     }
-    return dispatch_transition<pattern, state, which + 1>(symbol, cursor, end);
+    return dispatch_transition<pattern, in_vectors, state, which + 1>(
+        symbol, cursor, end);
   }
 }
 
@@ -368,24 +401,22 @@ template <fixed_string pattern, std::size_t state>
   }
 }
 
-template <fixed_string pattern, std::size_t state>
+template <fixed_string pattern, bool in_vectors, std::size_t state>
 [[nodiscard]] constexpr bool run_state_continuation(const char* cursor,
                                                     const char* end) {
+  // Over the run this state keeps, in vectors, once on the way in. What is
+  // left after it is shorter than a vector and is read a character at a time,
+  // which is what the loop below does anyway.
+  if constexpr (in_vectors && staying_class_of<pattern, state>().count != 0) {
+    cursor = skip_class<staying_class_of<pattern, state>()>(cursor, end);
+  }
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
-    return dispatch_transition<pattern, state>(symbol, cursor, end);
+    return dispatch_transition<pattern, in_vectors, state>(symbol, cursor,
+                                                           end);
   }
   return regex_automaton<pattern>.accepting[state];
-}
-
-template <fixed_string pattern, unsigned char sentinel>
-[[nodiscard]] consteval bool is_safe_sentinel() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  return std::ranges::all_of(automaton.transitions, [](const auto& row) {
-    return row[sentinel] ==
-           std::remove_cvref_t<decltype(automaton)>::reject;
-  });
 }
 
 template <fixed_string pattern, unsigned char sentinel, std::size_t state>
@@ -467,8 +498,23 @@ regex_match(
     if (input.size() < minimum_match_length<pattern>()) return {};
     const char* cursor = input.data();
     const char* const end = cursor + input.size();
-    if (!run_state_continuation<pattern, automaton.initial>(cursor, end))
-      return {};
+    // Which of the two walks runs is decided here, once, on the length of the
+    // subject -- the way the tagged walk below decides it.
+    //
+    // A short subject is read a character at a time by code that carries no
+    // trace of the other walk: the vector skip brings two dozen constants with
+    // it and stops the states folding into one another, which costs a match of
+    // twenty characters more than half of what it takes to run. Past sixty-four
+    // the skip is ahead however the runs fall, and by a few hundred characters
+    // it is ahead by ten times.
+    constexpr std::size_t worth_a_vector = 64;
+    const bool matched =
+        input.size() >= worth_a_vector
+            ? run_state_continuation<pattern, true, automaton.initial>(cursor,
+                                                                      end)
+            : run_state_continuation<pattern, false, automaton.initial>(cursor,
+                                                                       end);
+    if (!matched) return {};
     return {regex_submatch(input), {}};
   } else {
     // A register holds where in the subject something happened, and holds it as
