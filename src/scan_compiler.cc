@@ -1165,6 +1165,16 @@ template <class type, fixed_string format, bool allocate = true>
       constexpr std::uint32_t no_target = std::numeric_limits<std::uint32_t>::max();
       signature[state].reserve(1 + 2 * class_width);
       signature[state].push_back(classes[state]);
+      // Readings are part of what a state is: merging two that hold their tags
+      // in different registers would make the answer to "which group is open"
+      // depend on which of them the merge happened to keep.
+      signature[state].push_back(automaton.states[state].readings.size());
+      for (const std::vector<std::uint32_t>& reading :
+           automaton.states[state].readings) {
+        for (const std::uint32_t held : reading) {
+          signature[state].push_back(held);
+        }
+      }
       for (std::size_t index = 0; index < class_width; ++index) {
         const std::size_t symbol = representatives[index];
         const std::size_t transition = owner[state][symbol];
@@ -1228,6 +1238,11 @@ template <class type, fixed_string format, bool allocate = true>
     destination.accepting_slot = source.accepting_slot;
     destination.final_commands = source.final_commands;
     destination.nfa_states = source.nfa_states;
+    // Which register holds which tag, in each reading this state stands in.
+    // Carried over, and told apart below: a machine that is fed a character at
+    // a time asks this to know which group is open, and two states that agree
+    // about everything else can disagree about that.
+    destination.readings = source.readings;
     for (const scan::tre::tdfa_transition& transition : source.transitions) {
       destination.transitions.push_back(
           scan::tre::tdfa_transition{.symbols = transition.symbols,
