@@ -1546,34 +1546,20 @@ template <fixed_string pattern>
 
 template <fixed_string pattern>
 [[nodiscard]] consteval auto pack_regex_tdfa() {
+  // One shape for every pattern, tags or none.
+  //
+  // A pattern without tags used to be packed as a cell for every symbol of
+  // every state -- two hundred and fifty-six of them a state, recovered back
+  // into runs by whoever walked it, once per instantiation. The runs are what
+  // both walks want and what the tagged shape already holds, so both are that
+  // shape now: fewer numbers to carry through the module, and one set of
+  // questions to ask of either.
   constexpr packed_shape shape = compute_regex_shape<pattern>();
   const scan::tre::tdfa tdfa = build_regex_tdfa<pattern>();
-  if constexpr (shape.tags == 0) {
-    packed_captureless_tdfa<shape.states> packed;
-    packed.initial = static_cast<typename decltype(packed)::state_type>(
-        tdfa.initial);
-    for (auto& transitions : packed.transitions) {
-      std::ranges::fill(transitions, decltype(packed)::reject);
-    }
-    for (std::size_t state_index : std::views::iota(std::size_t{0}, tdfa.states.size())) {
-          const auto& source = tdfa.states[state_index];
-          packed.accepting[state_index] = source.accepting_slot.has_value();
-          for (const scan::tre::tdfa_transition& transition : source.transitions) {
-            for (std::size_t symbol = 0; symbol < 256; ++symbol) {
-              if (!transition.symbols.test(symbol)) continue;
-              packed.transitions[state_index][symbol] =
-                  static_cast<typename decltype(packed)::state_type>(
-                      transition.target);
-            }
-              }
-        }
-    return packed;
-  } else {
-    return pack_tdfa_value<shape.states, shape.registers,
-                           shape.initial_commands, shape.maximum_commands,
-                           shape.maximum_final_commands, shape.tags,
-                           shape.ranges>(tdfa);
-  }
+  return pack_tdfa_value<shape.states, shape.registers,
+                         shape.initial_commands, shape.maximum_commands,
+                         shape.maximum_final_commands, shape.tags,
+                         shape.ranges, shape.readings>(tdfa);
 }
 
 // Values built out of the groups a match left behind.

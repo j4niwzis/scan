@@ -164,26 +164,30 @@ struct transition_ranges {
   std::size_t size = 0;
 };
 
+// Whether the machine standing here would have a match.
+template <fixed_string pattern, std::size_t state>
+[[nodiscard]] consteval bool accepts_here() {
+  return regex_automaton<pattern>.states[state].accepting_slot !=
+         packed_state<0, 0, 0>::not_accepting;
+}
+
+// The runs of a state, as the automaton holds them.
+//
+// These used to be recovered from a cell for every symbol, once for every
+// instantiation that asked. The automaton is packed as runs now, so this hands
+// them over.
 template <fixed_string pattern, std::size_t state>
 [[nodiscard]] consteval auto make_transition_ranges() {
   constexpr const auto& automaton = regex_automaton<pattern>;
-  using state_type = typename std::remove_cvref_t<decltype(automaton)>::state_type;
+  using state_type = std::size_t;
   transition_ranges<state_type> result;
-  for (std::size_t symbol : std::views::iota(std::size_t{0}, std::size_t{256})) {
-        const state_type target = automaton.transitions[state][symbol];
-        if (target == std::remove_cvref_t<decltype(automaton)>::reject) continue;
-        if (result.size != 0 &&
-            result.values[result.size - 1].target == target &&
-            result.values[result.size - 1].last + 1 == symbol) {
-          result.values[result.size - 1].last =
-              static_cast<unsigned char>(symbol);
-          continue;
-        }
-        result.values[result.size++] = {
-            .first = static_cast<unsigned char>(symbol),
-            .last = static_cast<unsigned char>(symbol),
-            .target = target};
-      }
+  const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    result.values[result.size++] = {
+        .first = packed.ranges[index].first,
+        .last = packed.ranges[index].last,
+        .target = packed.ranges[index].target};
+  }
   return result;
 }
 
@@ -191,7 +195,7 @@ template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t minimum_match_length() {
   constexpr const auto& automaton = regex_automaton<pattern>;
   constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.accepting)>>;
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
   constexpr std::size_t unreachable =
       std::numeric_limits<std::size_t>::max();
   // Value-initialised, not left to the default constructor: an implicit
@@ -207,15 +211,17 @@ template <fixed_string pattern>
   for (std::size_t round = 0; round < state_count; ++round) {
     for (std::size_t source = 0; source < state_count; ++source) {
       if (distance[source] == unreachable) continue;
-      for (const auto target : automaton.transitions[source]) {
-        if (target == std::remove_cvref_t<decltype(automaton)>::reject) continue;
+      const auto& packed = automaton.states[source];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
         distance[target] = std::min(distance[target], distance[source] + 1);
       }
     }
   }
   auto result = unreachable;
   for (std::size_t state = 0; state < state_count; ++state) {
-    if (automaton.accepting[state]) {
+    if (automaton.states[state].accepting_slot !=
+        packed_state<0, 0, 0>::not_accepting) {
       result = std::min(result, distance[state]);
     }
   }
@@ -255,8 +261,7 @@ struct transition_targets {
 template <fixed_string pattern, std::size_t state>
 [[nodiscard]] consteval auto make_transition_targets() {
   constexpr const auto& automaton = regex_automaton<pattern>;
-  using state_type =
-      typename std::remove_cvref_t<decltype(automaton)>::state_type;
+  using state_type = std::size_t;
   constexpr auto ranges = make_transition_ranges<pattern, state>();
   transition_targets<state_type> result;
   for (std::size_t index = 0; index < ranges.size; ++index) {
@@ -286,10 +291,17 @@ template <fixed_string pattern, std::size_t state, auto target>
 template <fixed_string pattern, std::size_t state>
 inline constexpr auto transition_target_table = [] consteval {
   constexpr const auto& automaton = regex_automaton<pattern>;
-  using state_type =
-      typename std::remove_cvref_t<decltype(automaton)>::state_type;
+  using state_type = std::size_t;
   std::array<state_type, 256> result{};
-  std::ranges::copy(automaton.transitions[state], result.begin());
+  std::ranges::fill(result, static_cast<state_type>(
+      std::numeric_limits<state_type>::max()));
+  const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    for (std::size_t symbol = packed.ranges[index].first;
+         symbol <= packed.ranges[index].last; ++symbol) {
+      result[symbol] = static_cast<state_type>(packed.ranges[index].target);
+    }
+  }
   return result;
 }();
 
@@ -376,7 +388,7 @@ template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t chain_budget() {
   constexpr const auto& automaton = regex_automaton<pattern>;
   constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.accepting)>>;
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
   return state_count < 32 ? state_count : 32;
 }
 
@@ -470,10 +482,14 @@ template <fixed_string pattern, std::size_t state>
 inline constexpr auto self_transition_table = [] consteval {
   std::array<unsigned char, 256> result{};
   constexpr const auto& automaton = regex_automaton<pattern>;
-  std::ranges::transform(
-      automaton.transitions[state], result.begin(), [](auto target) {
-        return static_cast<unsigned char>(target == state);
-      });
+  const auto& packed = automaton.states[state];
+  for (std::size_t index = 0; index < packed.range_count; ++index) {
+    if (packed.ranges[index].target != state) continue;
+    for (std::size_t symbol = packed.ranges[index].first;
+         symbol <= packed.ranges[index].last; ++symbol) {
+      result[symbol] = 1;
+    }
+  }
   return result;
 }();
 
@@ -536,16 +552,21 @@ template <fixed_string pattern, bool in_vectors, std::size_t state,
     return dispatch_transition<pattern, in_vectors, state, budget, 0>(
         symbol, cursor, end);
   }
-  return regex_automaton<pattern>.accepting[state];
+  return accepts_here<pattern, state>();
 }
 
 template <fixed_string pattern, unsigned char sentinel>
 [[nodiscard]] consteval bool is_safe_sentinel() {
   constexpr const auto& automaton = regex_automaton<pattern>;
-  return std::ranges::all_of(automaton.transitions, [](const auto& row) {
-    return row[sentinel] ==
-           std::remove_cvref_t<decltype(automaton)>::reject;
-  });
+  for (const auto& state : automaton.states) {
+    for (std::size_t index = 0; index < state.range_count; ++index) {
+      if (sentinel >= state.ranges[index].first &&
+          sentinel <= state.ranges[index].last) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
@@ -573,7 +594,7 @@ template <fixed_string pattern, unsigned char sentinel, bool in_vectors,
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
-    if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
+    if (symbol == sentinel) return accepts_here<pattern, state>();
     return dispatch_sentinel_transition<pattern, sentinel, in_vectors, state>(
         symbol, cursor, end);
   }
@@ -624,7 +645,7 @@ run_inlined_sentinel_continuation(const char* cursor, const char* end) {
   while (true) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor++);
     if (is_self_transition<pattern, state>(symbol)) continue;
-    if (symbol == sentinel) return regex_automaton<pattern>.accepting[state];
+    if (symbol == sentinel) return accepts_here<pattern, state>();
     return dispatch_inlined_sentinel_transition<pattern, sentinel, in_vectors,
                                                 state, budget>(symbol, cursor,
                                                                end);
@@ -671,7 +692,7 @@ template <fixed_string pattern, std::size_t state, class iterator,
     if (is_self_transition<pattern, state>(symbol)) continue;
     return dispatch_general<pattern, state>(symbol, cursor, last);
   }
-  return regex_automaton<pattern>.accepting[state];
+  return accepts_here<pattern, state>();
 }
 
 // The longest head, over any pair of iterators. Where nothing was accepted the
@@ -710,7 +731,7 @@ template <fixed_string pattern, std::size_t state, class iterator,
 [[nodiscard]] constexpr std::optional<iterator> run_general_head(
     iterator cursor, sentinel last) {
   std::optional<iterator> best;
-  if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+  if constexpr (accepts_here<pattern, state>()) best = cursor;
   while (cursor != last) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
     if (!is_self_transition<pattern, state>(symbol)) {
@@ -719,7 +740,7 @@ template <fixed_string pattern, std::size_t state, class iterator,
                                                    std::move(best));
     }
     ++cursor;
-    if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+    if constexpr (accepts_here<pattern, state>()) best = cursor;
   }
   return best;
 }
@@ -855,12 +876,12 @@ template <fixed_string pattern, std::size_t state>
 [[nodiscard]] constexpr const char* run_longest_head(const char* cursor,
                                                      const char* end,
                                                      const char* best) {
-  if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+  if constexpr (accepts_here<pattern, state>()) best = cursor;
   while (cursor != end) {
     const unsigned char symbol = static_cast<unsigned char>(*cursor);
     if (!is_self_transition<pattern, state>(symbol)) break;
     ++cursor;
-    if constexpr (regex_automaton<pattern>.accepting[state]) best = cursor;
+    if constexpr (accepts_here<pattern, state>()) best = cursor;
   }
   if (cursor == end) return best;
   return dispatch_head_transition<pattern, state>(
