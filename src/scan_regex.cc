@@ -950,6 +950,281 @@ using walked_holder =
 
 }  // namespace detail
 
+// What a group is turned into.
+//
+// A collector says how to make a value out of the characters a group stood on.
+// There are three ways and the choice is made where the type is known, not
+// where the characters arrive:
+//
+//   * the type's own incremental scanner, where it has one -- the characters
+//     go straight in and no text is ever built;
+//   * the type's `parse`, where it has that instead -- the characters are
+//     handed over once, as a piece;
+//   * the type built from the characters, for a type that is a string of some
+//     kind and wants no scanner at all.
+//
+// Arguments given here are the arguments the value is made with, so a group
+// can be collected into a string with one allocator and the next group into a
+// string with another.
+template <class type, class... arguments>
+class as_collector {
+ public:
+  using value_type = type;
+
+  constexpr explicit as_collector(arguments... given)
+      : arguments_(std::move(given)...) {}
+
+  [[nodiscard]] constexpr value_type from_text(
+      std::string_view text, std::string_view parameters) const {
+    // Asked of the scanner itself, not of the helper: the helper is a template
+    // whose body is what fails for a type that has no scanner, and a body
+    // failing is not a question anyone can ask.
+    if constexpr (requires {
+                    std::declval<scan::scanner<type>&>().parse(text,
+                                                               parameters);
+                  } || requires {
+                    std::declval<scan::scanner<type>&>().parse(text);
+                  }) {
+      return scanner_parse<type>(text, parameters);
+    } else {
+      return std::apply(
+          [&](const arguments&... given) {
+            return value_type(text.begin(), text.end(), given...);
+          },
+          arguments_);
+    }
+  }
+
+  // Characters as they come, for a subject that cannot be looked at twice.
+  [[nodiscard]] constexpr auto begin_pushing(
+      std::string_view parameters) const {
+    if constexpr (requires {
+                    std::declval<scan::scanner<type>&>().begin(parameters);
+                  } || requires {
+                    std::declval<scan::scanner<type>&>().begin();
+                  }) {
+      return scanner_begin<type>(parameters);
+    } else {
+      return std::apply(
+          [&](const arguments&... given) { return value_type(given...); },
+          arguments_);
+    }
+  }
+
+ private:
+  std::tuple<arguments...> arguments_;
+};
+
+template <class type, class... arguments>
+[[nodiscard]] constexpr auto as(arguments&&... given) {
+  return as_collector<type, std::remove_cvref_t<arguments>...>(
+      std::forward<arguments>(given)...);
+}
+
+// The characters themselves, held however the subject affords: pointed at,
+// walked between, or owned. This is what every group is collected into when
+// nothing else is said.
+struct text_collector {};
+
+[[nodiscard]] constexpr text_collector text() { return {}; }
+
+// Nothing from this group.
+//
+// The group is still there -- it may be there because the type of another
+// group is read out of it -- but no value is made from it and it takes no room
+// in what comes back.
+struct skip_collector {};
+
+[[nodiscard]] constexpr skip_collector skip() { return {}; }
+
+// A value of any type at all, filled by a call of your own.
+//
+// The value is made from the arguments given here, and every character of the
+// group is handed to the call along with it. What that does is nobody else's
+// business: it can push into a string, count, hash, or throw the characters
+// away.
+template <class type, class pusher, class... arguments>
+class collecting_collector {
+ public:
+  using value_type = type;
+
+  constexpr collecting_collector(pusher push, arguments... given)
+      : push_(std::move(push)), arguments_(std::move(given)...) {}
+
+  [[nodiscard]] constexpr value_type from_text(std::string_view text,
+                                               std::string_view) const {
+    value_type made = std::apply(
+        [&](const arguments&... given) { return value_type(given...); },
+        arguments_);
+    for (const char letter : text) push_(made, letter);
+    return made;
+  }
+
+  [[nodiscard]] constexpr auto begin_pushing(std::string_view) const {
+    return std::apply(
+        [&](const arguments&... given) { return value_type(given...); },
+        arguments_);
+  }
+
+  constexpr void push_one(value_type& into, char letter) const {
+    push_(into, letter);
+  }
+
+ private:
+  pusher push_;
+  std::tuple<arguments...> arguments_;
+};
+
+template <class type, class pusher, class... arguments>
+[[nodiscard]] constexpr auto collecting(pusher&& push, arguments&&... given) {
+  return collecting_collector<type, std::remove_cvref_t<pusher>,
+                              std::remove_cvref_t<arguments>...>(
+      std::forward<pusher>(push), std::forward<arguments>(given)...);
+}
+
+// A match whose groups were turned into values.
+//
+// The whole of it is still a piece of the subject, held the way the subject
+// affords; each group is whatever its collector made of it, and they keep the
+// order they were written in. A group nobody wanted is `skipped`, which is
+// nothing and takes no room.
+struct skipped {};
+
+template <class whole_holder, class... values>
+class typed_result {
+ public:
+  constexpr typed_result() = default;
+  constexpr typed_result(basic_submatch<whole_holder> whole,
+                         std::tuple<values...> made)
+      : whole_(std::move(whole)), values_(std::move(made)) {}
+
+  [[nodiscard]] constexpr explicit operator bool() const noexcept {
+    return static_cast<bool>(whole_);
+  }
+  [[nodiscard]] constexpr const basic_submatch<whole_holder>& whole()
+      const noexcept {
+    return whole_;
+  }
+
+  // Nought is the whole match, as it is everywhere else here; the rest are the
+  // groups, in the order they were written.
+  template <std::size_t index>
+  [[nodiscard]] constexpr decltype(auto) get() const {
+    if constexpr (index == 0) {
+      return (whole_);
+    } else {
+      static_assert(index <= sizeof...(values), "no such group");
+      return std::get<index - 1>(values_);
+    }
+  }
+
+  [[nodiscard]] constexpr const std::tuple<values...>& all() const noexcept {
+    return values_;
+  }
+
+ private:
+  basic_submatch<whole_holder> whole_;
+  [[no_unique_address]] std::tuple<values...> values_{};
+};
+
+namespace detail {
+
+// What one collector makes.
+template <class collector, class holder>
+struct collected {
+  using type = typename collector::value_type;
+};
+
+template <class holder>
+struct collected<skip_collector, holder> {
+  using type = skipped;
+};
+
+template <class holder>
+struct collected<text_collector, holder> {
+  using type = holder;
+};
+
+template <class collector, class holder>
+using collected_type = typename collected<collector, holder>::type;
+
+template <class collector, class holder, class submatch_type>
+[[nodiscard]] constexpr collected_type<collector, holder> collect_one(
+    const collector& one, const submatch_type& group) {
+  if constexpr (std::same_as<collector, skip_collector>) {
+    return {};
+  } else if constexpr (std::same_as<collector, text_collector>) {
+    return group.held();
+  } else {
+    return one.from_text(group.to_view(), std::string_view{});
+  }
+}
+
+}  // namespace detail
+
+// A match whose groups are collected, each by its own collector.
+template <fixed_string pattern, class held_type, class... collectors>
+struct collected_match_closure
+    : std::ranges::range_adaptor_closure<
+          collected_match_closure<pattern, held_type, collectors...>> {
+  constexpr explicit collected_match_closure(collectors... given)
+      : collectors_(std::move(given)...) {}
+
+  template <detail::contiguous_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    using holder = std::string_view;
+    using result_type =
+        typed_result<holder, detail::collected_type<collectors, holder>...>;
+    const auto found = detail::regex_match<pattern>(std::string_view(
+        std::ranges::data(input), std::ranges::size(input)));
+    if (!found) return result_type{};
+    return build<holder, result_type>(
+        found, std::make_index_sequence<sizeof...(collectors)>{});
+  }
+
+  template <detail::read_once_char_range range_type>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    using holder = held_type;
+    using result_type =
+        typed_result<holder, detail::collected_type<collectors, holder>...>;
+    held_type held = detail::read_once<held_type>(input);
+    const auto found = detail::regex_match<pattern>(
+        std::string_view(held.data(), held.size()));
+    if (!found) return result_type{};
+    auto made = build_values(found,
+                             std::make_index_sequence<sizeof...(collectors)>{});
+    return result_type{basic_submatch<holder>(std::move(held)),
+                       std::move(made)};
+  }
+
+ private:
+  template <class holder, class result_type, class found_type,
+            std::size_t... group>
+  [[nodiscard]] constexpr result_type build(
+      const found_type& found, std::index_sequence<group...>) const {
+    return result_type{
+        basic_submatch<holder>(found.whole()),
+        std::tuple<detail::collected_type<collectors, holder>...>{
+            detail::collect_one<
+                std::tuple_element_t<group, std::tuple<collectors...>>,
+                holder>(std::get<group>(collectors_),
+                        found.template get<group + 1>())...}};
+  }
+
+  template <class found_type, std::size_t... group>
+  [[nodiscard]] constexpr auto build_values(
+      const found_type& found, std::index_sequence<group...>) const {
+    return std::tuple<
+        detail::collected_type<collectors, held_type>...>{
+        detail::collect_one<
+            std::tuple_element_t<group, std::tuple<collectors...>>, held_type>(
+            std::get<group>(collectors_),
+            found.template get<group + 1>())...};
+  }
+
+  std::tuple<collectors...> collectors_;
+};
+
 // The whole subject, matched.
 //
 // Three subjects and three answers. Characters that lie in a row are pointed
@@ -967,6 +1242,15 @@ struct match_closure
   template <class other>
   [[nodiscard]] constexpr match_closure<pattern, other> into() const {
     return {};
+  }
+
+  // A collector for each group, in the order the groups were written. What
+  // each of them is made with is its own business, so one group can be a
+  // string with one allocator and the next a string with another.
+  template <class... collectors>
+  [[nodiscard]] constexpr auto into(collectors... given) const {
+    return collected_match_closure<pattern, held_type, collectors...>(
+        std::move(given)...);
   }
 
   template <detail::contiguous_char_range range_type>
