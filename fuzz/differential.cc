@@ -50,14 +50,20 @@ class pattern_maker {
   [[nodiscard]] std::size_t groups() const { return groups_; }
 
  private:
+  // The bytes are what decides the shape, so when they run out the shape is
+  // finished. Handing back a zero instead is how the first run of this asked
+  // for three gigabytes: a loop that goes round again while the byte is zero
+  // goes round for ever once there are no bytes left.
+  [[nodiscard]] bool spent() const { return at_ >= bytes_.size(); }
+
   std::uint8_t next() {
-    if (at_ == bytes_.size()) return 0;
+    if (spent()) return 0;
     return bytes_[at_++];
   }
 
   void alternation(std::string& out, int depth) {
     concatenation(out, depth);
-    while (depth < 3 && (next() & 7) == 0) {
+    while (!spent() && !full(out) && depth < 3 && (next() & 7) == 0) {
       out += '|';
       concatenation(out, depth);
     }
@@ -65,7 +71,13 @@ class pattern_maker {
 
   void concatenation(std::string& out, int depth) {
     const int many = 1 + (next() & 3);
-    for (int at = 0; at < many; ++at) repeated(out, depth);
+    for (int at = 0; at < many && !full(out); ++at) repeated(out, depth);
+  }
+
+  // A second wall behind the first: however the bytes fall, a pattern this
+  // long is long enough.
+  [[nodiscard]] static bool full(const std::string& out) {
+    return out.size() > 120;
   }
 
   void repeated(std::string& out, int depth) {
