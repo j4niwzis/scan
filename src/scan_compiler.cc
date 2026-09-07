@@ -511,6 +511,28 @@ struct parts_of<type, true> {
   using at = typename call::template at<index>;
 };
 
+// What a shape is made of, asked of what it says and not of how it is read.
+//
+// The same answer as the general one -- the arguments of the call that makes
+// it, or its fields -- but reached without asking whether the type is a list or
+// a leaf or a shape, because those are questions this one is used to answer.
+template <class type, bool = scanned_from_values<type>>
+struct shape_parts {
+  static constexpr std::size_t count =
+      boost::pfr::tuple_size_v<std::remove_cv_t<type>>;
+  template <std::size_t index>
+  using at = std::remove_cvref_t<
+      boost::pfr::tuple_element_t<index, std::remove_cv_t<type>>>;
+};
+template <class type>
+struct shape_parts<type, true> {
+  using call = call_parameters<
+      decltype(&scan::scanner<std::remove_cv_t<type>>::parse)>;
+  static constexpr std::size_t count = call::count;
+  template <std::size_t index>
+  using at = typename call::template at<index>;
+};
+
 // Whether a list stands anywhere inside a shape, asked of what the types say
 // and never of how this library reads them.
 //
@@ -562,10 +584,9 @@ template <class type>
     // and its arguments are as much a part of it as fields are of anything.
     return []<std::size_t... field>(std::index_sequence<field...>) {
       return (false || ... ||
-              a_list_field<std::remove_cv_t<
-                  typename parts_of<std::remove_cv_t<type>>::template at<
-                      field>>>());
-    }(std::make_index_sequence<parts_of<std::remove_cv_t<type>>::count>{});
+              a_list_field<typename shape_parts<
+                  std::remove_cv_t<type>>::template at<field>>());
+    }(std::make_index_sequence<shape_parts<std::remove_cv_t<type>>::count>{});
   }
 }
 
