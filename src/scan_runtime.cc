@@ -93,8 +93,8 @@ SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
     std::array<mark, register_count>& registers, mark here) {
   constexpr const auto& transition =
       automaton.states[state].ranges[range];
-  [&]<std::size_t... index>(std::index_sequence<index...>)
-      SCAN_FORCE_INLINE_LAMBDA {
+  [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
+      std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
             (transition.commands[index].source == packed_command::no_source
                  ? absent_mark<mark>
@@ -110,8 +110,8 @@ template <auto& automaton, std::size_t state, class mark,
 SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
     std::array<mark, register_count>& registers, mark here) {
   constexpr const auto& packed_state = automaton.states[state];
-  [&]<std::size_t... index>(std::index_sequence<index...>)
-      SCAN_FORCE_INLINE_LAMBDA {
+  [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
+      std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
             (packed_state.final_commands[index].source ==
                      packed_command::no_source
@@ -2283,8 +2283,7 @@ class field_gatherer {
   // of it, which is one pass over the piece rather than one call a character.
   template <std::size_t state, class registers_type>
   constexpr void took_run(const char* from, const char* to,
-                          const registers_type& registers,
-                          std::ptrdiff_t position) {
+                          const registers_type& registers, std::ptrdiff_t) {
     hand_run<state>(from, to, registers,
                     std::make_index_sequence<field_count>{});
   }
@@ -2603,38 +2602,6 @@ template <class type, fixed_string format, class iterator_type,
   // Nothing matched; `finish` says so in the way the caller expects.
   return {std::move(state).finish(), stopped};
 }
-
-template <class type, fixed_string format, std::ranges::input_range range_type>
-[[nodiscard]] constexpr type scan_stream(range_type&& input) {
-  constexpr const auto& automaton = streaming_automaton<type, format>;
-  std::array<std::ptrdiff_t, automaton.register_count> registers{};
-  std::ranges::fill(registers, scan::tre::negative_tag);
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   std::ptrdiff_t{0});
-  field_gatherer<type, format, automaton> into;
-  auto cursor = std::ranges::begin(input);
-  std::ptrdiff_t position = 0;
-  constexpr walk_shape shape{};
-  walk_answer<decltype(cursor)> best;
-  if (!run_continuation<automaton, shape, automaton.initial, 0, 0,
-                        std::ptrdiff_t>(cursor, std::ranges::end(input),
-                                        position, registers, into, best)) {
-    throw scan_error("input does not match scan expression");
-  }
-  return std::move(*into.made());
-}
-
-// The head of a range that is read once, and the character that ended it.
-//
-// Nothing is buffered: the characters go through the machine as they come, the
-// values are gathered by the scanners of the fields themselves, and the one
-// character the machine could not take is handed back with them, because it has
-// been read and cannot be put back where it came from.
-template <class type>
-struct taken_ahead {
-  type value;
-  std::optional<char> stopped;
-};
 
 // How much a reading of this format has to be able to hold: nothing where it
 // can be gone back over, and nothing where no walk out of a match ever fails
