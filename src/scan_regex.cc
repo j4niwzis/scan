@@ -1047,9 +1047,9 @@ template <class type, fixed_string pattern, std::size_t group>
 
 template <class type, fixed_string pattern, std::size_t group>
 [[nodiscard]] consteval bool group_spells_out() {
-  if constexpr (groups_of<type>() <= 1) {
+  if constexpr (!says_a_format<std::remove_cv_t<type>>) {
     return false;
-  } else if constexpr (!scanned_by_format<std::remove_cv_t<type>>) {
+  } else if constexpr (groups_of_output<std::remove_cv_t<type>>() <= 1) {
     return false;
   } else {
     // Both read, and the readings compared -- not the characters. `a+` and
@@ -1073,7 +1073,10 @@ template <class type, fixed_string pattern, std::size_t group>
     // Each is read on its own, with its own count of the groups it opens, so
     // the tags in the two trees are numbered from the same place and can be
     // compared as they stand.
-    constexpr auto declared = capturing_pattern<std::remove_cv_t<type>>();
+    // The pattern the type declares, which for a shape is its places written
+    // as groups -- the same groups this asks whether the big pattern already
+    // has.
+    constexpr auto declared = declared_pattern<std::remove_cv_t<type>>();
     constexpr auto written = group_text<pattern>(group);
     if constexpr (written.empty()) {
       return false;
@@ -1082,7 +1085,7 @@ template <class type, fixed_string pattern, std::size_t group>
       tre_parser reading_the_group(written, {}, here, true);
       const auto theirs = reading_the_group.parse_regex();
       std::size_t there = 0;
-      tre_parser reading_the_type(declared.view(), {}, there, true);
+      tre_parser reading_the_type(pattern_view(declared), {}, there, true);
       const auto ours = reading_the_type.parse_regex();
       return scan::tre::same_expression(theirs, ours);
     }
