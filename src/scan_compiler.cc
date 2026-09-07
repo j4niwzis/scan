@@ -859,14 +859,37 @@ concept reads_its_own_groups =
 // Nought for every leaf that does not read itself out of them, which is every
 // leaf there was until now -- so the counting below is the counting that was
 // there before, for everything that came before.
+// The pattern a type declares, asked for in the way that works however it is
+// declared.
+//
+// A scanner may say `pattern()`, or `pattern(parameters)`, or both. Asked
+// without parameters, one that only has the second answers with the member
+// itself -- a pointer to a function, not a pattern -- and everything after
+// that is a puzzle. Asked with empty parameters, both answer with a pattern,
+// and empty parameters are what a place with nothing written after the colon
+// hands over anyway.
+template <class type>
+[[nodiscard]] constexpr auto declared_pattern() {
+  return scanner_pattern<std::remove_cv_t<type>>(std::string_view{});
+}
+
+// And its characters, however the pattern is held.
+[[nodiscard]] constexpr std::string_view pattern_view(const auto& declared) {
+  if constexpr (requires { std::string_view(declared); }) {
+    return std::string_view(declared);
+  } else {
+    return declared.view();
+  }
+}
+
 template <class type>
 [[nodiscard]] consteval std::size_t groups_a_leaf_opens() {
   if constexpr (!reads_its_own_groups<type>) {
     return 0;
   } else {
     std::size_t counted = 0;
-    const auto declared = scanner_pattern<std::remove_cv_t<type>>();
-    tre_parser reading(std::string_view(declared), {}, counted, true);
+    const auto declared = declared_pattern<type>();
+    tre_parser reading(pattern_view(declared), {}, counted, true);
     static_cast<void>(reading.parse_regex());
     return counted;
   }

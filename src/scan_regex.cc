@@ -1020,12 +1020,12 @@ template <class type, fixed_string pattern, std::size_t group>
     if constexpr (written.empty()) {
       return false;
     } else {
-      const auto declared = scanner_pattern<std::remove_cv_t<type>>();
+      const auto declared = declared_pattern<type>();
       std::size_t here = 0;
       tre_parser reading_the_group(written, {}, here, true);
       const auto theirs = reading_the_group.parse_regex();
       std::size_t there = 0;
-      tre_parser reading_the_type(std::string_view(declared), {}, there, true);
+      tre_parser reading_the_type(pattern_view(declared), {}, there, true);
       const auto ours = reading_the_type.parse_regex();
       return scan::tre::same_expression(theirs, ours);
     }

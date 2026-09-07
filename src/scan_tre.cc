@@ -186,12 +186,25 @@ constexpr void append_plainly(std::vector<node>& into, const node& one) {
         } else if constexpr (std::same_as<kind, ast::repetition>) {
           if (value.element.size() != 1) return node(value);
           const node body = plainly(value.element.front());
-          const bool exactly = value.minimum == value.maximum;
-          if (exactly && value.minimum <= most_copies &&
-              !marks_a_place(body)) {
+          // The turns that have to happen are written out, and what is left
+          // over stays a count that may take none. So `a+` is `aa*`, `a{2,}`
+          // is `aaa*`, `a{2}` is `aa`, and the three ways of writing the same
+          // thing come to one shape.
+          //
+          // Only where no tag is inside: writing out a turn that marks a place
+          // would make one group into several, which is a different answer and
+          // not a different spelling.
+          if (value.minimum <= most_copies && !marks_a_place(body)) {
             std::vector<node> elements;
             for (std::size_t turn = 0; turn < value.minimum; ++turn) {
               append_plainly(elements, body);
+            }
+            const std::size_t left =
+                value.maximum == unbounded ? unbounded
+                                           : value.maximum - value.minimum;
+            if (left != 0) {
+              elements.push_back(
+                  ast::repetition{{body}, 0, left, value.greedy});
             }
             if (elements.empty()) return ast::epsilon{};
             if (elements.size() == 1) return elements.front();
