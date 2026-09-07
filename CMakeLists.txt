@@ -26,6 +26,52 @@ CPMAddPackage(
 
 option(SCAN_BUILD_BENCHMARKS "Build regex engine comparison benchmarks" OFF)
 
+# The engine against another engine, on patterns nobody wrote.
+#
+# Everything that happens while a program is compiled -- reading the pattern,
+# building the machine, cutting the walks below a match, minimizing -- is
+# ordinary code that also runs, so the pattern can be a string made up at run
+# time and the answers can be compared against an engine that was not written
+# here. RE2 in its default mode is leftmost-first, which is the rule this
+# library settled on, so a disagreement is a bug in one of the two.
+#
+# Off by default: RE2 brings abseil with it, and that is a heavy thing to make
+# every build carry.
+option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
+
+if(SCAN_BUILD_FUZZER)
+  set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
+  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+  CPMAddPackage(
+    NAME abseil
+    GITHUB_REPOSITORY abseil/abseil-cpp
+    GIT_TAG 20250127.0
+  )
+  CPMAddPackage(
+    NAME re2_source
+    GITHUB_REPOSITORY google/re2
+    GIT_TAG 2024-07-02
+  )
+  add_executable(differential_fuzz fuzz/differential.cc)
+  target_link_libraries(differential_fuzz PRIVATE scan re2::re2)
+  # A pattern read at run time is read by the same code that reads one written
+  # in a template argument, and that code is in the library's own modules.
+  target_compile_features(differential_fuzz PRIVATE cxx_std_23)
+
+  # And the same thing under libFuzzer, where the bytes are chosen to reach
+  # places rather than at random.
+  if(SCAN_FUZZER_LIBFUZZER)
+    add_executable(differential_libfuzzer fuzz/differential.cc)
+    target_link_libraries(differential_libfuzzer PRIVATE scan re2::re2)
+    target_compile_definitions(differential_libfuzzer PRIVATE SCAN_FUZZ_ENTRY)
+    target_compile_options(differential_libfuzzer PRIVATE
+      -fsanitize=fuzzer,address)
+    target_link_options(differential_libfuzzer PRIVATE
+      -fsanitize=fuzzer,address)
+  endif()
+endif()
+
 if(SCAN_BUILD_BENCHMARKS)
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     add_compile_options($<$<CONFIG:Release>:-flto>)
