@@ -554,9 +554,65 @@ using branch_at =
     typename scan::branches<std::remove_cv_t<type>>::template at<which>;
 
 template <class type>
-concept scanned_by_format = requires {
+concept says_a_format = requires {
   scan::scanner<std::remove_cv_t<type>>::scan_format;
 };
+
+// A type read by spreading the format it declares into the automaton around
+// it. A type that also says how to build itself out of its own groups is read
+// that way instead: the groups are the same groups, and reading them is the
+// user's own code rather than this library's.
+template <class type>
+concept scanned_by_format = says_a_format<type> && !requires {
+  scan::scanner<std::remove_cv_t<type>>{}.from_groups(
+      std::declval<std::span<const std::string_view>>());
+} && !requires {
+  scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(
+      std::declval<std::span<const std::string_view>>());
+};
+
+template <class type>
+[[nodiscard]] consteval bool a_flat_shape();
+
+// Whether a shape is made only of places -- values, and shapes of values, and
+// nothing that takes turns or chooses.
+//
+// A shape like that is put together from the groups of one match and nothing
+// else, which is what a type that reads its own groups does. One with a list
+// or a choice in it cannot be: what those are made of are the turns, and the
+// positions a match leaves behind hold the last turn and nothing before it.
+template <class type>
+[[nodiscard]] consteval bool a_flat_field() {
+  // Asked of what the type says, and never of how this library decided to
+  // read it: how it is read is decided by this very question, and a question
+  // that asks its own answer has none.
+  if constexpr (says_it_is_a_list<type>) {
+    return false;
+  } else if constexpr (says_a_format<type>) {
+    return a_flat_shape<type>();
+  } else if constexpr (requires { sizeof(scan::scanner<std::remove_cv_t<type>>); }) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+template <class type>
+[[nodiscard]] consteval bool a_flat_shape() {
+  if constexpr (!says_a_format<type>) {
+    return false;
+  } else if constexpr (requires { &scan::scanner<std::remove_cv_t<type>>::parse; }) {
+    // Made by the call it named rather than filled in: its places stand for
+    // arguments, and that is a shape of its own.
+    return false;
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (true && ... &&
+              a_flat_field<std::remove_cvref_t<decltype(boost::pfr::get<field>(
+                  std::declval<std::remove_cv_t<type>&>()))>>());
+    }(std::make_index_sequence<boost::pfr::tuple_size_v<std::remove_cv_t<type>>>{});
+  }
+}
 
 // A type that says outright it is a list, though it could be read as one
 // value.
@@ -852,6 +908,8 @@ concept reads_its_own_groups =
     requires { scan::scanner<std::remove_cv_t<type>>{}.begin_groups(); } ||
     requires(std::span<const std::string_view> given) {
       scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
+    } || requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(given);
     };
 
 // How many groups a leaf's own pattern opens.
@@ -1148,6 +1206,22 @@ concept folds_its_groups = requires {
 template <class held>
 inline constexpr bool folds_by_turns =
     gathers_by_its_groups<held> && folds_its_groups<held>;
+
+// A type that can only be told its groups as they happen: it folds them and
+// cannot be handed them afterwards.
+//
+// The two are not the same question. A type that can do both is folded where
+// the subject is read once -- there is no other way there -- and handed its
+// groups whole where they can be pointed at, which is the faster of the two
+// and the one that copies nothing. Only a type that cannot be handed them
+// forces the reading that gathers as it goes.
+template <class held>
+inline constexpr bool needs_the_turns =
+    folds_by_turns<held> && !requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<held>>{}.from_groups(given);
+    } && !requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<held>>{}.try_from_groups(given);
+    };
 
 // Reading a format against the type it is scanned into, and writing out the one
 // the automaton is built from.
@@ -2313,7 +2387,7 @@ using failure_for = typename scan::as_a_variant<typename scan::without_repeats<
 template <class type>
 [[nodiscard]] consteval bool holds_a_fold() {
   if constexpr (scanned_as_leaf<type>) {
-    return folds_by_turns<std::remove_cv_t<type>>;
+    return needs_the_turns<std::remove_cv_t<type>>;
   } else if constexpr (scanned_as_variant<type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
       return (false || ... || holds_a_fold<branch_at<type, which>>());
@@ -2338,6 +2412,8 @@ template <class type>
 template <class type>
 [[nodiscard]] consteval bool holds_a_flat_reader() {
   if constexpr (scanned_as_leaf<type>) {
+    // One that can also be folded is not refused: off a stream it is told its
+    // groups as they arrive, which wants nothing to point at.
     return gathers_by_its_groups<std::remove_cv_t<type>> &&
            !folds_by_turns<std::remove_cv_t<type>>;
   } else if constexpr (scanned_as_variant<type>) {
@@ -2501,6 +2577,206 @@ template <class failure_type, class parameters, class type,
   }
 }
 
+// Where a field's group stands among the groups a shape's pattern opens: one
+// for the field itself, and then the ones that field's own pattern opens,
+// which belong to it and to nothing else.
+template <class type, std::size_t field>
+[[nodiscard]] consteval std::size_t groups_before_place() {
+  return []<std::size_t... before>(std::index_sequence<before...>) {
+    return (std::size_t{0} + ... +
+            (1 + groups_a_leaf_opens<std::remove_cv_t<
+                     typename parts_of<type>::template at<before>>>()));
+  }(std::make_index_sequence<field>{});
+}
+
+// One field of a shape, out of the groups of the one match.
+template <class type, class failure_type, std::size_t field>
+[[nodiscard]] constexpr auto one_field_from_groups(
+    std::span<const std::string_view> groups, std::string_view parameters)
+    -> std::expected<std::remove_cv_t<typename parts_of<type>::template at<field>>,
+                     failure_type> {
+  using held =
+      std::remove_cv_t<typename parts_of<type>::template at<field>>;
+  constexpr std::size_t at = groups_before_place<type, field>();
+  constexpr std::size_t inside = groups_a_leaf_opens<held>();
+  if constexpr (inside == 0) {
+    return parse_value<held, failure_type>(groups[at], parameters);
+  } else {
+    // A shape of its own: it is handed its groups, which are the ones after
+    // the group it stands in.
+    const auto theirs = groups.subspan(at + 1, inside);
+    if constexpr (requires {
+                    scan::scanner<held>{}.try_from_groups(theirs);
+                  }) {
+      auto got = scan::scanner<held>{}.try_from_groups(theirs);
+      if (got) return std::move(*got);
+      return std::unexpected(
+          scan::as_a_failure<failure_type>(std::move(got).error()));
+    } else {
+      return scan::scanner<held>{}.from_groups(theirs);
+    }
+  }
+}
+
+// A shape made only of places, out of the groups its pattern opened.
+//
+// This is the whole of what `aggregate_scanner` does for such a type, and
+// there is nothing in it a type could not do for itself: the groups are the
+// groups of the match everybody else sees, and reading them is reading them.
+template <class type, fixed_string format>
+[[nodiscard]] constexpr auto shape_from_groups(
+    std::span<const std::string_view> groups)
+    -> std::expected<std::remove_cv_t<type>, failure_for<std::remove_cv_t<type>>> {
+  using held = std::remove_cv_t<type>;
+  using failure_type = failure_for<held>;
+  constexpr std::size_t count = parts_of<held>::count;
+  constexpr auto parameters = field_parameters<format, count>();
+  return [&]<std::size_t... field>(std::index_sequence<field...>)
+             -> std::expected<held, failure_type> {
+    auto parts = std::tuple{
+        one_field_from_groups<held, failure_type, field>(groups,
+                                                         parameters[field])...};
+    if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+      return std::unexpected(std::move(*went_wrong));
+    }
+    return held{std::move(*std::get<field>(parts))...};
+  }(std::make_index_sequence<count>{});
+}
+
+// Which field a group belongs to, and where in that field: nothing means the
+// group the field itself stands in, and anything after it is one of the groups
+// that field's own pattern opens.
+template <class type, std::size_t group>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> place_of_group() {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        (1 + groups_a_leaf_opens<std::remove_cv_t<
+                 typename parts_of<type>::template at<field>>>())...};
+  }(std::make_index_sequence<parts_of<type>::count>{});
+  std::size_t left = group;
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (left < counts[field]) return {field, left};
+    left -= counts[field];
+  }
+  throw "group index past the end of the shape";
+}
+
+// What one field of a shape gathers into while its groups arrive: its own
+// scanner's gathering, or -- where the field is a shape of its own -- that
+// shape's fold.
+template <class field>
+using gathering_of_field = std::conditional_t<
+    groups_a_leaf_opens<std::remove_cv_t<field>>() != 0,
+    decltype(scan::scanner<std::remove_cv_t<field>>{}.begin_groups()),
+    decltype(scanner_begin<std::remove_cv_t<field>>())>;
+
+template <class type, class sequence>
+struct shape_fold_parts_of;
+template <class type, std::size_t... field>
+struct shape_fold_parts_of<type, std::index_sequence<field...>> {
+  using type_t = std::tuple<
+      gathering_of_field<typename parts_of<type>::template at<field>>...>;
+};
+
+template <class type>
+using shape_fold_parts = typename shape_fold_parts_of<
+    type, std::make_index_sequence<parts_of<type>::count>>::type_t;
+
+// A shape, folded out of its groups as they arrive.
+//
+// Every field gathers into its own scanner, and a field that is a shape of its
+// own gathers into that shape's fold -- so nothing is put together as text
+// anywhere, and a subject that is read once is read once.
+template <class type, fixed_string format>
+struct shape_fold {
+  using held = std::remove_cv_t<type>;
+  using parts_type = shape_fold_parts<held>;
+  parts_type parts;
+};
+
+template <class type, fixed_string format, std::size_t field>
+[[nodiscard]] constexpr auto begin_one_field() {
+  using held = std::remove_cv_t<typename parts_of<type>::template at<field>>;
+  if constexpr (groups_a_leaf_opens<held>() != 0) {
+    return scan::scanner<held>{}.begin_groups();
+  } else {
+    static constexpr auto parameters =
+        field_parameters<format, parts_of<type>::count>();
+    return scanner_begin<held>(parameters[field]);
+  }
+}
+
+template <class type, fixed_string format>
+[[nodiscard]] constexpr auto begin_shape_fold() {
+  return [&]<std::size_t... field>(std::index_sequence<field...>) {
+    return shape_fold<type, format>{
+        .parts = {begin_one_field<type, format, field>()...}};
+  }(std::make_index_sequence<parts_of<std::remove_cv_t<type>>::count>{});
+}
+
+// One character, to the field whose group it fell in -- or to that field's own
+// fold, where the field is a shape and the group is one of its own.
+template <class type, fixed_string format, std::size_t group, class state_type>
+constexpr void push_shape_group(state_type& state, char letter) {
+  using held = std::remove_cv_t<type>;
+  constexpr auto where = place_of_group<held, group>();
+  using field =
+      std::remove_cv_t<typename parts_of<held>::template at<where.first>>;
+  if constexpr (where.second == 0) {
+    scanner_push<field>(std::get<where.first>(state.parts), letter);
+  } else {
+    push_one_group<field, where.second - 1>(std::get<where.first>(state.parts),
+                                            letter);
+  }
+}
+
+template <class type, fixed_string format, std::size_t field,
+          class failure_type, class state_type>
+[[nodiscard]] constexpr auto finish_one_field(state_type& state)
+    -> std::expected<
+        std::remove_cv_t<typename parts_of<std::remove_cv_t<type>>::template at<
+            field>>,
+        failure_type> {
+  using held = std::remove_cv_t<
+      typename parts_of<std::remove_cv_t<type>>::template at<field>>;
+  auto& gathered = std::get<field>(state.parts);
+  if constexpr (groups_a_leaf_opens<held>() != 0) {
+    if constexpr (requires { scan::scanner<held>{}.try_finish_groups(std::move(gathered)); }) {
+      auto got = scan::scanner<held>{}.try_finish_groups(std::move(gathered));
+      if (got) return std::move(*got);
+      return std::unexpected(
+          scan::as_a_failure<failure_type>(std::move(got).error()));
+    } else {
+      return scan::scanner<held>{}.finish_groups(std::move(gathered));
+    }
+  } else if constexpr (scan::says_what_went_wrong_finishing<held>) {
+    auto got = scan::scanner<held>{}.try_finish(std::move(gathered));
+    if (got) return std::move(*got);
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::move(got).error()));
+  } else {
+    return scanner_finish<held>(std::move(gathered));
+  }
+}
+
+template <class type, fixed_string format, class state_type>
+[[nodiscard]] constexpr auto finish_shape_fold(state_type state)
+    -> std::expected<std::remove_cv_t<type>,
+                     failure_for<std::remove_cv_t<type>>> {
+  using held = std::remove_cv_t<type>;
+  using failure_type = failure_for<held>;
+  return [&]<std::size_t... field>(std::index_sequence<field...>)
+             -> std::expected<held, failure_type> {
+    auto parts = std::tuple{
+        finish_one_field<held, format, field, failure_type>(state)...};
+    if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+      return std::unexpected(std::move(*went_wrong));
+    }
+    return held{std::move(*std::get<field>(parts))...};
+  }(std::make_index_sequence<parts_of<held>::count>{});
+}
+
 [[nodiscard]] constexpr bool is_regex_meta(char value) {
   return std::string_view(".^$|()[]*+?{}\\").contains(value);
 }
@@ -2588,6 +2864,12 @@ template <class type>
   return make_aggregate_pattern<
       std::remove_cv_t<type>,
       scan::scanner<std::remove_cv_t<type>>::scan_format, "(">();
+}
+
+// The same, for whoever already has the format in hand.
+template <class type, fixed_string format>
+[[nodiscard]] consteval pattern_buffer<> capturing_pattern() {
+  return make_aggregate_pattern<std::remove_cv_t<type>, format, "(">();
 }
 
 

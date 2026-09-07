@@ -533,16 +533,78 @@ namespace detail {
 template <fixed_string format>
 struct aggregate_scanner {
   // The format, said out loud, so that whatever reads this type can read it as
-  // a shape and not as a value: the places below stand for this type's fields,
-  // and a scan that knows that spreads them into its own automaton instead of
-  // matching the whole thing and taking it apart again afterwards. The members
-  // beneath still do the taking apart, for the paths that cannot spread -- an
-  // input that is read once and not looked at twice.
+  // a shape and not as a value.
+  //
+  // What is done with it depends on the shape. A shape made only of places is
+  // read from its own groups, below, which is a thing any type can say for
+  // itself -- so this library does nothing for it that you could not. A shape
+  // with a list or a choice in it is made of turns rather than of places, and
+  // those are spread into the automaton around it, which is the one thing here
+  // that is still a privilege.
   static constexpr auto scan_format = format;
+
+  // Made only of places, and so read from the groups of the one match.
+  template <class self_type>
+  static constexpr bool by_its_own_groups =
+      detail::a_flat_shape<scanner_target_t<self_type>>();
 
   [[nodiscard]] constexpr auto pattern(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
-    return detail::make_aggregate_pattern<type, format>();
+    if constexpr (detail::a_flat_shape<type>()) {
+      // Its values are its groups, so its places are groups.
+      return detail::capturing_pattern<type, format>();
+    } else {
+      return detail::make_aggregate_pattern<type, format>();
+    }
+  }
+
+  // The shape, out of the groups its pattern opened.
+  //
+  // One group a value, and the values of a shape inside it are its own groups
+  // -- so a field that reads its own groups is handed exactly its own, and a
+  // field that reads text is handed the text it stood on. Nothing is read
+  // twice and nothing is copied: what a group stood on is a piece of the
+  // subject, which is still there.
+  template <class self_type>
+    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
+  [[nodiscard]] static constexpr auto try_from_groups(
+      this const self_type& self, std::span<const std::string_view> groups) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    return detail::shape_from_groups<type, format>(groups);
+  }
+
+  // And the same shape, told its groups as they arrive.
+  //
+  // Where the subject is read once there is nothing to point at, so the groups
+  // cannot be handed over at the end -- every field is told its characters as
+  // they come, and a field that is a shape of its own is told its groups the
+  // same way. Nothing is put together as text anywhere and nothing is read
+  // twice, which is what a stream needs and what the spread used to do.
+  template <class self_type>
+    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
+  [[nodiscard]] static constexpr auto begin_groups(this const self_type& self) {
+    static_cast<void>(self);
+    return detail::begin_shape_fold<scanner_target_t<self_type>, format>();
+  }
+
+  template <class self_type, std::size_t group, class state_type>
+    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
+  static constexpr void push_group(this const self_type& self,
+                                   state_type& state, scan::group_at<group>,
+                                   char letter) {
+    static_cast<void>(self);
+    detail::push_shape_group<scanner_target_t<self_type>, format, group>(
+        state, letter);
+  }
+
+  template <class self_type, class state_type>
+    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
+  [[nodiscard]] static constexpr auto try_finish_groups(
+      this const self_type& self, state_type state) {
+    static_cast<void>(self);
+    return detail::finish_shape_fold<scanner_target_t<self_type>, format>(
+        std::move(state));
   }
 
   [[nodiscard]] constexpr auto begin(this const auto& self) {
