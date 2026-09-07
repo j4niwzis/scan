@@ -1698,6 +1698,114 @@ struct gathered_group {
   std::string text;
 };
 
+// A fold, and what it has been told.
+//
+// The state is the type's own -- it says how it is made and what it holds. The
+// two arrays beside it are the walk's bookkeeping: which turn of each group the
+// type has been told about, and whether that turn is still open. They travel
+// with the state, because a reading that divides carries its fold with it, and
+// what one reading has been told the other has not.
+//
+// A turn is known by the position its group opened at. Positions only ever move
+// forward, so a group whose opening has moved is a new turn and is announced;
+// one whose opening stands still is the same turn going on.
+template <class held>
+struct fold_of {
+  using held_type = std::remove_cv_t<held>;
+  static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
+  using state_type = decltype(scan::scanner<held_type>::begin_groups());
+
+  state_type state = scan::scanner<held_type>::begin_groups();
+  std::array<std::ptrdiff_t, inside> told_at{};
+  std::array<bool, inside> open{};
+
+  constexpr fold_of() { told_at.fill(-1); }
+};
+
+// One step of a fold: what happened to the groups inside a place, said to the
+// type in the order it can make sense of.
+//
+// Opened first and in the order they are written, because a group that opens
+// inside another opens after it. Then the character, to every group it is
+// inside of. Then the closings, innermost first, because a group that opens
+// inside another closes before it.
+//
+// Nothing here asks what step the walk is on. It asks the positions, which say
+// everything: a group whose opening has moved has begun a turn, one whose
+// closing has caught up with its opening has ended one. So the same step run
+// twice tells nothing twice, and the same step run at the end of the input --
+// where there is no character to hand over -- finishes what the characters
+// left open.
+template <std::size_t place, class held, class reading_type, class fold_type,
+          std::size_t register_count>
+constexpr void fold_one_step(
+    fold_type& fold, const reading_type& reading,
+    const std::array<std::ptrdiff_t, register_count>& registers, char symbol,
+    bool hands_the_character) {
+  using held_type = std::remove_cv_t<held>;
+  constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
+  const auto opening_of = [&](std::size_t which) {
+    return registers[reading[(place + 1 + which) * 2]];
+  };
+  const auto closing_of = [&](std::size_t which) {
+    return registers[reading[(place + 1 + which) * 2 + 1]];
+  };
+  [&]<std::size_t... which>(std::index_sequence<which...>) {
+    ((void)[&] {
+      const std::ptrdiff_t began = opening_of(which);
+      if (began < 0 || fold.told_at[which] == began) return;
+      open_one_group<held_type, which>(fold.state);
+      fold.told_at[which] = began;
+      fold.open[which] = true;
+    }(), ...);
+  }(std::make_index_sequence<inside>{});
+  if (hands_the_character) {
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ((void)[&] {
+        if constexpr (takes_group_characters<held_type, which,
+                                             typename fold_type::state_type>) {
+          if (!fold.open[which]) return;
+          if (closing_of(which) >= opening_of(which)) return;
+          push_one_group<held_type, which>(fold.state, symbol);
+        }
+      }(), ...);
+    }(std::make_index_sequence<inside>{});
+  }
+  [&]<std::size_t... step>(std::index_sequence<step...>) {
+    ((void)[&] {
+      constexpr std::size_t which = inside - 1 - step;
+      if (!fold.open[which]) return;
+      if (closing_of(which) < opening_of(which)) return;
+      close_one_group<held_type, which>(fold.state);
+      fold.open[which] = false;
+    }(), ...);
+  }(std::make_index_sequence<inside>{});
+}
+
+// The fold of every reading that stands at this state, told the same step once.
+//
+// A fold lives at the register holding the place's opening, which is the
+// discipline a list is gathered by: readings that share that register share
+// what is gathered there, and where two readings would have to disagree the
+// machine has already given them registers of their own.
+template <std::size_t place, class held, auto& automaton, class states_type,
+          std::size_t register_count>
+constexpr void fold_the_readings(
+    std::size_t state,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    states_type& states, char symbol, bool hands_the_character) {
+  const auto& entered = automaton.states[state];
+  std::array<bool, register_count> told{};
+  for (std::size_t reading = 0; reading < entered.reading_count; ++reading) {
+    const std::uint32_t at = entered.readings[reading][place * 2];
+    if (told[at] || registers[at] < 0) continue;
+    told[at] = true;
+    fold_one_step<place, held>(std::get<place>(states[at]),
+                               entered.readings[reading], registers, symbol,
+                               hands_the_character);
+  }
+}
+
 // How one group is gathered, made once and asked at every place that gathers.
 //
 // A leaf that is built from the groups its own pattern opens is not handed the
@@ -1708,11 +1816,21 @@ template <class type, fixed_string format, std::size_t group>
 struct gathering_of {
   using held_type = leaf_kind<type, group>;
   static constexpr bool by_groups = gathers_by_its_groups<held_type>;
+  static constexpr bool folds = folds_by_turns<std::remove_cv_t<held_type>>;
   static constexpr bool the_place = by_groups && leaf_offset_of<type, group> == 0;
   static constexpr bool inside = by_groups && leaf_offset_of<type, group> != 0;
 
   [[nodiscard]] static constexpr auto begin(std::string_view parameters) {
-    if constexpr (the_place) {
+    if constexpr (the_place && folds) {
+      // The type's own state, and the walk's note of what it has been told.
+      static_cast<void>(parameters);
+      return fold_of<std::remove_cv_t<held_type>>{};
+    } else if constexpr (inside && folds) {
+      // Nothing: the characters and the edges of this group go to the fold,
+      // which is kept at the place the group is inside of.
+      static_cast<void>(parameters);
+      return no_gathering{};
+    } else if constexpr (the_place) {
       static_cast<void>(parameters);
       return no_gathering{};
     } else if constexpr (inside) {
@@ -1727,7 +1845,9 @@ struct gathering_of {
 
   template <class state_type>
   static constexpr void push(state_type& state, char letter) {
-    if constexpr (the_place) {
+    if constexpr (the_place || (inside && folds)) {
+      // A fold is handed its characters by the group they fell in, which the
+      // place does for all of its groups at once and in order.
       static_cast<void>(state);
       static_cast<void>(letter);
     } else if constexpr (inside) {
@@ -1850,6 +1970,11 @@ constexpr void advance_scanner(
   constexpr std::size_t closing = group * 2 + 1;
   using held_type = leaf_kind<type, group>;
   constexpr bool gathers_a_list = scanned_as_range<held_type>;
+  using how = gathering_of<type, format, group>;
+  // A group inside a folding place is not gathered at all: its place tells the
+  // fold what happened to it, and does that for all of its groups in one go,
+  // where the order can be got right.
+  if constexpr (how::folds && how::inside) return;
   // A field is gathered at the register holding its opening: nothing is written
   // inside a field, so that register stands still while the characters arrive.
   //
@@ -1900,6 +2025,13 @@ constexpr void advance_scanner(
          ...);
       },
       commands);
+  if constexpr (how::folds && how::the_place) {
+    // Everything that happened inside this place on this character, told in
+    // order -- and told now, before the copy below, or a fold that ends where
+    // its place ends would be copied one closing short.
+    fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+        state, registers, states, symbol, hands_the_character);
+  }
   if constexpr (!gathers_a_list) {
     // The groups that close on this step. What the field gathered is in the
     // opening it was being added to, whichever register that has become.
@@ -2118,7 +2250,20 @@ template <class root, class type, std::size_t offset, class reading_type,
 [[nodiscard]] constexpr type finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers) {
-  if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
+  if constexpr (scanned_as_leaf<type> && folds_by_turns<std::remove_cv_t<type>>) {
+    // A leaf that was told its groups as the walk passed them. What is left is
+    // the end of the input, which is not a character and so was never handed
+    // over: a group that opened where nothing followed it, and every group
+    // still open when the reading stopped. The same step the walk runs says
+    // both, asked once more with nothing to hand over.
+    using held = std::remove_cv_t<type>;
+    const std::uint32_t open = reading[offset * 2];
+    const std::uint32_t close = reading[offset * 2 + 1];
+    const bool still_reading = registers[close] < registers[open];
+    auto fold = std::get<offset>(states[still_reading ? open : close]);
+    fold_one_step<offset, held>(fold, reading, registers, '\0', false);
+    return scan::scanner<held>::finish_groups(std::move(fold.state));
+  } else if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
     // A leaf built from its own groups. They are groups of this match like any
     // others, and they were gathered each at its own register, so each is read
     // the way any field is read: where it was still being gathered if it had
@@ -2464,8 +2609,18 @@ class field_gatherer {
   constexpr void hand_run_group(const char* from, const char* to,
                                 const registers_type& registers) {
     using held_type = leaf_kind<type, group>;
+    using how = gathering_of<type, format, group>;
     if constexpr (scanned_as_range<held_type>) {
       return;
+    } else if constexpr (how::folds && how::inside) {
+      return;
+    } else if constexpr (how::folds && how::the_place) {
+      // The characters of a run, each to the group it fell in. The positions
+      // stand still across a run, so what opened and what closed is said once.
+      for (const char* letter = from; letter != to; ++letter) {
+        fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+            state, registers, states_, *letter, true);
+      }
     } else {
       constexpr auto at = gathered_at<automaton, state, group>;
       constexpr std::uint32_t closing =
@@ -2493,8 +2648,14 @@ class field_gatherer {
   template <std::size_t landed, std::size_t group, class registers_type>
   constexpr void hand_group(char letter, const registers_type& registers) {
     using held_type = leaf_kind<type, group>;
+    using how = gathering_of<type, format, group>;
     if constexpr (scanned_as_range<held_type>) {
       return;
+    } else if constexpr (how::folds && how::inside) {
+      return;
+    } else if constexpr (how::folds && how::the_place) {
+      fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+          landed, registers, states_, letter, true);
     } else {
       static constexpr auto spread = spread_of<type, format>();
       constexpr auto at = gathered_at<automaton, landed, group>;

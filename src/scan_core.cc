@@ -184,6 +184,17 @@ template <class type>
   }
 }
 
+// The number of a group, said as a type.
+//
+// A group is known by its number, and a number is not a thing you can overload
+// on. This is that number said so that you can: write one `push_group` per
+// group and let the compiler pick, instead of switching on a value inside one.
+// The number is still there for whoever wants it.
+template <std::size_t which>
+struct group_at {
+  static constexpr std::size_t value = which;
+};
+
 template <class type>
 [[nodiscard]] constexpr auto scanner_begin() {
   return scanner<type>{}.begin();

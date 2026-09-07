@@ -680,13 +680,36 @@ concept names_its_groups = requires {
   typename scan::scanner<std::remove_cv_t<type>>::group;
 };
 
+// Whether the type takes the characters of this group at all. A fold may be
+// made of the edges alone -- counting the turns, saying which branch ran -- and
+// then there is nothing to hand a character to.
+template <class type, std::size_t which, class state_type>
+concept takes_group_characters =
+    requires(state_type& state, char letter) {
+      scan::scanner<std::remove_cv_t<type>>::push_group(
+          state, scan::group_at<which>{}, letter);
+    } || requires(state_type& state, char letter) {
+      scan::scanner<std::remove_cv_t<type>>::push_group(state, which, letter);
+    } || (names_its_groups<type> && requires(state_type& state, char letter) {
+      scan::scanner<std::remove_cv_t<type>>::push_group(
+          state,
+          std::variant_alternative_t<
+              which, typename scan::scanner<std::remove_cv_t<type>>::group>{},
+          letter);
+    });
+
 // One character, handed to the group it belongs to, in whichever of the three
 // ways the type asked for: the name of the group, the group as a variant, or
 // its number. The choice is made here, where the number is a constant.
 template <class type, std::size_t which, class state_type>
 constexpr void push_one_group(state_type& state, char letter) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
-  if constexpr (names_its_groups<type>) {
+  if constexpr (requires {
+                  scanner_type::push_group(state, scan::group_at<which>{},
+                                           letter);
+                }) {
+    scanner_type::push_group(state, scan::group_at<which>{}, letter);
+  } else if constexpr (names_its_groups<type>) {
     using named = typename scanner_type::group;
     using one = std::variant_alternative_t<which, named>;
     if constexpr (requires { scanner_type::push_group(state, one{}, letter); }) {
@@ -711,7 +734,11 @@ constexpr void push_one_group(state_type& state, char letter) {
 template <class type, std::size_t which, class state_type>
 constexpr void open_one_group(state_type& state) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
-  if constexpr (names_its_groups<type>) {
+  if constexpr (requires {
+                  scanner_type::opened_group(state, scan::group_at<which>{});
+                }) {
+    scanner_type::opened_group(state, scan::group_at<which>{});
+  } else if constexpr (names_its_groups<type>) {
     using named = typename scanner_type::group;
     using one = std::variant_alternative_t<which, named>;
     if constexpr (requires { scanner_type::opened_group(state, one{}); }) {
@@ -730,9 +757,38 @@ constexpr void open_one_group(state_type& state) {
 }
 
 template <class type, std::size_t which, class state_type>
+constexpr void close_one_group(state_type& state);
+
+// A group closing, and where the subject can be pointed at, the whole of what
+// it stood on handed over with it. Off a stream there is no such thing to hand,
+// so the type is told the characters as they arrive and told the closing on its
+// own; the two are the same fold, said with what each reading has to give.
+template <class type, std::size_t which, class state_type>
+constexpr void close_one_group(state_type& state, std::string_view text) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (requires {
+                  scanner_type::closed_group(state, scan::group_at<which>{},
+                                             text);
+                }) {
+    scanner_type::closed_group(state, scan::group_at<which>{}, text);
+  } else if constexpr (requires {
+                         scanner_type::closed_group(state, which, text);
+                       }) {
+    scanner_type::closed_group(state, which, text);
+  } else {
+    for (char letter : text) push_one_group<type, which>(state, letter);
+    close_one_group<type, which>(state);
+  }
+}
+
+template <class type, std::size_t which, class state_type>
 constexpr void close_one_group(state_type& state) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
-  if constexpr (names_its_groups<type>) {
+  if constexpr (requires {
+                  scanner_type::closed_group(state, scan::group_at<which>{});
+                }) {
+    scanner_type::closed_group(state, scan::group_at<which>{});
+  } else if constexpr (names_its_groups<type>) {
     using named = typename scanner_type::group;
     using one = std::variant_alternative_t<which, named>;
     if constexpr (requires { scanner_type::closed_group(state, one{}); }) {
@@ -1014,6 +1070,25 @@ inline constexpr std::size_t leaf_offset_of = leaf_offset_at<subject, index>::va
 template <class held>
 inline constexpr bool gathers_by_its_groups =
     reads_its_own_groups<held> && groups_a_leaf_opens<held>() > 0;
+
+// A type that folds its groups as they happen, rather than reading them once
+// the match is over.
+//
+// The two are not a matter of taste. A machine with tags keeps a bounded number
+// of positions -- one per tag -- so what is there at the end is the last turn
+// round a loop and nothing before it. A type whose groups repeat can only be
+// built by folding the turns as they go, which is what a list has always done
+// here. So a type that says `begin_groups` is told its groups during the walk,
+// and one that only says `from_groups` is handed them afterwards, which is all
+// that can be handed to it.
+template <class type>
+concept folds_its_groups = requires {
+  scan::scanner<std::remove_cv_t<type>>::begin_groups();
+};
+
+template <class held>
+inline constexpr bool folds_by_turns =
+    gathers_by_its_groups<held> && folds_its_groups<held>;
 
 // Reading a format against the type it is scanned into, and writing out the one
 // the automaton is built from.
@@ -2011,6 +2086,30 @@ template <class type>
   }
 }
 
+// Whether a fold stands anywhere inside this output.
+//
+// The same question as the one above, and the same answer for the same reason:
+// a fold is told its groups as the walk passes them, so an output holding one
+// cannot be put together from the positions left behind, however well they can
+// be pointed at. It goes to the machine that gathers as it goes.
+template <class type>
+[[nodiscard]] consteval bool holds_a_fold() {
+  if constexpr (scanned_as_leaf<type>) {
+    return folds_by_turns<std::remove_cv_t<type>>;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... || holds_a_fold<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return holds_a_fold<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_fold<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
 // A leaf is read from its one group; a product is built from its fields, each
 // of which takes as many groups as it needs, in order. Nothing about the
 // nesting is written in the format: a structure of structures is spelled out
@@ -2060,10 +2159,7 @@ template <class parameters, class type, std::size_t offset, std::size_t extent>
           // is how the type is told it was not there.
           if (groups[offset + 1 + at].data() == nullptr) return;
           open_one_group<held, at>(state);
-          for (char letter : groups[offset + 1 + at]) {
-            push_one_group<held, at>(state, letter);
-          }
-          close_one_group<held, at>(state);
+          close_one_group<held, at>(state, groups[offset + 1 + at]);
         }(), ...);
       }(std::make_index_sequence<inside>{});
       return scan::scanner<held>::finish_groups(std::move(state));

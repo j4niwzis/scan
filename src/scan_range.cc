@@ -36,7 +36,11 @@ class borrowed_result {
                   "a type that declares its own format is read as a field, not "
                   "as the whole of what is scanned into: wrap it in a struct "
                   "with one member and scan into that");
-    if constexpr (holds_a_range<type>()) {
+    // A list or a fold is read by the machine that gathers as it goes, even
+    // where the subject lies in a row and could be pointed at: what either of
+    // them is made of are the turns, and the positions left behind hold the
+    // last turn and nothing before it.
+    if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
       return detail::scan_stream<type, format>(input_);
     } else {
     // A group that took no part is an error, unless somewhere in this output

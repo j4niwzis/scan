@@ -791,6 +791,77 @@ struct scan::branches<either_word_or_number> {
 };
 ```
 
+**A type that reads its own groups** -- a leaf may say a pattern with groups in
+it and be built from those groups rather than from the text it stood on. They
+are groups of the same match, found on the way past; nothing is read twice.
+
+```cpp
+template <>
+struct scan::scanner<version> {
+  static constexpr std::string_view pattern() {
+    return "([0-9]+)\\.([0-9]+)\\.([0-9]+)";
+  }
+  // Handed exactly its own groups, in the order it wrote them.
+  static constexpr version from_groups(std::span<const std::string_view> groups);
+};
+
+struct release { version number; scan::held<16> name; };
+const release one = scan::scan<"{} {[a-z]+}">("1.22.333 stable").of<release>();
+```
+
+This works in a format and in a pattern alike, and a place standing for such a
+type takes parameters but not a pattern of its own: the groups are counted off
+the pattern the type declares, so that is the pattern it is read with.
+
+**A fold -- a type told its groups as they happen.** `from_groups` hands over
+what is there when the match is over, and that is the last turn round a loop
+and nothing before it: a machine with tags keeps one position per tag, not a
+history. A type whose groups repeat therefore has to be told the turns as they
+go and fold them itself, which is what a list has always done inside this
+library and what these hooks are:
+
+```cpp
+template <>
+struct scan::scanner<numbers> {
+  struct state { std::vector<int> values; int running = 0; };
+
+  static constexpr std::string_view pattern() { return "([0-9]+)(?:,([0-9]+))*"; }
+
+  static constexpr state begin_groups();
+  // One overload a group: the group's number said as a type you can overload
+  // on. `std::size_t`, or a name out of `using group = std::variant<...>`, do
+  // just as well.
+  static constexpr void opened_group(state&, scan::group_at<0>);
+  static constexpr void push_group(state&, scan::group_at<0>, char);
+  static constexpr void closed_group(state&, scan::group_at<0>);
+  // ... and the same three for group 1, which repeats
+  static constexpr numbers finish_groups(state);
+};
+
+struct row { numbers list; scan::held<16> name; };
+const row one = scan::scan<"{} {[a-z]+}">("1,22,333 stable").of<row>();
+```
+
+An opening and a closing arrive once a turn, openings in the order the groups
+are written and closings innermost first. Where the subject can be pointed at,
+a closing may be handed the whole of what the group stood on --
+`closed_group(state&, scan::group_at<k>, std::string_view)` -- and then the
+characters are not handed over one at a time. Every hook is optional but
+`begin_groups` and `finish_groups`: a fold made of edges alone never asks for a
+character, and one that only wants characters never hears about an edge.
+
+One thing has to be said plainly, because it is the price of a fold and not a
+detail. **The walk stands in several readings of the subject at once**, and it
+carries a fold with each of them: the state is copied where a reading divides
+and dropped where a reading dies. So the state must be copyable, and it must be
+the only thing the fold touches -- anything written outside it would be written
+for a reading that never happened. Every collector in this library has always
+lived under that rule; a fold is the first place where you write one yourself.
+
+An output holding a fold is read by the machine that gathers as it goes, even
+where the subject lies in a row and could be pointed at -- the same road a list
+takes, and for the same reason.
+
 **A list** -- a field that is a range takes as many turns as the subject
 affords, and the place says what one turn looks like:
 
