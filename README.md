@@ -478,10 +478,8 @@ answer would be wrong. So it says no unless the trees are the same tree.
 
 #### Asking for the groups yourself
 
-The above happens for a type that declares a format, and the value is put
-together by the library. A type that declares a **pattern** of its own can ask
-for the same thing and do the putting together itself, by saying
-`from_groups`:
+A type that declares a **pattern** of its own asks for the same thing and does
+the putting together itself, by saying `from_groups`:
 
 ```cpp
 struct version { int major, minor, patch; };
@@ -608,11 +606,31 @@ read, and nothing can be handed a view into them afterwards. `from_groups` is
 for a subject that can be pointed at, and on a one-pass reading it simply does
 not apply.
 
-The same reuse is there, and it is better -- it is what a **format** buys. A
-type that declares one has its places spread into the one automaton, so the
-machine knows which of that type's places is open at each character and hands
-the character straight to that place's scanner. The three numbers of a
-`version` are gathered as three numbers, and no text is ever put together:
+A type that declares a **format** says all of this for itself. Its places are
+the groups of the pattern it matches, in the order the format has them -- so
+where the subject can be pointed at it is handed those groups and builds itself
+out of them, with nothing read twice and nothing copied. Where the subject is
+read once it is read as a value: the characters of its place go into its own
+machine as they arrive, which gathers each of its fields separately -- so
+nothing is held as text, and the cost is that those characters are walked by
+two automata instead of one.
+
+```cpp
+template <>
+struct scan::scanner<version> : scan::aggregate_scanner<"{}.{}.{}"> {};
+```
+
+That is not a privilege of this library. `aggregate_scanner` says a pattern and
+says how to build itself from that pattern's groups, which is what the two
+pages above are about and what any type of yours can say. Two shapes keep the
+older road, where the format's places are spread into the automaton around
+them: one with a **list** inside, because a list is made of turns and the
+positions a match leaves behind hold the last turn and nothing before it, and
+one **made by the call it named**, whose places stand for that call's arguments
+rather than for fields.
+
+Off a one-pass subject the three numbers of a `version` are still gathered as
+three numbers, and no text is put together anywhere:
 
 ```cpp
 template <>
