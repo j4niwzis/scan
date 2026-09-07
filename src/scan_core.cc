@@ -252,6 +252,15 @@ class wrong_subject : public scan_error {
   using scan_error::scan_error;
 };
 
+// Whether a type is a choice between several. Asked outright rather than by
+// whether `variant_size` says anything about it: that one is a template with
+// no definition for anything else, and asking it about a plain type is not a
+// question that comes back false.
+template <class type>
+inline constexpr bool a_choice_of_kinds = false;
+template <class... kinds>
+inline constexpr bool a_choice_of_kinds<std::variant<kinds...>> = true;
+
 // A list of types, and the two things ever done to one: put another list on the
 // end of it, and drop what is already in it.
 template <class... kinds>
@@ -441,7 +450,7 @@ using went_wrong_with =
 // several -- an `expected` over a variant of them -- whichever one it is.
 template <class error_type>
 [[noreturn]] void throw_what_went_wrong(error_type&& said) {
-  if constexpr (requires { std::variant_size_v<std::remove_cvref_t<error_type>>; }) {
+  if constexpr (a_choice_of_kinds<std::remove_cvref_t<error_type>>) {
     std::visit([](auto&& one) -> void { throw std::move(one); },
                std::forward<error_type>(said));
     throw scan_error("a failure that said it was nothing");
@@ -457,10 +466,21 @@ using scanner_state_t = decltype(scanner_begin<type>());
 // hands a failure back and the one that does not. Where both are there the
 // first is used, and the kind it hands back joins the list a reading of that
 // output can fail with.
+// Whether the type gathers a character at a time at all. Asked first, because
+// what it gathers into is what the question below is about, and a type with no
+// gathering has no such thing to name.
 template <class type>
-concept says_what_went_wrong_finishing = requires(scanner_state_t<type> state) {
-  scanner<std::remove_cv_t<type>>::try_finish(std::move(state));
+concept gathers_as_it_reads = requires {
+  scanner<std::remove_cv_t<type>>{}.begin();
+} || requires(std::string_view parameters) {
+  scanner<std::remove_cv_t<type>>{}.begin(parameters);
 };
+
+template <class type>
+concept says_what_went_wrong_finishing =
+    gathers_as_it_reads<type> && requires(scanner_state_t<type> state) {
+      scanner<std::remove_cv_t<type>>::try_finish(std::move(state));
+    };
 
 template <class type>
 concept says_what_went_wrong_from_groups =
@@ -548,9 +568,7 @@ template <class... kinds>
 // throws past all of this, to whoever called.
 template <class failure_type, class error_type>
 [[nodiscard]] constexpr failure_type as_a_failure(error_type&& said) {
-  if constexpr (requires {
-                  std::variant_size_v<std::remove_cvref_t<error_type>>;
-                }) {
+  if constexpr (a_choice_of_kinds<std::remove_cvref_t<error_type>>) {
     return std::visit(
         [](auto&& one) -> failure_type { return failure_type(std::move(one)); },
         std::forward<error_type>(said));
