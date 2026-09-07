@@ -438,9 +438,43 @@ scan::match<"v=([0-9]+\\.[0-9]+\\.[0-9]+)!">.into(scan::as<version>())(text);
 ```
 
 Which of the two happens is decided while the program is compiled, by the same
-comparison of expressions. Write both and the type is read the best way
-available wherever it is used; write only `parse` and it is always read from
-the text.
+comparison of expressions.
+
+#### On a subject that can only be read once
+
+There are no group texts there at all: the characters are gone as they are
+read, and nothing can be handed a view into them afterwards. `from_groups` is
+for a subject that can be pointed at, and on a one-pass reading it simply does
+not apply.
+
+The same reuse is there, and it is better -- it is what a **format** buys. A
+type that declares one has its places spread into the one automaton, so the
+machine knows which of that type's places is open at each character and hands
+the character straight to that place's scanner. The three numbers of a
+`version` are gathered as three numbers, and no text is ever put together:
+
+```cpp
+template <>
+struct scan::scanner<version> : scan::aggregate_scanner<"{}.{}.{}"> {};
+
+// Off a stream, holding nothing: each field of each record gathers into its
+// own scanner as the characters arrive.
+for (const row& one : scan::each<"v={}\n">(std::cin).of<row>()) { … }
+```
+
+So what a type says decides where it can be read:
+
+| what the type says | pointed at | read once |
+| --- | --- | --- |
+| `parse(text)` | yes | no -- there is no text to give it |
+| `begin` / `push` / `finish` | yes | yes: it gathers its own characters |
+| `from_groups` | yes, and nothing is read twice | no -- the groups are not there to hand over |
+| a format (`aggregate_scanner`) | yes, and nothing is read twice | yes, and each place gathers on its own |
+
+A type that will be read off a stream wants the last two rows: a format if it
+has parts, and `begin`/`push`/`finish` if it is a value of its own. Writing
+`parse` and `from_groups` as well costs nothing and is what makes it fast where
+the subject is in memory.
 
 ## The format layer
 

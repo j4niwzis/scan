@@ -216,6 +216,7 @@ set(scan_tests
   a_scan_that_did_not_test
   a_scan_that_is_asked_for_test
   a_shape_inside_a_record_test
+  a_shape_off_a_stream_test
   a_shape_of_shapes_test
   a_subject_handed_to_a_search_test
   a_subject_handed_to_a_split_test
