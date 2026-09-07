@@ -2115,15 +2115,15 @@ template <class root, class type, std::size_t offset, class reading_type,
         constexpr std::size_t mark =
             offset + groups_before_branch<type, which>();
         if (made || registers[reading[mark * 2]] < 0) return;
-        using alternative = std::variant_alternative_t<which, type>;
-        made.emplace(std::in_place_index<which>,
-                     finish_value<root, alternative, mark + 1>(
-                         reading, states, registers));
+        using alternative = branch_at<type, which>;
+        made = scan::branches<std::remove_cv_t<type>>::template make<which>(
+            finish_value<root, alternative, mark + 1>(reading, states,
+                                                      registers));
       };
       (take.template operator()<branch>(), ...);
       if (!made) throw scan_error("no branch of the format took the input");
       return std::move(*made);
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
+    }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
     return finish_by_call<root, type, offset>(
         reading, states, registers,

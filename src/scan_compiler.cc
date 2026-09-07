@@ -518,10 +518,23 @@ template <fixed_string format, std::size_t field_count>
 // A type may say how it is read as a format of its own, and then it is not a
 // leaf but a shape: the places in its format stand for its own fields, and its
 // groups are groups of whatever it is written into.
+// Whether a type is one of several: whatever `scan::branches` was told about,
+// which is `std::variant` and anything else somebody wrote a `branches` for.
 template <class type>
-inline constexpr bool scanned_as_variant = false;
-template <class... alternatives>
-inline constexpr bool scanned_as_variant<std::variant<alternatives...>> = true;
+concept scanned_as_variant = requires {
+  scan::branches<std::remove_cv_t<type>>::count;
+};
+
+// How many alternatives, and which type the k-th is, asked of whatever says
+// it.
+template <class type>
+[[nodiscard]] consteval std::size_t branch_count() {
+  return scan::branches<std::remove_cv_t<type>>::count;
+}
+
+template <class type, std::size_t which>
+using branch_at =
+    typename scan::branches<std::remove_cv_t<type>>::template at<which>;
 
 template <class type>
 concept scanned_by_format = requires {
@@ -648,8 +661,8 @@ template <class type>
     // reads, in the order the branches are written.
     return []<std::size_t... which>(std::index_sequence<which...>) {
       return (std::size_t{0} + ... +
-              (1 + groups_of<std::variant_alternative_t<which, type>>()));
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
+              (1 + groups_of<branch_at<type, which>>()));
+    }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_as_range<type>) {
     // One for the list itself, and then whatever one element reads -- written
     // over again on every turn round the loop.
@@ -772,8 +785,8 @@ template <class type>
   constexpr auto counts = []<std::size_t... which>(
                               std::index_sequence<which...>) {
     return std::array<std::size_t, sizeof...(which)>{
-        (1 + groups_of<std::variant_alternative_t<which, type>>())...};
-  }(std::make_index_sequence<std::variant_size_v<type>>{});
+        (1 + groups_of<branch_at<type, which>>())...};
+  }(std::make_index_sequence<branch_count<type>()>{});
   for (std::size_t branch = 0; branch < counts.size(); ++branch) {
     if (index < counts[branch]) return {branch, index};
     index -= counts[branch];
@@ -813,7 +826,7 @@ struct leaf_at<subject, index, 2> {
 template <class subject, std::size_t index>
 struct leaf_at<subject, index, 3> {
   static constexpr auto where = branch_holding<subject>(index);
-  using branch = std::variant_alternative_t<where.first, subject>;
+  using branch = branch_at<subject, where.first>;
   using kind = typename std::conditional_t<
       where.second == 0, kind_is<branch_mark>,
       leaf_at<branch, (where.second == 0 ? 0 : where.second - 1)>>::kind;
@@ -969,7 +982,7 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     // of the place says them, one per alternative, separated by a bar. Left
     // empty, each alternative is asked how it reads itself -- which it can
     // answer if it declares a format or if something knows how to read it.
-    constexpr std::size_t count = std::variant_size_v<kind>;
+    constexpr std::size_t count = branch_count<kind>();
     std::size_t written = 0;
     std::array<std::pair<std::size_t, std::size_t>, 16> parts{};
     if (!body.empty()) {
@@ -983,7 +996,7 @@ constexpr void spread_place(spread_format& made, std::string_view body,
       const auto one = [&]<std::size_t branch>() {
         if constexpr (branch != 0) made.text.push_back(format_branch);
         made.text.push_back(format_mark);
-        using alternative = std::variant_alternative_t<branch, kind>;
+        using alternative = branch_at<kind, branch>;
         if (body.empty()) {
           spread_place<alternative>(made, std::string_view{});
         } else {
@@ -1751,7 +1764,7 @@ template <class type, std::size_t branch>
 [[nodiscard]] consteval std::size_t groups_before_branch() {
   return []<std::size_t... which>(std::index_sequence<which...>) {
     return (std::size_t{0} + ... +
-            (1 + groups_of<std::variant_alternative_t<which, type>>()));
+            (1 + groups_of<branch_at<type, which>>()));
   }(std::make_index_sequence<branch>{});
 }
 
@@ -1788,8 +1801,8 @@ template <class type>
   } else if constexpr (scanned_as_variant<type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
       return (false || ... ||
-              holds_a_range<std::variant_alternative_t<which, type>>());
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
+              holds_a_range<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
   } else {
     return []<std::size_t... part>(std::index_sequence<part...>) {
       return (false || ... ||
@@ -1834,14 +1847,14 @@ template <class parameters, class type, std::size_t offset, std::size_t extent>
       const auto take = [&]<std::size_t which>() {
         constexpr std::size_t mark = offset + groups_before_branch<type, which>();
         if (made || groups[mark].data() == nullptr) return;
-        using alternative = std::variant_alternative_t<which, type>;
-        made.emplace(std::in_place_index<which>,
-                     build_value<parameters, alternative, mark + 1>(groups));
+        using alternative = branch_at<type, which>;
+        made = scan::branches<std::remove_cv_t<type>>::template make<which>(
+            build_value<parameters, alternative, mark + 1>(groups));
       };
       (take.template operator()<branch>(), ...);
       if (!made) throw scan_error("no branch of the format took the input");
       return std::move(*made);
-    }(std::make_index_sequence<std::variant_size_v<type>>{});
+    }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
     // Made by the call it named, out of the values its places stood for.
     return [&]<std::size_t... index>(std::index_sequence<index...>) {

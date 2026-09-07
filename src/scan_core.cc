@@ -95,6 +95,40 @@ enum class how_to_walk {
 template <class type>
 struct scanner;
 
+// A type that is one of several, and which one is what the reading says.
+//
+// `std::variant` is the one everybody has, and it is the one this is written
+// for -- but nothing about a sum type is peculiar to it. Three questions are
+// asked of one: how many alternatives, which type the k-th is, and how to make
+// the whole thing holding a value of that k-th. A type that answers them is a
+// sum here, whoever wrote it:
+//
+//   template <class... parts>
+//   struct scan::branches<my_either<parts...>> {
+//     static constexpr std::size_t count = sizeof...(parts);
+//     template <std::size_t which>
+//     using at = std::tuple_element_t<which, std::tuple<parts...>>;
+//     template <std::size_t which, class value>
+//     static constexpr my_either<parts...> make(value&& one) { … }
+//   };
+template <class type>
+struct branches;
+
+template <class... alternatives>
+struct branches<std::variant<alternatives...>> {
+  static constexpr std::size_t count = sizeof...(alternatives);
+
+  template <std::size_t which>
+  using at = std::variant_alternative_t<which, std::variant<alternatives...>>;
+
+  template <std::size_t which, class value>
+  [[nodiscard]] static constexpr std::variant<alternatives...> make(
+      value&& one) {
+    return std::variant<alternatives...>(std::in_place_index<which>,
+                                         std::forward<value>(one));
+  }
+};
+
 // A group that is nothing but a mark.
 //
 // A variant standing in a format takes one group for each branch, around what

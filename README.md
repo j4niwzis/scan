@@ -306,8 +306,17 @@ subject affords:
 | a forward range | `std::ranges::subrange<It, It>` -- the two iterators, and nothing is copied either |
 | pieces, or a range read once | owned, because what it was read from is gone; `std::string` unless you say otherwise |
 
-`into<T>()` says what "owned" means where owning is what has to happen -- a
-`std::pmr::string`, a `scan::held<32>`, anything that takes characters:
+Which of the three you get is decided by the subject and not by the pattern,
+so the same reading written once gives views where it is handed a string and
+owns what it kept where it is handed a socket. A field that was a
+`std::string_view` becomes a `std::string` by moving the reading from one to
+the other, and nothing else in the code changes.
+
+`into<T>()` says what "owned" means, and it is worth knowing that it says
+nothing else: where the characters can be pointed at they are pointed at, and
+`into<std::pmr::string>()` on a `string_view` subject changes nothing at all.
+It takes effect on the subjects where owning is what has to happen -- pieces
+and a range read once:
 
 ```cpp
 text | scan::match<"([a-z]+)">.into<std::pmr::string>()
@@ -629,7 +638,8 @@ constexpr auto stamp = scan::fixed_string("{}-{}-{}T{}:{}:{}").past_space();
   `bool`, `char`, `std::string`, `std::string_view`, and `scan::held<N>` --
   characters in room said in advance, for a reading with no allocator;
 * an aggregate, whose fields are the places inside a nested `{…}`;
-* a `std::variant`, written as branches;
+* a sum type, written as branches -- `std::variant`, or anything that answers
+  the three questions a sum is asked (see below);
 * a range, written with a repetition, which takes as many turns as the subject
   affords.
 
@@ -710,6 +720,21 @@ The places then stand for the arguments of that call rather than for the
 fields of the type, so the type need not be an aggregate at all: it may have
 invariants, private members, or an order of its own that has nothing to do
 with the order the format is written in.
+
+**A sum of your own** -- `std::variant` is the one everybody has, and nothing
+about a sum is peculiar to it. Three questions are asked of one, and a type
+that answers them is read as a sum:
+
+```cpp
+template <>
+struct scan::branches<either_word_or_number> {
+  static constexpr std::size_t count = 2;              // how many alternatives
+  template <std::size_t which>                          // which type the k-th is
+  using at = std::conditional_t<which == 0, word, number>;
+  template <std::size_t which, class value>             // and how to make it
+  static constexpr either_word_or_number make(value&& one) { … }
+};
+```
 
 **A list** -- a field that is a range takes as many turns as the subject
 affords, and the place says what one turn looks like:

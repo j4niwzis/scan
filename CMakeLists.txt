@@ -218,6 +218,7 @@ set(scan_tests
   a_shape_inside_a_record_test
   a_shape_off_a_stream_test
   a_shape_of_shapes_test
+  a_sum_of_your_own_test
   a_subject_handed_to_a_search_test
   a_subject_handed_to_a_split_test
   a_subject_handed_to_each_test
