@@ -2462,6 +2462,153 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
 
 template <class type, fixed_string format, std::ranges::input_range range_type>
 [[nodiscard]] constexpr type scan_stream(range_type&& input) {
+  // The whole of the reading, so the walks below a match are kept.
+  constexpr const auto& automaton = streaming_automaton<type, format, false>;
+  std::array<std::ptrdiff_t, automaton.register_count> registers{};
+  std::ranges::fill(registers, scan::tre::negative_tag);
+  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
+                   std::ptrdiff_t{0});
+  field_gatherer<type, format, automaton> into;
+  auto cursor = std::ranges::begin(input);
+  std::ptrdiff_t position = 0;
+  constexpr walk_shape shape{};
+  walk_answer<decltype(cursor)> best;
+  if (!run_continuation<automaton, shape, automaton.initial, 0, 0,
+                        std::ptrdiff_t>(cursor, std::ranges::end(input),
+                                        position, registers, into, best)) {
+    throw scan_error("input does not match scan expression");
+  }
+  return std::move(*into.made());
+}
+
+// The head of a range that is read once, and the character that ended it.
+//
+// Nothing is buffered: the characters go through the machine as they come, the
+// values are gathered by the scanners of the fields themselves, and the one
+// character the machine could not take is handed back with them, because it has
+// been read and cannot be put back where it came from.
+template <class type>
+struct taken_ahead {
+  type value;
+  std::optional<char> stopped;
+};
+
+// What a reading holds between one match and the next.
+//
+// A walk can go past a match and die away from one, and then the answer is the
+// place it passed -- which means the characters it read after that place have
+// to be read again by whoever reads next. There is nowhere to put them back
+// on a subject that is gone once it is read, so they are kept here, in front
+// of the reading, and taken before anything else.
+//
+// How many there can be is what the automaton says: the longest walk out of a
+// match that finds no other match. Where that is nothing, this is nothing.
+template <std::size_t hold>
+struct stream_carry {
+  std::array<char, hold == 0 ? 1 : hold> held{};
+  std::size_t count = 0;
+  std::size_t at = 0;
+
+  [[nodiscard]] constexpr bool empty() const { return at == count; }
+  [[nodiscard]] constexpr char front() const { return held[at]; }
+  constexpr void pop() { ++at; }
+
+  // In front of whatever is still unread here, because they were read first.
+  constexpr void put_in_front(const char* from, std::size_t many) {
+    if (many == 0) return;
+    const std::size_t left = count - at;
+    std::array<char, hold == 0 ? 1 : hold> made{};
+    for (std::size_t index = 0; index < many; ++index) made[index] = from[index];
+    for (std::size_t index = 0; index < left; ++index) {
+      made[many + index] = held[at + index];
+    }
+    held = made;
+    count = many + left;
+    at = 0;
+  }
+};
+
+// The head of a subject read as it arrives, and where it ended.
+//
+// The machine is offered the character before it is taken out of the reading,
+// so the one that ends a match is never lost -- it is looked at, reported, and
+// left where it is. What has to be given back is the other thing: the
+// characters read after the last match on the chance of a longer one, where
+// the walk went past a match and then died. Those were taken, and they go into
+// the carry for the next reading.
+//
+// A reading that can be gone back over needs neither: the place is an iterator
+// and going back is assigning it. That is why a forward range holds nothing at
+// all here, and why the only reading that has to name a number is the one that
+// cannot be gone back over.
+template <class type, fixed_string format, class iterator_type,
+          class sentinel_type, std::size_t hold>
+[[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
+    iterator_type& first, sentinel_type last, stream_carry<hold>& carry) {
+  constexpr const auto& automaton = streaming_automaton<type, format>;
+  constexpr std::size_t window = walk_past_a_match<automaton>();
+  constexpr bool can_go_back = std::forward_iterator<iterator_type>;
+  static_assert(
+      can_go_back || window != std::numeric_limits<std::size_t>::max(),
+      "this pattern can read any number of characters past a match without "
+      "finding another one, so the reading that has to give them back would "
+      "have to hold any number of them: read it from something that can be "
+      "gone back over -- a forward range, characters in a row, or input in "
+      "pieces");
+  stream_state<type, format> state;
+  std::optional<char> stopped;
+  std::optional<stream_state<type, format>> note;
+  iterator_type note_at = first;
+  std::array<char, can_go_back || window == 0 ? 1 : window> since{};
+  std::size_t since_count = 0;
+  if (state.accepting()) note = state;
+  while (true) {
+    char symbol = 0;
+    if (!carry.empty()) {
+      symbol = carry.front();
+    } else if (first != last) {
+      symbol = static_cast<char>(*first);
+    } else {
+      break;
+    }
+    if (!state.offer(symbol)) {
+      // Looked at and not taken: it stays where it is, and is said here so
+      // that whoever asked knows what ended the match.
+      stopped = symbol;
+      break;
+    }
+    if (!carry.empty()) {
+      carry.pop();
+    } else {
+      ++first;
+    }
+    if constexpr (!can_go_back && window != 0) since[since_count++] = symbol;
+    if (state.accepting()) {
+      note = state;
+      since_count = 0;
+      if constexpr (can_go_back) note_at = first;
+      // Where the machine can go nowhere from where it stands, it is over, and
+      // nothing needs to be read to find that out.
+      if (state.settled()) break;
+    }
+  }
+  if (state.accepting()) return {std::move(state).finish(), stopped};
+  if (note) {
+    // Past the match and dead. The answer is the place that was kept, and what
+    // was read after it goes back in front of the reading.
+    if constexpr (can_go_back) {
+      first = note_at;
+    } else {
+      carry.put_in_front(since.data(), since_count);
+    }
+    return {std::move(*note).finish(), std::optional<char>{}};
+  }
+  // Nothing matched; `finish` says so in the way the caller expects.
+  return {std::move(state).finish(), stopped};
+}
+
+template <class type, fixed_string format, std::ranges::input_range range_type>
+[[nodiscard]] constexpr type scan_stream(range_type&& input) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
   std::array<std::ptrdiff_t, automaton.register_count> registers{};
   std::ranges::fill(registers, scan::tre::negative_tag);
@@ -2492,46 +2639,37 @@ struct taken_ahead {
   std::optional<char> stopped;
 };
 
-// By iterators rather than by a range, so that whoever holds them can go on
-// from where this stopped -- which is what reading one match after another off
-// a stream is.
-//
-// Nothing is refused here, and nothing is walked back. A head is where the
-// machine stopped and not the furthest place it ever accepted, so there is no
-// place to return to: it goes while it can go, and where it stops away from an
-// accepting state there is no match at all. That is the same answer, character
-// for character, that a subject which can be pointed at gives -- the only
-// thing this has to be careful about is the character that ended the record,
-// which is read and handed back rather than lost.
-template <class type, fixed_string format, class iterator_type,
-          class sentinel_type>
-[[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
-    iterator_type& first, sentinel_type last) {
-  stream_state<type, format> state;
-  std::optional<char> stopped;
-  while (first != last) {
-    const char symbol = static_cast<char>(*first);
-    if (!state.offer(symbol)) {
-      // Stop before stepping. Stepping is what reads the next character out of
-      // the stream, and one taken and not used is one lost -- the character
-      // that ended the match is already read and is handed back, and there is
-      // no reason to take another with it.
-      stopped = symbol;
-      break;
+// How much a reading of this format has to be able to hold: nothing where it
+// can be gone back over, and nothing where no walk out of a match ever fails
+// to find another. Otherwise the characters read past a match, and the ones
+// already held when that happened.
+template <class type, fixed_string format, class iterator_type>
+inline constexpr std::size_t stream_hold = [] consteval {
+  if constexpr (std::forward_iterator<iterator_type>) {
+    return std::size_t{0};
+  } else {
+    constexpr std::size_t window =
+        walk_past_a_match<streaming_automaton<type, format>>();
+    if constexpr (window == std::numeric_limits<std::size_t>::max()) {
+      // Refused where it is used; sized so that saying so is what the caller
+      // sees, rather than an array of every address there is.
+      return std::size_t{0};
+    } else {
+      return window * 2;
     }
-    ++first;
-    // And where the machine can go nowhere from where it stands, it is over,
-    // and nothing needs to be read to find that out.
-    if (state.settled()) break;
   }
-  return {std::move(state).finish(), stopped};
-}
+}();
+
+template <class type, fixed_string format, class iterator_type>
+using stream_carry_for = stream_carry<stream_hold<type, format, iterator_type>>;
 
 template <class type, fixed_string format, std::ranges::input_range range_type>
 [[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
     range_type&& input) {
   auto first = std::ranges::begin(input);
-  return scan_stream_prefix<type, format>(first, std::ranges::end(input));
+  stream_carry<stream_hold<type, format, decltype(first)>> carry;
+  return scan_stream_prefix<type, format>(first, std::ranges::end(input),
+                                          carry);
 }
 
 #undef SCAN_FORCE_INLINE

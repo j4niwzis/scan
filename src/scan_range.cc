@@ -392,10 +392,10 @@ class each_stream_view {
  private:
   constexpr void advance() {
     value_.reset();
-    if (first_ == std::ranges::end(input_)) return;
+    if (carry_.empty() && first_ == std::ranges::end(input_)) return;
     try {
       auto got = detail::scan_stream_prefix<type, format>(
-          first_, std::ranges::end(input_));
+          first_, std::ranges::end(input_), carry_);
       value_ = std::move(got.value);
       stopped_ = got.stopped;
     } catch (const scan_error&) {
@@ -405,6 +405,10 @@ class each_stream_view {
 
   range_type input_;
   std::ranges::iterator_t<range_type> first_;
+  // What the last match read and did not keep. A reading that can be gone back
+  // over holds nothing here and the iterator goes back instead.
+  detail::stream_carry_for<type, format,
+                           std::ranges::iterator_t<range_type>> carry_;
   std::optional<type> value_;
   std::optional<char> stopped_;
 };
