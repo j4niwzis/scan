@@ -2704,10 +2704,13 @@ struct no_parameters {
   [[nodiscard]] static constexpr std::string_view at(std::size_t) { return {}; }
 };
 
+// The groups as a span and not as an array of a known length: the reading
+// hands over all of them, and a type that reads its own groups hands over the
+// few that are its. Both are the same thing to whoever reads them.
 template <class failure_type, class parameters, class type,
-          std::size_t offset, std::size_t extent>
+          std::size_t offset>
 [[nodiscard]] constexpr std::expected<type, failure_type> build_value(
-    const std::array<std::string_view, extent>& groups) {
+    std::span<const std::string_view> groups) {
   if constexpr (scanned_as_leaf<type> && reads_its_own_groups<type>) {
     // The type's own groups are groups of this match, already found. It is
     // handed them, or told which of them each character belongs to -- the same
