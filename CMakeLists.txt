@@ -259,6 +259,7 @@ set(scan_tests
   reads_no_further_than_the_record_test
   record_after_record_off_one_stream_test
   scanner_can_build_an_owning_pattern_test
+  scanner_from_groups_test
   scans_at_compile_time_test
   scans_borrowed_contiguous_range_test
   splits_a_stream_on_spaces_test

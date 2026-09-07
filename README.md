@@ -404,6 +404,44 @@ Where the two really are the same and this says they are not, the text is read
 the ordinary way and the cost is one reading. Where it said yes wrongly, the
 answer would be wrong. So it says no unless the trees are the same tree.
 
+#### Asking for the groups yourself
+
+The above happens for a type that declares a format, and the value is put
+together by the library. A type that declares a **pattern** of its own can ask
+for the same thing and do the putting together itself, by saying
+`from_groups`:
+
+```cpp
+struct version { int major, minor, patch; };
+
+template <>
+struct scan::scanner<version> {
+  static constexpr std::string_view pattern() {
+    return "([0-9]+)\\.([0-9]+)\\.([0-9]+)";
+  }
+
+  // Handed exactly the groups this pattern opens, in the order it opened
+  // them, out of the match that has already happened.
+  static constexpr version from_groups(std::span<const std::string_view> groups);
+
+  // And how it reads itself where there are no groups to be had.
+  static constexpr version parse(std::string_view text);
+};
+
+// The three numbers are groups of this match. `version` is handed them.
+scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))!">.into(
+    scan::as<version>(), scan::skip(), scan::skip(), scan::skip())(text);
+
+// Written without them, there is nothing to hand over, and `parse` reads the
+// text as usual.
+scan::match<"v=([0-9]+\\.[0-9]+\\.[0-9]+)!">.into(scan::as<version>())(text);
+```
+
+Which of the two happens is decided while the program is compiled, by the same
+comparison of expressions. Write both and the type is read the best way
+available wherever it is used; write only `parse` and it is always read from
+the text.
+
 ## The format layer
 
 A format is a pattern with places in it, and each place is a value of the

@@ -945,6 +945,55 @@ template <fixed_string pattern>
 // machine has already found them -- and the type is built from them. Where it
 // is not, there is nothing to reuse: the characters are handed to the type to
 // read as it sees fit.
+// A type that would rather be handed the groups than the text.
+//
+// Where a type's own pattern has groups in it, the machine that matched the
+// big pattern has already found them -- they are groups of that match like any
+// others. This is how a type says it can be built from them, and it is handed
+// exactly its own, in the order it wrote them.
+template <class type>
+concept scanned_from_groups = requires(std::span<const std::string_view> given) {
+  scan::scanner<std::remove_cv_t<type>>::from_groups(given);
+};
+
+// How many groups a type's own pattern opens.
+template <class type>
+[[nodiscard]] consteval std::size_t groups_a_type_opens() {
+  std::size_t counted = 0;
+  const auto declared = scanner_pattern<std::remove_cv_t<type>>();
+  tre_parser reading(std::string_view(declared), {}, counted, true);
+  static_cast<void>(reading.parse_regex());
+  return counted;
+}
+
+// Whether this group is written with the very pattern the type declares.
+//
+// The same question as the one below, asked of a type that says a pattern
+// rather than a format. What it decides is the same thing: whether the groups
+// inside this one are that type's own.
+template <class type, fixed_string pattern, std::size_t group>
+[[nodiscard]] consteval bool group_is_the_types_pattern() {
+  if constexpr (!scanned_from_groups<type>) {
+    return false;
+  } else if constexpr (!scanned_as_leaf<std::remove_cv_t<type>>) {
+    return false;
+  } else {
+    constexpr auto written = group_text<pattern>(group);
+    if constexpr (written.empty()) {
+      return false;
+    } else {
+      const auto declared = scanner_pattern<std::remove_cv_t<type>>();
+      std::size_t here = 0;
+      tre_parser reading_the_group(written, {}, here, true);
+      const auto theirs = reading_the_group.parse_regex();
+      std::size_t there = 0;
+      tre_parser reading_the_type(std::string_view(declared), {}, there, true);
+      const auto ours = reading_the_type.parse_regex();
+      return scan::tre::same_expression(theirs, ours);
+    }
+  }
+}
+
 template <class type, fixed_string pattern, std::size_t group>
 [[nodiscard]] consteval bool group_spells_out() {
   if constexpr (groups_of<type>() <= 1) {
@@ -1229,6 +1278,20 @@ template <fixed_string pattern, std::size_t group, class collector,
     return {};
   } else if constexpr (std::same_as<collector, text_collector>) {
     return found.template get<group>().held();
+  } else if constexpr (group_is_the_types_pattern<
+                           typename collector::value_type, pattern, group>()) {
+    // The type says a pattern of its own with groups in it, and this group is
+    // written with that pattern -- so the groups inside it are the type's own,
+    // already found, and the type asked to be handed them rather than the
+    // text.
+    using held_type = std::remove_cv_t<typename collector::value_type>;
+    constexpr std::size_t inside = groups_a_type_opens<held_type>();
+    std::array<std::string_view, inside> theirs{};
+    [&]<std::size_t... at>(std::index_sequence<at...>) {
+      ((theirs[at] = found.template get<group + 1 + at>().to_view()), ...);
+    }(std::make_index_sequence<inside>{});
+    return scan::scanner<held_type>::from_groups(
+        std::span<const std::string_view>(theirs));
   } else if constexpr (group_spells_out<typename collector::value_type,
                                         pattern, group>()) {
     // The group is the type's own pattern, so the groups inside it are the
