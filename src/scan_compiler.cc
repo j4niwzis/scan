@@ -528,10 +528,23 @@ concept scanned_by_format = requires {
   scan::scanner<std::remove_cv_t<type>>::scan_format;
 };
 
+// A type that says outright it is a list, though it could be read as one
+// value.
+//
+// `std::string` is a range and has a scanner, and reading it as a value is
+// what everybody wants -- so a type that is both is a value. Where that is the
+// wrong way round, the type says so:
+//
+//   template <> struct scan::scanner<my_bytes> { static constexpr bool as_a_list = true; … };
+template <class type>
+concept says_it_is_a_list = requires {
+  requires scan::scanner<std::remove_cv_t<type>>::as_a_list;
+};
+
 template <class type>
 concept scanned_as_leaf = requires {
   sizeof(scan::scanner<std::remove_cv_t<type>>);
-} && !scanned_by_format<type>;
+} && !scanned_by_format<type> && !says_it_is_a_list<type>;
 
 // A type that says how it is read and also how it is made.
 //
@@ -560,6 +573,11 @@ concept scanned_from_values = scanned_by_format<type> && requires {
 // one element, read over again for as long as it goes on -- so a separator is
 // written the way anything matched and not kept is written, and the element may
 // be a value, a shape, a variant or another list.
+// A type read as a list: as many turns as the subject affords.
+//
+// A type that is both a value and a range is read as a value, because that is
+// what a `std::string` field means. `as_a_list` is how a type says otherwise,
+// and saying it stops the type being a leaf at all.
 template <class type>
 concept scanned_as_range =
     !scanned_as_leaf<type> && !scanned_by_format<type> &&

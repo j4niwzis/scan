@@ -377,6 +377,19 @@ struct hex_bytes {
 Write both halves and the collector works everywhere; write only the first and
 it works wherever the characters can be pointed at.
 
+Two more, both optional:
+
+```cpp
+  // A run the walk stepped over in vectors, handed over in one go rather than
+  // as one call a character. Leave it out and the characters arrive one by
+  // one, which is what happens anyway where the walk did not step over a run.
+  void push_run(value_type& into, std::string_view run) const;
+
+  // Nothing at all from this group: the characters need not be handed over,
+  // and `scan::skipped` stands in the answer. This is `scan::skip()`.
+  static constexpr bool takes_nothing = true;
+```
+
 The collector that keeps the characters -- the default one -- is written in
 exactly these terms and has no privileges of its own:
 
@@ -619,6 +632,18 @@ constexpr auto stamp = scan::fixed_string("{}-{}-{}T{}:{}:{}").past_space();
 * a `std::variant`, written as branches;
 * a range, written with a repetition, which takes as many turns as the subject
   affords.
+
+A type that is both -- a range with a scanner of its own, `std::string` being
+the one everybody means -- is read as one value, because that is what a
+`std::string` field is for. Where it should be the other way round, the type
+says so:
+
+```cpp
+template <> struct scan::scanner<packet_bytes> {
+  static constexpr bool as_a_list = true;   // read as many as there are
+  …
+};
+```
 
 ### How a type says it can be read
 

@@ -1198,6 +1198,10 @@ template <class type, class... arguments>
       std::forward<arguments>(given)...);
 }
 
+// What stands in the answer where a group was wanted by nobody. Nothing, and
+// it takes no room.
+struct skipped {};
+
 // The characters themselves, held however the subject affords: pointed at,
 // walked between, or owned. This is what every group is collected into when
 // nothing else is said.
@@ -1224,6 +1228,13 @@ struct text_collector {
     into.push_back(letter);
   }
 
+  // A run the walk stepped over in vectors, handed over as a run rather than
+  // one character at a time. Optional: a collector without it is handed the
+  // characters one by one, as everything was before.
+  constexpr void push_run(auto& into, std::string_view run) const {
+    into.append(run.begin(), run.end());
+  }
+
   [[nodiscard]] constexpr auto finish_pushed(auto state) const {
     return state;
   }
@@ -1236,7 +1247,16 @@ struct text_collector {
 // The group is still there -- it may be there because the type of another
 // group is read out of it -- but no value is made from it and it takes no room
 // in what comes back.
-struct skip_collector {};
+//
+// Written the way a collector of your own would be: `takes_nothing` is what
+// says the characters need not be handed over at all, and `scan::skipped` is
+// what stands in the answer where a value would have been.
+struct skip_collector {
+  static constexpr bool takes_nothing = true;
+
+  template <class holder>
+  using value_for = skipped;
+};
 
 [[nodiscard]] constexpr skip_collector skip() { return {}; }
 
@@ -1291,8 +1311,6 @@ template <class type, class pusher, class... arguments>
 // affords; each group is whatever its collector made of it, and they keep the
 // order they were written in. A group nobody wanted is `skipped`, which is
 // nothing and takes no room.
-struct skipped {};
-
 template <class whole_holder, class... values>
 class typed_result {
  public:
@@ -1355,11 +1373,6 @@ struct collected<collector, holder> {
   using type = typename collector::template value_for<holder>;
 };
 
-template <class holder>
-struct collected<skip_collector, holder> {
-  using type = skipped;
-};
-
 template <class collector, class holder>
 using collected_type = typename collected<collector, holder>::type;
 
@@ -1375,7 +1388,7 @@ template <fixed_string pattern, std::size_t group, class collector,
           class holder, class found_type>
 [[nodiscard]] constexpr collected_type<collector, holder> collect_one(
     const collector& one, const found_type& found) {
-  if constexpr (std::same_as<collector, skip_collector>) {
+  if constexpr (requires { collector::takes_nothing; }) {
     return {};
   } else if constexpr (requires {
                          one.template from_text<holder>(std::string_view{},
@@ -1632,7 +1645,7 @@ struct collected_match_closure
                                   const registers_type& registers) {
       using collector =
           std::tuple_element_t<group, std::tuple<collectors...>>;
-      if constexpr (std::same_as<collector, skip_collector>) {
+      if constexpr (requires { collector::takes_nothing; }) {
         return;
       } else {
         constexpr const auto& entered =
@@ -1642,14 +1655,27 @@ struct collected_match_closure
           constexpr std::uint32_t closing = entered.readings[0][group * 2 + 1];
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
-          for (const char* letter = from; letter != to; ++letter) {
-            if constexpr (owner_type::template gathers_its_own_groups<
-                              group>()) {
+          if constexpr (owner_type::template gathers_its_own_groups<group>()) {
+            for (const char* letter = from; letter != to; ++letter) {
               hand_inner<landed, group>(
                   *letter, registers,
                   std::make_index_sequence<detail::groups_a_type_opens<
                       std::remove_cv_t<typename collector::value_type>>()>{});
-            } else {
+            }
+          } else if constexpr (requires {
+                                 std::get<group>(owner_.collectors_)
+                                     .push_run(std::get<group>(states_),
+                                               std::string_view{});
+                               }) {
+            // The walk stepped over this run in vectors, and a collector that
+            // takes a run takes it in one go rather than in as many calls as
+            // there are characters.
+            std::get<group>(owner_.collectors_)
+                .push_run(std::get<group>(states_),
+                          std::string_view(from,
+                                           static_cast<std::size_t>(to - from)));
+          } else {
+            for (const char* letter = from; letter != to; ++letter) {
               std::get<group>(owner_.collectors_)
                   .push_one(std::get<group>(states_), *letter);
             }
@@ -1669,7 +1695,7 @@ struct collected_match_closure
                               const registers_type& registers) {
       using collector =
           std::tuple_element_t<group, std::tuple<collectors...>>;
-      if constexpr (std::same_as<collector, skip_collector>) {
+      if constexpr (requires { collector::takes_nothing; }) {
         return;
       } else {
         constexpr const auto& entered =
@@ -1725,7 +1751,7 @@ struct collected_match_closure
   [[nodiscard]] constexpr auto begin_one() const {
     using collector =
         std::tuple_element_t<group, std::tuple<collectors...>>;
-    if constexpr (std::same_as<collector, skip_collector>) {
+    if constexpr (requires { collector::takes_nothing; }) {
       return held_type{};
     } else if constexpr (requires {
                            std::declval<const collector&>()
@@ -1755,7 +1781,7 @@ struct collected_match_closure
                            char letter) const {
     using collector =
         std::tuple_element_t<group, std::tuple<collectors...>>;
-    if constexpr (std::same_as<collector, skip_collector>) {
+    if constexpr (requires { collector::takes_nothing; }) {
       return;
     } else {
       if (!detail::group_is_open<pattern, group>(here, registers)) return;
@@ -1774,7 +1800,7 @@ struct collected_match_closure
   [[nodiscard]] constexpr auto finish_one(state_type state) const {
     using collector =
         std::tuple_element_t<group, std::tuple<collectors...>>;
-    if constexpr (std::same_as<collector, skip_collector>) {
+    if constexpr (requires { collector::takes_nothing; }) {
       return skipped{};
     } else if constexpr (gathers_its_own_groups<group>()) {
       return scan::scanner<std::remove_cv_t<
