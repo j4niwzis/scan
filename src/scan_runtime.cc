@@ -1798,7 +1798,17 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         }
         return std::string_view(begin, static_cast<std::size_t>(end - begin));
       };
-      return answer(std::array{capture.template operator()<index>()...});
+      // Where the automaton writes every tag on every path, no group can have
+      // taken no part, and the walk over them at the end is a walk over a
+      // question already answered.
+      constexpr bool any_can_be_absent =
+          !(true && ... && (always_written[index * 2] &&
+                            always_written[index * 2 + 1]));
+      if constexpr (!any_can_be_absent) {
+        return std::array{capture.template operator()<index>()...};
+      } else {
+        return answer(std::array{capture.template operator()<index>()...});
+      }
     }
   }
 }
