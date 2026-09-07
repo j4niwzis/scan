@@ -2169,6 +2169,33 @@ template <class type>
   }
 }
 
+// Whether a type that reads its own groups only once the match is over stands
+// anywhere inside this output.
+//
+// Such a type is handed views of the subject, so it needs a subject there is
+// something to point at. It can stand in the gathering machine -- a list or a
+// fold beside it puts the whole output there -- and then the walk has to be
+// one that started on characters lying in a row.
+template <class type>
+[[nodiscard]] consteval bool holds_a_flat_reader() {
+  if constexpr (scanned_as_leaf<type>) {
+    return gathers_by_its_groups<std::remove_cv_t<type>> &&
+           !folds_by_turns<std::remove_cv_t<type>>;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... || holds_a_flat_reader<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return holds_a_flat_reader<
+        std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_flat_reader<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
 // A leaf is read from its one group; a product is built from its fields, each
 // of which takes as many groups as it needs, in order. Nothing about the
 // nesting is written in the format: a structure of structures is spelled out

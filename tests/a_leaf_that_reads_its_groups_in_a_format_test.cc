@@ -159,16 +159,12 @@ TEST(ALeafThatReadsItsGroupsInAFormat, AndTheFieldAfterItReadsItsOwn) {
   EXPECT_EQ(times_read_as_text, 0);
 }
 
-TEST(ALeafThatReadsItsGroupsInAFormat, GatheredOffASubjectReadOnce) {
-  const std::string text = "1.22.333 stable";
-  std::size_t at = 0;
-  const release one =
-      scan::scan<"{} {[a-z]+}">(read_once(text, &at)).of<release>();
-  EXPECT_EQ(one.number.major, 1);
-  EXPECT_EQ(one.number.minor, 22);
-  EXPECT_EQ(one.number.patch, 333);
-  EXPECT_EQ(one.name.view(), "stable");
-}
+// And what it cannot do, said here rather than found out: `version` says only
+// `from_groups`, which is handed views of the subject once the match is over.
+// A subject that is read once is gone by then, so a scan of one into a type
+// holding a `version` does not compile at all -- holding the characters until
+// the end to have something to hand over would be a hold with no bound. What
+// such a type wants is the fold below.
 
 TEST(ALeafThatReadsItsGroupsInAFormat, ACharacterAtATimeIntoItsGroups) {
   const std::string text = "09:30 standup";
@@ -188,14 +184,14 @@ TEST(ALeafThatReadsItsGroupsInAFormat, TheSameOffAStream) {
 }
 
 TEST(ALeafThatReadsItsGroupsInAFormat, OneRecordAfterAnother) {
-  const std::string text = "1.2.3 alpha\n4.5.6 beta\n";
+  const std::string text = "09:30 standup\n11:00 review\n";
   std::size_t at = 0;
-  std::vector<int> majors;
-  for (const release& one :
-       scan::each<"{} {[a-z]+}\n">(read_once(text, &at)).of<release>()) {
-    majors.push_back(one.number.major);
+  std::vector<int> hours;
+  for (const entry& one :
+       scan::each<"{} {[a-z]+}\n">(read_once(text, &at)).of<entry>()) {
+    hours.push_back(one.when.hour);
   }
-  EXPECT_EQ(majors, std::vector<int>({1, 4}));
+  EXPECT_EQ(hours, std::vector<int>({9, 11}));
 }
 
 }  // namespace

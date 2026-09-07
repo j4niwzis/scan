@@ -1691,13 +1691,6 @@ using field_type = std::remove_cvref_t<decltype(
 // what it is built from are its groups, and they are gathered each at its own.
 struct no_gathering {};
 
-// The characters of one such group, kept until the leaf is put together. Where
-// the subject can be pointed at this is a view of it and costs nothing; off a
-// stream there is nothing left behind to point at, so it is held.
-struct gathered_group {
-  std::string text;
-};
-
 // A fold, and what it has been told.
 //
 // The state is the type's own -- it says how it is made and what it holds. The
@@ -1889,12 +1882,13 @@ struct gathering_of {
       // which is kept at the place the group is inside of.
       static_cast<void>(parameters);
       return no_gathering{};
-    } else if constexpr (the_place) {
+    } else if constexpr (the_place || inside) {
+      // A leaf read from its groups after the match gathers nothing at all:
+      // the positions say where each of its groups stood, and the subject is
+      // still there to be pointed at -- which is why such a leaf is refused
+      // where the subject is not.
       static_cast<void>(parameters);
       return no_gathering{};
-    } else if constexpr (inside) {
-      static_cast<void>(parameters);
-      return gathered_group{};
     } else {
       static_assert(requires { scanner_begin<held_type>(parameters); },
                     "single-pass input requires incremental scan::scanner<T>");
@@ -1904,13 +1898,12 @@ struct gathering_of {
 
   template <class state_type>
   static constexpr void push(state_type& state, char letter) {
-    if constexpr (the_place || (inside && folds)) {
+    if constexpr (the_place || inside) {
       // A fold is handed its characters by the group they fell in, which the
-      // place does for all of its groups at once and in order.
+      // place does for all of its groups at once and in order; a leaf read
+      // after the match is handed nothing at all.
       static_cast<void>(state);
       static_cast<void>(letter);
-    } else if constexpr (inside) {
-      state.text.push_back(letter);
     } else {
       scanner_push<held_type>(state, letter);
     }
@@ -2144,7 +2137,8 @@ template <class root, class type, std::size_t offset, class reading_type,
           class states_type, std::size_t register_count>
 [[nodiscard]] constexpr type finish_value(
     const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers);
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    const char* text);
 
 // The parts of a product, and the arguments of a call, as named functions
 // rather than as lambdas called where they stand. A lambda holding references
@@ -2155,10 +2149,10 @@ template <class root, class type, std::size_t offset, class reading_type,
 [[nodiscard]] constexpr type finish_parts(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
-    std::index_sequence<part...>) {
+    const char* text, std::index_sequence<part...>) {
   return type{finish_value<root, typename parts_of<type>::template at<part>,
                            offset + groups_before_field<type, part>()>(
-      reading, states, registers)...};
+      reading, states, registers, text)...};
 }
 
 template <class root, class type, std::size_t offset, class reading_type,
@@ -2166,11 +2160,11 @@ template <class root, class type, std::size_t offset, class reading_type,
 [[nodiscard]] constexpr type finish_by_call(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
-    std::index_sequence<part...>) {
+    const char* text, std::index_sequence<part...>) {
   return scan::scanner<std::remove_cv_t<type>>::parse(
       finish_value<root, typename parts_of<type>::template at<part>,
-                   offset + groups_before_field<type, part>()>(reading, states,
-                                                                registers)...);
+                   offset + groups_before_field<type, part>()>(
+          reading, states, registers, text)...);
 }
 
 // An element ends where the next one begins, and where that is, is said by a
@@ -2200,7 +2194,7 @@ constexpr void collect_element(
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count) {
+    std::size_t count, const char* text) {
   if constexpr (group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind<type, group - 1>>) {
@@ -2233,7 +2227,7 @@ constexpr void collect_element(
       done[into] = true;
       append_to(std::get<list_group>(states[into]),
                 finish_value<type, element, group>(packed.readings[reading],
-                                                   states, registers));
+                                                   states, registers, text));
     }
   }
 }
@@ -2246,9 +2240,10 @@ constexpr void collect_elements(
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, std::index_sequence<group...>) {
+    std::size_t count, std::index_sequence<group...>,
+    const char* text = nullptr) {
   (collect_element<group, type, format, automaton>(state, registers, states,
-                                                   commands, count),
+                                                   commands, count, text),
    ...);
 }
 
@@ -2309,7 +2304,8 @@ template <class root, class type, std::size_t offset, class reading_type,
           class states_type, std::size_t register_count>
 [[nodiscard]] constexpr type finish_value(
     const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers) {
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    const char* text) {
   if constexpr (scanned_as_leaf<type> && folds_by_turns<std::remove_cv_t<type>>) {
     // A leaf that was told its groups as the walk passed them. What is left is
     // the end of the input, which is not a character and so was never handed
@@ -2324,10 +2320,11 @@ template <class root, class type, std::size_t offset, class reading_type,
     fold_one_step<offset, held>(fold, reading, registers, '\0', false);
     return scan::scanner<held>::finish_groups(std::move(fold.state));
   } else if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
-    // A leaf built from its own groups. They are groups of this match like any
-    // others, and they were gathered each at its own register, so each is read
-    // the way any field is read: where it was still being gathered if it had
-    // not closed, and from the copy taken when it closed if it had.
+    // A leaf built from its own groups once the match is over. They are groups
+    // of this match like any others and the positions say where each one
+    // stood, so what it is handed are views of the subject: nothing was
+    // gathered for it and nothing was copied. That it has a subject to point
+    // at is settled where the walk is made.
     using held = std::remove_cv_t<type>;
     constexpr std::size_t inside = groups_a_leaf_opens<held>();
     std::array<std::string_view, inside> theirs{};
@@ -2335,12 +2332,12 @@ template <class root, class type, std::size_t offset, class reading_type,
     [&]<std::size_t... at>(std::index_sequence<at...>) {
       ((void)[&] {
         constexpr std::size_t which = offset + 1 + at;
-        const std::uint32_t open = reading[which * 2];
-        const std::uint32_t close = reading[which * 2 + 1];
-        if (registers[open] < 0) return;
+        const std::ptrdiff_t began = registers[reading[which * 2]];
+        const std::ptrdiff_t ended = registers[reading[which * 2 + 1]];
+        if (began < 0 || ended < began) return;
         took[at] = true;
-        const bool still_reading = registers[close] < registers[open];
-        theirs[at] = std::get<which>(states[still_reading ? open : close]).text;
+        theirs[at] = std::string_view(text + began,
+                                      static_cast<std::size_t>(ended - began));
       }(), ...);
     }(std::make_index_sequence<inside>{});
     if constexpr (requires(std::span<const std::string_view> given) {
@@ -2354,8 +2351,7 @@ template <class root, class type, std::size_t offset, class reading_type,
         ((void)[&] {
           if (!took[at]) return;
           open_one_group<held, at>(state);
-          for (char letter : theirs[at]) push_one_group<held, at>(state, letter);
-          close_one_group<held, at>(state);
+          close_one_group<held, at>(state, theirs[at]);
         }(), ...);
       }(std::make_index_sequence<inside>{});
       return scan::scanner<held>::finish_groups(std::move(state));
@@ -2380,7 +2376,7 @@ template <class root, class type, std::size_t offset, class reading_type,
     // is written to be allowed none at all, there may not have been one.
     if (registers[reading[(offset + 1) * 2]] >= 0) {
       append_to(made, finish_value<root, element, offset + 1>(reading, states,
-                                                              registers));
+                                                              registers, text));
     }
     return made;
   } else if constexpr (scanned_as_variant<type>) {
@@ -2397,7 +2393,7 @@ template <class root, class type, std::size_t offset, class reading_type,
         using alternative = branch_at<type, which>;
         made = scan::branches<std::remove_cv_t<type>>::template make<which>(
             finish_value<root, alternative, mark + 1>(reading, states,
-                                                      registers));
+                                                      registers, text));
       };
       (take.template operator()<branch>(), ...);
       if (!made) throw scan_error("no branch of the format took the input");
@@ -2405,11 +2401,11 @@ template <class root, class type, std::size_t offset, class reading_type,
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
     return finish_by_call<root, type, offset>(
-        reading, states, registers,
+        reading, states, registers, text,
         std::make_index_sequence<parts_of<type>::count>{});
   } else {
     return finish_parts<root, type, offset>(
-        reading, states, registers,
+        reading, states, registers, text,
         std::make_index_sequence<parts_of<type>::count>{});
   }
 }
@@ -2421,6 +2417,12 @@ template <class root, class type, std::size_t offset, class reading_type,
 template <class type, fixed_string format, bool cut = true>
 class stream_state {
  private:
+  static_assert(
+      !holds_a_flat_reader<type>(),
+      "a type built from its groups after the match cannot read a stream: "
+      "there is nothing left to point at by the time it would be handed them "
+      "-- give it begin_groups and push_group to be told its groups as they "
+      "arrive");
   inline static constexpr const auto& automaton =
       streaming_automaton<type, format, cut>;
   inline static constexpr std::size_t field_count = groups_of<type>();
@@ -2549,8 +2551,9 @@ class stream_state {
     // machine, so a group that never closed is read from where it was being
     // gathered, which is what the registers say.
     const auto& reached = automaton.states[state_];
+    // Nothing to point at: this machine is fed and never holds the subject.
     return finish_value<type, type, 0>(reached.readings[slot], scanner_states_,
-                                       registers_);
+                                       registers_, nullptr);
   }
 
  private:
@@ -2596,9 +2599,19 @@ inline constexpr auto gathered_at = [] consteval {
 // knows where it stands. The work each character does is what it was: apply
 // what the move writes to the gatherings, and give the character to the fields
 // that are open.
-template <class type, fixed_string format, auto& automaton>
+template <class type, fixed_string format, auto& automaton,
+          bool pointable = false>
 class field_gatherer {
  public:
+  // A type built from its groups once the match is over is handed views of the
+  // subject. Where the subject is gone as it is read there is nothing to give
+  // it, and holding the characters until the end to give it something would be
+  // a hold with no bound.
+  static_assert(
+      pointable || !holds_a_flat_reader<type>(),
+      "a type built from its groups after the match needs a subject that can "
+      "be pointed at: give it begin_groups and push_group to be told its "
+      "groups as they are read, or scan it from something contiguous");
   static constexpr std::size_t field_count = groups_of<type>();
   using states_type =
       std::array<decltype(make_scanner_state<type, format>()),
@@ -2615,7 +2628,7 @@ class field_gatherer {
     constexpr const auto& taken = automaton.states[state].ranges[move];
     collect_elements<type, format, automaton>(
         state, registers, states_, taken.commands, taken.command_count,
-        std::make_index_sequence<field_count>{});
+        std::make_index_sequence<field_count>{}, text_);
   }
 
   // A run the walk stepped over in vectors: the fields that are open take all
@@ -2652,7 +2665,7 @@ class field_gatherer {
   constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
     made_.emplace(finish_value<type, type, 0>(
-        packed.readings[packed.accepting_slot], states_, registers));
+        packed.readings[packed.accepting_slot], states_, registers, text_));
   }
 
   [[nodiscard]] constexpr std::optional<type>& made() { return made_; }
@@ -2834,7 +2847,9 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   std::ranges::fill(registers, scan::tre::negative_tag);
   execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                    std::ptrdiff_t{0});
-  field_gatherer<type, format, automaton> into;
+  field_gatherer<type, format, automaton,
+                 std::ranges::contiguous_range<range_type>>
+      into;
   if constexpr (std::ranges::contiguous_range<range_type>) {
     into.points_at(std::ranges::data(input));
   }

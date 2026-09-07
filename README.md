@@ -813,6 +813,13 @@ This works in a format and in a pattern alike, and a place standing for such a
 type takes parameters but not a pattern of its own: the groups are counted off
 the pattern the type declares, so that is the pattern it is read with.
 
+`from_groups` is handed views of the subject, so it wants a subject there is
+something left to point at. Scanning a subject that is read once into a type
+that says only `from_groups` does not compile: by the time the groups could be
+handed over the characters are gone, and holding them until the end would be a
+hold with no bound. Such a type reads a stream by saying the fold below
+instead.
+
 **A fold -- a type told its groups as they happen.** `from_groups` hands over
 what is there when the match is over, and that is the last turn round a loop
 and nothing before it: a machine with tags keeps one position per tag, not a
@@ -866,6 +873,15 @@ lived under that rule; a fold is the first place where you write one yourself.
 An output holding a fold is read by the machine that gathers as it goes, even
 where the subject lies in a row and could be pointed at -- the same road a list
 takes, and for the same reason.
+
+Between the two: **nothing in the engine allocates**. The registers, the
+gatherings, the character a stream holds back between matches and a fold's
+bookkeeping are all fixed-size arrays whose sizes the pattern decides while it
+is compiled. What allocates is what you asked for -- a collector that keeps
+text, a list that grows, a value whose type allocates -- and the default holder
+for a subject that is read once, which is a `std::string` because there is
+nothing to point at (`scan::held<N>` instead of it, and nothing allocates at
+all). Throwing `scan_error` allocates, as throwing does.
 
 **A list** -- a field that is a range takes as many turns as the subject
 affords, and the place says what one turn looks like:
