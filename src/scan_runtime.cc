@@ -616,6 +616,39 @@ template <auto& automaton, std::size_t state>
 // the machine goes there and nowhere else, and what follows can be written
 // where the move is. More than one is a fork, and writing what follows at the
 // fork would write it once per branch.
+// How many places in the pattern a walk can step over several characters at
+// once: the states a run of characters keeps the machine in. Everything the
+// vectors buy is bought there, and nowhere else.
+template <auto& automaton>
+[[nodiscard]] consteval std::size_t runs_stepped_over() {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  std::size_t count = 0;
+  [&]<std::size_t... state>(std::index_sequence<state...>) {
+    ((count += staying_of<automaton, state>().count != 0 ? 1 : 0), ...);
+  }(std::make_index_sequence<state_count>{});
+  return count;
+}
+
+// The length of subject at which reading in words is worth asking for.
+//
+// A step in vectors reads sixteen characters and asks one question of them, so
+// it is ahead of reading one at a time only where a run really is that long.
+// A subject is shared out between the runs the pattern has -- five fields of a
+// row take a fifth of it each -- so the length that pays is sixteen characters
+// for every run, and not a fixed number of them: one field of sixteen letters
+// is read in words, five fields of sixteen letters need eighty.
+//
+// It used to be eight, which is a run of one and a half characters a field: a
+// row of thirty characters took the walk that reads sixty-four at a time,
+// asked three questions to find that it could not, and read them one at a
+// time in the end. Twice the time of the walk it should have taken.
+template <auto& automaton>
+[[nodiscard]] consteval std::size_t worth_reading_in_words() {
+  constexpr std::size_t runs = runs_stepped_over<automaton>();
+  return 16 * (runs != 0 ? runs : 1);
+}
+
 template <auto& automaton, std::size_t state>
 [[nodiscard]] consteval std::size_t forks_of() {
   constexpr const auto& packed = automaton.states[state];
@@ -1851,7 +1884,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         //
         // Where the caller said which walk they want, nothing is asked: the
         // length is not looked at, and only the walk they named is written.
-        constexpr std::size_t worth_a_word = 32;
+        constexpr std::size_t worth_a_word =
+            worth_reading_in_words<automaton>();
         constexpr bool asks = walk == how_to_walk::by_length;
         if (asks ? input.size() < worth_a_word
                  : walk == how_to_walk::one_at_a_time) {
@@ -1867,7 +1901,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         }
     } else {
         const char* const end = cursor + input.size();
-        constexpr std::size_t worth_a_word = 32;
+        constexpr std::size_t worth_a_word =
+            worth_reading_in_words<automaton>();
         constexpr bool asks = walk == how_to_walk::by_length;
         if (asks ? input.size() < worth_a_word
                  : walk == how_to_walk::one_at_a_time) {
