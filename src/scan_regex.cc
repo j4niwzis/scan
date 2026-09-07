@@ -680,30 +680,68 @@ template <fixed_string pattern, unsigned char sentinel,
 regex_match_sentinel(std::string_view input) {
   constexpr auto whole = pattern.to_the_end();
   constexpr const auto& automaton = regex_automaton<whole>;
-  static_assert(automaton.tag_count == 0,
-                "sentinel matching currently supports captureless patterns");
   static_assert(is_safe_sentinel<whole, sentinel>(),
                 "sentinel must be rejected in every automaton state");
   const char* const end = input.data() + input.size();
-  const bool matched = [&] {
-    if constexpr (walk == how_to_walk::by_length) {
-      if (input.size() < minimum_match_length<whole>()) return false;
-      constexpr std::size_t worth_a_vector = 64;
-      return input.size() >= worth_a_vector
-                 ? matched_over<whole, terminated_shape<whole, sentinel>(true)>(
-                       input.data(), end)
-                 : matched_over<whole,
-                                terminated_shape<whole, sentinel>(false)>(
-                       input.data(), end);
-    } else {
-      return matched_over<
-          whole, terminated_shape<whole, sentinel>(walk ==
-                                                   how_to_walk::in_words)>(
-          input.data(), end);
+  if constexpr (automaton.tag_count == 0) {
+    const bool matched = [&] {
+      if constexpr (walk == how_to_walk::by_length) {
+        if (input.size() < minimum_match_length<whole>()) return false;
+        constexpr std::size_t worth_a_vector = 64;
+        return input.size() >= worth_a_vector
+                   ? matched_over<whole,
+                                  terminated_shape<whole, sentinel>(true)>(
+                         input.data(), end)
+                   : matched_over<whole,
+                                  terminated_shape<whole, sentinel>(false)>(
+                         input.data(), end);
+      } else {
+        return matched_over<
+            whole, terminated_shape<whole, sentinel>(walk ==
+                                                     how_to_walk::in_words)>(
+            input.data(), end);
+      }
+    }();
+    if (!matched) return {};
+    return {regex_submatch(input), {}};
+  } else {
+    // The same walk with the registers carried, which is the walk the format
+    // layer has always used for a terminated subject. What the terminator
+    // saves is the end test, and a group is written by the same operations
+    // whether the end is tested or not -- so there was nothing here to refuse.
+    std::array<const char*, automaton.register_count> registers{};
+    const char* cursor = input.data();
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, cursor);
+    const bool matched = [&] {
+      if constexpr (walk == how_to_walk::by_length) {
+        if (input.size() < minimum_match_length<whole>()) return false;
+        constexpr std::size_t worth_a_word = 32;
+        return input.size() >= worth_a_word
+                   ? run_to_terminator<automaton, sentinel, true,
+                                       automaton.initial>(cursor, end,
+                                                          registers)
+                   : run_to_terminator<automaton, sentinel, false,
+                                       automaton.initial>(cursor, end,
+                                                          registers);
+      } else {
+        return run_to_terminator<automaton, sentinel,
+                                 walk == how_to_walk::in_words,
+                                 automaton.initial>(cursor, end, registers);
+      }
+    }();
+    if (!matched) return {};
+    std::array<regex_submatch, automaton.tag_count / 2> captures{};
+    for (std::size_t capture :
+         std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
+      const char* const from = registers[capture * 2];
+      const char* const to = registers[capture * 2 + 1];
+      if (from == nullptr || to == nullptr) continue;
+      captures[capture] = regex_submatch(
+          std::string_view(from, static_cast<std::size_t>(to - from)));
     }
-  }();
-  if (!matched) return {};
-  return {regex_submatch(input), {}};
+    return {regex_submatch(input), captures};
+  }
 }
 
 // The longest head of the input the automaton accepts, or nothing.

@@ -83,4 +83,24 @@ TEST(TheWalkSaidOutright, AFormatReadsTheSameWayRoundToo) {
   EXPECT_EQ(terminated_vec.right, 34);
 }
 
+TEST(TheWalkSaidOutright, ATerminatedSubjectKeepsItsGroups) {
+  // What the terminator saves is the end test, and a group is written by the
+  // same operations whether the end is tested or not. This used to be refused
+  // outright.
+  const std::string text = "42-abc";
+  const auto found = scan::match_sentinel<"([0-9]+)-([a-z]+)">(text);
+  ASSERT_TRUE(static_cast<bool>(found));
+  EXPECT_EQ(found.get<1>().to_view(), "42"sv);
+  EXPECT_EQ(found.get<2>().to_view(), "abc"sv);
+
+  const auto one_at_a_time =
+      scan::match_sentinel_scalar<"([0-9]+)-([a-z]+)">(text);
+  ASSERT_TRUE(static_cast<bool>(one_at_a_time));
+  EXPECT_EQ(one_at_a_time.get<2>().to_view(), "abc"sv);
+
+  const auto in_words = scan::match_sentinel_vec<"([0-9]+)-([a-z]+)">(text);
+  ASSERT_TRUE(static_cast<bool>(in_words));
+  EXPECT_EQ(in_words.get<1>().to_view(), "42"sv);
+}
+
 }  // namespace
