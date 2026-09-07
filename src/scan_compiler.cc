@@ -1498,16 +1498,26 @@ template <class type, fixed_string format>
   return made;
 }
 
+// What one field of a shape matches, whatever kind of field it is.
+//
+// A value says it itself. A choice says a mark and a branch, over and over --
+// and a branch is a field like any other, so this is written once and asks
+// itself about them.
+template <class field_type>
+[[nodiscard]] constexpr pattern_buffer<> field_pattern(
+    std::string_view parameters);
+
 template <class type, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr auto parameterized_patterns(
     const std::array<std::string_view, extent>& parameters,
     std::index_sequence<index...>) {
   const auto make_pattern = []<class field_type>(
                                 std::string_view field_parameters) {
-    pattern_buffer<> result;
-    const auto pattern = scanner_pattern<field_type>(field_parameters);
-    result.append(std::string_view{pattern});
-    return result;
+    // A choice is written so that which branch ran can be read off the match:
+    // a group of nothing in front of each branch, which took part only if that
+    // branch did. The same mark the spread writes, said in the language
+    // everybody else can read.
+    return field_pattern<field_type>(field_parameters);
   };
   // By field, and not by the values a field opens up into: this builds the
   // pattern a whole aggregate matches for the paths that match it whole -- the
@@ -1516,6 +1526,34 @@ template <class type, std::size_t extent, std::size_t... index>
   return std::array<pattern_buffer<>, extent>{
       make_pattern.template operator()<std::remove_cvref_t<
           boost::pfr::tuple_element_t<index, type>>>(parameters[index])...};
+}
+
+template <class field_type>
+[[nodiscard]] constexpr pattern_buffer<> field_pattern(
+    std::string_view parameters) {
+  pattern_buffer<> result;
+  if constexpr (scanned_as_variant<field_type>) {
+    // A mark, and then the branch in a group of its own -- the mark says which
+    // branch ran, because a group that took no part points nowhere, and the
+    // group beside it holds what that branch stood on.
+    result.append(std::string_view("(?:"));
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ((void)[&] {
+        if constexpr (which != 0) result.push_back('|');
+        result.append(std::string_view("()("));
+        const auto branch =
+            field_pattern<std::remove_cv_t<branch_at<field_type, which>>>(
+                std::string_view{});
+        result.append(branch.view());
+        result.push_back(')');
+      }(), ...);
+    }(std::make_index_sequence<branch_count<field_type>()>{});
+    result.push_back(')');
+  } else {
+    const auto pattern = scanner_pattern<field_type>(parameters);
+    result.append(std::string_view{pattern});
+  }
+  return result;
 }
 
 template <std::size_t extent>
