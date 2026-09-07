@@ -386,16 +386,19 @@ compiled: the type declares a **format** of its own rather than a pattern for
 one value, that format has more than one place in it, and the group is written
 with the same expression the format spells out.
 
-**The same expression, not the same characters.** Both are read, and the two
-trees are compared, so `+` and `{1,}` agree and a group that captures nothing
-leaves nothing to disagree about.
+**The same expression, not the same characters.** Both are read, both are put
+into the plainest shape they can be, and the two trees are compared. So `+` and
+`{1,}` agree, an extra `(?:…)` disagrees with nothing, and `a{2}` and `aa` are
+the same two symbols.
 
-What the reading does not make identical is left alone, deliberately. `a{2}`
-and `aa` are the same characters and not the same expression: put a group
-around them and they stop being alike at all, because `(a){2}` is one group
-that took two turns and `(a)(a)` is two groups. Since what is being decided
-here is whether the groups already found are that type's values, anything that
-could move the groups has to count as different.
+That last one only where it is safe: a count is written out by hand exactly
+when nothing inside it marks a place. `(a){2}` and `(a)(a)` stay apart, because
+they really are different -- one group that took two turns against two groups
+-- and what is being decided here is whether the groups already found are that
+type's values, so anything that could move a group has to count as different.
+
+What would need to know what a machine does with it is not done at all: `[a]`
+stays a class and `a` stays a symbol.
 
 Where the two really are the same and this says they are not, the text is read
 the ordinary way and the cost is one reading. Where it said yes wrongly, the

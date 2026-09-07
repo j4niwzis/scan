@@ -40,25 +40,30 @@ TEST(CollectorReuse, WhatTheReadingMakesTheSameIsTheSame) {
                 "a group that captures nothing leaves nothing behind");
 }
 
-TEST(CollectorReuse, AndWhatItDoesNotIsNot) {
-  // Deliberately not equal, though a reader might call them the same thing.
-  //
-  // `a{2}` and `aa` are the same characters and not the same expression: put
-  // a group around them and they stop being alike at all -- `(a){2}` is one
-  // group that took two turns, `(a)(a)` is two groups. Writing a count out by
-  // hand can move the groups, so the count is compared as a count.
+TEST(CollectorReuse, ACountIsWrittenOutWhereThatIsSafe) {
+  // `a{2}` and `aa` are the same two symbols, so long as there is no tag
+  // inside the count: writing one out by hand cannot move what is not there.
+  static_assert(scan::detail::group_spells_out<
+                    point, "at=(\\(([+-]?[0-9]+),([+-]?[0-9]{1}[0-9]*)\\))", 1>(),
+                "a count with nothing marked inside it is written out");
+}
+
+TEST(CollectorReuse, AndACountAroundAGroupIsNot) {
+  // Here it would move them: `(a){2}` is one group that took two turns and
+  // `(a)(a)` is two groups, which is a different answer and not a different
+  // spelling. So a count around anything that marks a place is compared as a
+  // count.
+  struct pair_of_points { point first; point second; };
   static_assert(!scan::detail::group_spells_out<
                     point, "at=(\\(([+-]?[0-9]+),([+-]?[0-9]+)\\)\\(\\))", 1>(),
                 "a different expression is a different expression");
 
-  // And a class of one symbol is a class, not that symbol. Reuse could be had
-  // here and is not: what it costs to miss it is that the text is read the
-  // ordinary way, and what it would cost to be wrong about it is a wrong
-  // answer.
+  // And a class of one symbol stays a class. This one could be had and is
+  // not: missing it costs one reading of the text, and being wrong about it
+  // would cost the answer.
   static_assert(!scan::detail::group_spells_out<
                     point, "at=([(]([+-]?[0-9]+),([+-]?[0-9]+)[)])", 1>(),
-                "a class of one symbol is written differently and read "
-                "differently");
+                "a class of one symbol is read as a class");
 }
 
 TEST(CollectorReuse, AGroupWrittenSomeOtherWayIsNotReused) {

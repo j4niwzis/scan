@@ -92,31 +92,145 @@ class node : public ast::node_variant {
   using ast::node_variant::operator=;
 };
 
+// Whether anything anywhere in this expression marks a place.
+//
+// A count written around something with a tag in it cannot be written out by
+// hand without moving the tags -- `(a){2}` is one group that took two turns
+// and `(a)(a)` is two groups -- so this is what says whether writing it out is
+// allowed at all.
+[[nodiscard]] constexpr bool marks_a_place(const node& one) {
+  return std::visit(
+      [](const auto& value) -> bool {
+        using kind = std::remove_cvref_t<decltype(value)>;
+        if constexpr (std::same_as<kind, ast::tag>) {
+          return true;
+        } else if constexpr (std::same_as<kind, ast::alternative>) {
+          for (const node& branch : value.branches) {
+            if (marks_a_place(branch)) return true;
+          }
+          return false;
+        } else if constexpr (std::same_as<kind, ast::concatenation>) {
+          for (const node& element : value.elements) {
+            if (marks_a_place(element)) return true;
+          }
+          return false;
+        } else if constexpr (std::same_as<kind, ast::repetition>) {
+          for (const node& element : value.element) {
+            if (marks_a_place(element)) return true;
+          }
+          return false;
+        } else {
+          return false;
+        }
+      },
+      static_cast<const ast::node_variant&>(one));
+}
+
+// How many copies a count may be written out into. A guard and nothing more:
+// what is on the other side of it is a comparison, and one that says "not the
+// same" costs a reading of some text.
+inline constexpr std::size_t most_copies = 32;
+
+[[nodiscard]] constexpr node plainly(const node& one);
+
+constexpr void append_plainly(std::vector<node>& into, const node& one) {
+  const node made = plainly(one);
+  if (std::holds_alternative<ast::epsilon>(
+          static_cast<const ast::node_variant&>(made))) {
+    return;
+  }
+  if (const auto* inner = std::get_if<ast::concatenation>(
+          static_cast<const ast::node_variant*>(&made))) {
+    for (const node& element : inner->elements) into.push_back(element);
+    return;
+  }
+  into.push_back(made);
+}
+
+// The same expression, written the plainest way it can be.
+//
+// Two patterns that mean the same thing are written by two people in two ways,
+// and comparing them means putting both into one shape first. What is done
+// here is what can be done without moving a tag:
+//
+//   * a sequence inside a sequence is the same sequence, and an epsilon in one
+//     is nothing at all -- so they are flattened away;
+//   * a count around something that marks no place is that thing written out,
+//     so `a{2}` and `aa` come to the same, while `(a){2}` and `(a)(a)` stay
+//     apart, which they are.
+//
+// What is not done is anything that would need to know what a machine does
+// with it: `[a]` stays a class and `a` stays a symbol, `(?:a|a)` stays a
+// choice. Those could be had, and the reason they are not is that this
+// decides whether the groups a match already found are some type's values --
+// where saying "the same" wrongly is a wrong answer, and saying "not the
+// same" wrongly is one more reading of some text.
+[[nodiscard]] constexpr node plainly(const node& one) {
+  return std::visit(
+      [](const auto& value) -> node {
+        using kind = std::remove_cvref_t<decltype(value)>;
+        if constexpr (std::same_as<kind, ast::alternative>) {
+          std::vector<node> branches;
+          for (const node& branch : value.branches) {
+            branches.push_back(plainly(branch));
+          }
+          return ast::alternative{std::move(branches)};
+        } else if constexpr (std::same_as<kind, ast::concatenation>) {
+          std::vector<node> elements;
+          for (const node& element : value.elements) {
+            append_plainly(elements, element);
+          }
+          if (elements.empty()) return ast::epsilon{};
+          if (elements.size() == 1) return elements.front();
+          return ast::concatenation{std::move(elements)};
+        } else if constexpr (std::same_as<kind, ast::repetition>) {
+          if (value.element.size() != 1) return node(value);
+          const node body = plainly(value.element.front());
+          const bool exactly = value.minimum == value.maximum;
+          if (exactly && value.minimum <= most_copies &&
+              !marks_a_place(body)) {
+            std::vector<node> elements;
+            for (std::size_t turn = 0; turn < value.minimum; ++turn) {
+              append_plainly(elements, body);
+            }
+            if (elements.empty()) return ast::epsilon{};
+            if (elements.size() == 1) return elements.front();
+            return ast::concatenation{std::move(elements)};
+          }
+          return ast::repetition{{body}, value.minimum, value.maximum,
+                                 value.greedy};
+        } else {
+          return node(value);
+        }
+      },
+      static_cast<const ast::node_variant&>(one));
+}
+
 // Whether two expressions are the same expression.
 //
 // Written out they may not look it. `a+` and `a{1,}` are the same repetition,
-// `[a]` and `a` are the same one symbol, `(?:ab)` and `ab` are the same
-// sequence -- what tells them apart is the writing, and what makes them the
-// same is that reading them gives the same tree. So the comparison is of the
-// trees, after the reading, and never of the characters.
+// `(?:ab)` and `ab` the same sequence, and `a{2}` and `aa` the same two
+// symbols -- so what is compared is the reading and never the characters.
+//
+// Both are put into the plainest shape they can be first, so that a sequence
+// written with an extra pair of brackets, or a count written out by hand where
+// no tag is inside it, is still the same expression.
 //
 // Tags are compared by their number, which means both sides have to have been
 // read with their own count starting from the same place. Two patterns read
 // on their own do.
-[[nodiscard]] constexpr bool same_expression(const node& left,
-                                             const node& right);
+[[nodiscard]] constexpr bool same_tree(const node& left, const node& right);
 
-[[nodiscard]] constexpr bool same_expressions(const std::vector<node>& left,
-                                              const std::vector<node>& right) {
+[[nodiscard]] constexpr bool same_trees(const std::vector<node>& left,
+                                        const std::vector<node>& right) {
   if (left.size() != right.size()) return false;
   for (std::size_t at = 0; at < left.size(); ++at) {
-    if (!same_expression(left[at], right[at])) return false;
+    if (!same_tree(left[at], right[at])) return false;
   }
   return true;
 }
 
-[[nodiscard]] constexpr bool same_expression(const node& left,
-                                             const node& right) {
+[[nodiscard]] constexpr bool same_tree(const node& left, const node& right) {
   if (left.index() != right.index()) return false;
   return std::visit(
       [&](const auto& one) -> bool {
@@ -132,16 +246,21 @@ class node : public ast::node_variant {
         } else if constexpr (std::same_as<kind, ast::character_class>) {
           return one.symbols.words == other.symbols.words;
         } else if constexpr (std::same_as<kind, ast::alternative>) {
-          return same_expressions(one.branches, other.branches);
+          return same_trees(one.branches, other.branches);
         } else if constexpr (std::same_as<kind, ast::concatenation>) {
-          return same_expressions(one.elements, other.elements);
+          return same_trees(one.elements, other.elements);
         } else {
           return one.minimum == other.minimum &&
                  one.maximum == other.maximum && one.greedy == other.greedy &&
-                 same_expressions(one.element, other.element);
+                 same_trees(one.element, other.element);
         }
       },
       static_cast<const ast::node_variant&>(left));
+}
+
+[[nodiscard]] constexpr bool same_expression(const node& left,
+                                             const node& right) {
+  return same_tree(plainly(left), plainly(right));
 }
 
 [[nodiscard]] constexpr node empty() { return ast::empty{}; }
