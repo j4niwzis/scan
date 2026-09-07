@@ -549,7 +549,7 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
   // of what it was handed.
   return detail::run_continuation<automaton, shape, automaton.initial,
                                   shape.budget,
-                                  shape.head || shape.longest
+                                  shape.longest
                                       ? 0
                                       : minimum_match_length<pattern>(),
                                   mark_type>(cursor, last, place, registers,
