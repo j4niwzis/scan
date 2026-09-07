@@ -299,19 +299,26 @@ class no_group : public scan_error {
   using scan_error::scan_error;
 };
 
-// A place matched, and what stood there is not that type: `abc` where an
-// integer was written, an empty field where one character was.
-class bad_field : public scan_error {
+// Something about a field, and never thrown itself: the two below are what is
+// thrown, and this is the name for catching either.
+class field_error : public scan_error {
  public:
   using scan_error::scan_error;
+};
+
+// A place matched, and what stood there is not that type: `abc` where an
+// integer was written, an empty field where one character was.
+class bad_field : public field_error {
+ public:
+  using field_error::field_error;
 };
 
 // It is that type, and it does not fit in it. A different question from the one
 // above, and usually a different answer: the input is well formed and the
 // output type is too small for it.
-class out_of_range : public bad_field {
+class out_of_range : public field_error {
  public:
-  using bad_field::bad_field;
+  using field_error::field_error;
 };
 
 // The reading that was asked for cannot be had off this kind of subject -- a
@@ -322,5 +329,48 @@ class wrong_subject : public scan_error {
  public:
   using scan_error::scan_error;
 };
+
+// A failure handed back rather than thrown, holding the kind it was.
+//
+// Thrown, the kind is the type and `catch` picks it. Handed back, there is
+// nowhere to put a hierarchy: a base by value keeps the message and drops the
+// kind. So what is handed back is one of each kind that is ever thrown, and
+// only those -- `field_error` is a name for catching two things and is never
+// thrown itself, so nothing here is ever it. `scan_error` is on the list
+// because a scanner of your own throws that one.
+using failure =
+    std::variant<scan_error, no_match, no_group, bad_field, out_of_range,
+                 wrong_subject>;
+
+// What it said, whichever kind it is.
+[[nodiscard]] inline const char* what(const failure& said) {
+  return std::visit([](const scan_error& one) { return one.what(); }, said);
+}
+
+// The kinds, tried from the bottom of the hierarchy up, so the answer is the
+// kind that was thrown and not one of its names.
+//
+// Written once here rather than at every place that hands a failure back: they
+// all catch the same six things in the same order, and getting that order
+// wrong turns an `out_of_range` into a `field_error` quietly.
+template <class function>
+[[nodiscard]] constexpr auto caught(function&& run)
+    -> std::expected<decltype(run()), failure> {
+  try {
+    return std::forward<function>(run)();
+  } catch (const out_of_range& said) {
+    return std::unexpected(failure(said));
+  } catch (const bad_field& said) {
+    return std::unexpected(failure(said));
+  } catch (const no_match& said) {
+    return std::unexpected(failure(said));
+  } catch (const no_group& said) {
+    return std::unexpected(failure(said));
+  } catch (const wrong_subject& said) {
+    return std::unexpected(failure(said));
+  } catch (const scan_error& said) {
+    return std::unexpected(failure(said));
+  }
+}
 
 }  // namespace scan

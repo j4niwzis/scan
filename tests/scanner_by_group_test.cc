@@ -33,18 +33,6 @@ struct pair_of_words {
   std::string second;
 };
 
-TEST(ScannerByGroup, AndTheGroupAfterItIsTheNextCollectors) {
-  // The type took the three groups it wrote, so the group after them is the
-  // second collector's -- nobody has to count them out by hand.
-  const std::string text = "v=1.22.333-stable!";
-  const auto found =
-      scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))-([a-z]+)!">.into(
-          scan::as<version>(), scan::text())(text);
-  ASSERT_TRUE(static_cast<bool>(found));
-  EXPECT_EQ(found.get<1>().minor, 22);
-  EXPECT_EQ(found.get<2>(), "stable"sv);
-}
-
 }  // namespace
 
 // Told by the name of the group: an overload each, and no switch anywhere.
@@ -165,6 +153,18 @@ class read_once {
   std::size_t* at_ = nullptr;
 };
 
+
+TEST(ScannerByGroup, AndTheGroupAfterItIsTheNextCollectors) {
+  // The type took the three groups it wrote, so the group after them is the
+  // second collector's -- nobody has to count them out by hand.
+  const std::string text = "v=1.22.333-stable!";
+  const auto found =
+      scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))-([a-z]+)!">.into(
+          scan::as<version>(), scan::text())(text);
+  ASSERT_TRUE(static_cast<bool>(found));
+  EXPECT_EQ(found.get<1>().minor, 22);
+  EXPECT_EQ(found.get<2>(), "stable"sv);
+}
 
 TEST(ScannerByGroup, ToldByTheNameOfTheGroup) {
   const std::string text = "v=1.22.333!";

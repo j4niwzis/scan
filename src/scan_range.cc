@@ -83,12 +83,8 @@ class borrowed_result {
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() const {
-    try {
-      return static_cast<type>(*this);
-    } catch (const scan_error& failure) {
-      return std::unexpected(failure);
-    }
+  [[nodiscard]] constexpr std::expected<type, failure> try_of() const {
+    return caught([&] { return static_cast<type>(*this); });
   }
 
   // The same things the reading could be told before it was handed a subject,
@@ -166,12 +162,8 @@ class pieces_result {
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() {
-    try {
-      return static_cast<type>(*this);
-    } catch (const scan_error& failure) {
-      return std::unexpected(failure);
-    }
+  [[nodiscard]] constexpr std::expected<type, failure> try_of() {
+    return caught([&] { return static_cast<type>(*this); });
   }
 
  private:
@@ -201,12 +193,8 @@ class streaming_result {
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() {
-    try {
-      return static_cast<type>(*this);
-    } catch (const scan_error& failure) {
-      return std::unexpected(failure);
-    }
+  [[nodiscard]] constexpr std::expected<type, failure> try_of() {
+    return caught([&] { return static_cast<type>(*this); });
   }
 
  private:
@@ -271,13 +259,9 @@ class prefix_scan {
 
   // The head and what follows it, or what went wrong instead.
   template <class type>
-  [[nodiscard]] constexpr std::expected<taken<type>, scan_error> try_take()
+  [[nodiscard]] constexpr std::expected<taken<type>, failure> try_take()
       const {
-    try {
-      return take<type>();
-    } catch (const scan_error& failure) {
-      return std::unexpected(failure);
-    }
+    return caught([&] { return take<type>(); });
   }
 
   template <class type>
@@ -292,7 +276,7 @@ class prefix_scan {
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() const {
+  [[nodiscard]] constexpr std::expected<type, failure> try_of() const {
     auto got = try_take<type>();
     if (!got) return std::unexpected(got.error());
     return std::move(got->value);
@@ -522,13 +506,9 @@ class prefix_stream_scan {
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<detail::taken_ahead<type>, scan_error>
+  [[nodiscard]] constexpr std::expected<detail::taken_ahead<type>, failure>
   try_take() {
-    try {
-      return take<type>();
-    } catch (const scan_error& failure) {
-      return std::unexpected(failure);
-    }
+    return caught([&] { return take<type>(); });
   }
 
   template <class type>
@@ -543,7 +523,7 @@ class prefix_stream_scan {
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<type, scan_error> try_of() {
+  [[nodiscard]] constexpr std::expected<type, failure> try_of() {
     auto got = try_take<type>();
     if (!got) return std::unexpected(got.error());
     return std::move(got->value);
