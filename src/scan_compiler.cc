@@ -1241,6 +1241,116 @@ struct spread_format {
   bool space_before_places = false;
 };
 
+// The spread, said either way.
+//
+// One walk, two spellings. The first is this library's own: a place is `{`,
+// a repeated group is one character and a mark is another, and what the format
+// parser reads is that. The second is a plain regular expression, where a
+// place is a group, a mark is a group of nothing, and the whole thing can be
+// read by anybody -- which is what a type hands over when it says what it
+// matches.
+//
+// They are the same walk on purpose. The groups of the one are the places of
+// the other, in the same order, so a type that is handed its groups can be
+// built by the very code that builds it from the places.
+template <bool as_regex>
+constexpr void say_place_begin(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.push_back('(');
+  } else {
+    made.text.push_back('{');
+  }
+}
+
+template <bool as_regex>
+constexpr void say_place_end(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.push_back(')');
+  } else {
+    made.text.push_back('}');
+  }
+}
+
+template <bool as_regex>
+constexpr void say_repeat_begin(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.push_back('(');
+  } else {
+    made.text.push_back(format_repeat);
+  }
+}
+
+template <bool as_regex>
+constexpr void say_group_begin(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.append(std::string_view("(?:"));
+  } else {
+    made.text.push_back(format_group_begin);
+  }
+}
+
+template <bool as_regex>
+constexpr void say_group_end(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.push_back(')');
+  } else {
+    made.text.push_back(format_group_end);
+  }
+}
+
+template <bool as_regex>
+constexpr void say_branch(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.push_back('|');
+  } else {
+    made.text.push_back(format_branch);
+  }
+}
+
+template <bool as_regex>
+constexpr void say_mark(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.append(std::string_view("()"));
+  } else {
+    made.text.push_back(format_mark);
+  }
+}
+
+template <bool as_regex>
+constexpr void say_raw_begin(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.append(std::string_view("(?:"));
+  } else {
+    made.text.push_back(format_raw_begin);
+  }
+}
+
+template <bool as_regex>
+constexpr void say_raw_end(spread_format& made) {
+  if constexpr (as_regex) {
+    made.text.push_back(')');
+  } else {
+    made.text.push_back(format_raw_end);
+  }
+}
+
+// A character of the format that stands for itself.
+//
+// In this library's own spelling that is what it is: the format parser reads
+// anything it has no meaning for as the character it is. Said as a regular
+// expression it has to be written so that it still stands for itself, because
+// there a dot is every character and a plus is a repetition.
+template <bool as_regex>
+constexpr void say_literal(spread_format& made, char value) {
+  if constexpr (as_regex) {
+    if (std::string_view(".^$|()[]*+?{}\\").contains(value)) {
+      made.text.push_back('\\');
+    }
+  }
+  made.text.push_back(value);
+}
+
+template <bool as_regex = false>
 constexpr void copy_until_place(spread_format& made, std::string_view text,
                                 std::size_t& position) {
   while (position < text.size()) {
@@ -1251,7 +1361,7 @@ constexpr void copy_until_place(spread_format& made, std::string_view text,
       continue;
     }
     if (text[position] == '{') return;
-    made.text.push_back(text[position]);
+    say_literal<as_regex>(made, text[position]);
     ++position;
   }
 }
@@ -1315,23 +1425,24 @@ branches_of(std::string_view text, std::size_t& count) {
 // Literal text, and any place that keeps nothing, up to the next place that
 // does. A place whose body begins with a star is matched and thrown away, the
 // way `%*d` is read and not stored, and it takes no value with it.
+template <bool as_regex = false>
 constexpr void copy_until_kept_place(spread_format& made, std::string_view text,
                                      std::size_t& position) {
   while (true) {
-    copy_until_place(made, text, position);
+    copy_until_place<as_regex>(made, text, position);
     if (position == text.size()) return;
     const std::size_t close = end_of_place(text, position);
     const std::string_view body =
         text.substr(position + 1, close - position - 1);
     if (body.empty() || body.front() != '*') return;
-    made.text.push_back(format_raw_begin);
+    say_raw_begin<as_regex>(made);
     made.text.append(body.substr(1));
-    made.text.push_back(format_raw_end);
+    say_raw_end<as_regex>(made);
     position = close + 1;
   }
 }
 
-template <class type, bool within>
+template <class type, bool within, bool as_regex = false>
 constexpr void spread_into(spread_format& made, std::string_view text);
 
 // How many turns a place is written to take, as it is written: a star, a plus,
@@ -1352,18 +1463,18 @@ constexpr void spread_into(spread_format& made, std::string_view text);
   return text.substr(at, close - at + 1);
 }
 
-template <class kind>
+template <class kind, bool as_regex = false>
 constexpr void spread_place(spread_format& made, std::string_view body,
                             std::string_view repetition = {}) {
   if constexpr (scanned_as_range<kind>) {
     // The body is one element, and it is read for as long as it goes on. The
     // group around it is the list; the places inside it are the element, and
     // they are written over again on every turn.
-    made.text.push_back(format_repeat);
+    say_repeat_begin<as_regex>(made);
     ++made.leaves;
-    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
-        made, body);
-    made.text.push_back(format_group_end);
+    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false,
+                as_regex>(made, body);
+    say_group_end<as_regex>(made);
     made.text.append(repetition);
   } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body
@@ -1379,29 +1490,32 @@ constexpr void spread_place(spread_format& made, std::string_view body,
         throw "a variant place must have one branch for each alternative";
       }
     }
-    made.text.push_back(format_group_begin);
+    say_group_begin<as_regex>(made);
     [&]<std::size_t... which>(std::index_sequence<which...>) {
       const auto one = [&]<std::size_t branch>() {
-        if constexpr (branch != 0) made.text.push_back(format_branch);
-        made.text.push_back(format_mark);
+        if constexpr (branch != 0) say_branch<as_regex>(made);
+        say_mark<as_regex>(made);
         // The mark is a group like any other and takes a number, so what comes
         // after it reads its own parameters and not the ones before.
         ++made.leaves;
         using alternative = branch_at<kind, branch>;
         if (body.empty()) {
-          spread_place<alternative>(made, std::string_view{});
+          spread_place<alternative, as_regex>(made, std::string_view{});
         } else {
-          spread_into<alternative, false>(
+          spread_into<alternative, false, as_regex>(
               made, body.substr(parts[branch].first,
                                 parts[branch].second - parts[branch].first));
         }
       };
       (one.template operator()<which>(), ...);
     }(std::make_index_sequence<count>{});
-    made.text.push_back(format_group_end);
+    say_group_end<as_regex>(made);
   } else if constexpr (scanned_by_format<kind>) {
+    // Still spread into the pattern around it, which is what a shape made of
+    // turns needs. A shape that reads its own groups is not one of these: it
+    // stands in a place like any other value, and its groups follow it.
     if (!body.empty()) throw "a type that declares a format takes no body";
-    spread_into<kind, true>(
+    spread_into<kind, true, as_regex>(
         made, scan::scanner<std::remove_cv_t<kind>>::scan_format.view());
   } else if constexpr (!scanned_as_leaf<kind>) {
     // Only reached by a variant place left empty, which asks each alternative
@@ -1418,9 +1532,11 @@ constexpr void spread_place(spread_format& made, std::string_view body,
         throw "a type that reads its own groups keeps its own pattern -- a "
               "place standing for it takes parameters but not a pattern";
       }
-      made.text.push_back(format_own_groups);
+      // Said only in this library's own spelling: written as a regular
+      // expression, a parenthesis is a group already.
+      if constexpr (!as_regex) made.text.push_back(format_own_groups);
     }
-    made.text.push_back('{');
+    say_place_begin<as_regex>(made);
     if (body.empty() || body.front() == ':') {
       const std::string_view given = body.empty() ? body : body.substr(1);
       made.parameters[made.leaves].append(given);
@@ -1429,7 +1545,7 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     } else {
       made.text.append(body);
     }
-    made.text.push_back('}');
+    say_place_end<as_regex>(made);
     // The place, and then the groups its pattern opens, which take the numbers
     // straight after it. What is counted here is group numbers: the parameters
     // are read by the group that gathers, so everything that takes a number has
@@ -1441,12 +1557,12 @@ constexpr void spread_place(spread_format& made, std::string_view body,
   }
 }
 
-template <class type, bool within>
+template <class type, bool within, bool as_regex>
 constexpr void spread_into(spread_format& made, std::string_view text) {
   std::size_t position = 0;
   [&]<std::size_t... place>(std::index_sequence<place...>) {
     const auto one = [&]<std::size_t which>() {
-      copy_until_kept_place(made, text, position);
+      copy_until_kept_place<as_regex>(made, text, position);
       // A place can hold another, and the one inside is a value of its own:
       // `{{[a]+}}` is a group around a group, two values, one place at this
       // level. The body is copied as it stands, so the places within it are
@@ -1464,28 +1580,28 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
       // which is what `%d` does, and what this format asked for by being
       // written `past_space`.
       if (made.space_before_places) {
-        made.text.push_back(format_raw_begin);
+        say_raw_begin<as_regex>(made);
         made.text.append("\\s*");
-        made.text.push_back(format_raw_end);
+        say_raw_end<as_regex>(made);
       }
-      spread_place<kind>(made, text.substr(position + 1, close - position - 1),
-                         repetition);
+      spread_place<kind, as_regex>(
+          made, text.substr(position + 1, close - position - 1), repetition);
       position = close + 1 + repetition.size();
     };
     (one.template operator()<place>(), ...);
   }(std::make_index_sequence<places_chosen<type, within>()>{});
-  copy_until_kept_place(made, text, position);
+  copy_until_kept_place<as_regex>(made, text, position);
   if (position != text.size()) throw "format has more places than values";
 }
 
-template <class type, fixed_string format>
+template <class type, fixed_string format, bool as_regex = false>
 [[nodiscard]] consteval spread_format spread_of() {
   spread_format made;
   made.space_before_places = format.space_before_places;
   if constexpr (scanned_as_variant<type>) {
     // The whole format is the list of branches, which is what a place standing
     // for a variant is written as anywhere else.
-    spread_place<type>(made, format.view());
+    spread_place<type, as_regex>(made, format.view());
   } else {
     // The type scanned into is always opened up: its fields are the places, and
     // it is never itself one. A format of a single place standing for the whole
@@ -1493,9 +1609,21 @@ template <class type, fixed_string format>
     // one, without a word changing in the format, so it is not allowed to mean
     // anything. Whoever wants it writes the wrapper themselves, and then the
     // place is the field and says so.
-    spread_into<type, true>(made, format.view());
+    spread_into<type, true, as_regex>(made, format.view());
   }
   return made;
+}
+
+// The same spread, said as a regular expression: the groups of it are the
+// places of the format, in the order the format has them. This is what a type
+// that declares a format matches, and what it is handed when it is handed its
+// own groups.
+template <class type, fixed_string format>
+[[nodiscard]] consteval pattern_buffer<> places_pattern() {
+  constexpr auto made = spread_of<type, format, true>();
+  pattern_buffer<> result;
+  result.append(made.text.view());
+  return result;
 }
 
 // What one field of a shape matches, whatever kind of field it is.
@@ -2451,9 +2579,13 @@ template <class type>
 [[nodiscard]] consteval bool holds_a_flat_reader() {
   if constexpr (scanned_as_leaf<type>) {
     // One that can also be folded is not refused: off a stream it is told its
-    // groups as they arrive, which wants nothing to point at.
+    // groups as they arrive, which wants nothing to point at. Nor is one that
+    // gathers a character at a time, which is the ordinary way a leaf is read
+    // off a stream -- it is handed its groups only where they can be pointed
+    // at, and read as a value everywhere else.
     return gathers_by_its_groups<std::remove_cv_t<type>> &&
-           !folds_by_turns<std::remove_cv_t<type>>;
+           !folds_by_turns<std::remove_cv_t<type>> &&
+           !scan::gathers_as_it_reads<std::remove_cv_t<type>>;
   } else if constexpr (scanned_as_variant<type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
       return (false || ... || holds_a_flat_reader<branch_at<type, which>>());
@@ -2615,204 +2747,47 @@ template <class failure_type, class parameters, class type,
   }
 }
 
-// Where a field's group stands among the groups a shape's pattern opens: one
-// for the field itself, and then the ones that field's own pattern opens,
-// which belong to it and to nothing else.
-template <class type, std::size_t field>
-[[nodiscard]] consteval std::size_t groups_before_place() {
-  return []<std::size_t... before>(std::index_sequence<before...>) {
-    return (std::size_t{0} + ... +
-            (1 + groups_a_leaf_opens<std::remove_cv_t<
-                     typename parts_of<type>::template at<before>>>()));
-  }(std::make_index_sequence<field>{});
-}
-
-// One field of a shape, out of the groups of the one match.
-template <class type, class failure_type, std::size_t field>
-[[nodiscard]] constexpr auto one_field_from_groups(
-    std::span<const std::string_view> groups, std::string_view parameters)
-    -> std::expected<std::remove_cv_t<typename parts_of<type>::template at<field>>,
-                     failure_type> {
-  using held =
-      std::remove_cv_t<typename parts_of<type>::template at<field>>;
-  constexpr std::size_t at = groups_before_place<type, field>();
-  constexpr std::size_t inside = groups_a_leaf_opens<held>();
-  if constexpr (inside == 0) {
-    return parse_value<held, failure_type>(groups[at], parameters);
-  } else {
-    // A shape of its own: it is handed its groups, which are the ones after
-    // the group it stands in.
-    const auto theirs = groups.subspan(at + 1, inside);
-    if constexpr (requires {
-                    scan::scanner<held>{}.try_from_groups(theirs);
-                  }) {
-      auto got = scan::scanner<held>{}.try_from_groups(theirs);
+// A shape whose places have each been told their characters, put together.
+//
+// Only for a shape made of places: every place happens once, so what it
+// gathered is what that value is. A list or a choice is made of turns and of
+// marks, and neither is a thing a gathering by itself can say.
+template <class type, fixed_string format, std::size_t offset,
+          class state_type, class failure_type>
+[[nodiscard]] constexpr auto value_from_gatherings(state_type& state)
+    -> std::expected<std::remove_cv_t<type>, failure_type> {
+  using held = std::remove_cv_t<type>;
+  if constexpr (scanned_as_leaf<held>) {
+    auto& gathered = std::get<offset>(state);
+    if constexpr (scan::says_what_went_wrong_finishing<held>) {
+      auto got = scan::scanner<held>{}.try_finish(std::move(gathered));
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else {
-      return scan::scanner<held>{}.from_groups(theirs);
+      return scanner_finish<held>(std::move(gathered));
     }
-  }
-}
-
-// A shape made only of places, out of the groups its pattern opened.
-//
-// This is the whole of what `aggregate_scanner` does for such a type, and
-// there is nothing in it a type could not do for itself: the groups are the
-// groups of the match everybody else sees, and reading them is reading them.
-template <class type, fixed_string format>
-[[nodiscard]] constexpr auto shape_from_groups(
-    std::span<const std::string_view> groups)
-    -> std::expected<std::remove_cv_t<type>, failure_for<std::remove_cv_t<type>>> {
-  using held = std::remove_cv_t<type>;
-  using failure_type = failure_for<held>;
-  constexpr std::size_t count = parts_of<held>::count;
-  constexpr auto parameters = field_parameters<format, count>();
-  return [&]<std::size_t... field>(std::index_sequence<field...>)
-             -> std::expected<held, failure_type> {
-    auto parts = std::tuple{
-        one_field_from_groups<held, failure_type, field>(groups,
-                                                         parameters[field])...};
-    if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
-      return std::unexpected(std::move(*went_wrong));
-    }
-    return held{std::move(*std::get<field>(parts))...};
-  }(std::make_index_sequence<count>{});
-}
-
-// Which field a group belongs to, and where in that field: nothing means the
-// group the field itself stands in, and anything after it is one of the groups
-// that field's own pattern opens.
-template <class type, std::size_t group>
-[[nodiscard]] consteval std::pair<std::size_t, std::size_t> place_of_group() {
-  constexpr auto counts = []<std::size_t... field>(
-                              std::index_sequence<field...>) {
-    return std::array<std::size_t, sizeof...(field)>{
-        (1 + groups_a_leaf_opens<std::remove_cv_t<
-                 typename parts_of<type>::template at<field>>>())...};
-  }(std::make_index_sequence<parts_of<type>::count>{});
-  std::size_t left = group;
-  for (std::size_t field = 0; field < counts.size(); ++field) {
-    if (left < counts[field]) return {field, left};
-    left -= counts[field];
-  }
-  throw "group index past the end of the shape";
-}
-
-// What one field of a shape gathers into while its groups arrive: its own
-// scanner's gathering, or -- where the field is a shape of its own -- that
-// shape's fold.
-template <class field>
-using gathering_of_field = std::conditional_t<
-    groups_a_leaf_opens<std::remove_cv_t<field>>() != 0,
-    decltype(scan::scanner<std::remove_cv_t<field>>{}.begin_groups()),
-    decltype(scanner_begin<std::remove_cv_t<field>>())>;
-
-template <class type, class sequence>
-struct shape_fold_parts_of;
-template <class type, std::size_t... field>
-struct shape_fold_parts_of<type, std::index_sequence<field...>> {
-  using type_t = std::tuple<
-      gathering_of_field<typename parts_of<type>::template at<field>>...>;
-};
-
-template <class type>
-using shape_fold_parts = typename shape_fold_parts_of<
-    type, std::make_index_sequence<parts_of<type>::count>>::type_t;
-
-// A shape, folded out of its groups as they arrive.
-//
-// Every field gathers into its own scanner, and a field that is a shape of its
-// own gathers into that shape's fold -- so nothing is put together as text
-// anywhere, and a subject that is read once is read once.
-template <class type, fixed_string format>
-struct shape_fold {
-  using held = std::remove_cv_t<type>;
-  using parts_type = shape_fold_parts<held>;
-  parts_type parts;
-};
-
-template <class type, fixed_string format, std::size_t field>
-[[nodiscard]] constexpr auto begin_one_field() {
-  using held = std::remove_cv_t<typename parts_of<type>::template at<field>>;
-  if constexpr (groups_a_leaf_opens<held>() != 0) {
-    return scan::scanner<held>{}.begin_groups();
   } else {
-    static constexpr auto parameters =
-        field_parameters<format, parts_of<type>::count>();
-    return scanner_begin<held>(parameters[field]);
-  }
-}
-
-template <class type, fixed_string format>
-[[nodiscard]] constexpr auto begin_shape_fold() {
-  return [&]<std::size_t... field>(std::index_sequence<field...>) {
-    return shape_fold<type, format>{
-        .parts = {begin_one_field<type, format, field>()...}};
-  }(std::make_index_sequence<parts_of<std::remove_cv_t<type>>::count>{});
-}
-
-// One character, to the field whose group it fell in -- or to that field's own
-// fold, where the field is a shape and the group is one of its own.
-template <class type, fixed_string format, std::size_t group, class state_type>
-constexpr void push_shape_group(state_type& state, char letter) {
-  using held = std::remove_cv_t<type>;
-  constexpr auto where = place_of_group<held, group>();
-  using field =
-      std::remove_cv_t<typename parts_of<held>::template at<where.first>>;
-  if constexpr (where.second == 0) {
-    scanner_push<field>(std::get<where.first>(state.parts), letter);
-  } else {
-    push_one_group<field, where.second - 1>(std::get<where.first>(state.parts),
-                                            letter);
-  }
-}
-
-template <class type, fixed_string format, std::size_t field,
-          class failure_type, class state_type>
-[[nodiscard]] constexpr auto finish_one_field(state_type& state)
-    -> std::expected<
-        std::remove_cv_t<typename parts_of<std::remove_cv_t<type>>::template at<
-            field>>,
-        failure_type> {
-  using held = std::remove_cv_t<
-      typename parts_of<std::remove_cv_t<type>>::template at<field>>;
-  auto& gathered = std::get<field>(state.parts);
-  if constexpr (groups_a_leaf_opens<held>() != 0) {
-    if constexpr (requires { scan::scanner<held>{}.try_finish_groups(std::move(gathered)); }) {
-      auto got = scan::scanner<held>{}.try_finish_groups(std::move(gathered));
-      if (got) return std::move(*got);
-      return std::unexpected(
-          scan::as_a_failure<failure_type>(std::move(got).error()));
-    } else {
-      return scan::scanner<held>{}.finish_groups(std::move(gathered));
-    }
-  } else if constexpr (scan::says_what_went_wrong_finishing<held>) {
-    auto got = scan::scanner<held>{}.try_finish(std::move(gathered));
-    if (got) return std::move(*got);
-    return std::unexpected(
-        scan::as_a_failure<failure_type>(std::move(got).error()));
-  } else {
-    return scanner_finish<held>(std::move(gathered));
+    return [&]<std::size_t... field>(std::index_sequence<field...>)
+               -> std::expected<held, failure_type> {
+      auto parts = std::tuple{
+          value_from_gatherings<typename parts_of<held>::template at<field>,
+                                format,
+                                offset + groups_before_field<held, field>(),
+                                state_type, failure_type>(state)...};
+      if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+        return std::unexpected(std::move(*went_wrong));
+      }
+      return held{std::move(*std::get<field>(parts))...};
+    }(std::make_index_sequence<parts_of<held>::count>{});
   }
 }
 
 template <class type, fixed_string format, class state_type>
-[[nodiscard]] constexpr auto finish_shape_fold(state_type state)
-    -> std::expected<std::remove_cv_t<type>,
-                     failure_for<std::remove_cv_t<type>>> {
+[[nodiscard]] constexpr auto shape_from_gatherings(state_type state) {
   using held = std::remove_cv_t<type>;
-  using failure_type = failure_for<held>;
-  return [&]<std::size_t... field>(std::index_sequence<field...>)
-             -> std::expected<held, failure_type> {
-    auto parts = std::tuple{
-        finish_one_field<held, format, field, failure_type>(state)...};
-    if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
-      return std::unexpected(std::move(*went_wrong));
-    }
-    return held{std::move(*std::get<field>(parts))...};
-  }(std::make_index_sequence<parts_of<held>::count>{});
+  return value_from_gatherings<held, format, 0, state_type,
+                               failure_for<held>>(state);
 }
 
 [[nodiscard]] constexpr bool is_regex_meta(char value) {

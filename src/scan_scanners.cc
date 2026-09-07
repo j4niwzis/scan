@@ -543,49 +543,44 @@ struct aggregate_scanner {
   // that is still a privilege.
   static constexpr auto scan_format = format;
 
-  // Made only of places, and so read from the groups of the one match.
-  template <class self_type>
-  static constexpr bool by_its_own_groups =
-      detail::a_flat_shape<scanner_target_t<self_type>>();
-
   [[nodiscard]] constexpr auto pattern(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
-    if constexpr (detail::a_flat_shape<type>()) {
-      // Its values are its groups, so its places are groups.
-      return detail::capturing_pattern<type, format>();
-    } else {
-      return detail::make_aggregate_pattern<type, format>();
-    }
+    // What this shape matches, with its places as groups and in the order the
+    // format has them -- the very order the reading below counts on, because
+    // both come out of the one walk over the format.
+    return detail::places_pattern<type, format>();
   }
 
   // The shape, out of the groups its pattern opened.
   //
-  // One group a value, and the values of a shape inside it are its own groups
-  // -- so a field that reads its own groups is handed exactly its own, and a
-  // field that reads text is handed the text it stood on. Nothing is read
-  // twice and nothing is copied: what a group stood on is a piece of the
-  // subject, which is still there.
+  // Its groups are its places, so what builds it from them is what builds it
+  // from the places of the reading around it: one builder, and this is a call
+  // to it. A shape with a list inside is not built this way -- a list is made
+  // of turns, and the positions a match leaves behind hold the last turn and
+  // nothing before it -- so those keep the road that spreads them into the
+  // automaton.
   template <class self_type>
-    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
+    requires(!detail::holds_a_range<scanner_target_t<self_type>>())
   [[nodiscard]] static constexpr auto try_from_groups(
       this const self_type& self, std::span<const std::string_view> groups) {
     using type = scanner_target_t<self_type>;
     static_cast<void>(self);
-    return detail::shape_from_groups<type, format>(groups);
+    return detail::build_value<detail::failure_for<type>,
+                               detail::format_parameters<type, format>, type,
+                               0>(groups);
   }
 
   // And the same shape, told its groups as they arrive.
   //
   // Where the subject is read once there is nothing to point at, so the groups
-  // cannot be handed over at the end -- every field is told its characters as
-  // they come, and a field that is a shape of its own is told its groups the
-  // same way. Nothing is put together as text anywhere and nothing is read
-  // twice, which is what a stream needs and what the spread used to do.
+  // cannot be handed over at the end: every place is told its characters as
+  // they come, and what they are told is the reader of the value that place
+  // stands for. Nothing is put together as text and nothing is read twice.
   template <class self_type>
     requires(detail::a_flat_shape<scanner_target_t<self_type>>())
   [[nodiscard]] static constexpr auto begin_groups(this const self_type& self) {
     static_cast<void>(self);
-    return detail::begin_shape_fold<scanner_target_t<self_type>, format>();
+    return detail::make_scanner_state<scanner_target_t<self_type>, format>();
   }
 
   template <class self_type, std::size_t group, class state_type>
@@ -594,8 +589,9 @@ struct aggregate_scanner {
                                    state_type& state, scan::group_at<group>,
                                    char letter) {
     static_cast<void>(self);
-    detail::push_shape_group<scanner_target_t<self_type>, format, group>(
-        state, letter);
+    using type = scanner_target_t<self_type>;
+    scanner_push<detail::leaf_kind<type, group>>(std::get<group>(state),
+                                                 letter);
   }
 
   template <class self_type, class state_type>
@@ -603,7 +599,7 @@ struct aggregate_scanner {
   [[nodiscard]] static constexpr auto try_finish_groups(
       this const self_type& self, state_type state) {
     static_cast<void>(self);
-    return detail::finish_shape_fold<scanner_target_t<self_type>, format>(
+    return detail::shape_from_gatherings<scanner_target_t<self_type>, format>(
         std::move(state));
   }
 
