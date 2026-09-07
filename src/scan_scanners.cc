@@ -581,8 +581,8 @@ struct aggregate_scanner {
     using type = scanner_target_t<self_type>;
     static_cast<void>(self);
     return detail::build_value<detail::shape_failure<type>,
-                               detail::format_parameters<type, format>, type,
-                               0>(groups);
+                               detail::format_parameters<type, format>, type, 0,
+                               true>(groups);
   }
 
   [[nodiscard]] constexpr auto begin(this const auto& self) {

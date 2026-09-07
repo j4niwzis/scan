@@ -994,6 +994,30 @@ template <class type>
   }
 }
 
+// The same count, asked of a type as the output of its own format rather than
+// as a value standing in somebody else's.
+//
+// A shape that reads its own groups is one value to whatever contains it -- a
+// place, and the groups its pattern opens after it -- and a product of places
+// to itself. Everything that builds a reading of a format asks the second
+// question, and asking the first would count a place nobody wrote.
+template <class type>
+[[nodiscard]] consteval std::size_t groups_of_output() {
+  if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (std::size_t{0} + ... + (1 + groups_of<branch_at<type, which>>()));
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return 1 +
+           groups_of<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              groups_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
 template <class type, std::size_t field>
 [[nodiscard]] consteval std::size_t groups_before_field() {
   return []<std::size_t... index>(std::index_sequence<index...>) {
@@ -1153,6 +1177,20 @@ struct leaf_at<subject, index, 3> {
 
 template <class subject, std::size_t index>
 using leaf_kind = typename leaf_at<subject, index>::kind;
+
+// The same two, asked of a type as the output of its own format: never as a
+// value standing in somebody else's place, which is what it looks like to
+// whatever contains it.
+template <class subject, std::size_t index>
+using leaf_kind_of_output = typename leaf_at<
+    subject, index,
+    scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3 : 2>::kind;
+
+template <class subject, std::size_t index>
+inline constexpr std::size_t leaf_offset_of_output = leaf_offset_at<
+    subject, index,
+    scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3
+                                                                : 2>::value;
 
 // Where within that type the group falls: nothing means the place the type
 // stands at, and anything after it is one of the groups the type's own pattern
@@ -1720,7 +1758,7 @@ template <class type, fixed_string format>
   std::size_t captures = 0;
   tre_parser parser(spread.text.view(), {}, captures);
   scan::tre::node expression = parser.parse_format();
-  if (captures != groups_of<type>()) {
+  if (captures != groups_of_output<type>()) {
     throw "capture count does not match output";
   }
   return scan::tre::compile_tnfa(expression);
@@ -2708,10 +2746,13 @@ struct no_parameters {
 // hands over all of them, and a type that reads its own groups hands over the
 // few that are its. Both are the same thing to whoever reads them.
 template <class failure_type, class parameters, class type,
-          std::size_t offset>
+          std::size_t offset, bool as_output = false>
 [[nodiscard]] constexpr std::expected<type, failure_type> build_value(
     std::span<const std::string_view> groups) {
-  if constexpr (scanned_as_leaf<type> && reads_its_own_groups<type>) {
+  // Where this is the whole of what is being read, a shape that reads its own
+  // groups is a product of places rather than a value in a place.
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (a_value && reads_its_own_groups<type>) {
     // The type's own groups are groups of this match, already found. It is
     // handed them, or told which of them each character belongs to -- the same
     // reading it gets where a subject arrives as it is read, so it reads the
@@ -2755,7 +2796,7 @@ template <class failure_type, class parameters, class type,
         return scan::scanner<held>{}.finish_groups(std::move(state));
       }
     }
-  } else if constexpr (scanned_as_leaf<type>) {
+  } else if constexpr (a_value) {
     return parse_value<std::remove_cv_t<type>, failure_type>(
         groups[offset], parameters::at(offset));
   } else if constexpr (scanned_as_variant<type>) {

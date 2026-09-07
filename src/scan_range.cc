@@ -10,7 +10,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
 [[nodiscard]] constexpr type convert(
     const std::array<std::string_view, extent>& fields,
     std::index_sequence<index...>) {
-  static_assert(groups_of<type>() == extent,
+  static_assert(groups_of_output<type>() == extent,
                 "placeholder count must equal the number of values the output "
                 "type reads");
   // Built, not built empty and then written over. The aggregate used to be

@@ -1809,7 +1809,7 @@ template <class type, fixed_string format, int sentinel = -1,
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
   return scan_fields<type, format, sentinel, terminated, false, walk>(
-      input, std::make_index_sequence<groups_of<type>()>{});
+      input, std::make_index_sequence<groups_of_output<type>()>{});
 }
 
 // Every group of every branch, with the ones that took no part left empty.
@@ -1823,7 +1823,7 @@ template <class type, fixed_string format, int sentinel = -1,
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_branch_fields(
     std::string_view input) {
   return scan_fields<type, format, sentinel, terminated, true, walk>(
-      input, std::make_index_sequence<groups_of<type>()>{});
+      input, std::make_index_sequence<groups_of_output<type>()>{});
 }
 
 template <class type, std::size_t index>
@@ -2018,11 +2018,11 @@ constexpr void fold_the_readings(
 // it holds, which is what it was before any of this.
 template <class type, fixed_string format, std::size_t group>
 struct gathering_of {
-  using held_type = leaf_kind<type, group>;
+  using held_type = leaf_kind_of_output<type, group>;
   static constexpr bool by_groups = gathers_by_its_groups<held_type>;
   static constexpr bool folds = folds_by_turns<std::remove_cv_t<held_type>>;
-  static constexpr bool the_place = by_groups && leaf_offset_of<type, group> == 0;
-  static constexpr bool inside = by_groups && leaf_offset_of<type, group> != 0;
+  static constexpr bool the_place = by_groups && leaf_offset_of_output<type, group> == 0;
+  static constexpr bool inside = by_groups && leaf_offset_of_output<type, group> != 0;
 
   [[nodiscard]] static constexpr auto begin(std::string_view parameters) {
     if constexpr (the_place && folds) {
@@ -2079,7 +2079,7 @@ template <class type, fixed_string format, std::size_t... group>
   // A group that stands for a list gathers the list itself, which needs no
   // reader: what goes into it are whole elements, put there as each one ends.
   const auto one = []<std::size_t which>() {
-    using held_type = leaf_kind<type, which>;
+    using held_type = leaf_kind_of_output<type, which>;
     if constexpr (scanned_as_range<held_type>) {
       return held_type{};
     } else {
@@ -2093,7 +2093,7 @@ template <class type, fixed_string format, std::size_t... group>
 template <class type, fixed_string format>
 [[nodiscard]] constexpr auto make_scanner_state() {
   return make_scanner_state<type, format>(
-      std::make_index_sequence<groups_of<type>()>{});
+      std::make_index_sequence<groups_of_output<type>()>{});
 }
 
 // Following a reading instead of counting on the numbers.
@@ -2172,7 +2172,7 @@ constexpr void advance_scanner(
   static constexpr auto spread = spread_of<type, format>();
   constexpr std::size_t opening = group * 2;
   constexpr std::size_t closing = group * 2 + 1;
-  using held_type = leaf_kind<type, group>;
+  using held_type = leaf_kind_of_output<type, group>;
   constexpr bool gathers_a_list = scanned_as_range<held_type>;
   using how = gathering_of<type, format, group>;
   // A group inside a folding place is not gathered at all: its place tells the
@@ -2285,8 +2285,8 @@ constexpr void advance_scanner(
   }
 }
 
-template <class root, class type, std::size_t offset, class reading_type,
-          class states_type, std::size_t register_count>
+template <class root, class type, std::size_t offset, bool as_output = false,
+          class reading_type, class states_type, std::size_t register_count>
 [[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
@@ -2360,10 +2360,10 @@ constexpr void collect_element(
     std::optional<failure_for<type>>& failed) {
   if constexpr (group == 0) {
     return;
-  } else if constexpr (!scanned_as_range<leaf_kind<type, group - 1>>) {
+  } else if constexpr (!scanned_as_range<leaf_kind_of_output<type, group - 1>>) {
     return;
   } else {
-    using list_type = leaf_kind<type, group - 1>;
+    using list_type = leaf_kind_of_output<type, group - 1>;
     using element = std::remove_cvref_t<std::ranges::range_value_t<list_type>>;
     constexpr std::size_t list_group = group - 1;
     // Does this step begin another turn? It does if it writes a fresh position
@@ -2468,14 +2468,18 @@ template <class type, class state_type, std::size_t... index>
 // its own reader to finish, a product asks its parts, a type made by a call
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
-template <class root, class type, std::size_t offset, class reading_type,
-          class states_type, std::size_t register_count>
+template <class root, class type, std::size_t offset, bool as_output,
+          class reading_type, class states_type, std::size_t register_count>
 [[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text) {
   using failure_type = failure_for<root>;
-  if constexpr (scanned_as_leaf<type> && folds_by_turns<std::remove_cv_t<type>>) {
+  // A shape that reads its own groups is a value where it stands in somebody
+  // else's format and a product of places in its own. Where this is the whole
+  // of what is being read, it is the second.
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (a_value && folds_by_turns<std::remove_cv_t<type>>) {
     // A leaf that was told its groups as the walk passed them. What is left is
     // the end of the input, which is not a character and so was never handed
     // over: a group that opened where nothing followed it, and every group
@@ -2500,7 +2504,7 @@ template <class root, class type, std::size_t offset, class reading_type,
     } else {
       return scan::scanner<held>{}.finish_groups(std::move(fold.state));
     }
-  } else if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
+  } else if constexpr (a_value && gathers_by_its_groups<type>) {
     // A leaf built from its own groups once the match is over. They are groups
     // of this match like any others and the positions say where each one
     // stood, so what it is handed are views of the subject: nothing was
@@ -2550,7 +2554,7 @@ template <class root, class type, std::size_t offset, class reading_type,
         return scan::scanner<held>{}.finish_groups(std::move(state));
       }
     }
-  } else if constexpr (scanned_as_leaf<type>) {
+  } else if constexpr (a_value) {
     // A field still being read when the input ended is where it was being
     // gathered; one that ended earlier is the copy taken when it closed, which
     // the readings that went on adding to the opening cannot have changed.
@@ -2637,7 +2641,7 @@ class stream_state {
       "arrive");
   inline static constexpr const auto& automaton =
       streaming_automaton<type, format, cut>;
-  inline static constexpr std::size_t field_count = groups_of<type>();
+  inline static constexpr std::size_t field_count = groups_of_output<type>();
   // One gathering per register, because a gathering follows the register it
   // belongs to and there is no arithmetic that says which registers go
   // together.
@@ -2769,8 +2773,9 @@ class stream_state {
     // gathered, which is what the registers say.
     const auto& reached = automaton.states[state_];
     // Nothing to point at: this machine is fed and never holds the subject.
-    return finish_value<type, type, 0>(reached.readings[slot], scanner_states_,
-                                       registers_, nullptr);
+    return finish_value<type, type, 0, true>(reached.readings[slot],
+                                             scanner_states_, registers_,
+                                             nullptr);
   }
 
  private:
@@ -2832,7 +2837,7 @@ class field_gatherer {
       "a type built from its groups after the match needs a subject that can "
       "be pointed at: give it begin_groups and push_group to be told its "
       "groups as they are read, or scan it from something contiguous");
-  static constexpr std::size_t field_count = groups_of<type>();
+  static constexpr std::size_t field_count = groups_of_output<type>();
   using states_type =
       std::array<decltype(make_scanner_state<type, format>()),
                  automaton.register_count>;
@@ -2889,7 +2894,7 @@ class field_gatherer {
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
-    auto got = finish_value<type, type, 0>(
+    auto got = finish_value<type, type, 0, true>(
         packed.readings[packed.accepting_slot], states_, registers, text_);
     if (!got) {
       failed_ = std::move(got).error();
@@ -2933,7 +2938,7 @@ class field_gatherer {
   template <std::size_t state, std::size_t group, class registers_type>
   constexpr void hand_run_group(const char* from, const char* to,
                                 const registers_type& registers) {
-    using held_type = leaf_kind<type, group>;
+    using held_type = leaf_kind_of_output<type, group>;
     using how = gathering_of<type, format, group>;
     if constexpr (scanned_as_range<held_type>) {
       return;
@@ -2981,7 +2986,7 @@ class field_gatherer {
 
   template <std::size_t landed, std::size_t group, class registers_type>
   constexpr void hand_group(char letter, const registers_type& registers) {
-    using held_type = leaf_kind<type, group>;
+    using held_type = leaf_kind_of_output<type, group>;
     using how = gathering_of<type, format, group>;
     if constexpr (scanned_as_range<held_type>) {
       return;
