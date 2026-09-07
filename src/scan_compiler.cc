@@ -1091,10 +1091,12 @@ template <class type, fixed_string format>
 // overlap, and the division stops meaning anything. So that machine is built
 // from the same pattern without allocation, and pays a wider register file for
 // it, which costs it nothing: it never fills the file, it walks it.
-template <class type, fixed_string format, bool allocate = true>
+template <class type, fixed_string format, bool allocate = true,
+          bool cut_at_match = true>
 [[nodiscard]] constexpr scan::tre::tdfa build_tdfa() {
   return scan::tre::optimize_tdfa(
-      scan::tre::compile_tdfa(build_tnfa<type, format>()), allocate);
+      scan::tre::compile_tdfa(build_tnfa<type, format>(), cut_at_match),
+      allocate);
 }
 
 // Minimisation as Moore's refinement, with the two things that make it cheap:
@@ -1290,12 +1292,15 @@ template <class type, fixed_string format, bool allocate = true>
   return minimized;
 }
 
+// The pattern says which rule it is built for, so nothing here has to be told
+// twice: everything keyed by the pattern -- the automaton and every table of
+// states, runs and classes that names it -- follows the same value.
 template <fixed_string pattern>
 [[nodiscard]] consteval scan::tre::tdfa build_regex_tdfa() {
   std::size_t captures = 0;
   tre_parser parser(pattern.view(), {}, captures, true);
-  return minimize_tdfa(scan::tre::optimize_tdfa(
-      scan::tre::compile_tdfa(scan::tre::compile_tnfa(parser.parse_regex()))));
+  return minimize_tdfa(scan::tre::optimize_tdfa(scan::tre::compile_tdfa(
+      scan::tre::compile_tnfa(parser.parse_regex()), !pattern.anchored)));
 }
 
 // Which transition each symbol takes, or none. The symbol sets of a state's
@@ -1373,9 +1378,10 @@ struct packed_shape {
   return shape;
 }
 
-template <class type, fixed_string format, bool allocate = true>
+template <class type, fixed_string format, bool allocate = true,
+          bool cut = true>
 [[nodiscard]] consteval packed_shape compute_shape() {
-  const scan::tre::tdfa tdfa = build_tdfa<type, format, allocate>();
+  const scan::tre::tdfa tdfa = build_tdfa<type, format, allocate, cut>();
   return compute_shape(tdfa);
 }
 
@@ -1608,13 +1614,15 @@ template <std::size_t state_count, std::size_t register_count,
   return packed;
 }
 
-template <class type, fixed_string format, bool allocate = true>
+template <class type, fixed_string format, bool allocate = true,
+          bool cut = true>
 [[nodiscard]] consteval auto pack_tdfa() {
-  constexpr packed_shape shape = compute_shape<type, format, allocate>();
+  constexpr packed_shape shape = compute_shape<type, format, allocate, cut>();
   return pack_tdfa_value<shape.states, shape.registers,
                          shape.initial_commands, shape.maximum_commands,
                          shape.maximum_final_commands, shape.tags, shape.ranges,
-                         shape.readings>(build_tdfa<type, format, allocate>());
+                         shape.readings>(
+      build_tdfa<type, format, allocate, cut>());
 }
 
 // Whether an automaton is built while the program runs rather than while it is
@@ -1633,8 +1641,12 @@ inline constexpr bool automata_at_runtime = true;
 inline constexpr bool automata_at_runtime = false;
 #endif
 
-template <class type, fixed_string format>
-inline constexpr auto packed_automaton = pack_tdfa<type, format>();
+// Two policies, and a pattern pays for the second only where it is read both
+// ways. The reading that ends at a match cuts the walks below it; the one
+// anchored to the end of the input keeps them, because one of them may be the
+// only walk that reaches the end.
+template <class type, fixed_string format, bool cut = true>
+inline constexpr auto packed_automaton = pack_tdfa<type, format, true, cut>();
 
 // Built once, on first use. The determiniser is the same one the compiled form
 // evaluates while compiling; asked at run time it answers in microseconds.
@@ -1644,8 +1656,9 @@ template <class type, fixed_string format, bool allocate = true>
   return built;
 }
 
-template <class type, fixed_string format>
-inline constexpr auto streaming_automaton = pack_tdfa<type, format, false>();
+template <class type, fixed_string format, bool cut = true>
+inline constexpr auto streaming_automaton =
+    pack_tdfa<type, format, false, cut>();
 
 template <fixed_string pattern>
 [[nodiscard]] consteval packed_shape compute_regex_shape() {

@@ -1354,7 +1354,10 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       };
       return std::array{capture.template operator()<index>()...};
     } else {
-      constexpr const auto& automaton = packed_automaton<type, format>;
+      // Anchored to both ends of the subject, so the walks below a match are
+      // kept: one of them may be the only walk that reaches the end, and the
+      // answer is the first still accepting when it does.
+      constexpr const auto& automaton = packed_automaton<type, format, false>;
       std::array<const char*, automaton.register_count> registers{};
       // Only the slots that can still be unwritten when the machine accepts are
       // given the value that says a field took no part. Everything past the tags
@@ -1937,11 +1940,15 @@ template <class root, class type, std::size_t offset, class reading_type,
   }
 }
 
-template <class type, fixed_string format>
+// Fed a character at a time. Whoever holds it says where the input ends, so
+// the reading is anchored by default -- the walks below a match are kept, and
+// the answer is the first still accepting when the feeding stops. A prefix
+// read off a stream asks for the other policy, and stops where the match ends.
+template <class type, fixed_string format, bool cut = true>
 class stream_state {
  private:
   inline static constexpr const auto& automaton =
-      streaming_automaton<type, format>;
+      streaming_automaton<type, format, cut>;
   inline static constexpr std::size_t field_count = groups_of<type>();
   // One gathering per register, because a gathering follows the register it
   // belongs to and there is no arithmetic that says which registers go

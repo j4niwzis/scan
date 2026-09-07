@@ -512,7 +512,7 @@ struct aggregate_scanner {
         "the automaton, which a range that is read once is not scanned by: "
         "read it from something contiguous, or give the type a scanner that "
         "gathers it a character at a time");
-    return detail::stream_state<type, format>{};
+    return detail::stream_state<type, format, false>{};
   }
 
   constexpr void push(this const auto&, auto& state, char value) {

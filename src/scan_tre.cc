@@ -237,7 +237,8 @@ struct tdfa {
 
 // Builds a deterministic tagged transducer. epsilon actions after a symbol are
 // delayed to that symbol's transition, which is the one-symbol lookahead form.
-[[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton);
+[[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
+                                          bool cut_at_match = true);
 // Applies TDFA register liveness, dead-store elimination, copy cleanup, and
 // local transition normalization.
 [[nodiscard]] constexpr tdfa optimize_tdfa(tdfa automaton,
@@ -582,7 +583,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
           .tags = std::vector<tag_history>(automaton.tag_count)};
 }
 
-constexpr tdfa compile_tdfa(const tnfa& automaton) {
+constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
   // Determinisation as Algorithm 3 of "A closer look at TDFA".
   //
   // A register belongs to a configuration, not to a slot. When a transition
@@ -720,7 +721,18 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
     // transitions at all. Nothing the papers do is touched -- the order of
     // configurations, their bitcodes, and the tags of the walk that wins are
     // all what they were, with the losers gone.
-    if (matched != entries.end()) entries.erase(matched + 1, entries.end());
+    //
+    // Only where the match is what ends the reading. A match anchored to the
+    // end of the input is not: there the whole of it has to be taken, and a
+    // walk below the match may be the only one that can take it. `a|ab`
+    // reading "ab" is the match of `a` losing to the walk under it, which is
+    // what Perl's backtracking does when the anchor fails -- and what this
+    // does by keeping them and answering with the first walk still accepting
+    // once the input runs out. The same rule, said at the other end, and no
+    // walking back either way.
+    if (cut_at_match) {
+      if (matched != entries.end()) entries.erase(matched + 1, entries.end());
+    }
     for (std::size_t id = 0; id < configurations.size(); ++id) {
       if (auto copies = mapping(configurations[id], entries)) {
         // The copies go on the transition that leads here -- but a transition

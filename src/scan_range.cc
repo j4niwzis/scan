@@ -471,7 +471,7 @@ class reader {
   constexpr void restart() { state_.restart(); }
 
  private:
-  detail::stream_state<type, format> state_;
+  detail::stream_state<type, format, false> state_;
 };
 
 // The head of a range that is read once. The range is left standing after the

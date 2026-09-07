@@ -569,13 +569,21 @@ template <fixed_string pattern>
 using regex_result_for =
     regex_result<regex_automaton<pattern>.tag_count / 2>;
 
+// The whole of the subject, from one end to the other.
+//
+// Built for the anchored rule, which is the same leftmost-first rule said at
+// the other end: a match does not end the reading here, because the end of the
+// subject does, so the walks below a match are kept and the answer is the
+// first of them still accepting when the characters run out. `a|ab` reads
+// "ab" as `ab`, where the same pattern searching for a head reads `a`.
 template <fixed_string pattern>
-[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr regex_result_for<pattern>
-regex_match(
-    std::string_view input) {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr
+    regex_result_for<pattern.to_the_end()>
+    regex_match(std::string_view input) {
+  constexpr auto whole = pattern.to_the_end();
+  constexpr const auto& automaton = regex_automaton<whole>;
   if constexpr (automaton.tag_count == 0) {
-    if (input.size() < minimum_match_length<pattern>()) return {};
+    if (input.size() < minimum_match_length<whole>()) return {};
     const char* cursor = input.data();
     const char* const end = cursor + input.size();
     // Which of the two walks runs is decided here, once, on the length of the
@@ -590,9 +598,8 @@ regex_match(
     constexpr std::size_t worth_a_vector = 64;
     const bool matched =
         input.size() >= worth_a_vector
-            ? matched_over<pattern, bounded_shape<pattern>(true)>(cursor, end)
-            : matched_over<pattern, bounded_shape<pattern>(false)>(cursor,
-                                                                   end);
+            ? matched_over<whole, bounded_shape<whole>(true)>(cursor, end)
+            : matched_over<whole, bounded_shape<whole>(false)>(cursor, end);
     if (!matched) return {};
     return {regex_submatch(input), {}};
   } else {
@@ -631,21 +638,23 @@ regex_match(
 }
 
 template <fixed_string pattern, unsigned char sentinel>
-[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr regex_result_for<pattern>
-regex_match_sentinel(std::string_view input) {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr
+    regex_result_for<pattern.to_the_end()>
+    regex_match_sentinel(std::string_view input) {
+  constexpr auto whole = pattern.to_the_end();
+  constexpr const auto& automaton = regex_automaton<whole>;
   static_assert(automaton.tag_count == 0,
                 "sentinel matching currently supports captureless patterns");
-  static_assert(is_safe_sentinel<pattern, sentinel>(),
+  static_assert(is_safe_sentinel<whole, sentinel>(),
                 "sentinel must be rejected in every automaton state");
-  if (input.size() < minimum_match_length<pattern>()) return {};
+  if (input.size() < minimum_match_length<whole>()) return {};
   const char* const end = input.data() + input.size();
   constexpr std::size_t worth_a_vector = 64;
   const bool matched =
       input.size() >= worth_a_vector
-          ? matched_over<pattern, terminated_shape<pattern, sentinel>(true)>(
+          ? matched_over<whole, terminated_shape<whole, sentinel>(true)>(
                 input.data(), end)
-          : matched_over<pattern, terminated_shape<pattern, sentinel>(false)>(
+          : matched_over<whole, terminated_shape<whole, sentinel>(false)>(
                 input.data(), end);
   if (!matched) return {};
   return {regex_submatch(input), {}};

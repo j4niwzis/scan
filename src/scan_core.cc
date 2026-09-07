@@ -30,8 +30,30 @@ export namespace scan {
 template <std::size_t extent>
 struct fixed_string {
   char value[extent]{};
+  // Whether the reading this pattern is built for is anchored to the end of
+  // the subject.
+  //
+  // It is part of the pattern rather than a parameter beside it because
+  // everything built from a pattern -- the automaton, and every table of
+  // states and runs and classes that names it -- is keyed by this value. Two
+  // readings of the same characters under different rules are two patterns
+  // here, and nothing that answers questions about one can be handed the
+  // answers about the other by mistake.
+  //
+  // The rule itself is leftmost-first, and the difference is only whether a
+  // match ends the reading. Where it does, the walks below it have lost and
+  // are cut in determinization. Where the end of the subject has to be
+  // reached, they are kept: one of them may be the only walk that gets there,
+  // which is `a|ab` reading "ab".
+  bool anchored = false;
 
   consteval fixed_string(const char (&text)[extent]) { std::copy_n(text, extent, value); }
+
+  [[nodiscard]] constexpr fixed_string to_the_end() const {
+    fixed_string made = *this;
+    made.anchored = true;
+    return made;
+  }
 
   [[nodiscard]] static consteval std::size_t size() { return extent - 1; }
   [[nodiscard]] constexpr char operator[](std::size_t index) const {
