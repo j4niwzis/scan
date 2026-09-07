@@ -2439,9 +2439,9 @@ template <class type, class sequence>
 struct kinds_of_fields;
 template <class type, std::size_t... field>
 struct kinds_of_fields<type, std::index_sequence<field...>> {
-  using list = typename joined_all<typename kinds_in<std::remove_cvref_t<
-      decltype(boost::pfr::get<field>(
-          std::declval<std::remove_cv_t<type>&>()))>>::list...>::type;
+  using list = typename joined_all<
+      typename kinds_in<typename shape_parts<
+          std::remove_cv_t<type>>::template at<field>>::list...>::type;
 };
 
 template <class type>
@@ -2449,8 +2449,9 @@ using shape_failure = typename scan::as_a_variant<typename scan::without_repeats
     typename scan::joined_lists<
         scan::our_kinds,
         typename kinds_of_fields<
-            type, std::make_index_sequence<boost::pfr::tuple_size_v<
-                      std::remove_cv_t<type>>>>::list>::type>::type>::type;
+            type, std::make_index_sequence<shape_parts<std::remove_cv_t<type>>::
+                                               count>>::list>::type>::type>::
+    type;
 
 // This library's kinds, and the ones this output's own scanners declare.
 template <class type>
