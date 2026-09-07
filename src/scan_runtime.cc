@@ -2710,36 +2710,75 @@ struct gathered_by_a_fold {
   [[nodiscard]] constexpr bool took_part() const {
     return state.took[place];
   }
+
+  // A fold at this place has been told everything as it happened -- the walk
+  // hands the edges on and this hands them further -- so there is nothing left
+  // to run into it here.
+  template <std::size_t place, class held>
+  [[nodiscard]] constexpr auto fold_at() const {
+    return std::get<place>(state.gatherings);
+  }
 };
 
-// One character, to the place it fell in. A list's own group holds no
+// Where a group of a shape belongs: the place it is, or the place it is inside
+// of and which of that type's own groups it is.
+template <class type, std::size_t group>
+inline constexpr std::size_t shape_place_of =
+    group - leaf_offset_of_output<std::remove_cv_t<type>, group>;
+
+template <class type, std::size_t group>
+inline constexpr std::size_t shape_place_inside =
+    leaf_offset_of_output<std::remove_cv_t<type>, group>;
+
+// One character, to the place it fell in -- or to the type standing at that
+// place, where the group is one of that type's own. A list's own group holds no
 // characters: what is inside it are the places of one turn, and they take them.
-template <class type, fixed_string format, std::size_t place, class shape_type>
+template <class type, fixed_string format, std::size_t group, class shape_type>
 constexpr void push_shape_place(shape_type& state, char letter) {
   using held = std::remove_cv_t<type>;
-  using stands_for = leaf_kind_of_output<held, place>;
-  if constexpr (!scanned_as_range<stands_for>) {
+  constexpr std::size_t place = shape_place_of<held, group>;
+  constexpr std::size_t inside = shape_place_inside<held, group>;
+  using stands_for = std::remove_cv_t<leaf_kind_of_output<held, group>>;
+  if constexpr (inside != 0) {
+    push_one_group<stands_for, inside - 1>(
+        std::get<place>(state.gatherings).state, letter);
+  } else if constexpr (!scanned_as_range<stands_for>) {
     scanner_push<stands_for>(std::get<place>(state.gatherings), letter);
   }
 }
 
 // A place opened. Said so that a choice can be asked which branch ran and a
-// list whether a turn is going.
-template <class type, fixed_string format, std::size_t place, class shape_type>
+// list whether a turn is going -- and handed on where the group belongs to the
+// type standing at that place.
+template <class type, fixed_string format, std::size_t group, class shape_type>
 constexpr void open_shape_place(shape_type& state) {
-  state.took[place] = true;
+  using held = std::remove_cv_t<type>;
+  constexpr std::size_t place = shape_place_of<held, group>;
+  constexpr std::size_t inside = shape_place_inside<held, group>;
+  if constexpr (inside != 0) {
+    using stands_for = std::remove_cv_t<leaf_kind_of_output<held, group>>;
+    open_one_group<stands_for, inside - 1>(
+        std::get<place>(state.gatherings).state);
+  } else {
+    state.took[place] = true;
+  }
 }
 
 // A place closed. Where it is a list, that is one turn: the element is put
 // together out of the places inside it, added to the list, and those places
 // begin again for the turn that may follow.
-template <class type, fixed_string format, std::size_t place,
+template <class type, fixed_string format, std::size_t group,
           class failure_type, class shape_type>
 constexpr void close_shape_place(shape_type& state,
                                  std::optional<failure_type>& failed) {
   using held = std::remove_cv_t<type>;
-  using stands_for = leaf_kind_of_output<held, place>;
-  if constexpr (scanned_as_range<stands_for>) {
+  constexpr std::size_t place = shape_place_of<held, group>;
+  constexpr std::size_t inside = shape_place_inside<held, group>;
+  using stands_for = std::remove_cv_t<leaf_kind_of_output<held, group>>;
+  if constexpr (inside != 0) {
+    close_one_group<stands_for, inside - 1>(
+        std::get<place>(state.gatherings).state);
+  } else if constexpr (scanned_as_range<stands_for>) {
     using element = std::remove_cvref_t<std::ranges::range_value_t<stands_for>>;
     if (!state.took[place + 1]) return;
     auto one = finish_value<held, element, place + 1, false, failure_type>(

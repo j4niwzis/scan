@@ -558,19 +558,18 @@ struct aggregate_scanner {
   // fail with, and working that list out means knowing how the shape is read,
   // which is what the question decides.
   //
-  // A shape with a list inside says no. A list is made of turns, and the
-  // positions a match leaves behind hold the last turn and nothing before it,
-  // so such a shape keeps the road that spreads its places into the automaton
-  // around it.
+  // A shape made only of places can be handed its groups when the match is
+  // over. One with a list in it is made of turns, and the positions a match
+  // leaves behind hold the last turn and nothing before it -- so it has to be
+  // told its groups as they happen, which every place of it has to be able to
+  // take. Where neither is true, the shape keeps the road that spreads its
+  // places into the automaton around it.
   [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
     static_cast<void>(self);
     if constexpr (!detail::says_a_list_inside<type>()) {
-      // Made only of places: handed its groups when the match is over.
       return true;
     } else {
-      // Made of turns as well: told its groups as they happen, where every
-      // place is something that can be told characters.
       return detail::turns_can_be_folded<type, format>();
     }
   }
@@ -593,25 +592,28 @@ struct aggregate_scanner {
                                true>(groups);
   }
 
-  // Told its groups as they happen, for a shape whose places take turns.
+  // Told its groups as they happen.
   //
-  // A list is made of turns and the positions a match leaves behind hold the
-  // last turn and nothing before it, so such a shape cannot be handed its
-  // groups at the end. It is told them instead: every place gathers into the
+  // Every shape that can be says this, not only one made of turns: a subject
+  // that is read once has nothing to point at, and a shape standing inside a
+  // shape that is being told its groups has to be told its own. Where the
+  // groups can be handed over instead, they are -- that is the faster of the
+  // two and the one that copies nothing.
+  //
+  // Every place gathers into the
   // reader of the value it stands for, a turn ends where the list's own group
   // closes, and the element is put together there and added -- by the same
   // builder that puts together everything else, asked for the gatherings a
   // different way.
   template <class self_type>
-    requires(detail::says_a_list_inside<scanner_target_t<self_type>>() &&
-             detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {
     static_cast<void>(self);
     return detail::shape_turns<scanner_target_t<self_type>, format>{};
   }
 
   template <class self_type, std::size_t place, class state_type>
-    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   constexpr void push_group(this const self_type& self, state_type& state,
                             scan::group_at<place>, char letter) {
     static_cast<void>(self);
@@ -620,7 +622,7 @@ struct aggregate_scanner {
   }
 
   template <class self_type, std::size_t place, class state_type>
-    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   constexpr void opened_group(this const self_type& self, state_type& state,
                               scan::group_at<place>) {
     static_cast<void>(self);
@@ -628,7 +630,7 @@ struct aggregate_scanner {
   }
 
   template <class self_type, std::size_t place, class state_type>
-    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   constexpr void closed_group(this const self_type& self, state_type& state,
                               scan::group_at<place>) {
     using type = scanner_target_t<self_type>;
@@ -639,7 +641,7 @@ struct aggregate_scanner {
   }
 
   template <class self_type, class state_type>
-    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   [[nodiscard]] constexpr auto try_finish_groups(this const self_type& self,
                                                  state_type state) {
     using type = scanner_target_t<self_type>;

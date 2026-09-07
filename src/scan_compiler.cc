@@ -2693,9 +2693,15 @@ template <class type>
 template <class type, fixed_string format>
 [[nodiscard]] consteval bool turns_can_be_folded() {
   return []<std::size_t... place>(std::index_sequence<place...>) {
-    return (true && ... &&
-            !gathers_by_its_groups<std::remove_cv_t<
-                leaf_kind_of_output<std::remove_cv_t<type>, place>>>);
+    return (true && ... && [] {
+      using stands_for =
+          std::remove_cv_t<leaf_kind_of_output<std::remove_cv_t<type>, place>>;
+      // A value that takes characters, or a type that folds its own groups and
+      // can be handed the ones that are its. What cannot be told this way is a
+      // type that wants its groups when the match is over: a fold has no views
+      // of the subject to give it.
+      return !gathers_by_its_groups<stands_for> || folds_by_turns<stands_for>;
+    }());
   }(std::make_index_sequence<groups_of_output<std::remove_cv_t<type>>()>{});
 }
 
