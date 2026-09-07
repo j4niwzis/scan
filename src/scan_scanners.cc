@@ -563,8 +563,16 @@ struct aggregate_scanner {
   // so such a shape keeps the road that spreads its places into the automaton
   // around it.
   [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
+    using type = scanner_target_t<decltype(self)>;
     static_cast<void>(self);
-    return !detail::says_a_list_inside<scanner_target_t<decltype(self)>>();
+    // A shape made by the call it named says no as well: its places stand for
+    // the arguments of that call and not for fields anybody can look at, so
+    // there is nothing here to hand groups to.
+    if constexpr (requires { &scanner<type>::parse; }) {
+      return false;
+    } else {
+      return !detail::says_a_list_inside<type>();
+    }
   }
 
   // The shape, out of the groups its pattern opened.
@@ -573,7 +581,10 @@ struct aggregate_scanner {
   // from the places of the reading around it: one builder, and this is a call
   // to it.
   template <class self_type>
-    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
+    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>() &&
+             !requires {
+               &scanner<scanner_target_t<self_type>>::parse;
+             })
   [[nodiscard]] constexpr auto try_from_groups(
       this const self_type& self, std::span<const std::string_view> groups)
       -> std::expected<scanner_target_t<self_type>,

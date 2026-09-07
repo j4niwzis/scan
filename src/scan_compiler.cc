@@ -611,7 +611,7 @@ concept scanned_as_leaf = requires {
 // ordinary leaf and reads itself from the text of one place; the format is what
 // says the places are the arguments.
 template <class type>
-concept scanned_from_values = scanned_by_format<type> && requires {
+concept scanned_from_values = says_a_format<type> && requires {
   &scan::scanner<std::remove_cv_t<type>>::parse;
 };
 
