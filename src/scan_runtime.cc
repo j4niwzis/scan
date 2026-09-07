@@ -2742,7 +2742,14 @@ constexpr void push_shape_place(shape_type& state, char letter) {
   if constexpr (inside != 0) {
     push_one_group<stands_for, inside - 1>(
         std::get<place>(state.gatherings).state, letter);
-  } else if constexpr (!scanned_as_range<stands_for>) {
+  } else if constexpr (gathers_by_its_groups<stands_for> ||
+                       scanned_as_range<stands_for>) {
+    // Neither takes characters of its own: a list holds turns and the places
+    // inside it take them, and a type that reads its own groups is told them
+    // by the groups, which are the places after this one.
+    static_cast<void>(state);
+    static_cast<void>(letter);
+  } else {
     scanner_push<stands_for>(std::get<place>(state.gatherings), letter);
   }
 }

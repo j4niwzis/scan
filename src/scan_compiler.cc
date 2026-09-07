@@ -2607,6 +2607,60 @@ struct no_parameters {
 // The groups as a span and not as an array of a known length: the reading
 // hands over all of them, and a type that reads its own groups hands over the
 // few that are its. Both are the same thing to whoever reads them.
+// Whether putting this value together out of groups can go wrong at all.
+//
+// Most readings cannot. A value whose scanner throws rather than hands a
+// failure back throws past all of this; a value whose scanner does neither
+// cannot fail; a product of such values cannot fail. What can are the readings
+// that have something to say: a scanner that hands a failure back, a choice
+// where no branch may have run, a list, and a type built from its own groups.
+//
+// Where nothing can, the value is built as it was before any of this: straight
+// into the aggregate, with no `expected` held anywhere along the way. That is
+// the path most scans take and it costs what it used to.
+template <class type, bool as_output = false>
+[[nodiscard]] consteval bool never_fails() {
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (a_value && reads_its_own_groups<type>) {
+    return false;
+  } else if constexpr (a_value) {
+    return !scan::says_what_went_wrong<std::remove_cv_t<type>>;
+  } else if constexpr (scanned_as_variant<type>) {
+    return false;
+  } else if constexpr (scanned_as_range<type>) {
+    return false;
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (true && ... &&
+              never_fails<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// The value itself, for a reading that cannot go wrong.
+template <class parameters, class type, std::size_t offset,
+          bool as_output = false>
+[[nodiscard]] constexpr type built_value(
+    std::span<const std::string_view> groups) {
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (a_value) {
+    return scanner_parse<std::remove_cv_t<type>>(groups[offset],
+                                                 parameters::at(offset));
+  } else if constexpr (scanned_from_values<type>) {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return scan::scanner<std::remove_cv_t<type>>{}.parse(
+          built_value<parameters, typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...);
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  } else {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return type{
+          built_value<parameters, typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...};
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
 template <class failure_type, class parameters, class type,
           std::size_t offset, bool as_output = false>
 [[nodiscard]] constexpr std::expected<type, failure_type> build_value(
@@ -2614,7 +2668,10 @@ template <class failure_type, class parameters, class type,
   // Where this is the whole of what is being read, a shape that reads its own
   // groups is a product of places rather than a value in a place.
   constexpr bool a_value = scanned_as_leaf<type> && !as_output;
-  if constexpr (a_value && reads_its_own_groups<type>) {
+  if constexpr (never_fails<type, as_output>()) {
+    // Nothing here can hand a failure back, so nothing here holds one.
+    return built_value<parameters, type, offset, as_output>(groups);
+  } else if constexpr (a_value && reads_its_own_groups<type>) {
     // The type's own groups are groups of this match, already found. It is
     // handed them, or told which of them each character belongs to -- the same
     // reading it gets where a subject arrives as it is read, so it reads the
