@@ -254,21 +254,35 @@ class tre_parser {
     return scan::tre::cat({std::move(head), parse_sequence(stop)});
   }
 
+  // Whether the repetition just read prefers another turn or prefers to stop.
+  //
+  // A `?` after a quantifier is what says the second one. It was being left
+  // where it stood and read afterwards as a question mark to match, so `a*?`
+  // meant `a*` followed by the character `?` -- a pattern that means something
+  // else and says nothing about it. A `+` after one is the possessive form,
+  // which this does not have; it is swallowed rather than misread.
+  [[nodiscard]] constexpr bool parse_greed() {
+    if (peek() == '?') {
+      ++position_;
+      return false;
+    }
+    if (peek() == '+') ++position_;
+    return true;
+  }
+
   [[nodiscard]] constexpr scan::tre::node parse_quantified() {
     scan::tre::node atom = parse_atom();
     if (peek() == '*') {
       ++position_;
-      if (peek() == '+') ++position_;
-      return scan::tre::star(std::move(atom));
+      return scan::tre::star(std::move(atom), parse_greed());
     }
     if (peek() == '+') {
       ++position_;
-      if (peek() == '+') ++position_;
-      return scan::tre::plus(std::move(atom));
+      return scan::tre::plus(std::move(atom), parse_greed());
     }
     if (peek() == '?') {
       ++position_;
-      return scan::tre::optional(std::move(atom));
+      return scan::tre::optional(std::move(atom), parse_greed());
     }
     if (peek() == '{' && peek(1) >= '0' && peek(1) <= '9') {
       ++position_;
@@ -280,7 +294,8 @@ class tre_parser {
       }
       if (peek() != '}') throw "invalid repetition";
       ++position_;
-      return scan::tre::repeat(std::move(atom), minimum, maximum);
+      return scan::tre::repeat(std::move(atom), minimum, maximum,
+                               parse_greed());
     }
     return atom;
   }

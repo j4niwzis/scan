@@ -71,6 +71,13 @@ struct repetition {
   std::vector<node> element;
   std::size_t minimum = 0;
   std::size_t maximum = unbounded;
+  // Whether another turn is preferred to stopping.
+  //
+  // Both are always possible; this says which is tried first, and the order of
+  // the two is the whole of the difference between `a*` and `a*?`. It decides
+  // which parse wins where several are possible, and never whether anything
+  // matches at all.
+  bool greedy = true;
 };
 
 using node_variant =
@@ -104,17 +111,18 @@ class node : public ast::node_variant {
   return ast::concatenation{std::move(elements)};
 }
 [[nodiscard]] constexpr node repeat(node element, std::size_t minimum,
-                                    std::size_t maximum = unbounded) {
-  return ast::repetition{{std::move(element)}, minimum, maximum};
+                                    std::size_t maximum = unbounded,
+                                    bool greedy = true) {
+  return ast::repetition{{std::move(element)}, minimum, maximum, greedy};
 }
-[[nodiscard]] constexpr node star(node element) {
-  return repeat(std::move(element), 0);
+[[nodiscard]] constexpr node star(node element, bool greedy = true) {
+  return repeat(std::move(element), 0, unbounded, greedy);
 }
-[[nodiscard]] constexpr node plus(node element) {
-  return repeat(std::move(element), 1);
+[[nodiscard]] constexpr node plus(node element, bool greedy = true) {
+  return repeat(std::move(element), 1, unbounded, greedy);
 }
-[[nodiscard]] constexpr node optional(node element) {
-  return repeat(std::move(element), 0, 1);
+[[nodiscard]] constexpr node optional(node element, bool greedy = true) {
+  return repeat(std::move(element), 0, 1, greedy);
 }
 
 enum class transition_kind : std::uint8_t {
@@ -421,35 +429,40 @@ class tnfa_builder {
       tail = copy.end;
     }
     const state_id end = new_state();
+    // Which of the two is tried first. Greedy takes another turn before it
+    // stops; lazy stops before it takes another. Both edges are there either
+    // way, so this decides which parse wins and never whether one exists.
+    const std::uint32_t again = node.greedy ? 0 : 1;
+    const std::uint32_t enough = node.greedy ? 1 : 0;
     if (node.maximum == unbounded) {
       const fragment copy = visit(node.element.front());
       add(tail, {.target = copy.start, .kind = transition_kind::epsilon,
-                 .priority = 0});
+                 .priority = again});
       if (node.minimum == 0) {
-        add_negative_chain(tail, end, tags(node.element.front()), 1);
+        add_negative_chain(tail, end, tags(node.element.front()), enough);
       } else {
         add(tail, {.target = end, .kind = transition_kind::epsilon,
-                   .priority = 1});
+                   .priority = enough});
       }
       add(copy.end, {.target = copy.start, .kind = transition_kind::epsilon,
-                     .priority = 0});
+                     .priority = again});
       add(copy.end, {.target = end, .kind = transition_kind::epsilon,
-                     .priority = 1});
+                     .priority = enough});
       return {start, end};
     }
     if (node.minimum == 0) {
-      add_negative_chain(tail, end, tags(node.element.front()), 1);
+      add_negative_chain(tail, end, tags(node.element.front()), enough);
     } else {
       add(tail, {.target = end, .kind = transition_kind::epsilon,
-                 .priority = 1});
+                 .priority = enough});
     }
     for (std::size_t i = node.minimum; i < node.maximum; ++i) {
       const fragment copy = visit(node.element.front());
       add(tail, {.target = copy.start, .kind = transition_kind::epsilon,
-                 .priority = 0});
+                 .priority = again});
       tail = copy.end;
       add(tail, {.target = end, .kind = transition_kind::epsilon,
-                 .priority = 1});
+                 .priority = enough});
     }
     return {start, end};
   }
