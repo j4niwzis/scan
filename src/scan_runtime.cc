@@ -2286,8 +2286,9 @@ constexpr void advance_scanner(
 }
 
 template <class root, class type, std::size_t offset, bool as_output = false,
-          class reading_type, class states_type, std::size_t register_count>
-[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_value(
+          class failure_type = failure_for<root>, class reading_type,
+          class states_type, std::size_t register_count>
+[[nodiscard]] constexpr std::expected<type, failure_type> finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text);
@@ -2296,33 +2297,37 @@ template <class root, class type, std::size_t offset, bool as_output = false,
 // rather than as lambdas called where they stand. A lambda holding references
 // and called inside the argument of something that itself holds references is
 // more than the constant evaluator will follow.
-template <class root, class type, std::size_t offset, class reading_type,
-          class states_type, std::size_t register_count, std::size_t... part>
-[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_parts(
+template <class root, class type, std::size_t offset, class failure_type,
+          class reading_type, class states_type, std::size_t register_count,
+          std::size_t... part>
+[[nodiscard]] constexpr std::expected<type, failure_type> finish_parts(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text, std::index_sequence<part...>) {
   auto parts =
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
-                              offset + groups_before_field<type, part>()>(
-          reading, states, registers, text)...};
-  if (auto went_wrong = what_went_wrong<failure_for<root>>(parts)) {
+                              offset + groups_before_field<type, part>(), false,
+                              failure_type>(reading, states, registers,
+                                            text)...};
+  if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
   return type{std::move(*std::get<part>(parts))...};
 }
 
-template <class root, class type, std::size_t offset, class reading_type,
-          class states_type, std::size_t register_count, std::size_t... part>
-[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_by_call(
+template <class root, class type, std::size_t offset, class failure_type,
+          class reading_type, class states_type, std::size_t register_count,
+          std::size_t... part>
+[[nodiscard]] constexpr std::expected<type, failure_type> finish_by_call(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text, std::index_sequence<part...>) {
   auto parts =
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
-                              offset + groups_before_field<type, part>()>(
-          reading, states, registers, text)...};
-  if (auto went_wrong = what_went_wrong<failure_for<root>>(parts)) {
+                              offset + groups_before_field<type, part>(), false,
+                              failure_type>(reading, states, registers,
+                                            text)...};
+  if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
   return scan::scanner<std::remove_cv_t<type>>::parse(
@@ -2349,7 +2354,7 @@ constexpr void append_to(list_type& list, element_type&& value) {
 }
 
 template <std::size_t group, class type, fixed_string format, auto& automaton,
-          class states_type, std::size_t register_count,
+          class failure_type, class states_type, std::size_t register_count,
           std::size_t command_count>
 constexpr void collect_element(
     std::size_t state,
@@ -2357,7 +2362,7 @@ constexpr void collect_element(
     states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, const char* text,
-    std::optional<failure_for<type>>& failed) {
+    std::optional<failure_type>& failed) {
   if constexpr (group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind_of_output<type, group - 1>>) {
@@ -2388,8 +2393,8 @@ constexpr void collect_element(
       const std::uint32_t into = packed.readings[reading][list_group * 2];
       if (done[into] || registers[open] < 0) continue;
       done[into] = true;
-      auto one = finish_value<type, element, group>(packed.readings[reading],
-                                                    states, registers, text);
+      auto one = finish_value<type, element, group, false, failure_type>(
+          packed.readings[reading], states, registers, text);
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;
@@ -2399,7 +2404,7 @@ constexpr void collect_element(
   }
 }
 
-template <class type, fixed_string format, auto& automaton,
+template <class type, fixed_string format, auto& automaton, class failure_type,
           std::size_t register_count, class states_type,
           std::size_t command_count, std::size_t... group>
 constexpr void collect_elements(
@@ -2408,10 +2413,9 @@ constexpr void collect_elements(
     states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, std::index_sequence<group...>, const char* text,
-    std::optional<failure_for<type>>& failed) {
-  (collect_element<group, type, format, automaton>(state, registers, states,
-                                                   commands, count, text,
-                                                   failed),
+    std::optional<failure_type>& failed) {
+  (collect_element<group, type, format, automaton, failure_type>(
+       state, registers, states, commands, count, text, failed),
    ...);
 }
 
@@ -2469,12 +2473,12 @@ template <class type, class state_type, std::size_t... index>
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
 template <class root, class type, std::size_t offset, bool as_output,
-          class reading_type, class states_type, std::size_t register_count>
-[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_value(
+          class failure_type, class reading_type, class states_type,
+          std::size_t register_count>
+[[nodiscard]] constexpr std::expected<type, failure_type> finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text) {
-  using failure_type = failure_for<root>;
   // A shape that reads its own groups is a value where it stands in somebody
   // else's format and a product of places in its own. Where this is the whole
   // of what is being read, it is the second.
@@ -2580,8 +2584,8 @@ template <class root, class type, std::size_t offset, bool as_output,
     // The turn that was still going when the whole thing ended. Where the list
     // is written to be allowed none at all, there may not have been one.
     if (registers[reading[(offset + 1) * 2]] >= 0) {
-      auto last = finish_value<root, element, offset + 1>(reading, states,
-                                                          registers, text);
+      auto last = finish_value<root, element, offset + 1, false, failure_type>(
+          reading, states, registers, text);
       if (!last) return std::unexpected(std::move(last).error());
       append_to(made, std::move(*last));
     }
@@ -2599,8 +2603,9 @@ template <class root, class type, std::size_t offset, bool as_output,
             offset + groups_before_branch<type, which>();
         if (made || registers[reading[mark * 2]] < 0) return;
         using alternative = branch_at<type, which>;
-        auto part = finish_value<root, alternative, mark + 1>(reading, states,
-                                                              registers, text);
+        auto part = finish_value<root, alternative, mark + 1, false,
+                                 failure_type>(reading, states, registers,
+                                               text);
         if (!part) {
           made = std::unexpected(std::move(part).error());
           return;
@@ -2616,11 +2621,11 @@ template <class root, class type, std::size_t offset, bool as_output,
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
-    return finish_by_call<root, type, offset>(
+    return finish_by_call<root, type, offset, failure_type>(
         reading, states, registers, text,
         std::make_index_sequence<parts_of<type>::count>{});
   } else {
-    return finish_parts<root, type, offset>(
+    return finish_parts<root, type, offset, failure_type>(
         reading, states, registers, text,
         std::make_index_sequence<parts_of<type>::count>{});
   }
@@ -2630,7 +2635,8 @@ template <class root, class type, std::size_t offset, bool as_output,
 // the reading is anchored by default -- the walks below a match are kept, and
 // the answer is the first still accepting when the feeding stops. A prefix
 // read off a stream asks for the other policy, and stops where the match ends.
-template <class type, fixed_string format, bool cut = true>
+template <class type, fixed_string format, bool cut = true,
+          class failure_type = failure_for<type>>
 class stream_state {
  private:
   static_assert(
@@ -2670,7 +2676,7 @@ class stream_state {
         run_taken<automaton>(state_, static_cast<unsigned char>(symbol));
     if (run == no_run) return false;
     const auto* transition = &automaton.states[state_].ranges[run];
-    collect_elements<type, format, automaton>(
+    collect_elements<type, format, automaton, failure_type>(
         state_, registers_, scanner_states_, transition->commands,
         transition->command_count, std::make_index_sequence<field_count>{},
         nullptr, failed_);
@@ -2750,21 +2756,20 @@ class stream_state {
 
   constexpr void restart() { *this = stream_state{}; }
 
-  [[nodiscard]] constexpr std::expected<type, failure_for<type>> finish()
-      const& {
+  [[nodiscard]] constexpr std::expected<type, failure_type> finish() const& {
     stream_state copy = *this;
     return std::move(copy).finish();
   }
 
-  [[nodiscard]] constexpr std::expected<type, failure_for<type>> finish() && {
+  [[nodiscard]] constexpr std::expected<type, failure_type> finish() && {
     if (failed_) return std::unexpected(std::move(*failed_));
     if (state_ == packed_range<0>::reject) {
-      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+      return std::unexpected(scan::as_a_failure<failure_type>(
           no_match("input does not match scan expression")));
     }
     const auto slot = automaton.states[state_].accepting_slot;
     if (slot == packed_state<0, 0, 0>::not_accepting) {
-      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+      return std::unexpected(scan::as_a_failure<failure_type>(
           no_match("input does not match scan expression")));
     }
     // The reading that accepted says which register holds each value. Nothing
@@ -2773,9 +2778,8 @@ class stream_state {
     // gathered, which is what the registers say.
     const auto& reached = automaton.states[state_];
     // Nothing to point at: this machine is fed and never holds the subject.
-    return finish_value<type, type, 0, true>(reached.readings[slot],
-                                             scanner_states_, registers_,
-                                             nullptr);
+    return finish_value<type, type, 0, true, failure_type>(
+        reached.readings[slot], scanner_states_, registers_, nullptr);
   }
 
  private:
@@ -2785,7 +2789,7 @@ class stream_state {
   std::ptrdiff_t position_ = 0;
   // An element of a list that did not read: met in the middle of the walk,
   // where there is nothing to hand it back to yet, so it waits here.
-  std::optional<failure_for<type>> failed_;
+  std::optional<failure_type> failed_;
 };
 
 // Which gatherings a group is added to where the machine stands.
@@ -2851,7 +2855,7 @@ class field_gatherer {
   template <std::size_t state, std::size_t move, class registers_type>
   constexpr void moving(const registers_type& registers, std::ptrdiff_t) {
     constexpr const auto& taken = automaton.states[state].ranges[move];
-    collect_elements<type, format, automaton>(
+    collect_elements<type, format, automaton, failure_for<type>>(
         state, registers, states_, taken.commands, taken.command_count,
         std::make_index_sequence<field_count>{}, text_, failed_);
   }

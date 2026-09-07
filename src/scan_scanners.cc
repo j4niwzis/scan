@@ -593,7 +593,11 @@ struct aggregate_scanner {
         "the automaton, which a range that is read once is not scanned by: "
         "read it from something contiguous, or give the type a scanner that "
         "gathers it a character at a time");
-    return detail::stream_state<type, format, false>{};
+    // The list of what can go wrong is built from this shape's fields and
+    // never from the shape: what the shape says it hands back is that very
+    // list, and a list that asked the shape would be asking its own answer.
+    return detail::stream_state<type, format, false,
+                                detail::shape_failure<type>>{};
   }
 
   constexpr void push(this const auto&, auto& state, char value) {
