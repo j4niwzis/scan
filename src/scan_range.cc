@@ -6,19 +6,6 @@ export import scan.runtime;
 
 export namespace scan::detail {
 
-// The value, or the failure thrown.
-//
-// This is the only place in the library where anything is thrown for a reading
-// that went wrong, and nothing anywhere catches it. Asking for a value has
-// nowhere to put a failure; trying for one does, and then nothing is thrown at
-// all.
-template <class type, class failure_type>
-[[nodiscard]] constexpr type or_thrown(
-    std::expected<type, failure_type> got) {
-  if (got) return std::move(*got);
-  scan::throw_what_went_wrong(std::move(got).error());
-}
-
 template <class type, fixed_string format, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr type convert(
     const std::array<std::string_view, extent>& fields,
@@ -305,7 +292,7 @@ class prefix_scan {
 
   template <class type>
   [[nodiscard]] constexpr taken<type> take() const {
-    return detail::or_thrown(try_take<type>());
+    return or_thrown(try_take<type>());
   }
 
   template <class type>
@@ -517,7 +504,7 @@ class reader {
   }
 
   [[nodiscard]] constexpr type take() const {
-    return detail::or_thrown(try_take());
+    return or_thrown(try_take());
   }
 
   // What has been gathered for a field so far, while the match is still going
@@ -567,7 +554,7 @@ class prefix_stream_scan {
 
   template <class type>
   [[nodiscard]] constexpr detail::taken_ahead<type> take() {
-    return detail::or_thrown(try_take<type>());
+    return or_thrown(try_take<type>());
   }
 
   template <class type>

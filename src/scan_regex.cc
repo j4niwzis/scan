@@ -1436,8 +1436,12 @@ template <fixed_string pattern, std::size_t group, class collector,
     // read twice and no second automaton was ever built.
     constexpr std::size_t count = regex_automaton<pattern>.tag_count / 2;
     const auto groups = all_groups(found, std::make_index_sequence<count>{});
-    return build_value<no_parameters, typename collector::value_type, group>(
-        groups);
+    // A collector gives a value and has nowhere to put a failure, so a reading
+    // that went wrong is thrown here -- at the asking, which is the only place
+    // in this library anything is thrown.
+    using held = typename collector::value_type;
+    return scan::or_thrown(
+        build_value<failure_for<held>, no_parameters, held, group>(groups));
   } else {
     return one.from_text(found.template get<group>().to_view(),
                          std::string_view{});

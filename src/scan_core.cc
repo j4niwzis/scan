@@ -344,7 +344,13 @@ struct group_at {
 
 template <class type>
 [[nodiscard]] constexpr auto scanner_begin() {
-  return scanner<type>{}.begin();
+  // Nothing written after the colon is empty parameters, and a scanner that
+  // only takes them says the same thing when handed nothing.
+  if constexpr (requires { scanner<type>{}.begin(); }) {
+    return scanner<type>{}.begin();
+  } else {
+    return scanner<type>{}.begin(std::string_view{});
+  }
 }
 
 template <class type>
@@ -556,6 +562,17 @@ using failure = typename as_a_variant<our_kinds>::type;
 template <class... kinds>
 [[nodiscard]] const char* what(const std::variant<kinds...>& said) {
   return std::visit([](const scan_error& one) { return one.what(); }, said);
+}
+
+// The value, or the failure thrown.
+//
+// The only place in this library where a reading that went wrong becomes a
+// throw, and nothing anywhere catches it. Asking for a value has nowhere to
+// put a failure; trying for one does, and then nothing is thrown at all.
+template <class type, class failure_type>
+[[nodiscard]] constexpr type or_thrown(std::expected<type, failure_type> got) {
+  if (got) return std::move(*got);
+  throw_what_went_wrong(std::move(got).error());
 }
 
 // One kind of failure said as another: what a scanner handed back, put into the
