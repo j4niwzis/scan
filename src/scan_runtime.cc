@@ -76,6 +76,12 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 #define SCAN_FORCE_INLINE_LAMBDA
 #endif
 
+#if defined(__clang__)
+#define SCAN_FORCE_INLINE_CALL [[clang::always_inline]]
+#else
+#define SCAN_FORCE_INLINE_CALL
+#endif
+
 // The generated form of a tagged automaton: a chain of comparisons per state,
 // unrolled by the template recursion, with the register operations of each
 // transition written out.
@@ -852,6 +858,19 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         into.template moved<state, range.target>(
             move, static_cast<char>(symbol), registers, place);
         if constexpr (budget != 0 && forks_of<automaton, state>() == 1) {
+          // Written out here rather than called, and said so rather than left
+          // to be guessed.
+          //
+          // The budget is what decides how much of the chain is worth writing
+          // out, and it was only ever a hope: the optimiser stopped after a
+          // handful of steps and left a call in the middle of a date, with the
+          // spills around it costing more than the characters it went on to
+          // read. Nineteen characters were four bodies and two calls; they are
+          // one body and no calls now.
+          //
+          // Only this call. The one below ends the chain, and forcing that one
+          // would ask an automaton with a cycle to write itself out for ever.
+          SCAN_FORCE_INLINE_CALL
           return run_continuation<automaton, shape, range.target, budget - 1,
                                   certain>(cursor, last, place, registers, into,
                                            best);
