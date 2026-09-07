@@ -560,7 +560,7 @@ struct aggregate_scanner {
   // nothing before it -- so those keep the road that spreads them into the
   // automaton.
   template <class self_type>
-    requires(!detail::holds_a_range<scanner_target_t<self_type>>())
+    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
   [[nodiscard]] constexpr auto try_from_groups(
       this const self_type& self, std::span<const std::string_view> groups) {
     using type = scanner_target_t<self_type>;

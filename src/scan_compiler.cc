@@ -609,6 +609,59 @@ concept scanned_from_values = scanned_by_format<type> && requires {
   &scan::scanner<std::remove_cv_t<type>>::parse;
 };
 
+// Whether a list stands anywhere inside a shape, asked of what the types say
+// and never of how this library reads them.
+//
+// The difference matters here and nowhere else: how a shape is read is decided
+// by whether it can hand its groups over, that is decided by whether it holds
+// a list, and a question that asks its own answer has none. So this one asks
+// only what a type is: a range that can be pushed into is a list, a type that
+// says it is one is one, and a shape or a choice is asked about what is in it.
+template <class type>
+concept a_list_by_itself =
+    !requires { sizeof(scan::scanner<std::remove_cv_t<type>>); } &&
+    std::ranges::range<type> &&
+    requires(type& into, std::ranges::range_value_t<type> one) {
+      into.push_back(std::move(one));
+    };
+
+template <class type>
+concept a_choice_by_itself = requires {
+  scan::branches<std::remove_cv_t<type>>::count;
+};
+
+template <class type>
+[[nodiscard]] consteval bool says_a_list_inside();
+
+template <class type>
+[[nodiscard]] consteval bool a_list_field() {
+  if constexpr (says_it_is_a_list<type> || a_list_by_itself<type>) {
+    return true;
+  } else if constexpr (says_a_format<type>) {
+    return says_a_list_inside<type>();
+  } else if constexpr (a_choice_by_itself<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... ||
+              a_list_field<std::remove_cv_t<branch_at<type, which>>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else {
+    return false;
+  }
+}
+
+template <class type>
+[[nodiscard]] consteval bool says_a_list_inside() {
+  if constexpr (!says_a_format<type>) {
+    return a_list_field<type>();
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              a_list_field<std::remove_cvref_t<decltype(boost::pfr::get<field>(
+                  std::declval<std::remove_cv_t<type>&>()))>>());
+    }(std::make_index_sequence<boost::pfr::tuple_size_v<std::remove_cv_t<type>>>{});
+  }
+}
+
 template <class type>
 [[nodiscard]] consteval bool a_flat_shape();
 
