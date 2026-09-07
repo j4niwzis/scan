@@ -440,6 +440,52 @@ scan::match<"v=([0-9]+\\.[0-9]+\\.[0-9]+)!">.into(scan::as<version>())(text);
 Which of the two happens is decided while the program is compiled, by the same
 comparison of expressions.
 
+#### Gathered by its own groups
+
+`from_groups` hands the groups over when the match is done, which wants a
+subject that can still be pointed at. The other way round is to be told, as
+each character arrives, which of the type's own groups it belongs to -- and
+then a type with parts can be read off a subject that will never be seen
+again, with no text put together anywhere:
+
+```cpp
+template <>
+struct scan::scanner<version> {
+  static constexpr std::string_view pattern() {
+    return "([0-9]+)\\.([0-9]+)\\.([0-9]+)";
+  }
+
+  // The groups, named. The k-th alternative is the k-th group.
+  struct major_part {}; struct minor_part {}; struct patch_part {};
+  using group = std::variant<major_part, minor_part, patch_part>;
+
+  struct state { version made; };
+  static constexpr state begin_groups() { return {}; }
+  static constexpr void push_group(state& into, major_part, char letter) {
+    into.made.major = into.made.major * 10 + (letter - '0');
+  }
+  static constexpr void push_group(state& into, minor_part, char letter) { … }
+  static constexpr void push_group(state& into, patch_part, char letter) { … }
+  static constexpr version finish_groups(state from) { return from.made; }
+};
+```
+
+The names are optional. A type may be told which group a character belongs to
+in whichever of these three ways it writes, and the choice is made where the
+number is a constant, so none of them costs a branch:
+
+```cpp
+void push_group(state&, major_part, char);   // the name of the group
+void push_group(state&, group, char);        // the group as a variant
+void push_group(state&, std::size_t, char);  // its number, from nought
+```
+
+This is the same reading wherever it is used. Where the subject is in memory
+the characters of each group are handed over the same way, so a type written
+like this reads identically off a string and off a socket -- and where the
+group is written with some other expression, `parse` or `from_groups` takes
+over as before.
+
 #### On a subject that can only be read once
 
 There are no group texts there at all: the characters are gone as they are
@@ -469,6 +515,7 @@ So what a type says decides where it can be read:
 | `parse(text)` | yes | no -- there is no text to give it |
 | `begin` / `push` / `finish` | yes | yes: it gathers its own characters |
 | `from_groups` | yes, and nothing is read twice | no -- the groups are not there to hand over |
+| `begin_groups` / `push_group` / `finish_groups` | yes, and nothing is read twice | yes: told which of its own groups each character belongs to |
 | a format (`aggregate_scanner`) | yes, and nothing is read twice | yes, and each place gathers on its own |
 
 A type that will be read off a stream wants the last two rows: a format if it

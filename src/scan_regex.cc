@@ -945,6 +945,57 @@ template <fixed_string pattern>
 // machine has already found them -- and the type is built from them. Where it
 // is not, there is nothing to reuse: the characters are handed to the type to
 // read as it sees fit.
+// A type gathered by its own groups, a character at a time.
+//
+// The other way round from `from_groups`: there the groups are handed over
+// when the match is done, which wants a subject that can still be pointed at.
+// This one is told, as each character arrives, which of the type's own groups
+// it belongs to -- so a type with parts can be read off a subject that will
+// never be seen again, and no text is put together anywhere.
+template <class type>
+concept gathers_by_group = requires {
+  scan::scanner<std::remove_cv_t<type>>::begin_groups();
+  scan::scanner<std::remove_cv_t<type>>::finish_groups(
+      scan::scanner<std::remove_cv_t<type>>::begin_groups());
+};
+
+// Whether the type names its groups with types rather than with numbers.
+//
+//   using group = std::variant<major, minor, patch>;
+//
+// Then the k-th alternative is the name of the k-th group, and the pushes can
+// be overloads rather than a switch.
+template <class type>
+concept names_its_groups = requires {
+  typename scan::scanner<std::remove_cv_t<type>>::group;
+};
+
+// One character, handed to the group it belongs to, in whichever of the three
+// ways the type asked for: the name of the group, the group as a variant, or
+// its number. The choice is made here, where the number is a constant.
+template <class type, std::size_t which, class state_type>
+constexpr void push_into_group(state_type& state, char letter) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type::push_group(state, one{}, letter); }) {
+      scanner_type::push_group(state, one{}, letter);
+    } else if constexpr (requires {
+                           scanner_type::push_group(
+                               state, named(std::in_place_index<which>),
+                               letter);
+                         }) {
+      scanner_type::push_group(state, named(std::in_place_index<which>),
+                               letter);
+    } else {
+      scanner_type::push_group(state, which, letter);
+    }
+  } else {
+    scanner_type::push_group(state, which, letter);
+  }
+}
+
 // A type that would rather be handed the groups than the text.
 //
 // Where a type's own pattern has groups in it, the machine that matched the
@@ -971,11 +1022,10 @@ template <class type>
 // The same question as the one below, asked of a type that says a pattern
 // rather than a format. What it decides is the same thing: whether the groups
 // inside this one are that type's own.
+// Whether this group is written with the very expression the type declares.
 template <class type, fixed_string pattern, std::size_t group>
-[[nodiscard]] consteval bool group_is_the_types_pattern() {
-  if constexpr (!scanned_from_groups<type>) {
-    return false;
-  } else if constexpr (!scanned_as_leaf<std::remove_cv_t<type>>) {
+[[nodiscard]] consteval bool group_is_written_as_the_types_pattern() {
+  if constexpr (!scanned_as_leaf<std::remove_cv_t<type>>) {
     return false;
   } else {
     constexpr auto written = group_text<pattern>(group);
@@ -992,6 +1042,19 @@ template <class type, fixed_string pattern, std::size_t group>
       return scan::tre::same_expression(theirs, ours);
     }
   }
+}
+
+// The two kinds of reuse, each asking that question and its own.
+template <class type, fixed_string pattern, std::size_t group>
+[[nodiscard]] consteval bool group_is_the_types_pattern() {
+  return scanned_from_groups<type> &&
+         group_is_written_as_the_types_pattern<type, pattern, group>();
+}
+
+template <class type, fixed_string pattern, std::size_t group>
+[[nodiscard]] consteval bool group_gathers_by_group() {
+  return gathers_by_group<type> &&
+         group_is_written_as_the_types_pattern<type, pattern, group>();
 }
 
 template <class type, fixed_string pattern, std::size_t group>
@@ -1292,6 +1355,22 @@ template <fixed_string pattern, std::size_t group, class collector,
     }(std::make_index_sequence<inside>{});
     return scan::scanner<held_type>::from_groups(
         std::span<const std::string_view>(theirs));
+  } else if constexpr (group_gathers_by_group<typename collector::value_type,
+                                             pattern, group>()) {
+    // The type is gathered by its own groups, and here they are already
+    // found: the characters of each are handed to it the same way they would
+    // be handed over one at a time on a subject that cannot be looked at
+    // twice, so the type is read the same way wherever it is used.
+    using held_type_here = std::remove_cv_t<typename collector::value_type>;
+    auto state = scan::scanner<held_type_here>::begin_groups();
+    [&]<std::size_t... inside>(std::index_sequence<inside...>) {
+      ((void)[&] {
+        for (char letter : found.template get<group + 1 + inside>().to_view()) {
+          push_into_group<held_type_here, inside>(state, letter);
+        }
+      }(), ...);
+    }(std::make_index_sequence<groups_a_type_opens<held_type_here>()>{});
+    return scan::scanner<held_type_here>::finish_groups(std::move(state));
   } else if constexpr (group_spells_out<typename collector::value_type,
                                         pattern, group>()) {
     // The group is the type's own pattern, so the groups inside it are the
@@ -1423,6 +1502,8 @@ struct collected_match_closure
   template <class states_type>
   class gathering_into {
    public:
+    using owner_type = collected_match_closure;
+
     constexpr gathering_into(const collected_match_closure& owner,
                              states_type& states)
         : owner_(owner), states_(states) {}
@@ -1456,6 +1537,40 @@ struct collected_match_closure
     constexpr void ended(const registers_type&) {}
 
    private:
+    // Which of the type's own groups is open, and the character to it.
+    //
+    // They are groups of this match like any others, sitting straight after
+    // the one written with the type's pattern, so the same two registers say
+    // whether each is open.
+    template <std::size_t landed, std::size_t group, class registers_type,
+              std::size_t... inside>
+    constexpr void hand_inner(char letter, const registers_type& registers,
+                              std::index_sequence<inside...>) {
+      (hand_inner_one<landed, group, inside>(letter, registers), ...);
+    }
+
+    template <std::size_t landed, std::size_t group, std::size_t inside,
+              class registers_type>
+    constexpr void hand_inner_one(char letter,
+                                  const registers_type& registers) {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      using held = std::remove_cv_t<typename collector::value_type>;
+      constexpr const auto& entered =
+          detail::regex_automaton<pattern>.states[landed];
+      constexpr std::size_t theirs = group + 1 + inside;
+      if constexpr (theirs * 2 + 1 >=
+                    detail::regex_automaton<pattern>.tag_count) {
+        return;
+      } else {
+        constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
+        constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
+        if (registers[opening] < 0) return;
+        if (registers[closing] >= registers[opening]) return;
+        detail::push_into_group<held, inside>(std::get<group>(states_), letter);
+      }
+    }
+
     template <std::size_t landed, class registers_type, std::size_t... group>
     constexpr void hand_run(const char* from, const char* to,
                             const registers_type& registers,
@@ -1481,6 +1596,12 @@ struct collected_match_closure
           for (const char* letter = from; letter != to; ++letter) {
             if constexpr (std::same_as<collector, text_collector>) {
               std::get<group>(states_).push_back(*letter);
+            } else if constexpr (owner_type::template gathers_its_own_groups<
+                                     group>()) {
+              hand_inner<landed, group>(
+                  *letter, registers,
+                  std::make_index_sequence<detail::groups_a_type_opens<
+                      std::remove_cv_t<typename collector::value_type>>()>{});
             } else {
               std::get<group>(owner_.collectors_)
                   .push_one(std::get<group>(states_), *letter);
@@ -1515,6 +1636,14 @@ struct collected_match_closure
           if (registers[closing] >= registers[opening]) return;
           if constexpr (std::same_as<collector, text_collector>) {
             std::get<group>(states_).push_back(letter);
+          } else if constexpr (owner_type::template gathers_its_own_groups<
+                                   group>()) {
+            // The type has groups of its own, and they are groups of this
+            // match: which of them is open says where the character goes.
+            hand_inner<landed, group>(
+                letter, registers,
+                std::make_index_sequence<detail::groups_a_type_opens<
+                    std::remove_cv_t<typename collector::value_type>>()>{});
           } else {
             std::get<group>(owner_.collectors_)
                 .push_one(std::get<group>(states_), letter);
@@ -1533,12 +1662,30 @@ struct collected_match_closure
   }
 
   template <std::size_t group>
+  // Whether the collector at this place is a type that gathers by its own
+  // groups, and whether this group is written as that type's own pattern. Both
+  // have to hold: the type asks for it, and the pattern gives it something to
+  // ask about.
+  template <std::size_t group>
+  [[nodiscard]] static consteval bool gathers_its_own_groups() {
+    using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+    if constexpr (requires { typename collector::value_type; }) {
+      return detail::group_gathers_by_group<typename collector::value_type,
+                                            pattern, group + 1>();
+    } else {
+      return false;
+    }
+  }
+
   [[nodiscard]] constexpr auto begin_one() const {
     using collector =
         std::tuple_element_t<group, std::tuple<collectors...>>;
     if constexpr (std::same_as<collector, skip_collector> ||
                   std::same_as<collector, text_collector>) {
       return held_type{};
+    } else if constexpr (gathers_its_own_groups<group>()) {
+      return scan::scanner<std::remove_cv_t<
+          typename collector::value_type>>::begin_groups();
     } else {
       return std::get<group>(collectors_).begin_pushing(std::string_view{});
     }
@@ -1584,6 +1731,9 @@ struct collected_match_closure
       return skipped{};
     } else if constexpr (std::same_as<collector, text_collector>) {
       return state;
+    } else if constexpr (gathers_its_own_groups<group>()) {
+      return scan::scanner<std::remove_cv_t<
+          typename collector::value_type>>::finish_groups(std::move(state));
     } else {
       return std::get<group>(collectors_).finish_pushed(std::move(state));
     }
