@@ -331,6 +331,24 @@ struct as_a_variant<kind_list<kinds...>> {
   using type = std::variant<kinds...>;
 };
 
+// A subject that lies in a row, as the characters it stands for.
+//
+// A string literal is an array with a nul at the end of it, and so is a buffer
+// somebody read into. Neither of them means that character to be part of the
+// subject -- `scan<"{}">("450")` would be a scan of four characters otherwise,
+// and would say the pattern does not match rather than what is wrong. So a
+// trailing nul is left out, which costs one comparison and is what everybody
+// writing the literal expects.
+template <class range_type>
+[[nodiscard]] constexpr std::string_view characters_of(range_type&& input) {
+  const char* const from = std::ranges::data(input);
+  std::size_t many = std::ranges::size(input);
+  if constexpr (std::is_array_v<std::remove_cvref_t<range_type>>) {
+    if (many != 0 && from[many - 1] == '\0') --many;
+  }
+  return std::string_view(from, many);
+}
+
 // The number of a group, said as a type.
 //
 // A group is known by its number, and a number is not a thing you can overload

@@ -659,8 +659,7 @@ struct each_closure : std::ranges::range_adaptor_closure<each_closure<format>> {
     requires(std::is_lvalue_reference_v<range_type&&> ||
              std::ranges::borrowed_range<range_type>)
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return each_scan<format>(std::string_view(std::ranges::data(input),
-                                              std::ranges::size(input)));
+    return each_scan<format>(detail::characters_of(input));
   }
 
   template <std::ranges::input_range range_type>
@@ -774,8 +773,7 @@ class each_pieces_view {
 template <fixed_string format, detail::contiguous_char_range range_type>
   requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
 [[nodiscard]] constexpr auto scan_prefix(range_type&& input) {
-  return prefix_scan<format>(std::string_view(std::ranges::data(input),
-                                              std::ranges::size(input)));
+  return prefix_scan<format>(detail::characters_of(input));
 }
 
 // The same, for input that has to be read as it comes. Nothing is buffered and
@@ -881,8 +879,7 @@ struct scan_closure {
     requires(std::is_lvalue_reference_v<range_type&&> ||
              std::ranges::borrowed_range<range_type>)
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    const std::string_view text(std::ranges::data(input),
-                                std::ranges::size(input));
+    const std::string_view text = detail::characters_of(input);
     auto reading = [&] {
       if constexpr (terminator < 0) {
         return detail::borrowed_result<format, -1,

@@ -1463,8 +1463,7 @@ struct collected_match_closure
     using holder = std::string_view;
     using result_type =
         typed_result<holder, detail::collected_type<collectors, holder>...>;
-    const auto found = detail::regex_match<pattern>(std::string_view(
-        std::ranges::data(input), std::ranges::size(input)));
+    const auto found = detail::regex_match<pattern>(detail::characters_of(input));
     if (!found) return result_type{};
     return build<holder, result_type>(
         found, std::make_index_sequence<sizeof...(collectors)>{});
@@ -1570,65 +1569,24 @@ struct collected_match_closure
                              states_type& states)
         : owner_(owner), states_(states) {}
 
-    // Before the move writes anything: where it opens a group of a type that
-    // wants to be told, the turn that was going has ended and a new one
-    // begins. Told in that order, so that what was gathered is taken before
-    // the next turn puts anything in.
+    // Nothing to do before a move writes: what happened to a group is read off
+    // the positions afterwards, which is the only way that answers the same in
+    // both layers.
     template <std::size_t state, std::size_t move, class registers_type,
               class mark>
-    constexpr void moving(const registers_type&, mark) {
-      edges<state, move>(std::make_index_sequence<sizeof...(collectors)>{});
-    }
-
-    template <std::size_t state, std::size_t move, std::size_t... group>
-    constexpr void edges(std::index_sequence<group...>) {
-      (edges_of<state, move, group>(), ...);
-    }
-
-    template <std::size_t state, std::size_t move, std::size_t group>
-    constexpr void edges_of() {
-      using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
-      if constexpr (requires { typename collector::value_type; }) {
-        using held = std::remove_cv_t<typename collector::value_type>;
-        if constexpr (detail::knows_its_edges<held> &&
-                      owner_type::template gathers_its_own_groups<group>()) {
-          edges_inside<state, move, group>(
-              std::make_index_sequence<
-                  detail::groups_a_leaf_opens<held>()>{});
-        }
-      }
-    }
-
-    template <std::size_t state, std::size_t move, std::size_t group,
-              std::size_t... inside>
-    constexpr void edges_inside(std::index_sequence<inside...>) {
-      (edge_of<state, move, group, inside>(), ...);
-    }
-
-    template <std::size_t state, std::size_t move, std::size_t group,
-              std::size_t inside>
-    constexpr void edge_of() {
-      using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
-      using held = std::remove_cv_t<typename collector::value_type>;
-      constexpr std::size_t theirs =
-          owner_type::template group_of<group>() + 1 + inside;
-      if constexpr (detail::opens_the_group<detail::regex_automaton<pattern>,
-                                            state, move, theirs>()) {
-        auto& state_of_the_type = std::get<group>(states_);
-        if (open_[theirs]) {
-          detail::close_one_group<held, inside>(state_of_the_type);
-        }
-        detail::open_one_group<held, inside>(state_of_the_type);
-        open_[theirs] = true;
-      }
-    }
+    constexpr void moving(const registers_type&, mark) {}
 
     // A run stepped over in vectors: whatever is open takes all of it.
     template <std::size_t state, class registers_type, class mark>
     constexpr void took_run(const char* from, const char* to,
                             const registers_type& registers, mark) {
+      // Nothing is written inside a run, so what is open at one end of it is
+      // open at the other: the edges are told once and the characters go in as
+      // they come.
+      for (const char* letter = from; letter != to; ++letter) {
+        fold_all<state>(*letter, true, registers,
+                        std::make_index_sequence<sizeof...(collectors)>{});
+      }
       hand_run<state>(from, to, registers,
                       std::make_index_sequence<sizeof...(collectors)>{});
     }
@@ -1642,52 +1600,19 @@ struct collected_match_closure
     template <std::size_t state, std::size_t landed, class registers_type>
     constexpr void moved(std::size_t, char letter,
                          const registers_type& registers, std::ptrdiff_t) {
+      fold_all<landed>(letter, true, registers,
+                       std::make_index_sequence<sizeof...(collectors)>{});
       hand_all<landed>(letter, registers,
                        std::make_index_sequence<sizeof...(collectors)>{});
     }
 
-    // And the match ending ends the turn that was going.
+    // And the match ending ends the turn that was going. Asked with the
+    // positions as they stand and no character to hand over, which is the same
+    // step the characters run through.
     template <std::size_t state, class registers_type>
-    constexpr void ended(const registers_type&) {
-      closing(std::make_index_sequence<sizeof...(collectors)>{});
-    }
-
-    template <std::size_t... group>
-    constexpr void closing(std::index_sequence<group...>) {
-      (closing_of<group>(), ...);
-    }
-
-    template <std::size_t group>
-    constexpr void closing_of() {
-      using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
-      if constexpr (requires { typename collector::value_type; }) {
-        using held = std::remove_cv_t<typename collector::value_type>;
-        if constexpr (detail::knows_its_edges<held> &&
-                      owner_type::template gathers_its_own_groups<group>()) {
-          closing_inside<group>(
-              std::make_index_sequence<
-                  detail::groups_a_leaf_opens<held>()>{});
-        }
-      }
-    }
-
-    template <std::size_t group, std::size_t... inside>
-    constexpr void closing_inside(std::index_sequence<inside...>) {
-      (closing_one<group, inside>(), ...);
-    }
-
-    template <std::size_t group, std::size_t inside>
-    constexpr void closing_one() {
-      using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
-      using held = std::remove_cv_t<typename collector::value_type>;
-      constexpr std::size_t theirs =
-          owner_type::template group_of<group>() + 1 + inside;
-      if (open_[theirs]) {
-        detail::close_one_group<held, inside>(std::get<group>(states_));
-        open_[theirs] = false;
-      }
+    constexpr void ended(const registers_type& registers) {
+      fold_all<state>(char{}, false, registers,
+                      std::make_index_sequence<sizeof...(collectors)>{});
     }
 
    private:
@@ -1698,31 +1623,108 @@ struct collected_match_closure
     // whether each is open.
     template <std::size_t landed, std::size_t group, class registers_type,
               std::size_t... inside>
-    constexpr void hand_inner(char letter, const registers_type& registers,
+    constexpr void hand_inner(char letter, bool hands_the_character,
+                              const registers_type& registers,
                               std::index_sequence<inside...>) {
-      (hand_inner_one<landed, group, inside>(letter, registers), ...);
+      // Opened first and in the order they are written, then the character to
+      // whatever is inside, then the closings innermost first -- the same step,
+      // in the same order, as a fold read by the format layer.
+      (open_inner<landed, group, inside>(registers), ...);
+      if (hands_the_character) {
+        (push_inner<landed, group, inside>(letter, registers), ...);
+      }
+      [&]<std::size_t... step>(std::index_sequence<step...>) {
+        (close_inner<landed, group, sizeof...(inside) - 1 - step>(registers),
+         ...);
+      }(std::make_index_sequence<sizeof...(inside)>{});
+    }
+
+    // Where a group of the type stands in the groups of this match, and
+    // whether the pattern has it at all.
+    template <std::size_t group, std::size_t inside>
+    static constexpr std::size_t theirs_at =
+        owner_type::template group_of<group>() + 1 + inside;
+
+    template <std::size_t group, std::size_t inside>
+    static constexpr bool inside_the_pattern =
+        theirs_at<group, inside> * 2 + 1 <
+        detail::regex_automaton<pattern>.tag_count;
+
+    // A turn is known by the position its group opened at: positions only move
+    // forward, so an opening that has moved is a turn that has begun. Told once
+    // per turn, however many characters the walk hands over inside it.
+    template <std::size_t landed, std::size_t group, std::size_t inside,
+              class registers_type>
+    constexpr void open_inner(const registers_type& registers) {
+      if constexpr (inside_the_pattern<group, inside>) {
+        using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+        using held = std::remove_cv_t<typename collector::value_type>;
+        constexpr std::size_t theirs = theirs_at<group, inside>;
+        constexpr const auto& entered =
+            detail::regex_automaton<pattern>.states[landed];
+        constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
+        const auto began = registers[opening];
+        if (began < 0 || told_at_[theirs] == began) return;
+        detail::open_one_group<held, inside>(std::get<group>(states_));
+        told_at_[theirs] = began;
+        open_[theirs] = true;
+      }
     }
 
     template <std::size_t landed, std::size_t group, std::size_t inside,
               class registers_type>
-    constexpr void hand_inner_one(char letter,
-                                  const registers_type& registers) {
-      using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
-      using held = std::remove_cv_t<typename collector::value_type>;
-      constexpr const auto& entered =
-          detail::regex_automaton<pattern>.states[landed];
-      constexpr std::size_t theirs =
-          owner_type::template group_of<group>() + 1 + inside;
-      if constexpr (theirs * 2 + 1 >=
-                    detail::regex_automaton<pattern>.tag_count) {
-        return;
-      } else {
+    constexpr void push_inner(char letter, const registers_type& registers) {
+      if constexpr (inside_the_pattern<group, inside>) {
+        using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+        using held = std::remove_cv_t<typename collector::value_type>;
+        constexpr std::size_t theirs = theirs_at<group, inside>;
+        constexpr const auto& entered =
+            detail::regex_automaton<pattern>.states[landed];
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
-        if (registers[opening] < 0) return;
+        if (!open_[theirs]) return;
         if (registers[closing] >= registers[opening]) return;
         detail::push_one_group<held, inside>(std::get<group>(states_), letter);
+      }
+    }
+
+    template <std::size_t landed, std::size_t group, std::size_t inside,
+              class registers_type>
+    constexpr void close_inner(const registers_type& registers) {
+      if constexpr (inside_the_pattern<group, inside>) {
+        using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+        using held = std::remove_cv_t<typename collector::value_type>;
+        constexpr std::size_t theirs = theirs_at<group, inside>;
+        constexpr const auto& entered =
+            detail::regex_automaton<pattern>.states[landed];
+        constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
+        constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
+        if (!open_[theirs]) return;
+        if (registers[closing] < registers[opening]) return;
+        detail::close_one_group<held, inside>(std::get<group>(states_));
+        open_[theirs] = false;
+      }
+    }
+
+    // Every collector, told what this step did to the groups it reads.
+    template <std::size_t landed, class registers_type, std::size_t... group>
+    constexpr void fold_all(char letter, bool hands_the_character,
+                            const registers_type& registers,
+                            std::index_sequence<group...>) {
+      (fold_one<landed, group>(letter, hands_the_character, registers), ...);
+    }
+
+    template <std::size_t landed, std::size_t group, class registers_type>
+    constexpr void fold_one(char letter, bool hands_the_character,
+                            const registers_type& registers) {
+      using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+      if constexpr (requires { typename collector::value_type; }) {
+        using held = std::remove_cv_t<typename collector::value_type>;
+        if constexpr (owner_type::template gathers_its_own_groups<group>()) {
+          hand_inner<landed, group>(
+              letter, hands_the_character, registers,
+              std::make_index_sequence<detail::groups_a_leaf_opens<held>()>{});
+        }
       }
     }
 
@@ -1750,12 +1752,9 @@ struct collected_match_closure
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
           if constexpr (owner_type::template gathers_its_own_groups<group>()) {
-            for (const char* letter = from; letter != to; ++letter) {
-              hand_inner<landed, group>(
-                  *letter, registers,
-                  std::make_index_sequence<detail::groups_a_leaf_opens<
-                      std::remove_cv_t<typename collector::value_type>>()>{});
-            }
+            // Told by the step above, which asks the positions rather than
+            // whether the group around it happens to be open here.
+            return;
           } else if constexpr (requires {
                                  std::get<group>(owner_.collectors_)
                                      .push_run(std::get<group>(states_),
@@ -1804,12 +1803,8 @@ struct collected_match_closure
           if (registers[closing] >= registers[opening]) return;
           if constexpr (owner_type::template gathers_its_own_groups<
                             group>()) {
-            // The type has groups of its own, and they are groups of this
-            // match: which of them is open says where the character goes.
-            hand_inner<landed, group>(
-                letter, registers,
-                std::make_index_sequence<detail::groups_a_leaf_opens<
-                    std::remove_cv_t<typename collector::value_type>>()>{});
+            // Told by the step above.
+            return;
           } else {
             std::get<group>(owner_.collectors_)
                 .push_one(std::get<group>(states_), letter);
@@ -1820,6 +1815,17 @@ struct collected_match_closure
 
     const collected_match_closure& owner_;
     states_type& states_;
+    // Where each group of this match last opened, so a turn is told once, and
+    // whether it is open now.
+    std::array<std::ptrdiff_t,
+               detail::regex_automaton<pattern>.tag_count / 2 + 1>
+        told_at_ = [] {
+          std::array<std::ptrdiff_t,
+                     detail::regex_automaton<pattern>.tag_count / 2 + 1>
+              made{};
+          for (auto& one : made) one = -1;
+          return made;
+        }();
     // Which of the groups of this match are open, by the number of the group.
     // A turn is ended by the opening of the next one, and the walk is what
     // sees that, so what has been opened has to be remembered here.
@@ -2069,8 +2075,7 @@ struct match_closure
 
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    const std::string_view text(std::ranges::data(input),
-                                std::ranges::size(input));
+    const std::string_view text = detail::characters_of(input);
     if constexpr (terminator < 0) {
       return detail::regex_match<pattern, walk>(text);
     } else {
@@ -2167,8 +2172,7 @@ struct starts_with_closure
 
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_starts_with<pattern>(std::string_view(
-        std::ranges::data(input), std::ranges::size(input)));
+    return detail::regex_starts_with<pattern>(detail::characters_of(input));
   }
 
   template <detail::forward_char_range range_type>
@@ -2234,8 +2238,7 @@ struct search_closure
     : std::ranges::range_adaptor_closure<search_closure<pattern>> {
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_search<pattern>(std::string_view(
-        std::ranges::data(input), std::ranges::size(input)));
+    return detail::regex_search<pattern>(detail::characters_of(input));
   }
 };
 
@@ -2742,8 +2745,7 @@ struct search_all_closure
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr search_view<pattern> operator()(
       range_type&& input) const {
-    return search_view<pattern>(std::string_view(std::ranges::data(input),
-                                                 std::ranges::size(input)));
+    return search_view<pattern>(detail::characters_of(input));
   }
 
   template <detail::read_once_char_range range_type>
@@ -3007,8 +3009,7 @@ struct split_closure
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr split_view<pattern> operator()(
       range_type&& input) const {
-    return split_view<pattern>(std::string_view(std::ranges::data(input),
-                                                std::ranges::size(input)));
+    return split_view<pattern>(detail::characters_of(input));
   }
 
   template <detail::read_once_char_range range_type>

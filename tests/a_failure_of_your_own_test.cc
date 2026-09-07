@@ -14,6 +14,8 @@ import gtest;
 
 namespace {
 
+using namespace std::string_view_literals;
+
 struct too_heavy : scan::scan_error {
   using scan_error::scan_error;
 };
@@ -74,13 +76,13 @@ struct package {
 };
 
 TEST(AFailureOfYourOwn, TheValueWhereNothingWentWrong) {
-  const package one = scan::scan<"{} {}">("450 flour").of<package>();
+  const package one = scan::scan<"{} {}">("450 flour"sv).of<package>();
   EXPECT_EQ(one.how_heavy.grams, 450);
   EXPECT_EQ(one.name.text, "flour");
 }
 
 TEST(AFailureOfYourOwn, HandedBackAsTheKindItIs) {
-  const auto got = scan::scan<"{} {}">("99999 flour").try_of<package>();
+  const auto got = scan::scan<"{} {}">("99999 flour"sv).try_of<package>();
   ASSERT_FALSE(got.has_value());
   EXPECT_TRUE(std::holds_alternative<too_heavy>(got.error()));
   EXPECT_EQ(std::string_view(scan::what(got.error())), "over ten kilos");
@@ -91,19 +93,19 @@ TEST(AFailureOfYourOwn, AndOneThatThrowsGoesPastTheReading) {
   // and trying rather than asking does not change that -- what it changes is
   // what a scanner that hands its failure back comes out as.
   EXPECT_THROW(
-      static_cast<void>(scan::scan<"{} {}">("450 no").try_of<package>()),
+      static_cast<void>(scan::scan<"{} {}">("450 no"sv).try_of<package>()),
       thrown_at_you);
 }
 
 TEST(AFailureOfYourOwn, TheLibrarysOwnKindsAreStillThere) {
-  const auto got = scan::scan<"{} {}">("450;flour").try_of<package>();
+  const auto got = scan::scan<"{} {}">("450;flour"sv).try_of<package>();
   ASSERT_FALSE(got.has_value());
   EXPECT_TRUE(std::holds_alternative<scan::no_match>(got.error()));
 }
 
 TEST(AFailureOfYourOwn, AskedForRatherThanTriedForItThrows) {
   EXPECT_THROW(
-      static_cast<void>(scan::scan<"{} {}">("99999 flour").of<package>()),
+      static_cast<void>(scan::scan<"{} {}">("99999 flour"sv).of<package>()),
       too_heavy);
 }
 

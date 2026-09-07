@@ -26,10 +26,27 @@ TEST(ExpectedForm, AScanThatDidNot) {
 }
 
 TEST(ExpectedForm, AFieldThatWillNotConvert) {
+  // A place written `{}` for an `int` matches digits and nothing else, so a
+  // field of letters is not a field that will not convert -- it is a subject
+  // the pattern does not describe, and that is what comes back.
   const std::string text = "12,abc";
   const auto value = scan::scan<"{},{}">(text).try_of<pair>();
   EXPECT_FALSE(value.has_value());
-  EXPECT_TRUE(std::holds_alternative<scan::bad_field>(value.error()));
+  EXPECT_TRUE(std::holds_alternative<scan::no_match>(value.error()));
+}
+
+TEST(ExpectedForm, AFieldThatMatchedAndStillWillNotConvert) {
+  // Written out, the place takes what the type will not: eight digits are a
+  // fine `[0-9]+` and not a fine `int`… which is the field below. Here the
+  // reading is of something that matched and then did not read.
+  struct wide {
+    int left;
+    std::uint8_t right;
+  };
+  const std::string text = "12,300";
+  const auto value = scan::scan<"{},{[0-9]+}">(text).try_of<wide>();
+  EXPECT_FALSE(value.has_value());
+  EXPECT_TRUE(std::holds_alternative<scan::out_of_range>(value.error()));
 }
 
 TEST(ExpectedForm, AFieldThatDoesNotFit) {

@@ -2740,16 +2740,22 @@ class field_gatherer {
 
   // Where the walk ended is a constant, so the reading that accepted is one
   // too, and the value is put together here rather than looked for afterwards.
+  // A walk keeps every place it passes, and the last one it keeps is the
+  // answer -- so this runs more than once and the last of them wins, which is
+  // what it has always done with the value. It has to do the same with a
+  // failure: a place passed early where a field was not read yet is not this
+  // reading's answer, and holding on to that would lose every match after it.
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type& registers) {
-    if (failed_) return;
     constexpr const auto& packed = automaton.states[state];
     auto got = finish_value<type, type, 0>(
         packed.readings[packed.accepting_slot], states_, registers, text_);
     if (!got) {
       failed_ = std::move(got).error();
+      made_.reset();
       return;
     }
+    failed_.reset();
     made_.emplace(std::move(*got));
   }
 
