@@ -562,13 +562,19 @@ concept says_a_format = requires {
 // it. A type that also says how to build itself out of its own groups is read
 // that way instead: the groups are the same groups, and reading them is the
 // user's own code rather than this library's.
+// A type read by spreading the format it declares into the automaton around
+// it. A type that says it reads its own groups is read that way instead: the
+// groups are the same groups, and reading them is the user's own code rather
+// than this library's.
+//
+// Asked as a plain question and not by whether a hook is there. What such a
+// hook hands back is a list of everything the reading can fail with, and
+// working that list out means asking how this type is read -- which is what is
+// being decided here.
 template <class type>
 concept scanned_by_format = says_a_format<type> && !requires {
-  scan::scanner<std::remove_cv_t<type>>{}.from_groups(
-      std::declval<std::span<const std::string_view>>());
-} && !requires {
-  scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(
-      std::declval<std::span<const std::string_view>>());
+  { scan::scanner<std::remove_cv_t<type>>{}.reads_its_groups() } -> std::same_as<bool>;
+  requires scan::scanner<std::remove_cv_t<type>>{}.reads_its_groups();
 };
 
 // A type that says outright it is a list, though it could be read as one
@@ -2590,6 +2596,28 @@ struct kinds_in<type, 3> {
       decltype(over(std::make_index_sequence<branch_count<type>()>{}));
 };
 
+// What reading a shape can fail with, asked of its fields.
+//
+// Never of the shape itself: what the shape says it hands back is this very
+// list, so a list that asked the shape would be asking its own answer. Its
+// fields are other types, and asking them is asking something else.
+template <class type, class sequence>
+struct kinds_of_fields;
+template <class type, std::size_t... field>
+struct kinds_of_fields<type, std::index_sequence<field...>> {
+  using list = typename joined_all<typename kinds_in<std::remove_cvref_t<
+      decltype(boost::pfr::get<field>(
+          std::declval<std::remove_cv_t<type>&>()))>>::list...>::type;
+};
+
+template <class type>
+using shape_failure = typename scan::as_a_variant<typename scan::without_repeats<
+    typename scan::joined_lists<
+        scan::our_kinds,
+        typename kinds_of_fields<
+            type, std::make_index_sequence<boost::pfr::tuple_size_v<
+                      std::remove_cv_t<type>>>>::list>::type>::type>::type;
+
 // This library's kinds, and the ones this output's own scanners declare.
 template <class type>
 using failure_for = typename scan::as_a_variant<typename scan::without_repeats<
@@ -2798,49 +2826,6 @@ template <class failure_type, class parameters, class type,
       return type{std::move(*std::get<index>(parts))...};
     }(std::make_index_sequence<parts_of<type>::count>{});
   }
-}
-
-// A shape whose places have each been told their characters, put together.
-//
-// Only for a shape made of places: every place happens once, so what it
-// gathered is what that value is. A list or a choice is made of turns and of
-// marks, and neither is a thing a gathering by itself can say.
-template <class type, fixed_string format, std::size_t offset,
-          class state_type, class failure_type>
-[[nodiscard]] constexpr auto value_from_gatherings(state_type& state)
-    -> std::expected<std::remove_cv_t<type>, failure_type> {
-  using held = std::remove_cv_t<type>;
-  if constexpr (scanned_as_leaf<held>) {
-    auto& gathered = std::get<offset>(state);
-    if constexpr (scan::says_what_went_wrong_finishing<held>) {
-      auto got = scan::scanner<held>{}.try_finish(std::move(gathered));
-      if (got) return std::move(*got);
-      return std::unexpected(
-          scan::as_a_failure<failure_type>(std::move(got).error()));
-    } else {
-      return scanner_finish<held>(std::move(gathered));
-    }
-  } else {
-    return [&]<std::size_t... field>(std::index_sequence<field...>)
-               -> std::expected<held, failure_type> {
-      auto parts = std::tuple{
-          value_from_gatherings<typename parts_of<held>::template at<field>,
-                                format,
-                                offset + groups_before_field<held, field>(),
-                                state_type, failure_type>(state)...};
-      if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
-        return std::unexpected(std::move(*went_wrong));
-      }
-      return held{std::move(*std::get<field>(parts))...};
-    }(std::make_index_sequence<parts_of<held>::count>{});
-  }
-}
-
-template <class type, fixed_string format, class state_type>
-[[nodiscard]] constexpr auto shape_from_gatherings(state_type state) {
-  using held = std::remove_cv_t<type>;
-  return value_from_gatherings<held, format, 0, state_type,
-                               failure_for<held>>(state);
 }
 
 [[nodiscard]] constexpr bool is_regex_meta(char value) {

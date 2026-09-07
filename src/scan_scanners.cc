@@ -551,55 +551,38 @@ struct aggregate_scanner {
     return detail::places_pattern<type, format>();
   }
 
+  // Whether this shape is read from its own groups, said outright.
+  //
+  // Asked as a question and not found out by whether the hook below is there:
+  // what that hook hands back is the list of everything reading this shape can
+  // fail with, and working that list out means knowing how the shape is read,
+  // which is what the question decides.
+  //
+  // A shape with a list inside says no. A list is made of turns, and the
+  // positions a match leaves behind hold the last turn and nothing before it,
+  // so such a shape keeps the road that spreads its places into the automaton
+  // around it.
+  [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
+    static_cast<void>(self);
+    return !detail::says_a_list_inside<scanner_target_t<decltype(self)>>();
+  }
+
   // The shape, out of the groups its pattern opened.
   //
   // Its groups are its places, so what builds it from them is what builds it
   // from the places of the reading around it: one builder, and this is a call
-  // to it. A shape with a list inside is not built this way -- a list is made
-  // of turns, and the positions a match leaves behind hold the last turn and
-  // nothing before it -- so those keep the road that spreads them into the
-  // automaton.
+  // to it.
   template <class self_type>
     requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
   [[nodiscard]] constexpr auto try_from_groups(
-      this const self_type& self, std::span<const std::string_view> groups) {
+      this const self_type& self, std::span<const std::string_view> groups)
+      -> std::expected<scanner_target_t<self_type>,
+                       detail::shape_failure<scanner_target_t<self_type>>> {
     using type = scanner_target_t<self_type>;
     static_cast<void>(self);
-    return detail::build_value<detail::failure_for<type>,
+    return detail::build_value<detail::shape_failure<type>,
                                detail::format_parameters<type, format>, type,
                                0>(groups);
-  }
-
-  // And the same shape, told its groups as they arrive.
-  //
-  // Where the subject is read once there is nothing to point at, so the groups
-  // cannot be handed over at the end: every place is told its characters as
-  // they come, and what they are told is the reader of the value that place
-  // stands for. Nothing is put together as text and nothing is read twice.
-  template <class self_type>
-    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
-  [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {
-    static_cast<void>(self);
-    return detail::make_scanner_state<scanner_target_t<self_type>, format>();
-  }
-
-  template <class self_type, std::size_t group, class state_type>
-    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
-  constexpr void push_group(this const self_type& self, state_type& state,
-                            scan::group_at<group>, char letter) {
-    static_cast<void>(self);
-    using type = scanner_target_t<self_type>;
-    scanner_push<detail::leaf_kind<type, group>>(std::get<group>(state),
-                                                 letter);
-  }
-
-  template <class self_type, class state_type>
-    requires(detail::a_flat_shape<scanner_target_t<self_type>>())
-  [[nodiscard]] constexpr auto try_finish_groups(
-      this const self_type& self, state_type state) {
-    static_cast<void>(self);
-    return detail::shape_from_gatherings<scanner_target_t<self_type>, format>(
-        std::move(state));
   }
 
   [[nodiscard]] constexpr auto begin(this const auto& self) {
