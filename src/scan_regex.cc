@@ -140,15 +140,15 @@ namespace detail {
 // the things a lambda-declarator may carry, and naming it there is not a
 // weaker request that compilers ignore -- it stops the parse.
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA __forceinline
-#define SCAN_REGEX_NEVER_INLINE __declspec(noinline)
+#define SCAN_REGEX_NEVER_INLINE_CALL
 #elif defined(__GNUC__) || defined(__clang__)
 #define SCAN_REGEX_FORCE_INLINE [[gnu::always_inline]] inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
-#define SCAN_REGEX_NEVER_INLINE [[gnu::noinline]]
+#define SCAN_REGEX_NEVER_INLINE_CALL [[clang::noinline]]
 #else
 #define SCAN_REGEX_FORCE_INLINE inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA
-#define SCAN_REGEX_NEVER_INLINE
+#define SCAN_REGEX_NEVER_INLINE_CALL
 #endif
 
 template <class state_type>
@@ -577,9 +577,8 @@ using regex_result_for =
 // first of them still accepting when the characters run out. `a|ab` reads
 // "ab" as `ab`, where the same pattern searching for a head reads `a`.
 template <fixed_string pattern>
-[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr
-    regex_result_for<pattern.to_the_end()>
-    regex_match(std::string_view input) {
+[[nodiscard]] constexpr regex_result_for<pattern.to_the_end()>
+regex_match(std::string_view input) {
   constexpr auto whole = pattern.to_the_end();
   constexpr const auto& automaton = regex_automaton<whole>;
   if constexpr (automaton.tag_count == 0) {
@@ -638,9 +637,8 @@ template <fixed_string pattern>
 }
 
 template <fixed_string pattern, unsigned char sentinel>
-[[nodiscard]] SCAN_REGEX_NEVER_INLINE constexpr
-    regex_result_for<pattern.to_the_end()>
-    regex_match_sentinel(std::string_view input) {
+[[nodiscard]] constexpr regex_result_for<pattern.to_the_end()>
+regex_match_sentinel(std::string_view input) {
   constexpr auto whole = pattern.to_the_end();
   constexpr const auto& automaton = regex_automaton<whole>;
   static_assert(automaton.tag_count == 0,
@@ -690,6 +688,13 @@ template <fixed_string pattern>
   if (best == nullptr) return {};
   // The head is known; the match over exactly that head is run again to fill
   // in whatever the pattern captures, which one pass cannot carry.
+  //
+  // Called rather than written out here. Whoever matches a subject of their
+  // own wants it written where they are -- no call, no result handed back
+  // through memory, and the parts of it they do not look at gone. A search
+  // runs it once for every place it tries, and writing it out there would put
+  // the whole of a match inside a loop.
+  SCAN_REGEX_NEVER_INLINE_CALL
   return regex_match<pattern>(
       input.substr(0, static_cast<std::size_t>(best - begin)));
 }
@@ -708,6 +713,7 @@ template <fixed_string pattern>
   for (const char* from = begin; from <= end; ++from) {
     const char* const best = longest_head<pattern>(from, end);
     if (best == nullptr) continue;
+    SCAN_REGEX_NEVER_INLINE_CALL
     return regex_match<pattern>(
         std::string_view(from, static_cast<std::size_t>(best - from)));
   }
