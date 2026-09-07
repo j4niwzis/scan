@@ -53,17 +53,25 @@ if(SCAN_BUILD_FUZZER)
     GITHUB_REPOSITORY google/re2
     GIT_TAG 2024-07-02
   )
+  # The other engine is a header, and a translation unit that includes one
+  # textually while importing modules built against the `std` module gets two
+  # views of the standard library. So it is wrapped once, the way the
+  # benchmarks wrap theirs, and nothing else here names an RE2 type.
+  add_library(fuzz_oracle)
+  target_sources(fuzz_oracle PUBLIC FILE_SET CXX_MODULES FILES
+    fuzz/oracle.cppm)
+  target_link_libraries(fuzz_oracle PUBLIC re2::re2)
+  target_compile_features(fuzz_oracle PUBLIC cxx_std_23)
+
   add_executable(differential_fuzz fuzz/differential.cc)
-  target_link_libraries(differential_fuzz PRIVATE scan re2::re2)
-  # A pattern read at run time is read by the same code that reads one written
-  # in a template argument, and that code is in the library's own modules.
+  target_link_libraries(differential_fuzz PRIVATE scan fuzz_oracle)
   target_compile_features(differential_fuzz PRIVATE cxx_std_23)
 
   # And the same thing under libFuzzer, where the bytes are chosen to reach
   # places rather than at random.
   if(SCAN_FUZZER_LIBFUZZER)
     add_executable(differential_libfuzzer fuzz/differential.cc)
-    target_link_libraries(differential_libfuzzer PRIVATE scan re2::re2)
+    target_link_libraries(differential_libfuzzer PRIVATE scan fuzz_oracle)
     target_compile_definitions(differential_libfuzzer PRIVATE SCAN_FUZZ_ENTRY)
     target_compile_options(differential_libfuzzer PRIVATE
       -fsanitize=fuzzer,address)

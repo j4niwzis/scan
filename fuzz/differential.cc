@@ -24,20 +24,10 @@
 // part. The group positions are where the tags are, and a machine that gets
 // the answer right by getting the tags wrong is the failure this is looking
 // for.
-#include <re2/re2.h>
-
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <random>
-#include <span>
-#include <string>
-#include <string_view>
-#include <vector>
-
 import std;
 import scan.tre;
 import scan.compiler;
+import fuzz.oracle;
 
 namespace {
 
@@ -167,33 +157,26 @@ answer ours(std::string_view pattern, std::string_view subject, bool anchored,
   return said;
 }
 
-answer theirs(const RE2& expression, std::string_view subject, bool anchored,
-              std::size_t groups) {
+answer theirs(const oracle::expression& expression, std::string_view subject,
+              bool anchored, std::size_t groups) {
   answer said;
   said.groups.resize(groups);
-  std::vector<re2::StringPiece> found(groups + 1);
-  const bool matched = expression.Match(
-      subject, 0, subject.size(),
-      anchored ? RE2::ANCHOR_BOTH : RE2::ANCHOR_START, found.data(),
-      static_cast<int>(found.size()));
-  said.matched = matched;
-  if (!matched) return said;
+  std::vector<oracle::span> found(groups);
+  const std::string held(subject);
+  if (!expression.match(held, anchored, found)) return said;
+  said.matched = true;
   for (std::size_t group = 0; group < groups; ++group) {
-    const re2::StringPiece& piece = found[group + 1];
-    if (piece.data() == nullptr) continue;
-    said.groups[group] = {true, piece.data() - subject.data(),
-                          piece.data() + piece.size() - subject.data()};
+    said.groups[group] = {found[group].took_part,
+                          static_cast<std::ptrdiff_t>(found[group].begins),
+                          static_cast<std::ptrdiff_t>(found[group].ends)};
   }
   return said;
 }
 
 void complain(std::string_view what, std::string_view pattern,
               std::string_view subject, bool anchored) {
-  std::printf("%.*s\n  pattern: %.*s\n  subject: %.*s\n  anchored: %s\n",
-              static_cast<int>(what.size()), what.data(),
-              static_cast<int>(pattern.size()), pattern.data(),
-              static_cast<int>(subject.size()), subject.data(),
-              anchored ? "both ends" : "the start");
+  std::println("{}\n  pattern:  {}\n  subject:  {}\n  anchored: {}", what,
+               pattern, subject, anchored ? "both ends" : "the start");
 }
 
 // True where the two agreed, or where the case says nothing.
@@ -206,13 +189,9 @@ bool one_round(std::span<const std::uint8_t> bytes) {
   const std::size_t groups = maker.groups();
   if (pattern.empty() || pattern.size() > 200) return true;
 
-  RE2::Options options;
-  options.set_log_errors(false);
-  const RE2 expression(pattern, options);
+  const oracle::expression expression(pattern);
   if (!expression.ok()) return true;
-  if (static_cast<std::size_t>(expression.NumberOfCapturingGroups()) != groups) {
-    return true;
-  }
+  if (static_cast<std::size_t>(expression.groups()) != groups) return true;
 
   for (const bool anchored : {true, false}) {
     answer mine;
@@ -237,11 +216,11 @@ bool one_round(std::span<const std::uint8_t> bytes) {
            (mine.groups[group].begins != other.groups[group].begins ||
             mine.groups[group].ends != other.groups[group].ends))) {
         complain("the group is somewhere else", pattern, subject, anchored);
-        std::printf("  group %zu: ours [%td,%td) took_part=%d, theirs [%td,%td) took_part=%d\n",
-                    group, mine.groups[group].begins, mine.groups[group].ends,
-                    static_cast<int>(mine.groups[group].took_part),
-                    other.groups[group].begins, other.groups[group].ends,
-                    static_cast<int>(other.groups[group].took_part));
+        std::println(
+            "  group {}: ours [{},{}) took_part={}, theirs [{},{}) took_part={}",
+            group, mine.groups[group].begins, mine.groups[group].ends,
+            mine.groups[group].took_part, other.groups[group].begins,
+            other.groups[group].ends, other.groups[group].took_part);
         return false;
       }
     }
@@ -261,12 +240,12 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
 int main(int count, char** arguments) {
   std::uint64_t seed = 1;
   std::size_t rounds = 100000;
-  for (int at = 1; at + 1 < count; at += 2) {
-    if (std::strcmp(arguments[at], "--seed") == 0) {
-      seed = std::strtoull(arguments[at + 1], nullptr, 10);
-    } else if (std::strcmp(arguments[at], "--rounds") == 0) {
-      rounds = std::strtoull(arguments[at + 1], nullptr, 10);
-    }
+  const std::span given(arguments, static_cast<std::size_t>(count));
+  for (std::size_t at = 1; at + 1 < given.size(); at += 2) {
+    const std::string_view name(given[at]);
+    const std::string_view value(given[at + 1]);
+    if (name == "--seed") seed = std::stoull(std::string(value));
+    else if (name == "--rounds") rounds = std::stoull(std::string(value));
   }
   std::mt19937_64 source(seed);
   std::vector<std::uint8_t> bytes;
@@ -277,12 +256,12 @@ int main(int count, char** arguments) {
     if (!one_round(bytes)) {
       ++disagreements;
       if (disagreements == 20) {
-        std::printf("stopping after twenty\n");
+        std::println("stopping after twenty");
         break;
       }
     }
   }
-  std::printf("%zu rounds, %zu disagreements\n", rounds, disagreements);
+  std::println("{} rounds, {} disagreements", rounds, disagreements);
   return disagreements == 0 ? 0 : 1;
 }
 #endif
