@@ -1849,9 +1849,9 @@ template <class held>
 struct fold_of {
   using held_type = std::remove_cv_t<held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
-  using state_type = decltype(scan::scanner<held_type>::begin_groups());
+  using state_type = decltype(scan::scanner<held_type>{}.begin_groups());
 
-  state_type state = scan::scanner<held_type>::begin_groups();
+  state_type state = scan::scanner<held_type>{}.begin_groups();
   std::array<std::ptrdiff_t, inside> told_at{};
   std::array<bool, inside> open{};
   // Whether it asked for something this subject cannot give: its groups whole,
@@ -2493,12 +2493,12 @@ template <class root, class type, std::size_t offset, class reading_type,
           "pointed at: give it push_group to read a stream")));
     }
     if constexpr (scan::says_what_went_wrong_folding<held>) {
-      auto got = scan::scanner<held>::try_finish_groups(std::move(fold.state));
+      auto got = scan::scanner<held>{}.try_finish_groups(std::move(fold.state));
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else {
-      return scan::scanner<held>::finish_groups(std::move(fold.state));
+      return scan::scanner<held>{}.finish_groups(std::move(fold.state));
     }
   } else if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
     // A leaf built from its own groups once the match is over. They are groups
@@ -2524,16 +2524,16 @@ template <class root, class type, std::size_t offset, class reading_type,
     }(std::make_index_sequence<inside>{});
     const auto given = std::span<const std::string_view>(theirs);
     if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-      auto got = scan::scanner<held>::try_from_groups(given);
+      auto got = scan::scanner<held>{}.try_from_groups(given);
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else if constexpr (requires {
-                           scan::scanner<held>::from_groups(given);
+                           scan::scanner<held>{}.from_groups(given);
                          }) {
-      return scan::scanner<held>::from_groups(given);
+      return scan::scanner<held>{}.from_groups(given);
     } else {
-      auto state = scan::scanner<held>::begin_groups();
+      auto state = scan::scanner<held>{}.begin_groups();
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           if (!took[at]) return;
@@ -2542,12 +2542,12 @@ template <class root, class type, std::size_t offset, class reading_type,
         }(), ...);
       }(std::make_index_sequence<inside>{});
       if constexpr (scan::says_what_went_wrong_folding<held>) {
-        auto got = scan::scanner<held>::try_finish_groups(std::move(state));
+        auto got = scan::scanner<held>{}.try_finish_groups(std::move(state));
         if (got) return std::move(*got);
         return std::unexpected(
             scan::as_a_failure<failure_type>(std::move(got).error()));
       } else {
-        return scan::scanner<held>::finish_groups(std::move(state));
+        return scan::scanner<held>{}.finish_groups(std::move(state));
       }
     }
   } else if constexpr (scanned_as_leaf<type>) {

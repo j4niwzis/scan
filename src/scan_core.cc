@@ -520,13 +520,13 @@ concept says_what_went_wrong_finishing =
 template <class type>
 concept says_what_went_wrong_from_groups =
     requires(std::span<const std::string_view> given) {
-      scanner<std::remove_cv_t<type>>::try_from_groups(given);
+      scanner<std::remove_cv_t<type>>{}.try_from_groups(given);
     };
 
 template <class type>
 concept says_what_went_wrong_folding = requires {
-  scanner<std::remove_cv_t<type>>::try_finish_groups(
-      scanner<std::remove_cv_t<type>>::begin_groups());
+  scanner<std::remove_cv_t<type>>{}.try_finish_groups(
+      scanner<std::remove_cv_t<type>>{}.begin_groups());
 };
 
 template <class type>
@@ -539,13 +539,13 @@ using went_wrong_finishing = typename decltype(scanner<std::remove_cv_t<type>>::
 
 template <class type>
 using went_wrong_from_groups =
-    typename decltype(scanner<std::remove_cv_t<type>>::try_from_groups(
+    typename decltype(scanner<std::remove_cv_t<type>>{}.try_from_groups(
         std::declval<std::span<const std::string_view>>()))::error_type;
 
 template <class type>
 using went_wrong_folding =
-    typename decltype(scanner<std::remove_cv_t<type>>::try_finish_groups(
-        scanner<std::remove_cv_t<type>>::begin_groups()))::error_type;
+    typename decltype(scanner<std::remove_cv_t<type>>{}.try_finish_groups(
+        scanner<std::remove_cv_t<type>>{}.begin_groups()))::error_type;
 
 template <std::size_t capacity = 8192>
 struct pattern_buffer {

@@ -686,13 +686,13 @@ concept names_its_groups = requires {
 template <class type, std::size_t which, class state_type>
 concept takes_the_group_whole =
     requires(state_type& state, std::string_view text) {
-      scan::scanner<std::remove_cv_t<type>>::closed_group(
+      scan::scanner<std::remove_cv_t<type>>{}.closed_group(
           state, scan::group_at<which>{}, text);
     } || requires(state_type& state, std::string_view text) {
-      scan::scanner<std::remove_cv_t<type>>::closed_group(state, which, text);
+      scan::scanner<std::remove_cv_t<type>>{}.closed_group(state, which, text);
     } || (names_its_groups<type> &&
           requires(state_type& state, std::string_view text) {
-            scan::scanner<std::remove_cv_t<type>>::closed_group(
+            scan::scanner<std::remove_cv_t<type>>{}.closed_group(
                 state,
                 std::variant_alternative_t<
                     which,
@@ -703,7 +703,7 @@ concept takes_the_group_whole =
 // The state a type folds its groups in, as a type.
 template <class type>
 using group_state_of =
-    decltype(scan::scanner<std::remove_cv_t<type>>::begin_groups());
+    decltype(scan::scanner<std::remove_cv_t<type>>{}.begin_groups());
 
 // Whether the type takes the characters of this group at all. A fold may be
 // made of the edges alone -- counting the turns, saying which branch ran -- and
@@ -711,12 +711,12 @@ using group_state_of =
 template <class type, std::size_t which, class state_type>
 concept takes_group_characters =
     requires(state_type& state, char letter) {
-      scan::scanner<std::remove_cv_t<type>>::push_group(
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(
           state, scan::group_at<which>{}, letter);
     } || requires(state_type& state, char letter) {
-      scan::scanner<std::remove_cv_t<type>>::push_group(state, which, letter);
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(state, which, letter);
     } || (names_its_groups<type> && requires(state_type& state, char letter) {
-      scan::scanner<std::remove_cv_t<type>>::push_group(
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(
           state,
           std::variant_alternative_t<
               which, typename scan::scanner<std::remove_cv_t<type>>::group>{},
@@ -730,27 +730,27 @@ template <class type, std::size_t which, class state_type>
 constexpr void push_one_group(state_type& state, char letter) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
   if constexpr (requires {
-                  scanner_type::push_group(state, scan::group_at<which>{},
+                  scanner_type{}.push_group(state, scan::group_at<which>{},
                                            letter);
                 }) {
-    scanner_type::push_group(state, scan::group_at<which>{}, letter);
+    scanner_type{}.push_group(state, scan::group_at<which>{}, letter);
   } else if constexpr (names_its_groups<type>) {
     using named = typename scanner_type::group;
     using one = std::variant_alternative_t<which, named>;
-    if constexpr (requires { scanner_type::push_group(state, one{}, letter); }) {
-      scanner_type::push_group(state, one{}, letter);
+    if constexpr (requires { scanner_type{}.push_group(state, one{}, letter); }) {
+      scanner_type{}.push_group(state, one{}, letter);
     } else if constexpr (requires {
-                           scanner_type::push_group(
+                           scanner_type{}.push_group(
                                state, named(std::in_place_index<which>),
                                letter);
                          }) {
-      scanner_type::push_group(state, named(std::in_place_index<which>),
+      scanner_type{}.push_group(state, named(std::in_place_index<which>),
                                letter);
     } else {
-      scanner_type::push_group(state, which, letter);
+      scanner_type{}.push_group(state, which, letter);
     }
   } else {
-    scanner_type::push_group(state, which, letter);
+    scanner_type{}.push_group(state, which, letter);
   }
 }
 
@@ -760,24 +760,24 @@ template <class type, std::size_t which, class state_type>
 constexpr void open_one_group(state_type& state) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
   if constexpr (requires {
-                  scanner_type::opened_group(state, scan::group_at<which>{});
+                  scanner_type{}.opened_group(state, scan::group_at<which>{});
                 }) {
-    scanner_type::opened_group(state, scan::group_at<which>{});
+    scanner_type{}.opened_group(state, scan::group_at<which>{});
   } else if constexpr (names_its_groups<type>) {
     using named = typename scanner_type::group;
     using one = std::variant_alternative_t<which, named>;
-    if constexpr (requires { scanner_type::opened_group(state, one{}); }) {
-      scanner_type::opened_group(state, one{});
+    if constexpr (requires { scanner_type{}.opened_group(state, one{}); }) {
+      scanner_type{}.opened_group(state, one{});
     } else if constexpr (requires {
-                           scanner_type::opened_group(
+                           scanner_type{}.opened_group(
                                state, named(std::in_place_index<which>));
                          }) {
-      scanner_type::opened_group(state, named(std::in_place_index<which>));
-    } else if constexpr (requires { scanner_type::opened_group(state, which); }) {
-      scanner_type::opened_group(state, which);
+      scanner_type{}.opened_group(state, named(std::in_place_index<which>));
+    } else if constexpr (requires { scanner_type{}.opened_group(state, which); }) {
+      scanner_type{}.opened_group(state, which);
     }
-  } else if constexpr (requires { scanner_type::opened_group(state, which); }) {
-    scanner_type::opened_group(state, which);
+  } else if constexpr (requires { scanner_type{}.opened_group(state, which); }) {
+    scanner_type{}.opened_group(state, which);
   }
 }
 
@@ -792,22 +792,22 @@ template <class type, std::size_t which, class state_type>
 constexpr void close_one_group(state_type& state, std::string_view text) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
   if constexpr (requires {
-                  scanner_type::closed_group(state, scan::group_at<which>{},
+                  scanner_type{}.closed_group(state, scan::group_at<which>{},
                                              text);
                 }) {
-    scanner_type::closed_group(state, scan::group_at<which>{}, text);
+    scanner_type{}.closed_group(state, scan::group_at<which>{}, text);
   } else if constexpr (requires {
-                         scanner_type::closed_group(state, which, text);
+                         scanner_type{}.closed_group(state, which, text);
                        }) {
-    scanner_type::closed_group(state, which, text);
+    scanner_type{}.closed_group(state, which, text);
   } else if constexpr (names_its_groups<type> && requires {
-                         scanner_type::closed_group(
+                         scanner_type{}.closed_group(
                              state,
                              std::variant_alternative_t<
                                  which, typename scanner_type::group>{},
                              text);
                        }) {
-    scanner_type::closed_group(
+    scanner_type{}.closed_group(
         state,
         std::variant_alternative_t<which, typename scanner_type::group>{},
         text);
@@ -821,24 +821,24 @@ template <class type, std::size_t which, class state_type>
 constexpr void close_one_group(state_type& state) {
   using scanner_type = scan::scanner<std::remove_cv_t<type>>;
   if constexpr (requires {
-                  scanner_type::closed_group(state, scan::group_at<which>{});
+                  scanner_type{}.closed_group(state, scan::group_at<which>{});
                 }) {
-    scanner_type::closed_group(state, scan::group_at<which>{});
+    scanner_type{}.closed_group(state, scan::group_at<which>{});
   } else if constexpr (names_its_groups<type>) {
     using named = typename scanner_type::group;
     using one = std::variant_alternative_t<which, named>;
-    if constexpr (requires { scanner_type::closed_group(state, one{}); }) {
-      scanner_type::closed_group(state, one{});
+    if constexpr (requires { scanner_type{}.closed_group(state, one{}); }) {
+      scanner_type{}.closed_group(state, one{});
     } else if constexpr (requires {
-                           scanner_type::closed_group(
+                           scanner_type{}.closed_group(
                                state, named(std::in_place_index<which>));
                          }) {
-      scanner_type::closed_group(state, named(std::in_place_index<which>));
-    } else if constexpr (requires { scanner_type::closed_group(state, which); }) {
-      scanner_type::closed_group(state, which);
+      scanner_type{}.closed_group(state, named(std::in_place_index<which>));
+    } else if constexpr (requires { scanner_type{}.closed_group(state, which); }) {
+      scanner_type{}.closed_group(state, which);
     }
-  } else if constexpr (requires { scanner_type::closed_group(state, which); }) {
-    scanner_type::closed_group(state, which);
+  } else if constexpr (requires { scanner_type{}.closed_group(state, which); }) {
+    scanner_type{}.closed_group(state, which);
   }
 }
 
@@ -849,9 +849,9 @@ constexpr void close_one_group(state_type& state) {
 // in it, which are groups of whatever it is written into.
 template <class type>
 concept reads_its_own_groups =
-    requires { scan::scanner<std::remove_cv_t<type>>::begin_groups(); } ||
+    requires { scan::scanner<std::remove_cv_t<type>>{}.begin_groups(); } ||
     requires(std::span<const std::string_view> given) {
-      scan::scanner<std::remove_cv_t<type>>::from_groups(given);
+      scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
     };
 
 // How many groups a leaf's own pattern opens.
@@ -1142,7 +1142,7 @@ inline constexpr bool gathers_by_its_groups =
 // that can be handed to it.
 template <class type>
 concept folds_its_groups = requires {
-  scan::scanner<std::remove_cv_t<type>>::begin_groups();
+  scan::scanner<std::remove_cv_t<type>>{}.begin_groups();
 };
 
 template <class held>
@@ -2406,7 +2406,7 @@ template <class failure_type, class parameters, class type,
     constexpr std::size_t inside = groups_a_leaf_opens<held>();
     if constexpr (scan::says_what_went_wrong_from_groups<held> ||
                   requires(std::span<const std::string_view> given) {
-                    scan::scanner<held>::from_groups(given);
+                    scan::scanner<held>{}.from_groups(given);
                   }) {
       std::array<std::string_view, inside> theirs{};
       [&]<std::size_t... at>(std::index_sequence<at...>) {
@@ -2414,15 +2414,15 @@ template <class failure_type, class parameters, class type,
       }(std::make_index_sequence<inside>{});
       const auto given = std::span<const std::string_view>(theirs);
       if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-        auto got = scan::scanner<held>::try_from_groups(given);
+        auto got = scan::scanner<held>{}.try_from_groups(given);
         if (got) return std::move(*got);
         return std::unexpected(
             scan::as_a_failure<failure_type>(std::move(got).error()));
       } else {
-        return scan::scanner<held>::from_groups(given);
+        return scan::scanner<held>{}.from_groups(given);
       }
     } else {
-      auto state = scan::scanner<held>::begin_groups();
+      auto state = scan::scanner<held>{}.begin_groups();
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           // A group that took no part in the match is not opened at all, which
@@ -2433,12 +2433,12 @@ template <class failure_type, class parameters, class type,
         }(), ...);
       }(std::make_index_sequence<inside>{});
       if constexpr (scan::says_what_went_wrong_folding<held>) {
-        auto got = scan::scanner<held>::try_finish_groups(std::move(state));
+        auto got = scan::scanner<held>{}.try_finish_groups(std::move(state));
         if (got) return std::move(*got);
         return std::unexpected(
             scan::as_a_failure<failure_type>(std::move(got).error()));
       } else {
-        return scan::scanner<held>::finish_groups(std::move(state));
+        return scan::scanner<held>{}.finish_groups(std::move(state));
       }
     }
   } else if constexpr (scanned_as_leaf<type>) {
@@ -2596,3 +2596,20 @@ inline constexpr auto regex_automaton = pack_regex_tdfa<pattern>();
 
 
 }  // namespace scan::detail
+
+export namespace scan {
+
+// How many groups a type's own pattern opens.
+//
+// Said out loud because a type built from its groups may want to hand some of
+// them on: a shape whose field is another shape has that field's groups inside
+// its own, and it can only pass them along if it knows how many there are.
+// What is counted is the pattern the type declares, which is the pattern the
+// match was made with.
+template <class type>
+[[nodiscard]] consteval std::size_t groups_in() {
+  return detail::groups_a_leaf_opens<std::remove_cv_t<type>>();
+}
+
+}  // namespace scan
+

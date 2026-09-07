@@ -973,13 +973,13 @@ template <auto& automaton, std::size_t state, std::size_t move,
 template <class type>
 concept knows_its_edges =
     requires(group_state_of<type>& state) {
-      scan::scanner<std::remove_cv_t<type>>::opened_group(state,
+      scan::scanner<std::remove_cv_t<type>>{}.opened_group(state,
                                                           std::size_t{0});
     } || requires(group_state_of<type>& state) {
-      scan::scanner<std::remove_cv_t<type>>::opened_group(
+      scan::scanner<std::remove_cv_t<type>>{}.opened_group(
           state, scan::group_at<std::size_t{0}>{});
     } || (names_its_groups<type> && requires(group_state_of<type>& state) {
-      scan::scanner<std::remove_cv_t<type>>::opened_group(
+      scan::scanner<std::remove_cv_t<type>>{}.opened_group(
           state,
           std::variant_alternative_t<
               0, typename scan::scanner<std::remove_cv_t<type>>::group>{});
@@ -994,9 +994,9 @@ concept knows_its_edges =
 // never be seen again, and no text is put together anywhere.
 template <class type>
 concept gathers_by_group = requires {
-  scan::scanner<std::remove_cv_t<type>>::begin_groups();
-  scan::scanner<std::remove_cv_t<type>>::finish_groups(
-      scan::scanner<std::remove_cv_t<type>>::begin_groups());
+  scan::scanner<std::remove_cv_t<type>>{}.begin_groups();
+  scan::scanner<std::remove_cv_t<type>>{}.finish_groups(
+      scan::scanner<std::remove_cv_t<type>>{}.begin_groups());
 };
 
 // A type that would rather be handed the groups than the text.
@@ -1007,7 +1007,7 @@ concept gathers_by_group = requires {
 // exactly its own, in the order it wrote them.
 template <class type>
 concept scanned_from_groups = requires(std::span<const std::string_view> given) {
-  scan::scanner<std::remove_cv_t<type>>::from_groups(given);
+  scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
 };
 
 // Whether this group is written with the very expression the type declares.
@@ -1411,7 +1411,7 @@ template <fixed_string pattern, std::size_t group, class collector,
     [&]<std::size_t... at>(std::index_sequence<at...>) {
       ((theirs[at] = found.template get<group + 1 + at>().to_view()), ...);
     }(std::make_index_sequence<inside>{});
-    return scan::scanner<held_type>::from_groups(
+    return scan::scanner<held_type>{}.from_groups(
         std::span<const std::string_view>(theirs));
   } else if constexpr (group_gathers_by_group<typename collector::value_type,
                                              pattern, group>()) {
@@ -1420,7 +1420,7 @@ template <fixed_string pattern, std::size_t group, class collector,
     // be handed over one at a time on a subject that cannot be looked at
     // twice, so the type is read the same way wherever it is used.
     using held_type_here = std::remove_cv_t<typename collector::value_type>;
-    auto state = scan::scanner<held_type_here>::begin_groups();
+    auto state = scan::scanner<held_type_here>{}.begin_groups();
     [&]<std::size_t... inside>(std::index_sequence<inside...>) {
       ((void)[&] {
         for (char letter : found.template get<group + 1 + inside>().to_view()) {
@@ -1428,7 +1428,7 @@ template <fixed_string pattern, std::size_t group, class collector,
         }
       }(), ...);
     }(std::make_index_sequence<groups_a_leaf_opens<held_type_here>()>{});
-    return scan::scanner<held_type_here>::finish_groups(std::move(state));
+    return scan::scanner<held_type_here>{}.finish_groups(std::move(state));
   } else if constexpr (group_spells_out<typename collector::value_type,
                                         pattern, group>()) {
     // The group is the type's own pattern, so the groups inside it are the
@@ -1909,7 +1909,7 @@ struct collected_match_closure
           .template begin_pushing<held_type>(std::string_view{});
     } else if constexpr (gathers_its_own_groups<group>()) {
       return scan::scanner<std::remove_cv_t<
-          typename collector::value_type>>::begin_groups();
+          typename collector::value_type>>{}.begin_groups();
     } else {
       return std::get<group>(collectors_).begin_pushing(std::string_view{});
     }
@@ -1953,7 +1953,7 @@ struct collected_match_closure
       return skipped{};
     } else if constexpr (gathers_its_own_groups<group>()) {
       return scan::scanner<std::remove_cv_t<
-          typename collector::value_type>>::finish_groups(std::move(state));
+          typename collector::value_type>>{}.finish_groups(std::move(state));
     } else {
       return std::get<group>(collectors_).finish_pushed(std::move(state));
     }
