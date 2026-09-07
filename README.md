@@ -550,6 +550,49 @@ like this reads identically off a string and off a socket -- and where the
 group is written with some other expression, `parse` or `from_groups` takes
 over as before.
 
+#### Told where its groups begin and end
+
+The two above say what is in a group. A type may also be told where its groups
+begin and end, and that is what the shapes a format could express are made of:
+
+```cpp
+static constexpr void opened_group(state&, std::size_t which);
+static constexpr void closed_group(state&, std::size_t which);
+```
+
+A **list** is a group taken over and over, and every turn that ends is an
+element:
+
+```cpp
+template <>
+struct scan::scanner<numbers> {
+  static constexpr std::string_view pattern() { return "([0-9]+)(?:,([0-9]+))*"; }
+
+  struct state { numbers made; int gathering = 0; bool going = false; };
+  static constexpr state begin_groups() { return {}; }
+  static constexpr void opened_group(state& into, std::size_t) {
+    into.gathering = 0; into.going = true;
+  }
+  static constexpr void push_group(state& into, std::size_t, char letter) {
+    into.gathering = into.gathering * 10 + (letter - '0');
+  }
+  static constexpr void closed_group(state& into, std::size_t) {
+    if (into.going) into.made.values.push_back(into.gathering);
+    into.going = false;
+  }
+  static constexpr numbers finish_groups(state from) { return std::move(from.made); }
+};
+```
+
+A **choice** is a group for each branch, and the one whose group opened is the
+one that ran.
+
+Only one of the two edges can be known while the pattern is compiled: a move
+that writes a group's opening is a group opening, whereas the closings are
+written on the chance of the match ending there and taken back when it does
+not. So a turn is ended by the next one beginning, or by the match ending --
+which is what those two calls are, and why nothing is ever said twice.
+
 #### On a subject that can only be read once
 
 There are no group texts there at all: the characters are gone as they are
@@ -580,6 +623,7 @@ So what a type says decides where it can be read:
 | `begin` / `push` / `finish` | yes | yes: it gathers its own characters |
 | `from_groups` | yes, and nothing is read twice | no -- the groups are not there to hand over |
 | `begin_groups` / `push_group` / `finish_groups` | yes, and nothing is read twice | yes: told which of its own groups each character belongs to |
+| `opened_group` / `closed_group` | yes | yes: told where each of its groups begins and ends, which is what a list or a choice is made of |
 | a format (`aggregate_scanner`) | yes, and nothing is read twice | yes, and each place gathers on its own |
 
 A type that will be read off a stream wants the last two rows: a format if it

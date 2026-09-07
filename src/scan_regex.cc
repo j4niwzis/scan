@@ -945,6 +945,39 @@ template <fixed_string pattern>
 // machine has already found them -- and the type is built from them. Where it
 // is not, there is nothing to reuse: the characters are handed to the type to
 // read as it sees fit.
+// Whether this move writes the opening of that group.
+//
+// An opening written is an opening that happened: only the closings are
+// written on the chance of a match ending here and taken back when it does
+// not. So this is the one edge of a group that can be known while the pattern
+// is compiled, and the other edge follows from it -- a turn ends where the
+// next one begins, or where the match does.
+template <auto& automaton, std::size_t state, std::size_t move,
+          std::size_t group>
+[[nodiscard]] consteval bool opens_the_group() {
+  constexpr const auto& taken = automaton.states[state].ranges[move];
+  for (std::size_t at = 0; at < taken.command_count; ++at) {
+    const std::size_t destination = taken.commands[at].destination;
+    if (destination >= automaton.register_tag.size()) continue;
+    if (automaton.register_tag[destination] == group * 2) return true;
+  }
+  return false;
+}
+
+// A type told where its groups begin and end, and not only what is in them.
+//
+// This is what a list is made of -- every turn of a repeated group is an
+// element, and the type is told when one ended -- and what a choice is made of
+// -- the branch whose group opened is the branch that ran. Both were things
+// only a format could say.
+template <class type>
+concept knows_its_edges = requires {
+  scan::scanner<std::remove_cv_t<type>>::opened_group(
+      scan::scanner<std::remove_cv_t<type>>::begin_groups(), std::size_t{0});
+  scan::scanner<std::remove_cv_t<type>>::closed_group(
+      scan::scanner<std::remove_cv_t<type>>::begin_groups(), std::size_t{0});
+};
+
 // A type gathered by its own groups, a character at a time.
 //
 // The other way round from `from_groups`: there the groups are handed over
@@ -1570,9 +1603,60 @@ struct collected_match_closure
                              states_type& states)
         : owner_(owner), states_(states) {}
 
+    // Before the move writes anything: where it opens a group of a type that
+    // wants to be told, the turn that was going has ended and a new one
+    // begins. Told in that order, so that what was gathered is taken before
+    // the next turn puts anything in.
     template <std::size_t state, std::size_t move, class registers_type,
               class mark>
-    constexpr void moving(const registers_type&, mark) const {}
+    constexpr void moving(const registers_type&, mark) {
+      edges<state, move>(std::make_index_sequence<sizeof...(collectors)>{});
+    }
+
+    template <std::size_t state, std::size_t move, std::size_t... group>
+    constexpr void edges(std::index_sequence<group...>) {
+      (edges_of<state, move, group>(), ...);
+    }
+
+    template <std::size_t state, std::size_t move, std::size_t group>
+    constexpr void edges_of() {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      if constexpr (requires { typename collector::value_type; }) {
+        using held = std::remove_cv_t<typename collector::value_type>;
+        if constexpr (detail::knows_its_edges<held> &&
+                      owner_type::template gathers_its_own_groups<group>()) {
+          edges_inside<state, move, group>(
+              std::make_index_sequence<
+                  detail::groups_a_type_opens<held>()>{});
+        }
+      }
+    }
+
+    template <std::size_t state, std::size_t move, std::size_t group,
+              std::size_t... inside>
+    constexpr void edges_inside(std::index_sequence<inside...>) {
+      (edge_of<state, move, group, inside>(), ...);
+    }
+
+    template <std::size_t state, std::size_t move, std::size_t group,
+              std::size_t inside>
+    constexpr void edge_of() {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      using held = std::remove_cv_t<typename collector::value_type>;
+      constexpr std::size_t theirs =
+          owner_type::template group_of<group>() + 1 + inside;
+      if constexpr (detail::opens_the_group<detail::regex_automaton<pattern>,
+                                            state, move, theirs>()) {
+        auto& state_of_the_type = std::get<group>(states_);
+        if (open_[theirs]) {
+          scan::scanner<held>::closed_group(state_of_the_type, inside);
+        }
+        scan::scanner<held>::opened_group(state_of_the_type, inside);
+        open_[theirs] = true;
+      }
+    }
 
     // A run stepped over in vectors: whatever is open takes all of it.
     template <std::size_t state, class registers_type, class mark>
@@ -1595,8 +1679,49 @@ struct collected_match_closure
                        std::make_index_sequence<sizeof...(collectors)>{});
     }
 
+    // And the match ending ends the turn that was going.
     template <std::size_t state, class registers_type>
-    constexpr void ended(const registers_type&) {}
+    constexpr void ended(const registers_type&) {
+      closing(std::make_index_sequence<sizeof...(collectors)>{});
+    }
+
+    template <std::size_t... group>
+    constexpr void closing(std::index_sequence<group...>) {
+      (closing_of<group>(), ...);
+    }
+
+    template <std::size_t group>
+    constexpr void closing_of() {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      if constexpr (requires { typename collector::value_type; }) {
+        using held = std::remove_cv_t<typename collector::value_type>;
+        if constexpr (detail::knows_its_edges<held> &&
+                      owner_type::template gathers_its_own_groups<group>()) {
+          closing_inside<group>(
+              std::make_index_sequence<
+                  detail::groups_a_type_opens<held>()>{});
+        }
+      }
+    }
+
+    template <std::size_t group, std::size_t... inside>
+    constexpr void closing_inside(std::index_sequence<inside...>) {
+      (closing_one<group, inside>(), ...);
+    }
+
+    template <std::size_t group, std::size_t inside>
+    constexpr void closing_one() {
+      using collector =
+          std::tuple_element_t<group, std::tuple<collectors...>>;
+      using held = std::remove_cv_t<typename collector::value_type>;
+      constexpr std::size_t theirs =
+          owner_type::template group_of<group>() + 1 + inside;
+      if (open_[theirs]) {
+        scan::scanner<held>::closed_group(std::get<group>(states_), inside);
+        open_[theirs] = false;
+      }
+    }
 
    private:
     // Which of the type's own groups is open, and the character to it.
