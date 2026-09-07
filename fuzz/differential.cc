@@ -62,17 +62,24 @@ class pattern_maker {
     return bytes_[at_++];
   }
 
-  void alternation(std::string& out, int depth) {
-    concatenation(out, depth);
+  // True where every branch of what was written can match nothing.
+  bool alternation(std::string& out, int depth) {
+    bool empty = concatenation(out, depth);
     while (!spent() && !full(out) && depth < 3 && (next() & 7) == 0) {
       out += '|';
-      concatenation(out, depth);
+      empty = concatenation(out, depth) || empty;
     }
+    return empty;
   }
 
-  void concatenation(std::string& out, int depth) {
+  // True where every part of it can match nothing.
+  bool concatenation(std::string& out, int depth) {
     const int many = 1 + (next() & 3);
-    for (int at = 0; at < many && !full(out); ++at) repeated(out, depth);
+    bool empty = true;
+    for (int at = 0; at < many && !full(out); ++at) {
+      empty = repeated(out, depth) && empty;
+    }
+    return empty;
   }
 
   // A second wall behind the first: however the bytes fall, a pattern this
@@ -81,11 +88,19 @@ class pattern_maker {
     return out.size() > 120;
   }
 
-  void repeated(std::string& out, int depth) {
+  // True where what was written, quantifier and all, can match nothing.
+  bool repeated(std::string& out, int depth) {
     const std::size_t was = out.size();
     const std::size_t counted_before = counted_;
-    atom(out, depth);
+    const bool nullable = atom(out, depth);
     const bool one_thing = out.size() - was == 1;
+    // A quantifier around something that can match nothing is the one place
+    // where the engines do not agree with each other, never mind with us.
+    // `([ab]*?)*` against "ba" is group [2,2) in Perl and in Python, [0,2) in
+    // RE2 and [1,2) here: three answers to whether the loop takes a last turn
+    // that matches nothing, and where the group is left when it does. There is
+    // no oracle to be had, so these are not made.
+    if (nullable) return true;
     // A count written around something that already has one multiplies the
     // machine: `((a{3}){3}){3}` is twenty-seven copies of `a`, and the
     // deterministic form of that is worse than twenty-seven. Nesting them is
@@ -93,39 +108,47 @@ class pattern_maker {
     // than nested -- one on the way down each branch, and no more.
     const bool may_count = counted_ == counted_before && counted_ < 2;
     switch (next() & 15) {
-      case 0: out += '*'; break;
-      case 1: out += '+'; break;
-      case 2: out += '?'; break;
-      case 3: if (may_count) { out += "{2}"; ++counted_; } break;
-      case 4: if (may_count) { out += "{1,3}"; ++counted_; } break;
-      case 5: if (may_count) { out += "{0,2}"; ++counted_; } break;
+      case 0: out += '*'; return true;
+      case 1: out += '+'; return false;
+      case 2: out += '?'; return true;
+      case 3: if (may_count) { out += "{2}"; ++counted_; } return false;
+      case 4: if (may_count) { out += "{1,3}"; ++counted_; } return false;
+      case 5:
+        if (!may_count) return false;
+        out += "{0,2}";
+        ++counted_;
+        return true;
       // A lazy quantifier only where there is something to be lazy about.
-      case 6: if (!one_thing) out += "*?"; else out += '*'; break;
-      default: break;
+      case 6: out += one_thing ? "*" : "*?"; return true;
+      default: return false;
     }
   }
 
-  void atom(std::string& out, int depth) {
+  // True where what was written can match nothing at all, which is what a
+  // quantifier must not be put around.
+  bool atom(std::string& out, int depth) {
     switch (next() % (depth < 3 ? 10 : 7)) {
-      case 0: out += 'a'; break;
-      case 1: out += 'b'; break;
-      case 2: out += 'c'; break;
-      case 3: out += '0'; break;
-      case 4: out += "[ab]"; break;
-      case 5: out += "[^a]"; break;
-      case 6: out += "[a-c0-9]"; break;
-      case 7:
+      case 0: out += 'a'; return false;
+      case 1: out += 'b'; return false;
+      case 2: out += 'c'; return false;
+      case 3: out += '0'; return false;
+      case 4: out += "[ab]"; return false;
+      case 5: out += "[^a]"; return false;
+      case 6: out += "[a-c0-9]"; return false;
+      case 7: {
         out += '(';
         ++groups_;
-        alternation(out, depth + 1);
+        const bool empty = alternation(out, depth + 1);
         out += ')';
-        break;
-      case 8:
+        return empty;
+      }
+      case 8: {
         out += "(?:";
-        alternation(out, depth + 1);
+        const bool empty = alternation(out, depth + 1);
         out += ')';
-        break;
-      default: out += '.'; break;
+        return empty;
+      }
+      default: out += '.'; return false;
     }
   }
 
