@@ -23,6 +23,28 @@ concept contiguous_char_range =
     std::ranges::sized_range<range_type> &&
     std::same_as<std::ranges::range_value_t<range_type>, char>;
 
+// A subject that lies in a row, as the characters it stands for.
+//
+// A string literal is an array with a nul at the end of it, and nobody writing
+// one means that character to be part of the subject: `scan<"{}">("450")` would
+// be a scan of four characters otherwise, and would say the pattern does not
+// match rather than what is wrong. So a trailing nul is left out of it.
+template <class range_type>
+[[nodiscard]] constexpr std::string_view characters_of(range_type&& input) {
+  const char* const from = std::ranges::data(input);
+  std::size_t many = std::ranges::size(input);
+  // Only an array that cannot be written to, which is what a literal is. A
+  // buffer somebody reads into is as long as it says it is: how much of it was
+  // filled is a thing only its owner knows, and guessing at it here would
+  // quietly read a different subject than the one handed over.
+  if constexpr (std::is_array_v<std::remove_reference_t<range_type>> &&
+                std::is_const_v<
+                    std::remove_extent_t<std::remove_reference_t<range_type>>>) {
+    if (many != 0 && from[many - 1] == '\0') --many;
+  }
+  return std::string_view(from, many);
+}
+
 }  // namespace scan::detail
 
 export namespace scan {
@@ -330,30 +352,6 @@ template <class... kinds>
 struct as_a_variant<kind_list<kinds...>> {
   using type = std::variant<kinds...>;
 };
-
-// A subject that lies in a row, as the characters it stands for.
-//
-// A string literal is an array with a nul at the end of it, and so is a buffer
-// somebody read into. Neither of them means that character to be part of the
-// subject -- `scan<"{}">("450")` would be a scan of four characters otherwise,
-// and would say the pattern does not match rather than what is wrong. So a
-// trailing nul is left out, which costs one comparison and is what everybody
-// writing the literal expects.
-template <class range_type>
-[[nodiscard]] constexpr std::string_view characters_of(range_type&& input) {
-  const char* const from = std::ranges::data(input);
-  std::size_t many = std::ranges::size(input);
-  // Only an array that cannot be written to, which is what a literal is. A
-  // buffer somebody reads into is as long as it says it is: how much of it was
-  // filled is a thing only its owner knows, and guessing at it here would
-  // quietly read a different subject than the one handed over.
-  if constexpr (std::is_array_v<std::remove_reference_t<range_type>> &&
-                std::is_const_v<
-                    std::remove_extent_t<std::remove_reference_t<range_type>>>) {
-    if (many != 0 && from[many - 1] == '\0') --many;
-  }
-  return std::string_view(from, many);
-}
 
 // The number of a group, said as a type.
 //
