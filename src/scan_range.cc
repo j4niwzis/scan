@@ -798,6 +798,19 @@ struct scan_closure {
     return {};
   }
 
+  // Every place begins past whatever whitespace is in front of it, which is
+  // what `%d` does and `{}` does not. Written out it is `{*\s*}` before every
+  // place, and in a format with six fields that is six times the same words.
+  //
+  // It is not quite what `sscanf` does: there the skipping belongs to the
+  // conversion, so `%d` and `%s` skip and `%c` and `%[a-z]` do not. Here it
+  // belongs to the format, and every place in it skips.
+  [[nodiscard]] constexpr scan_closure<format.past_space(), type, no_throw,
+                                       terminator, walk>
+  past_space() const {
+    return {};
+  }
+
   // The subject ends where it ends, and the walk tests that as well as the
   // character -- except where the type of the subject carries a terminator of
   // its own, which is noticed without the caller having to say so.

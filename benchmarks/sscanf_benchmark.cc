@@ -52,6 +52,13 @@ struct field_buffers {
 
 inline constexpr std::string_view pair_text = "12:34";
 
+// `past_space` says once what `{*\\s*}` before every place says over and over:
+// each place begins past whatever whitespace is in front of it, which is what
+// `%d` does.
+inline constexpr auto pair_format = scan::fixed_string("{}:{}").past_space();
+inline constexpr auto stamp_format =
+    scan::fixed_string("{}-{}-{}T{}:{}:{}").past_space();
+
 void sscanf_two_numbers(harness::State& state) {
   const auto& texts = bench::copies_of(pair_text, 32);
   for (auto _ : state) {
@@ -73,7 +80,7 @@ void scan_two_numbers(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      two_numbers value = scan::scan_prefix<"{*\\s*}{}:{*\\s*}{}">(view);
+      two_numbers value = scan::scan_prefix<pair_format>(view);
       harness::DoNotOptimize(value);
     }
   }
@@ -104,8 +111,7 @@ void scan_timestamp_fields(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      stamp value = scan::scan_prefix<
-          "{*\\s*}{}-{*\\s*}{}-{*\\s*}{}T{*\\s*}{}:{*\\s*}{}:{*\\s*}{}">(view);
+      stamp value = scan::scan_prefix<stamp_format>(view);
       harness::DoNotOptimize(value);
     }
   }

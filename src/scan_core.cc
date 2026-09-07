@@ -46,12 +46,27 @@ struct fixed_string {
   // reached, they are kept: one of them may be the only walk that gets there,
   // which is `a|ab` reading "ab".
   bool anchored = false;
+  // Whether every place in this format begins past whatever whitespace is in
+  // front of it.
+  //
+  // This is what `%d` does and `{}` does not, and writing it out -- `{*\s*}`
+  // before every place -- says the same thing four times in a format with four
+  // fields. Said here it is said once, and it is said in the key: a format
+  // that skips and a format that does not are two formats, so nothing built
+  // from one can be handed to a reading of the other.
+  bool space_before_places = false;
 
   consteval fixed_string(const char (&text)[extent]) { std::copy_n(text, extent, value); }
 
   [[nodiscard]] constexpr fixed_string to_the_end() const {
     fixed_string made = *this;
     made.anchored = true;
+    return made;
+  }
+
+  [[nodiscard]] constexpr fixed_string past_space() const {
+    fixed_string made = *this;
+    made.space_before_places = true;
     return made;
   }
 

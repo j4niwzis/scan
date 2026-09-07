@@ -802,6 +802,9 @@ struct spread_format {
   pattern_buffer<2048> text{};
   pattern_buffer<64> parameters[32]{};
   std::size_t leaves = 0;
+  // Carried rather than passed: the format says it, and everything that
+  // spreads a format is already handed this.
+  bool space_before_places = false;
 };
 
 constexpr void copy_until_place(spread_format& made, std::string_view text,
@@ -1003,6 +1006,14 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
       if constexpr (scanned_as_range<kind>) {
         repetition = repetition_after(text, close + 1);
       }
+      // Whatever whitespace is in front of the place, taken and not kept --
+      // which is what `%d` does, and what this format asked for by being
+      // written `past_space`.
+      if (made.space_before_places) {
+        made.text.push_back(format_raw_begin);
+        made.text.append("\\s*");
+        made.text.push_back(format_raw_end);
+      }
       spread_place<kind>(made, text.substr(position + 1, close - position - 1),
                          repetition);
       position = close + 1 + repetition.size();
@@ -1016,6 +1027,7 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
 template <class type, fixed_string format>
 [[nodiscard]] consteval spread_format spread_of() {
   spread_format made;
+  made.space_before_places = format.space_before_places;
   if constexpr (scanned_as_variant<type>) {
     // The whole format is the list of branches, which is what a place standing
     // for a variant is written as anywhere else.

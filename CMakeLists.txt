@@ -198,6 +198,7 @@ set(scan_tests
   list_shape_test
   nothing_where_nothing_matched_test
   optimized_register_program_preserves_test
+  past_space_test
   preserves_official_capture_and_range_test
   reads_no_further_than_the_record_test
   record_after_record_off_one_stream_test
