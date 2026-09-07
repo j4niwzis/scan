@@ -160,6 +160,14 @@ which for a greedy repetition is the last one.
 | a range read once (`views::istream`, `istreambuf_iterator`) | a character at a time, once | the characters read past a match, and no more |
 | a range read once, through `\| scan::in_pieces<N>` | as pieces: in words and vectors inside each | the room asked for, twice over |
 
+A string literal is a subject like any other, and the nul the compiler put at
+the end of it is not part of it: `scan<"{}">("450")` reads three characters.
+It is also read *to* that nul rather than by counting, which is the faster of
+the two walks -- so the spelling everybody writes first is the one that needs
+nothing said about it. A buffer you read into yourself is as long as it says
+it is: how much of it was filled is something only you know, so hand over a
+`string_view` of that much.
+
 ### A subject that can only be read once
 
 This is the one worth explaining, because most engines cannot do it and the

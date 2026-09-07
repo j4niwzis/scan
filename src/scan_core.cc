@@ -343,7 +343,13 @@ template <class range_type>
 [[nodiscard]] constexpr std::string_view characters_of(range_type&& input) {
   const char* const from = std::ranges::data(input);
   std::size_t many = std::ranges::size(input);
-  if constexpr (std::is_array_v<std::remove_cvref_t<range_type>>) {
+  // Only an array that cannot be written to, which is what a literal is. A
+  // buffer somebody reads into is as long as it says it is: how much of it was
+  // filled is a thing only its owner knows, and guessing at it here would
+  // quietly read a different subject than the one handed over.
+  if constexpr (std::is_array_v<std::remove_reference_t<range_type>> &&
+                std::is_const_v<
+                    std::remove_extent_t<std::remove_reference_t<range_type>>>) {
     if (many != 0 && from[many - 1] == '\0') --many;
   }
   return std::string_view(from, many);

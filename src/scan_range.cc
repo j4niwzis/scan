@@ -244,7 +244,14 @@ concept terminated_char_range =
     (std::same_as<std::remove_cvref_t<range_type>, std::string> ||
      std::same_as<std::remove_cvref_t<range_type>,
                   std::basic_string<char, std::char_traits<char>,
-                                    std::allocator<char>>>);
+                                    std::allocator<char>>> ||
+     // A string literal: an array of characters that cannot be written to, and
+     // so an array that ends in the nul the compiler put there. Read to that
+     // nul rather than by counting, which is the faster of the two walks and
+     // the one nobody has to ask for.
+     std::is_array_v<std::remove_reference_t<range_type>> &&
+         std::is_const_v<
+             std::remove_extent_t<std::remove_reference_t<range_type>>>);
 
 // What a scan of the head of an input hands back: the values, and what is left.
 template <class type>

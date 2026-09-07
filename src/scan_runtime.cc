@@ -1802,10 +1802,15 @@ constexpr void fold_one_step(
       if constexpr (takes_the_group_whole<held_type, which,
                                           typename fold_type::state_type>) {
         // The whole of what the group stood on, pointed at rather than copied.
+        //
+        // A position here is how many characters have been read and not the
+        // index of one: the walk writes a tag with the count after the
+        // character that wrote it. So what a group stood on begins one before
+        // where its opening says.
         if (fold.text != nullptr) {
           close_one_group<held_type, which>(
               fold.state,
-              std::string_view(fold.text + began,
+              std::string_view(fold.text + (began > 0 ? began - 1 : 0),
                                static_cast<std::size_t>(ended - began)));
           fold.open[which] = false;
           return;
@@ -2377,7 +2382,8 @@ template <class root, class type, std::size_t offset, class reading_type,
         const std::ptrdiff_t ended = registers[reading[which * 2 + 1]];
         if (began < 0 || ended < began) return;
         took[at] = true;
-        theirs[at] = std::string_view(text + began,
+        // The same count-not-index the fold reads its spans by.
+        theirs[at] = std::string_view(text + (began > 0 ? began - 1 : 0),
                                       static_cast<std::size_t>(ended - began));
       }(), ...);
     }(std::make_index_sequence<inside>{});
