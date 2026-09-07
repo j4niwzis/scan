@@ -21,6 +21,16 @@ Four kinds of subject are read by the same machine and answer the same way:
 characters in a row, input that arrives in pieces, a forward range, and a
 range that can only be read once.
 
+The pattern is a template argument, so a pattern that is only known while the
+program runs cannot be read here. Everything below follows from that: the walk
+has no dispatch in it, the cost of a reading can be asked before the program
+runs, and a subject that can never be looked at twice can still be read.
+Compiling a pattern is a constant evaluation that builds a machine, and a
+program with hundreds of them will feel it.
+
+Today it wants clang, `import std`, and `boost::pfr`; a header form is
+coming.
+
 ```cpp
 import scan;
 
@@ -34,23 +44,6 @@ const point where = scan::scan<"{},{}">("12,34");
 // One record after another, off a stream, holding nothing.
 for (const point& one : scan::each<"{},{}\n">(std::cin).of<point>()) { … }
 ```
-
-## Before anything else
-
-**The pattern has to be known where it is written.** It is a template
-argument, and the automaton is built from it while the program is compiled. If
-your patterns come from a configuration file, from a user, or from anywhere
-else at run time, this library cannot read them and is not the tool for the
-job.
-
-What it costs, and what it buys, both follow from that one decision. The cost
-is compile time: every distinct pattern is a constant evaluation that builds a
-machine, and a program with hundreds of them will feel it. What it buys is a
-walk with no dispatch in it, a cost model that can be asked questions before
-the program runs, and the ability to read a subject that can never be looked
-at twice.
-
-Today it wants clang, `import std`, and `boost::pfr`; a header form is coming.
 
 ## A five-minute tour
 
@@ -165,6 +158,7 @@ which for a greedy repetition is the last one.
 | pieces (a range of contiguous ranges) | each piece in words and vectors, the reading held between them | nothing; the place a record ended is an address inside a piece |
 | a forward range | a character at a time | nothing; the note is an iterator, and going back is assigning it |
 | a range read once (`views::istream`, `istreambuf_iterator`) | a character at a time, once | the characters read past a match, and no more |
+| a range read once, through `\| scan::in_pieces<N>` | as pieces: in words and vectors inside each | the room asked for, twice over |
 
 ### A subject that can only be read once
 
@@ -205,6 +199,30 @@ character that is not a space dies before it is taken. Where a number cannot
 be named -- a cycle with no match anywhere along it, like `a+b`, which can eat
 any number of characters and still not match -- the reading is refused where
 it is compiled, and told why. It is not silently buffered.
+
+### Handing it over in pieces instead
+
+Reading one character at a time costs the walk its vectors: it cannot step
+over a run of thirty letters in one instruction when it is handed them one at
+a time. `in_pieces` gathers the characters into room said in advance and hands
+over the room, so the reading becomes the pieces one -- and a piece is
+characters in a row, which is what the fast walk wants:
+
+```cpp
+scan::each<f>(source | scan::in_pieces<512>).of<row>()
+```
+
+It is a separate thing rather than something a scan does for you, because it
+is not always the right trade. It costs a copy of every character and a buffer
+that has to live somewhere; it wins where the fields are long enough for the
+walk to step over them, and loses where they are a few characters each and the
+copying is the whole of the work. Which of the two you have is not something
+the library can know.
+
+The room is used two pieces at a time, in turn: the walk keeps an address
+inside the piece it is holding -- where a record ended, so that the next one
+starts there -- and asks for the next piece before it is done with that, so
+the piece handed over before this one is still where it was.
 
 The order of the alternatives decides this, which is the practical thing to
 know:
@@ -272,10 +290,32 @@ scan::match<"([0-9]+)-([a-z]+)">.into(scan::skip(), scan::text())
 scan::match<"([0-9]+)">.into(scan::collecting(my_pusher{}, args…))
 ```
 
-`as<T>` reads the group into a `T` -- which may be a type with a format of its
-own, in which case the groups the outer pattern already found are reused
-rather than the text being read a second time. `skip()` keeps nothing.
-`collecting` takes whatever pushes characters somewhere.
+`as<T>` reads the group into a `T`. `skip()` keeps nothing. `collecting` takes
+whatever pushes characters somewhere.
+
+### The groups are read once, not twice
+
+Where the type a group is read into has a format of its own, the text is not
+handed to it to be parsed again. The two patterns are compared where they are
+compiled, and if the groups line up, the value is built out of the groups the
+outer pattern already found:
+
+```cpp
+struct point { int x; int y; };
+template <> struct scan::scanner<point> {
+  static constexpr std::string_view pattern() { return "([0-9]+),([0-9]+)"; }
+  …
+};
+
+// The outer pattern already has the two numbers as groups. `point` is built
+// from them: nothing is matched twice, and no substring is handed anywhere.
+scan::match<"at ([0-9]+),([0-9]+)!">.into(scan::as<point>())(text);
+```
+
+Where the groups do not line up -- the type wrote `(?:…)` where the outer
+pattern wrote a group, say -- there is nothing to reuse and the text is read
+the ordinary way. Which of the two happens is decided while the program is
+compiled, by comparing the two patterns.
 
 ## The format layer
 

@@ -77,6 +77,105 @@ inline constexpr to_array_adaptor<extent> to_array;
 
 }  // namespace views
 
+// Characters as they arrive, handed on in pieces that lie in a row.
+//
+// A subject that can only be read once is read a character at a time, which
+// costs the vectors: a walk cannot step over a run of thirty letters in one
+// instruction when it is handed them one at a time. This gathers them into
+// room said in advance and hands over that room, so the reading is by pieces
+// -- and a piece is characters in a row, which is what the fast walk wants.
+//
+// It is a separate thing rather than something `scan` does, because it is not
+// always the right trade. It costs a copy of every character and a buffer that
+// has to be somewhere; it wins where the fields are long enough for the walk
+// to step over them, and loses where they are a few characters each and the
+// copy is the whole of the work.
+//
+// Two rooms, used in turn. The walk keeps an address inside the piece it is
+// holding -- where a record ended, so that the next one starts there -- and
+// asks for the next piece before it is done with that. So the piece handed
+// over before this one is still where it was, and only the one before that is
+// written over.
+template <std::size_t room, class range_type>
+class piece_view : public std::ranges::view_interface<
+                       piece_view<room, range_type>> {
+ public:
+  static_assert(room != 0, "a piece has to have room for something");
+
+  constexpr explicit piece_view(range_type input) : input_(std::move(input)) {}
+
+  piece_view(piece_view&&) = default;
+  piece_view& operator=(piece_view&&) = default;
+  piece_view(const piece_view&) = delete;
+  piece_view& operator=(const piece_view&) = delete;
+
+  class iterator {
+   public:
+    using value_type = std::string_view;
+    using difference_type = std::ptrdiff_t;
+    using iterator_concept = std::input_iterator_tag;
+
+    constexpr iterator() = default;
+    constexpr explicit iterator(piece_view& owner) : owner_(&owner) {}
+
+    [[nodiscard]] constexpr std::string_view operator*() const {
+      return owner_->piece_;
+    }
+    constexpr iterator& operator++() {
+      owner_->fill();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      return owner_ == nullptr || owner_->piece_.empty();
+    }
+
+   private:
+    piece_view* owner_ = nullptr;
+  };
+
+  [[nodiscard]] constexpr iterator begin() {
+    fill();
+    return iterator(*this);
+  }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+ private:
+  constexpr void fill() {
+    if (!cursor_) cursor_.emplace(std::ranges::begin(input_));
+    which_ = 1 - which_;
+    auto& into = rooms_[which_];
+    std::size_t taken = 0;
+    while (taken < room && *cursor_ != std::ranges::end(input_)) {
+      into[taken++] = **cursor_;
+      ++*cursor_;
+    }
+    piece_ = std::string_view(into.data(), taken);
+  }
+
+  range_type input_;
+  std::optional<std::ranges::iterator_t<range_type>> cursor_;
+  std::array<std::array<char, room>, 2> rooms_{};
+  std::size_t which_ = 0;
+  std::string_view piece_;
+};
+
+template <std::size_t room>
+struct in_pieces_adaptor
+    : std::ranges::range_adaptor_closure<in_pieces_adaptor<room>> {
+  template <std::ranges::input_range range_type>
+    requires std::same_as<std::ranges::range_value_t<range_type>, char>
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    auto view = std::views::all(std::forward<range_type>(input));
+    return piece_view<room, decltype(view)>(std::move(view));
+  }
+};
+
+// `source | scan::in_pieces<512>` -- the same characters, handed over in
+// pieces of that size.
+template <std::size_t room = 512>
+inline constexpr in_pieces_adaptor<room> in_pieces{};
+
 struct format_details {
   std::string_view name;
   std::optional<std::string_view> parameters;

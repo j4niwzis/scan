@@ -247,6 +247,7 @@ set(scan_tests
   exposes_search_split_and_tokenize_test
   flat_shape_test
   handles_bounded_greedy_repetition_test
+  in_pieces_test
   lazy_repetition_test
   leftmost_alternative_wins_inside_test
   list_own_test
