@@ -971,12 +971,19 @@ template <auto& automaton, std::size_t state, std::size_t move,
 // -- the branch whose group opened is the branch that ran. Both were things
 // only a format could say.
 template <class type>
-concept knows_its_edges = requires {
-  scan::scanner<std::remove_cv_t<type>>::opened_group(
-      scan::scanner<std::remove_cv_t<type>>::begin_groups(), std::size_t{0});
-  scan::scanner<std::remove_cv_t<type>>::closed_group(
-      scan::scanner<std::remove_cv_t<type>>::begin_groups(), std::size_t{0});
-};
+concept knows_its_edges =
+    requires(group_state_of<type>& state) {
+      scan::scanner<std::remove_cv_t<type>>::opened_group(state,
+                                                          std::size_t{0});
+    } || requires(group_state_of<type>& state) {
+      scan::scanner<std::remove_cv_t<type>>::opened_group(
+          state, scan::group_at<std::size_t{0}>{});
+    } || (names_its_groups<type> && requires(group_state_of<type>& state) {
+      scan::scanner<std::remove_cv_t<type>>::opened_group(
+          state,
+          std::variant_alternative_t<
+              0, typename scan::scanner<std::remove_cv_t<type>>::group>{});
+    });
 
 // A type gathered by its own groups, a character at a time.
 //
@@ -1599,9 +1606,9 @@ struct collected_match_closure
                                             state, move, theirs>()) {
         auto& state_of_the_type = std::get<group>(states_);
         if (open_[theirs]) {
-          scan::scanner<held>::closed_group(state_of_the_type, inside);
+          detail::close_one_group<held, inside>(state_of_the_type);
         }
-        scan::scanner<held>::opened_group(state_of_the_type, inside);
+        detail::open_one_group<held, inside>(state_of_the_type);
         open_[theirs] = true;
       }
     }
@@ -1666,7 +1673,7 @@ struct collected_match_closure
       constexpr std::size_t theirs =
           owner_type::template group_of<group>() + 1 + inside;
       if (open_[theirs]) {
-        scan::scanner<held>::closed_group(std::get<group>(states_), inside);
+        detail::close_one_group<held, inside>(std::get<group>(states_));
         open_[theirs] = false;
       }
     }
@@ -1801,6 +1808,10 @@ struct collected_match_closure
 
     const collected_match_closure& owner_;
     states_type& states_;
+    // Which of the groups of this match are open, by the number of the group.
+    // A turn is ended by the opening of the next one, and the walk is what
+    // sees that, so what has been opened has to be remembered here.
+    std::array<bool, detail::regex_automaton<pattern>.tag_count / 2 + 1> open_{};
   };
 
   template <std::size_t... group>
@@ -1808,7 +1819,6 @@ struct collected_match_closure
     return std::tuple{begin_one<group>()...};
   }
 
-  template <std::size_t group>
   // Which group of the match each collector reads.
   //
   // One each, in the order they were written -- until one of them reads a type
@@ -1866,6 +1876,7 @@ struct collected_match_closure
     }
   }
 
+  template <std::size_t group>
   [[nodiscard]] constexpr auto begin_one() const {
     using collector =
         std::tuple_element_t<group, std::tuple<collectors...>>;

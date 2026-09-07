@@ -680,6 +680,11 @@ concept names_its_groups = requires {
   typename scan::scanner<std::remove_cv_t<type>>::group;
 };
 
+// The state a type folds its groups in, as a type.
+template <class type>
+using group_state_of =
+    decltype(scan::scanner<std::remove_cv_t<type>>::begin_groups());
+
 // Whether the type takes the characters of this group at all. A fold may be
 // made of the edges alone -- counting the turns, saying which branch ran -- and
 // then there is nothing to hand a character to.
