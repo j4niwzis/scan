@@ -39,6 +39,19 @@ class expression {
     return expression_.NumberOfCapturingGroups();
   }
 
+  // Where a match anchored at the start ends, which is the head. False where
+  // there is none at all -- and an empty match at the beginning is a head,
+  // not the absence of one.
+  [[nodiscard]] bool head(const std::string& subject, long& ends) const {
+    absl::string_view whole;
+    if (!expression_.Match(subject, 0, subject.size(), RE2::ANCHOR_START,
+                           &whole, 1)) {
+      return false;
+    }
+    ends = static_cast<long>(whole.data() + whole.size() - subject.data());
+    return true;
+  }
+
   // Anchored at both ends, or only at the start -- which are the two readings
   // this library offers, and RE2's default rule for both is leftmost-first.
   [[nodiscard]] bool match(const std::string& subject, bool anchored,

@@ -27,6 +27,7 @@
 import std;
 import scan.tre;
 import scan.compiler;
+import scan.runtime;
 import fuzz.oracle;
 
 namespace {
@@ -169,20 +170,21 @@ bool tracing() {
 inline constexpr std::size_t walkable = 2000;
 
 // Ours, over an automaton built from a pattern that was a string a moment ago.
-answer ours(std::string_view pattern, std::string_view subject, bool anchored,
-            std::size_t groups) {
+//
+// The whole of the subject: the automaton for the anchored reading, which
+// keeps the walks below a match, and the simulation that requires the
+// characters to run out in an accepting state. Groups come back with it.
+answer ours_whole(std::string_view pattern, std::string_view subject,
+                  std::size_t groups) {
   answer said;
   said.groups.resize(groups);
   std::size_t counted = 0;
   scan::detail::tre_parser parser(pattern, {}, counted, true);
   const auto tree = parser.parse_regex();
   const auto machine = scan::tre::compile_tnfa(tree);
-  // Determinizing is where the room goes, and the library says how much of it
-  // it will spend: past that it throws, and here that is stepped over rather
-  // than counted as a disagreement.
   if (machine.transitions.size() > walkable) throw too_big{};
-  const auto automaton = scan::tre::optimize_tdfa(
-      scan::tre::compile_tdfa(machine, !anchored), true);
+  const auto automaton =
+      scan::tre::optimize_tdfa(scan::tre::compile_tdfa(machine, false), true);
   const auto got = scan::tre::simulate(automaton, subject);
   said.matched = got.matched;
   if (!got.matched) return said;
@@ -195,6 +197,27 @@ answer ours(std::string_view pattern, std::string_view subject, bool anchored,
     said.groups[group] = {true, begins.back(), ends.back()};
   }
   return said;
+}
+
+// The head of the subject: the automaton with the walks below a match cut,
+// walked by the machine that answers where the head ended. This is the
+// reading `starts_with` and the format layer do, and the one the cut and the
+// note were written for. It answers where, and not what the groups were --
+// the interpreter that carries registers wants the whole subject.
+std::optional<std::ptrdiff_t> ours_head(std::string_view pattern,
+                                        std::string_view subject) {
+  std::size_t counted = 0;
+  scan::detail::tre_parser parser(pattern, {}, counted, true);
+  const auto tree = parser.parse_regex();
+  const auto machine = scan::tre::compile_tnfa(tree);
+  if (machine.transitions.size() > walkable) throw too_big{};
+  const auto automaton =
+      scan::tre::optimize_tdfa(scan::tre::compile_tdfa(machine, true), true);
+  const char* const begin = subject.data();
+  const char* const found =
+      scan::detail::run_prefix_runtime(automaton, begin, begin + subject.size());
+  if (found == nullptr) return std::nullopt;
+  return found - begin;
 }
 
 answer theirs(const oracle::expression& expression, std::string_view subject,
@@ -248,37 +271,62 @@ bool one_round(std::span<const std::uint8_t> whole) {
   if (!expression.ok()) return true;
   if (static_cast<std::size_t>(expression.groups()) != groups) return true;
 
-  for (const bool anchored : {true, false}) {
+  // The whole subject, groups and all.
+  {
     answer mine;
     try {
-      mine = ours(pattern, subject, anchored, groups);
+      mine = ours_whole(pattern, subject, groups);
     } catch (...) {
-      // A pattern this library will not read, or will not build a machine
-      // for, is not a disagreement about what a pattern means. Both are worth
-      // knowing about and neither is a failure here.
       return true;
     }
-    const answer other = theirs(expression, subject, anchored, groups);
+    const answer other = theirs(expression, subject, true, groups);
     if (mine.matched != other.matched) {
-      complain(mine.matched ? "we matched and they did not"
-                            : "they matched and we did not",
-               pattern, subject, anchored);
+      complain(mine.matched ? "we matched the whole of it and they did not"
+                            : "they matched the whole of it and we did not",
+               pattern, subject, true);
       return false;
     }
-    if (!mine.matched) continue;
-    for (std::size_t group = 0; group < groups; ++group) {
-      if (mine.groups[group].took_part != other.groups[group].took_part ||
-          (mine.groups[group].took_part &&
-           (mine.groups[group].begins != other.groups[group].begins ||
-            mine.groups[group].ends != other.groups[group].ends))) {
-        complain("the group is somewhere else", pattern, subject, anchored);
-        std::println(
-            "  group {}: ours [{},{}) took_part={}, theirs [{},{}) took_part={}",
-            group, mine.groups[group].begins, mine.groups[group].ends,
-            mine.groups[group].took_part, other.groups[group].begins,
-            other.groups[group].ends, other.groups[group].took_part);
-        return false;
+    if (mine.matched) {
+      for (std::size_t group = 0; group < groups; ++group) {
+        if (mine.groups[group].took_part != other.groups[group].took_part ||
+            (mine.groups[group].took_part &&
+             (mine.groups[group].begins != other.groups[group].begins ||
+              mine.groups[group].ends != other.groups[group].ends))) {
+          complain("the group is somewhere else", pattern, subject, true);
+          std::println(
+              "  group {}: ours [{},{}) took_part={}, theirs [{},{}) "
+              "took_part={}",
+              group, mine.groups[group].begins, mine.groups[group].ends,
+              mine.groups[group].took_part, other.groups[group].begins,
+              other.groups[group].ends, other.groups[group].took_part);
+          return false;
+        }
       }
+    }
+  }
+
+  // The head, which is where the cut and the note are felt.
+  {
+    std::optional<std::ptrdiff_t> mine;
+    try {
+      mine = ours_head(pattern, subject);
+    } catch (...) {
+      return true;
+    }
+    const std::string held(subject);
+    long ends = 0;
+    const bool theirs_matched = expression.head(held, ends);
+    const std::ptrdiff_t theirs_ends = ends;
+    if (mine.has_value() != theirs_matched) {
+      complain(mine ? "we took a head and they did not"
+                    : "they took a head and we did not",
+               pattern, subject, false);
+      return false;
+    }
+    if (mine && *mine != theirs_ends) {
+      complain("the head ends somewhere else", pattern, subject, false);
+      std::println("  ours ends at {}, theirs at {}", *mine, theirs_ends);
+      return false;
     }
   }
   return true;
