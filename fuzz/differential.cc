@@ -70,15 +70,22 @@ class pattern_maker {
 
   void repeated(std::string& out, int depth) {
     const std::size_t was = out.size();
+    const std::size_t counted_before = counted_;
     atom(out, depth);
     const bool one_thing = out.size() - was == 1;
+    // A count written around something that already has one multiplies the
+    // machine: `((a{3}){3}){3}` is twenty-seven copies of `a`, and the
+    // deterministic form of that is worse than twenty-seven. Nesting them is
+    // how a fuzzer asks for three gigabytes, so the counts are spent rather
+    // than nested -- one on the way down each branch, and no more.
+    const bool may_count = counted_ == counted_before && counted_ < 2;
     switch (next() & 15) {
       case 0: out += '*'; break;
       case 1: out += '+'; break;
       case 2: out += '?'; break;
-      case 3: out += "{2}"; break;
-      case 4: out += "{1,3}"; break;
-      case 5: out += "{0,2}"; break;
+      case 3: if (may_count) { out += "{2}"; ++counted_; } break;
+      case 4: if (may_count) { out += "{1,3}"; ++counted_; } break;
+      case 5: if (may_count) { out += "{0,2}"; ++counted_; } break;
       // A lazy quantifier only where there is something to be lazy about.
       case 6: if (!one_thing) out += "*?"; else out += '*'; break;
       default: break;
@@ -112,6 +119,7 @@ class pattern_maker {
   std::span<const std::uint8_t> bytes_;
   std::size_t at_ = 0;
   std::size_t groups_ = 0;
+  std::size_t counted_ = 0;
 };
 
 std::string subject_of(std::span<const std::uint8_t> bytes) {
@@ -132,6 +140,15 @@ struct answer {
   std::vector<group_span> groups;
 };
 
+// A pattern whose machine is larger than anything worth comparing. Every
+// engine has these -- RE2 answers them by simulating rather than
+// determinizing, and by keeping a bounded cache of the states it has seen --
+// and this library answers them by refusing to build one past a size it says
+// out loud. Here they are stepped over, because what is being looked for is a
+// disagreement about meaning.
+struct too_big {};
+inline constexpr std::size_t walkable = 2000;
+
 // Ours, over an automaton built from a pattern that was a string a moment ago.
 answer ours(std::string_view pattern, std::string_view subject, bool anchored,
             std::size_t groups) {
@@ -141,6 +158,10 @@ answer ours(std::string_view pattern, std::string_view subject, bool anchored,
   scan::detail::tre_parser parser(pattern, {}, counted, true);
   const auto tree = parser.parse_regex();
   const auto machine = scan::tre::compile_tnfa(tree);
+  // Determinizing is where the room goes, and the library says how much of it
+  // it will spend: past that it throws, and here that is stepped over rather
+  // than counted as a disagreement.
+  if (machine.transitions.size() > walkable) throw too_big{};
   const auto automaton = scan::tre::optimize_tdfa(
       scan::tre::compile_tdfa(machine, !anchored), true);
   const auto got = scan::tre::simulate(automaton, subject);
@@ -198,8 +219,9 @@ bool one_round(std::span<const std::uint8_t> bytes) {
     try {
       mine = ours(pattern, subject, anchored, groups);
     } catch (...) {
-      // A pattern this library will not read is not a disagreement about what
-      // it means. It is worth knowing about, and it is not a failure.
+      // A pattern this library will not read, or will not build a machine
+      // for, is not a disagreement about what a pattern means. Both are worth
+      // knowing about and neither is a failure here.
       return true;
     }
     const answer other = theirs(expression, subject, anchored, groups);

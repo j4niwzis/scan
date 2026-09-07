@@ -237,6 +237,20 @@ struct tdfa {
 
 // Builds a deterministic tagged transducer. epsilon actions after a symbol are
 // delayed to that symbol's transition, which is the one-symbol lookahead form.
+// How large a deterministic machine this will build before it gives up.
+//
+// Determinizing can cost exponentially more states than the expression has
+// symbols, and the expressions that do it are ordinary: anything that reads
+// freely and then counts, `.*a.{20}` and its like, doubles with every
+// character of the tail. Every engine has to answer this somehow -- RE2
+// answers it by simulating rather than determinizing and keeping a bounded
+// cache of the states it has met.
+//
+// This library is compiled, so the failure is not a slow program but a
+// compilation nobody waits for, ended by the machine running out of room. A
+// number here turns that into a sentence saying which pattern did it.
+inline constexpr std::size_t most_states = 20000;
+
 [[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
                                           bool cut_at_match = true);
 // Applies TDFA register liveness, dead-store elimination, copy cleanup, and
@@ -802,6 +816,12 @@ constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
       }
     }
     result.states.push_back(std::move(state));
+    if (result.states.size() > most_states) {
+      throw "the deterministic machine for this pattern is larger than this "
+            "library will build: a pattern that counts and then goes on to "
+            "read anything -- `.*a.{20}` and its like -- has a deterministic "
+            "form that doubles with every character of the tail";
+    }
     configurations.push_back(std::move(entries));
     pending.push_back(static_cast<std::uint32_t>(id));
     return id;
