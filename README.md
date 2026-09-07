@@ -224,6 +224,25 @@ inside the piece it is holding -- where a record ended, so that the next one
 starts there -- and asks for the next piece before it is done with that, so
 the piece handed over before this one is still where it was.
 
+**It changes what the program does, not only what it costs.** A range that
+reads a character at a time is read a character at a time, and this library
+reads exactly as far as the match needs and no further. That is what lets a
+scan sit on a console, a socket or a pipe: the characters arrive as they are
+typed or sent, a record is answered the moment it ends, and nothing further is
+taken.
+
+Put `in_pieces<512>` in front of that and the reading waits for five hundred
+and twelve characters, or for the range to end, before the machine sees the
+first one. On a terminal that means a program that answered every line stops
+answering until the buffer fills. On a socket it means more of the stream is
+consumed than the match needed -- and those characters are in the buffer, so
+whoever reads the range afterwards will not find them.
+
+So it is for a subject that is all there and merely arrives in a stream: a
+file, a pipe already full, a decompressor. For anything that answers as it is
+read, leave it out; reading one character at a time is what makes that work at
+all.
+
 The order of the alternatives decides this, which is the practical thing to
 know:
 
@@ -276,22 +295,74 @@ of a few dozen characters is read faster one at a time, a long one is read
 faster in words -- and where you know which, saying so means the length is
 never looked at and the walk you did not name is not written at all.
 
-### Collectors
+### Collectors: what a group comes back as
 
-By default a group comes back as the characters themselves, held however the
-subject affords: a view into it, a pair of iterators, or owned where there is
-nothing left to point at. `into` says otherwise, one collector per group:
+By default a group is the characters themselves, held in whatever way the
+subject affords:
+
+| subject | what a group is |
+| --- | --- |
+| characters in a row | `std::string_view` into the subject; nothing is copied |
+| a forward range | `std::ranges::subrange<It, It>` -- the two iterators, and nothing is copied either |
+| pieces, or a range read once | owned, because what it was read from is gone; `std::string` unless you say otherwise |
+
+`into<T>()` says what "owned" means where owning is what has to happen -- a
+`std::pmr::string`, a `scan::held<32>`, anything that takes characters:
 
 ```cpp
-scan::match<"([0-9]+)-([a-z]+)">.into(
-    scan::as<int>(),                       // parsed into a value
-    scan::as<std::pmr::string>(&pool))     // with the arguments it needs
-scan::match<"([0-9]+)-([a-z]+)">.into(scan::skip(), scan::text())
-scan::match<"([0-9]+)">.into(scan::collecting(my_pusher{}, args…))
+text | scan::match<"([a-z]+)">.into<std::pmr::string>()
 ```
 
-`as<T>` reads the group into a `T`. `skip()` keeps nothing. `collecting` takes
-whatever pushes characters somewhere.
+`into(collectors…)` says it for each group separately, in the order the groups
+were written, and then each group can be a different thing entirely:
+
+```cpp
+scan::match<"([0-9]+)-([a-z]+)-([a-z]+)">.into(
+    scan::as<int>(),                       // parsed into a value
+    scan::as<std::pmr::string>(&pool),     // built with the arguments given
+    scan::skip())                          // nothing kept, and no room taken
+```
+
+| | |
+| --- | --- |
+| `scan::text()` | the characters, held as the subject affords -- the default |
+| `scan::as<T>(args…)` | a `T`: parsed by `scan::scanner<T>` if it has one, otherwise built as `T(first, last, args…)` |
+| `scan::skip()` | nothing at all; the group takes no room in the answer |
+| `scan::collecting(push, args…)` | a value of any type, made from `args…`, with every character handed to `push` |
+
+`collecting` is the one to reach for when the answer is not a string and not a
+parsed value -- a count, a hash, a checksum:
+
+```cpp
+scan::match<"([a-z]+)">.into(scan::collecting(
+    [](std::size_t& sum, char letter) { sum += static_cast<unsigned char>(letter); },
+    std::size_t{0}));
+```
+
+#### Writing one of your own
+
+A collector is any type with these three, and none of them is virtual or
+inherited from anything:
+
+```cpp
+struct hex_bytes {
+  using value_type = std::vector<std::byte>;
+
+  // The whole of the group at once, where the subject can be pointed at. The
+  // second argument is whatever was written after the colon in the format.
+  value_type from_text(std::string_view text, std::string_view parameters) const;
+
+  // Or a character at a time, where it cannot: this makes the value…
+  value_type begin_pushing(std::string_view parameters) const;
+  // …and this is handed every character of the group as it arrives.
+  void push_one(value_type& into, char letter) const;
+};
+```
+
+`from_text` is what a subject held in memory uses; `begin_pushing` and
+`push_one` are what a subject that arrives once uses. Write both and the
+collector works everywhere; write only the first and it works wherever the
+characters can be pointed at.
 
 ### The groups are read once, not twice
 
@@ -383,24 +454,79 @@ constexpr auto stamp = scan::fixed_string("{}-{}-{}T{}:{}:{}").past_space();
 * a range, written with a repetition, which takes as many turns as the subject
   affords.
 
-A type says how it reads itself by specialising `scan::scanner`:
+### How a type says it can be read
+
+`scan::scanner<T>` is the whole of it, and there are three shapes it can take.
+
+**A leaf** -- a value read out of the text of one place:
 
 ```cpp
 template <>
 struct scan::scanner<weight> {
-  static constexpr std::string_view pattern() { return "[0-9]+"; }
-  static constexpr weight parse(std::string_view text) { … }
+  // What the place matches when the format does not say. Either a member or a
+  // function; and taking the parameters written after the colon, if it wants
+  // them.
+  static constexpr std::string_view pattern() { return "[0-9]+(?:\\.[0-9]+)?"; }
+  static constexpr auto pattern(std::string_view parameters);
 
-  // And, for a subject that arrives a character at a time:
+  // From the text of the place. Again, with the parameters if it wants them.
+  static constexpr weight parse(std::string_view text);
+  static constexpr weight parse(std::string_view text, std::string_view parameters);
+
+  // And for a subject that arrives a character at a time and cannot be gone
+  // back over: make a state, take the characters, then make the value.
   static constexpr state begin();
+  static constexpr state begin(std::string_view parameters);
   static constexpr void push(state&, char);
   static constexpr weight finish(state);
 };
 ```
 
-`parse` is enough for a subject held in memory. `begin`/`push`/`finish` are
-what a reading that cannot go back uses, and a type that has them can be a
-field of a record read off a stream.
+`parse` alone is enough for a subject held in memory. `begin`/`push`/`finish`
+are what a one-pass reading uses, and a type that has them can be a field of a
+record read off a stream. This is what the library's own scanners look like:
+the integers take `{:x}`, `{:#}` and a width through `parameters`, and gather
+digits through `push` so that a number can be read off a socket.
+
+**A shape** -- a type that says a whole format rather than a pattern, whose
+places are its own fields:
+
+```cpp
+template <>
+struct scan::scanner<point> : scan::aggregate_scanner<"({}, {})"> {};
+
+struct line { point from; point to; };
+const line one = scan::scan<"{} -> {}">("(1, 2) -> (3, 4)");
+```
+
+The places inside `point`'s format mean `point`'s fields, wherever it is used.
+Nothing is read twice: the outer pattern and the inner one are one automaton,
+and `point` is built from the groups it already found.
+
+**A shape that is built rather than filled** -- the same, with a `parse` taking
+the places as arguments:
+
+```cpp
+template <>
+struct scan::scanner<angle> : scan::aggregate_scanner<"{}deg{}min"> {
+  static constexpr angle parse(int degrees, int minutes) {
+    return angle(degrees * 60 + minutes);   // invariants kept, members private
+  }
+};
+```
+
+The places then stand for the arguments of that call rather than for the
+fields of the type, so the type need not be an aggregate at all: it may have
+invariants, private members, or an order of its own that has nothing to do
+with the order the format is written in.
+
+**A list** -- a field that is a range takes as many turns as the subject
+affords, and the place says what one turn looks like:
+
+```cpp
+struct row { std::vector<int> values; };
+const row one = scan::scan<"{{}{*,?}}">("1,2,3,4");
+```
 
 ## The pattern syntax
 
@@ -479,10 +605,9 @@ for instruction**. The difference in the ordinary form is three instructions:
 the length checks re2c does not have, because it is given a pointer and a
 terminator rather than a range.
 
-Against the other engines, on two shapes -- a timestamp recognised, and five
-fields taken out of a record. `engines_benchmark` runs all four on the same
-subjects; build it with `-DSCAN_BENCHMARK_RE2=ON`, which is what brings RE2
-and abseil in. What each is given differs, and the differences are the point:
+Every benchmark asks its question of four engines -- this library, CTRE, RE2
+and re2c -- on the same subjects. What each of them is given differs, and the
+differences are the point:
 
 | | pattern known | given | hands back |
 | --- | --- | --- | --- |
@@ -576,7 +701,7 @@ ctest --test-dir build
 
 | option | |
 | --- | --- |
-| `SCAN_BUILD_BENCHMARKS` | the benchmarks, against re2c, CTRE and `sscanf` |
+| `SCAN_BUILD_BENCHMARKS` | the benchmarks: against CTRE, RE2, re2c and `sscanf`. Brings all four in |
 | `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
 | `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
 

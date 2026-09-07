@@ -5,6 +5,7 @@
 // constant evaluator the library is built with.
 import std;
 import bench.harness;
+import bench.re2;
 import ctre;
 import scan;
 
@@ -69,11 +70,30 @@ harness::Benchmark* with_lengths(harness::Benchmark* registration) {
   return registration->Arg(64)->Arg(1024)->Arg(4096)->Arg(65536);
 }
 
+
+// The same question of an engine that reads its pattern while the program
+// runs. What it compiles is not in the measurement; what its walk does with a
+// pattern it did not know about is.
+void re2_word(harness::State& state) {
+  const bench::re2_engine engine("[a-z]+");
+  const auto& texts = bench::copies_of(bench::word, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(engine.whole(view));
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::word.size());
+}
+
 const int registered = [] {
   with_lengths(harness::RegisterBenchmark("scan_word", scan_word));
   with_lengths(
       harness::RegisterBenchmark("scan_word_sentinel", scan_word_sentinel));
   with_lengths(harness::RegisterBenchmark("ctre_word", ctre_word));
+  with_lengths(harness::RegisterBenchmark("re2_word", re2_word));
   with_lengths(
       harness::RegisterBenchmark("re2c_word", re2c_word_benchmark));
   return 0;

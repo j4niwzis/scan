@@ -7,6 +7,7 @@
 import std;
 import bench.harness;
 import bench.inputs;
+import bench.re2;
 import ctre;
 import scan;
 
@@ -293,6 +294,29 @@ void re2c_captures_benchmark(harness::State& state) {
 // unmodified library moved by eight per cent, which is more than several of the
 // steps that were worth taking. A median of seven with the spread beside it
 // says which differences are real and which are the machine.
+
+// The same five fields, out of an engine that reads its pattern while the
+// program runs. It hands back views into the subject, as this library and CTRE
+// do, so the row is the same work: what differs is where the pattern was
+// turned into a machine.
+void re2_captures(harness::State& state) {
+  const bench::re2_engine engine("([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)");
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      std::array<std::string_view, 5> found{};
+      if (engine.whole_with_five(view, found)) {
+        field_views value{found[0], found[1], found[2], found[3], found[4]};
+        harness::DoNotOptimize(value);
+      }
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
 const int registered = [] {
   const auto row = [](const char* name, void (*body)(harness::State&)) {
     harness::RegisterBenchmark(name, body)
@@ -309,6 +333,7 @@ const int registered = [] {
   row("scan_captures_long", scan_captures_long);
   row("re2c_captures_long", re2c_captures_long);
   row("ctre_captures", ctre_captures);
+  row("re2_captures", re2_captures);
   row("re2c_captures", re2c_captures_benchmark);
   return 0;
 }();

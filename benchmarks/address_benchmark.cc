@@ -13,6 +13,7 @@
 import std;
 import bench.harness;
 import bench.inputs;
+import bench.re2;
 import ctre;
 import scan;
 
@@ -72,10 +73,29 @@ void re2c_address_benchmark(harness::State& state) {
                           bench::address.size());
 }
 
+
+// The same question of an engine that reads its pattern while the program
+// runs. What it compiles is not in the measurement; what its walk does with a
+// pattern it did not know about is.
+void re2_address(harness::State& state) {
+  const bench::re2_engine engine("[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?");
+  const auto& texts = bench::copies_of(bench::address, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      harness::DoNotOptimize(engine.whole(view));
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::address.size());
+}
+
 const int registered = [] {
   harness::RegisterBenchmark("scan_address", scan_address);
   harness::RegisterBenchmark("scan_address_sentinel", scan_address_sentinel);
   harness::RegisterBenchmark("ctre_address", ctre_address);
+  harness::RegisterBenchmark("re2_address", re2_address);
   harness::RegisterBenchmark("re2c_address", re2c_address_benchmark);
   return 0;
 }();
