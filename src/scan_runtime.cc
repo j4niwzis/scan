@@ -2213,6 +2213,20 @@ struct gathering_of {
       scanner_push<held_type>(state, letter);
     }
   }
+
+  // The characters of a run the walk stepped over, together. What the step in
+  // vectors saved was being given back a call at a time here.
+  template <class state_type>
+  static constexpr void push_run(state_type& state, const char* from,
+                                 const char* to) {
+    if constexpr (the_place || inside) {
+      static_cast<void>(state);
+      static_cast<void>(from);
+      static_cast<void>(to);
+    } else {
+      scanner_push_run<held_type>(state, from, to);
+    }
+  }
 };
 
 // One gathering per value the pattern reads, not one per field of the output.
@@ -3310,10 +3324,8 @@ class field_gatherer {
         const std::uint32_t opening = at.at[which];
         if (registers[opening] < 0) continue;
         if (registers[closing] >= registers[opening]) continue;
-        auto& gathering = std::get<group>(states_[opening]);
-        for (const char* letter = from; letter != to; ++letter) {
-          gathering_of<type, format, group>::push(gathering, *letter);
-        }
+        gathering_of<type, format, group>::push_run(
+            std::get<group>(states_[opening]), from, to);
       }
     }
   }
@@ -3445,7 +3457,8 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   const char* last = nullptr;
   std::ptrdiff_t place = 0;
   walk_answer<const char*> best;
-  constexpr walk_shape shape{.in_words = true};
+  constexpr walk_shape shape{.in_words = true,
+                             .budget = chain_budget<automaton>()};
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
@@ -3472,9 +3485,12 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   }
   auto cursor = std::ranges::begin(input);
   std::ptrdiff_t position = 0;
-  constexpr walk_shape shape{};
+  // Written out, the same as every other walk. A subject handed over a
+  // character at a time is read by the machine written as code -- what it
+  // cannot have is the vectors, because there is nothing in a row to read.
+  constexpr walk_shape shape{.budget = chain_budget<automaton>()};
   walk_answer<decltype(cursor)> best;
-  if (!run_continuation<automaton, shape, automaton.initial, 0, 0,
+  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, std::ranges::end(input),
                                         position, registers, into, best)) {
     return std::unexpected(scan::as_a_failure<failure_for<type>>(

@@ -397,6 +397,30 @@ constexpr void scanner_push(state_type& state, char value) {
   scanner<type>{}.push(state, value);
 }
 
+// A run of characters that all belong to the same value.
+//
+// A walk over characters that lie in a row steps over a run of them at once --
+// sixteen to a comparison -- and then has to hand them to whoever is gathering.
+// Handing them one at a time gives back everything the step saved: a call a
+// character, into a scanner that will do the same thing to all of them. So a
+// scanner may say it takes a run, by taking a view of one, and the whole of it
+// arrives in a single call. One that says nothing is handed the characters one
+// at a time, exactly as before.
+template <class type, class state_type>
+constexpr void scanner_push_run(state_type& state, const char* from,
+                                const char* to) {
+  if constexpr (requires {
+                  scanner<type>{}.push(state, std::string_view{});
+                }) {
+    scanner<type>{}.push(
+        state, std::string_view(from, static_cast<std::size_t>(to - from)));
+  } else {
+    for (const char* letter = from; letter != to; ++letter) {
+      scanner<type>{}.push(state, *letter);
+    }
+  }
+}
+
 // Said below, and used here: what a scanner handed back, thrown where somebody
 // asked for the value itself.
 template <class error_type>

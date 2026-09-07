@@ -59,6 +59,10 @@ struct scanner<std::string> {
   static constexpr void push(state_type& state, char value) {
     state.push_back(value);
   }
+  // A whole run of characters, which is one copy rather than one call each.
+  static constexpr void push(state_type& state, std::string_view run) {
+    state.append(run);
+  }
   [[nodiscard]] static constexpr std::string finish(state_type state) {
     return state;
   }
@@ -125,6 +129,20 @@ struct held {
     }
     storage[length++] = value;
   }
+  constexpr void append(std::string_view run) {
+    if (run.size() > capacity - length) {
+      overflowed = true;
+      for (std::size_t at = 0; at < capacity - length; ++at) {
+        storage[length + at] = run[at];
+      }
+      length = capacity;
+      return;
+    }
+    for (std::size_t at = 0; at < run.size(); ++at) {
+      storage[length + at] = run[at];
+    }
+    length += run.size();
+  }
 };
 
 template <std::size_t capacity>
@@ -138,6 +156,9 @@ struct scanner<held<capacity>> {
   }
   static constexpr void push(state_type& state, char value) {
     state.push_back(value);
+  }
+  static constexpr void push(state_type& state, std::string_view run) {
+    state.append(run);
   }
   [[nodiscard]] static constexpr held<capacity> finish(state_type state) {
     return state;
