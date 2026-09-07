@@ -2639,6 +2639,33 @@ template <class type>
   }
 }
 
+// The same question, asked of what is inside an output rather than of the
+// output itself.
+//
+// A type read by the machine that gathers is being built out of its places,
+// however it looks to whatever contains it -- a shape that is one value to its
+// parent is a product of places to itself. Asking the question of the type
+// would ask how that type is read, and the answer to that is the machine doing
+// the asking.
+template <class type>
+[[nodiscard]] consteval bool a_flat_reader_inside() {
+  if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... || holds_a_flat_reader<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return holds_a_flat_reader<
+        std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              holds_a_flat_reader<
+                  typename parts_of<type>::template at<field>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+
 // A leaf is read from its one group; a product is built from its fields, each
 // of which takes as many groups as it needs, in order. Nothing about the
 // nesting is written in the format: a structure of structures is spelled out

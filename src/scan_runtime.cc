@@ -2630,7 +2630,7 @@ template <class type, fixed_string format, bool cut = true>
 class stream_state {
  private:
   static_assert(
-      !holds_a_flat_reader<type>(),
+      !a_flat_reader_inside<type>(),
       "a type built from its groups after the match cannot read a stream: "
       "there is nothing left to point at by the time it would be handed them "
       "-- give it begin_groups and push_group to be told its groups as they "
@@ -2828,7 +2828,7 @@ class field_gatherer {
   // it, and holding the characters until the end to give it something would be
   // a hold with no bound.
   static_assert(
-      pointable || !holds_a_flat_reader<type>(),
+      pointable || !a_flat_reader_inside<type>(),
       "a type built from its groups after the match needs a subject that can "
       "be pointed at: give it begin_groups and push_group to be told its "
       "groups as they are read, or scan it from something contiguous");
