@@ -67,10 +67,33 @@ class borrowed_result {
     }
   }
 
+  // The same reading, asked for rather than tried for: nothing along the way
+  // holds a failure, because there is nowhere to put one but a throw and the
+  // throw happens where the failure is.
+  template <class type>
+  [[nodiscard]] constexpr type read_or_throw() const {
+    if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
+      return or_thrown(detail::scan_stream<type, format>(input_));
+    } else {
+      auto fields = [&] {
+        if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
+          return scan_branch_fields<type, format, terminator, terminated, walk>(
+              input_);
+        } else {
+          return scan_fields<type, format, terminator, terminated, walk>(
+              input_);
+        }
+      }();
+      if (!fields) scan::throw_what_went_wrong(std::move(fields).error());
+      return build_value<failure_for<type>, format_parameters<type, format>,
+                         type, 0, false, throws_a_failure>(*fields);
+    }
+  }
+
   template <class type>
     requires std::is_aggregate_v<type>
   constexpr operator type() const {
-    return or_thrown(read<type>());
+    return read_or_throw<type>();
   }
 
   // The same scan, for a format that says the input may be one of several
@@ -78,7 +101,7 @@ class borrowed_result {
   template <class type>
     requires scanned_as_variant<type>
   constexpr operator type() const {
-    return or_thrown(read<type>());
+    return read_or_throw<type>();
   }
 
   // The same scan, said rather than implied, and the same scan that does not
@@ -90,7 +113,7 @@ class borrowed_result {
   // instead of throwing it.
   template <class type>
   [[nodiscard]] constexpr type of() const {
-    return static_cast<type>(*this);
+    return read_or_throw<type>();
   }
 
   template <class type>
@@ -296,7 +319,19 @@ class prefix_scan {
 
   template <class type>
   [[nodiscard]] constexpr taken<type> take() const {
-    return or_thrown(try_take<type>());
+    // One walk, and nothing along it holds a failure: asked for a value, a
+    // failure is a throw where it happens.
+    const auto found =
+        detail::taken_prefix_fields<type, format,
+                                    detail::holds_a_variant<type>()>(input_);
+    if (!found.matched) {
+      throw no_match("input does not begin with the pattern");
+    }
+    return taken<type>{
+        detail::build_value<detail::failure_for<type>,
+                            detail::format_parameters<type, format>, type, 0,
+                            false, detail::throws_a_failure>(found.groups),
+        input_.substr(found.head.size())};
   }
 
   template <class type>
