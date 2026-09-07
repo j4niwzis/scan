@@ -992,43 +992,6 @@ concept gathers_by_group = requires {
       scan::scanner<std::remove_cv_t<type>>::begin_groups());
 };
 
-// Whether the type names its groups with types rather than with numbers.
-//
-//   using group = std::variant<major, minor, patch>;
-//
-// Then the k-th alternative is the name of the k-th group, and the pushes can
-// be overloads rather than a switch.
-template <class type>
-concept names_its_groups = requires {
-  typename scan::scanner<std::remove_cv_t<type>>::group;
-};
-
-// One character, handed to the group it belongs to, in whichever of the three
-// ways the type asked for: the name of the group, the group as a variant, or
-// its number. The choice is made here, where the number is a constant.
-template <class type, std::size_t which, class state_type>
-constexpr void push_into_group(state_type& state, char letter) {
-  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
-  if constexpr (names_its_groups<type>) {
-    using named = typename scanner_type::group;
-    using one = std::variant_alternative_t<which, named>;
-    if constexpr (requires { scanner_type::push_group(state, one{}, letter); }) {
-      scanner_type::push_group(state, one{}, letter);
-    } else if constexpr (requires {
-                           scanner_type::push_group(
-                               state, named(std::in_place_index<which>),
-                               letter);
-                         }) {
-      scanner_type::push_group(state, named(std::in_place_index<which>),
-                               letter);
-    } else {
-      scanner_type::push_group(state, which, letter);
-    }
-  } else {
-    scanner_type::push_group(state, which, letter);
-  }
-}
-
 // A type that would rather be handed the groups than the text.
 //
 // Where a type's own pattern has groups in it, the machine that matched the
@@ -1040,21 +1003,6 @@ concept scanned_from_groups = requires(std::span<const std::string_view> given) 
   scan::scanner<std::remove_cv_t<type>>::from_groups(given);
 };
 
-// How many groups a type's own pattern opens.
-template <class type>
-[[nodiscard]] consteval std::size_t groups_a_type_opens() {
-  std::size_t counted = 0;
-  const auto declared = scanner_pattern<std::remove_cv_t<type>>();
-  tre_parser reading(std::string_view(declared), {}, counted, true);
-  static_cast<void>(reading.parse_regex());
-  return counted;
-}
-
-// Whether this group is written with the very pattern the type declares.
-//
-// The same question as the one below, asked of a type that says a pattern
-// rather than a format. What it decides is the same thing: whether the groups
-// inside this one are that type's own.
 // Whether this group is written with the very expression the type declares.
 template <class type, fixed_string pattern, std::size_t group>
 [[nodiscard]] consteval bool group_is_written_as_the_types_pattern() {
@@ -1443,7 +1391,7 @@ template <fixed_string pattern, std::size_t group, class collector,
     // already found, and the type asked to be handed them rather than the
     // text.
     using held_type = std::remove_cv_t<typename collector::value_type>;
-    constexpr std::size_t inside = groups_a_type_opens<held_type>();
+    constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
     std::array<std::string_view, inside> theirs{};
     [&]<std::size_t... at>(std::index_sequence<at...>) {
       ((theirs[at] = found.template get<group + 1 + at>().to_view()), ...);
@@ -1461,10 +1409,10 @@ template <fixed_string pattern, std::size_t group, class collector,
     [&]<std::size_t... inside>(std::index_sequence<inside...>) {
       ((void)[&] {
         for (char letter : found.template get<group + 1 + inside>().to_view()) {
-          push_into_group<held_type_here, inside>(state, letter);
+          push_one_group<held_type_here, inside>(state, letter);
         }
       }(), ...);
-    }(std::make_index_sequence<groups_a_type_opens<held_type_here>()>{});
+    }(std::make_index_sequence<groups_a_leaf_opens<held_type_here>()>{});
     return scan::scanner<held_type_here>::finish_groups(std::move(state));
   } else if constexpr (group_spells_out<typename collector::value_type,
                                         pattern, group>()) {
@@ -1628,7 +1576,7 @@ struct collected_match_closure
                       owner_type::template gathers_its_own_groups<group>()) {
           edges_inside<state, move, group>(
               std::make_index_sequence<
-                  detail::groups_a_type_opens<held>()>{});
+                  detail::groups_a_leaf_opens<held>()>{});
         }
       }
     }
@@ -1700,7 +1648,7 @@ struct collected_match_closure
                       owner_type::template gathers_its_own_groups<group>()) {
           closing_inside<group>(
               std::make_index_sequence<
-                  detail::groups_a_type_opens<held>()>{});
+                  detail::groups_a_leaf_opens<held>()>{});
         }
       }
     }
@@ -1755,7 +1703,7 @@ struct collected_match_closure
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (registers[opening] < 0) return;
         if (registers[closing] >= registers[opening]) return;
-        detail::push_into_group<held, inside>(std::get<group>(states_), letter);
+        detail::push_one_group<held, inside>(std::get<group>(states_), letter);
       }
     }
 
@@ -1786,7 +1734,7 @@ struct collected_match_closure
             for (const char* letter = from; letter != to; ++letter) {
               hand_inner<landed, group>(
                   *letter, registers,
-                  std::make_index_sequence<detail::groups_a_type_opens<
+                  std::make_index_sequence<detail::groups_a_leaf_opens<
                       std::remove_cv_t<typename collector::value_type>>()>{});
             }
           } else if constexpr (requires {
@@ -1841,7 +1789,7 @@ struct collected_match_closure
             // match: which of them is open says where the character goes.
             hand_inner<landed, group>(
                 letter, registers,
-                std::make_index_sequence<detail::groups_a_type_opens<
+                std::make_index_sequence<detail::groups_a_leaf_opens<
                     std::remove_cv_t<typename collector::value_type>>()>{});
           } else {
             std::get<group>(owner_.collectors_)
@@ -1879,7 +1827,7 @@ struct collected_match_closure
       if constexpr (detail::group_gathers_by_group<held, pattern, where + 1>() ||
                     detail::group_is_the_types_pattern<held, pattern,
                                                        where + 1>()) {
-        return detail::groups_a_type_opens<held>();
+        return detail::groups_a_leaf_opens<held>();
       } else if constexpr (detail::group_spells_out<held, pattern,
                                                     where + 1>()) {
         // A type that declares a format spells its places out as groups, and

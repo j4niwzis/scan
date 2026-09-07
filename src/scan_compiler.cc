@@ -22,6 +22,12 @@ inline constexpr char format_mark = '\x04';
 inline constexpr char format_raw_begin = '\x05';
 inline constexpr char format_raw_end = '\x06';
 inline constexpr char format_repeat = '\x07';
+// A place standing for a leaf that is built from the groups its own pattern
+// opens. Inside it, and only inside it, a parenthesis is a group of this match:
+// the type asked for those groups, so they are numbered and kept like any
+// others. Everywhere else in a written format a parenthesis groups and keeps
+// nothing, which is what it has always done.
+inline constexpr char format_own_groups = '\x08';
 
 // The characters a backslash names. Without these a format can only say a
 // newline by holding one, which means a pattern cannot be written on one line,
@@ -189,6 +195,11 @@ class tre_parser {
       position_ += 2;
       return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
     }
+    if (peek() == format_own_groups) {
+      ++position_;
+      scan::tre::node capture = parse_capture(true);
+      return scan::tre::cat({std::move(capture), parse_format_sequence()});
+    }
     if (peek() == '{') {
       scan::tre::node capture = parse_capture();
       return scan::tre::cat({std::move(capture), parse_format_sequence()});
@@ -198,7 +209,8 @@ class tre_parser {
     return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
   }
 
-  [[nodiscard]] constexpr scan::tre::node parse_capture() {
+  [[nodiscard]] constexpr scan::tre::node parse_capture(
+      bool parentheses_are_groups = false) {
     ++position_;
     const std::size_t capture = capture_count_++;
     scan::tre::node body;
@@ -206,10 +218,15 @@ class tre_parser {
       if (capture >= defaults_.size()) throw "too many capture groups";
       if (peek() == ':') skip_parameters();
       std::size_t nested_count = capture_count_;
-      tre_parser parser(defaults_[capture], defaults_, nested_count);
+      tre_parser parser(defaults_[capture], defaults_, nested_count,
+                        capture_parentheses_ || parentheses_are_groups);
       body = parser.parse_regex();
+      capture_count_ = nested_count;
     } else {
+      const bool before = capture_parentheses_;
+      capture_parentheses_ = before || parentheses_are_groups;
       body = parse_alternative('}');
+      capture_parentheses_ = before;
     }
     if (peek() != '}') throw "unterminated capture group";
     ++position_;
@@ -652,10 +669,123 @@ template <class type>
   }
 }
 
+// Whether the type names its groups with types rather than with numbers.
+//
+//   using group = std::variant<major, minor, patch>;
+//
+// Then the k-th alternative is the name of the k-th group, and the pushes can
+// be overloads rather than a switch.
+template <class type>
+concept names_its_groups = requires {
+  typename scan::scanner<std::remove_cv_t<type>>::group;
+};
+
+// One character, handed to the group it belongs to, in whichever of the three
+// ways the type asked for: the name of the group, the group as a variant, or
+// its number. The choice is made here, where the number is a constant.
+template <class type, std::size_t which, class state_type>
+constexpr void push_one_group(state_type& state, char letter) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type::push_group(state, one{}, letter); }) {
+      scanner_type::push_group(state, one{}, letter);
+    } else if constexpr (requires {
+                           scanner_type::push_group(
+                               state, named(std::in_place_index<which>),
+                               letter);
+                         }) {
+      scanner_type::push_group(state, named(std::in_place_index<which>),
+                               letter);
+    } else {
+      scanner_type::push_group(state, which, letter);
+    }
+  } else {
+    scanner_type::push_group(state, which, letter);
+  }
+}
+
+// The two edges of a group, said the same three ways a push is said. A type
+// that only wants the characters says neither, and then nothing is said to it.
+template <class type, std::size_t which, class state_type>
+constexpr void open_one_group(state_type& state) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type::opened_group(state, one{}); }) {
+      scanner_type::opened_group(state, one{});
+    } else if constexpr (requires {
+                           scanner_type::opened_group(
+                               state, named(std::in_place_index<which>));
+                         }) {
+      scanner_type::opened_group(state, named(std::in_place_index<which>));
+    } else if constexpr (requires { scanner_type::opened_group(state, which); }) {
+      scanner_type::opened_group(state, which);
+    }
+  } else if constexpr (requires { scanner_type::opened_group(state, which); }) {
+    scanner_type::opened_group(state, which);
+  }
+}
+
+template <class type, std::size_t which, class state_type>
+constexpr void close_one_group(state_type& state) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type::closed_group(state, one{}); }) {
+      scanner_type::closed_group(state, one{});
+    } else if constexpr (requires {
+                           scanner_type::closed_group(
+                               state, named(std::in_place_index<which>));
+                         }) {
+      scanner_type::closed_group(state, named(std::in_place_index<which>));
+    } else if constexpr (requires { scanner_type::closed_group(state, which); }) {
+      scanner_type::closed_group(state, which);
+    }
+  } else if constexpr (requires { scanner_type::closed_group(state, which); }) {
+    scanner_type::closed_group(state, which);
+  }
+}
+
+// A type that reads itself out of the groups its own pattern opens.
+//
+// Either handed them when the match is done, or told which of them each
+// character belongs to as it arrives -- and either way its pattern has groups
+// in it, which are groups of whatever it is written into.
+template <class type>
+concept reads_its_own_groups =
+    requires { scan::scanner<std::remove_cv_t<type>>::begin_groups(); } ||
+    requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<type>>::from_groups(given);
+    };
+
+// How many groups a leaf's own pattern opens.
+//
+// Nought for every leaf that does not read itself out of them, which is every
+// leaf there was until now -- so the counting below is the counting that was
+// there before, for everything that came before.
+template <class type>
+[[nodiscard]] consteval std::size_t groups_a_leaf_opens() {
+  if constexpr (!reads_its_own_groups<type>) {
+    return 0;
+  } else {
+    std::size_t counted = 0;
+    const auto declared = scanner_pattern<std::remove_cv_t<type>>();
+    tre_parser reading(std::string_view(declared), {}, counted, true);
+    static_cast<void>(reading.parse_regex());
+    return counted;
+  }
+}
+
 template <class type>
 [[nodiscard]] consteval std::size_t groups_of() {
   if constexpr (scanned_as_leaf<type>) {
-    return 1;
+    // The place itself, and the groups the type's own pattern opens inside
+    // it, which are groups of this match like any others.
+    return 1 + groups_a_leaf_opens<type>();
   } else if constexpr (scanned_as_variant<type>) {
     // A mark for each branch, and then whatever that branch's alternative
     // reads, in the order the branches are written.
@@ -835,6 +965,56 @@ struct leaf_at<subject, index, 3> {
 template <class subject, std::size_t index>
 using leaf_kind = typename leaf_at<subject, index>::kind;
 
+// Where within that type the group falls: nothing means the place the type
+// stands at, and anything after it is one of the groups the type's own pattern
+// opens, counted in the order they are written.
+//
+// The walk is the one above, step for step. Only the answer differs, so if one
+// of them ever learns a new shape the other has to learn it too.
+template <class subject, std::size_t index,
+          int = scanned_as_leaf<subject> ? 0
+                : scanned_as_range<subject> ? 1
+                : scanned_as_variant<subject> ? 3
+                                              : 2>
+struct leaf_offset_at;
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 0> {
+  static constexpr std::size_t value = index;
+};
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 1> {
+  using element = std::remove_cvref_t<std::ranges::range_value_t<subject>>;
+  static constexpr std::size_t value =
+      index == 0 ? 0
+                 : leaf_offset_at<element, (index == 0 ? 0 : index - 1)>::value;
+};
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 2> {
+  static constexpr auto where = field_holding<subject>(index);
+  using next = typename parts_of<subject>::template at<where.first>;
+  static constexpr std::size_t value = leaf_offset_at<next, where.second>::value;
+};
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 3> {
+  static constexpr auto where = branch_holding<subject>(index);
+  using branch = branch_at<subject, where.first>;
+  static constexpr std::size_t value =
+      where.second == 0
+          ? 0
+          : leaf_offset_at<branch, (where.second == 0 ? 0 : where.second - 1)>::
+                value;
+};
+
+template <class subject, std::size_t index>
+inline constexpr std::size_t leaf_offset_of = leaf_offset_at<subject, index>::value;
+
+// A leaf that is put together from the groups its own pattern opens, rather
+// than from the text it stands on. Where it opens none, it is an ordinary leaf
+// and nothing below changes for it.
+template <class held>
+inline constexpr bool gathers_by_its_groups =
+    reads_its_own_groups<held> && groups_a_leaf_opens<held>() > 0;
+
 // Reading a format against the type it is scanned into, and writing out the one
 // the automaton is built from.
 //
@@ -996,6 +1176,9 @@ constexpr void spread_place(spread_format& made, std::string_view body,
       const auto one = [&]<std::size_t branch>() {
         if constexpr (branch != 0) made.text.push_back(format_branch);
         made.text.push_back(format_mark);
+        // The mark is a group like any other and takes a number, so what comes
+        // after it reads its own parameters and not the ones before.
+        ++made.leaves;
         using alternative = branch_at<kind, branch>;
         if (body.empty()) {
           spread_place<alternative>(made, std::string_view{});
@@ -1019,6 +1202,16 @@ constexpr void spread_place(spread_format& made, std::string_view body,
           "itself -- give it a scanner or a format of its own, or write the "
           "branches out with a bar between them";
   } else {
+    if constexpr (gathers_by_its_groups<std::remove_cv_t<kind>>) {
+      // The groups are counted off the pattern the type declares, so that is
+      // the pattern it has to be read with. Written over, the count and the
+      // groups would be two different things.
+      if (!body.empty() && body.front() != ':') {
+        throw "a type that reads its own groups keeps its own pattern -- a "
+              "place standing for it takes parameters but not a pattern";
+      }
+      made.text.push_back(format_own_groups);
+    }
     made.text.push_back('{');
     if (body.empty() || body.front() == ':') {
       const std::string_view given = body.empty() ? body : body.substr(1);
@@ -1029,7 +1222,14 @@ constexpr void spread_place(spread_format& made, std::string_view body,
       made.text.append(body);
     }
     made.text.push_back('}');
+    // The place, and then the groups its pattern opens, which take the numbers
+    // straight after it. What is counted here is group numbers: the parameters
+    // are read by the group that gathers, so everything that takes a number has
+    // to move this on.
     ++made.leaves;
+    if constexpr (gathers_by_its_groups<std::remove_cv_t<kind>>) {
+      made.leaves += groups_a_leaf_opens<std::remove_cv_t<kind>>();
+    }
   }
 }
 
@@ -1836,7 +2036,39 @@ struct no_parameters {
 template <class parameters, class type, std::size_t offset, std::size_t extent>
 [[nodiscard]] constexpr type build_value(
     const std::array<std::string_view, extent>& groups) {
-  if constexpr (scanned_as_leaf<type>) {
+  if constexpr (scanned_as_leaf<type> && reads_its_own_groups<type>) {
+    // The type's own groups are groups of this match, already found. It is
+    // handed them, or told which of them each character belongs to -- the same
+    // reading it gets where a subject arrives as it is read, so it reads the
+    // same way in both places.
+    using held = std::remove_cv_t<type>;
+    constexpr std::size_t inside = groups_a_leaf_opens<held>();
+    if constexpr (requires(std::span<const std::string_view> given) {
+                    scan::scanner<held>::from_groups(given);
+                  }) {
+      std::array<std::string_view, inside> theirs{};
+      [&]<std::size_t... at>(std::index_sequence<at...>) {
+        ((theirs[at] = groups[offset + 1 + at]), ...);
+      }(std::make_index_sequence<inside>{});
+      return scan::scanner<held>::from_groups(
+          std::span<const std::string_view>(theirs));
+    } else {
+      auto state = scan::scanner<held>::begin_groups();
+      [&]<std::size_t... at>(std::index_sequence<at...>) {
+        ((void)[&] {
+          // A group that took no part in the match is not opened at all, which
+          // is how the type is told it was not there.
+          if (groups[offset + 1 + at].data() == nullptr) return;
+          open_one_group<held, at>(state);
+          for (char letter : groups[offset + 1 + at]) {
+            push_one_group<held, at>(state, letter);
+          }
+          close_one_group<held, at>(state);
+        }(), ...);
+      }(std::make_index_sequence<inside>{});
+      return scan::scanner<held>::finish_groups(std::move(state));
+    }
+  } else if constexpr (scanned_as_leaf<type>) {
     return parse_value<std::remove_cv_t<type>>(groups[offset],
                                                parameters::at(offset));
   } else if constexpr (scanned_as_variant<type>) {

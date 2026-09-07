@@ -1687,6 +1687,57 @@ template <class type, std::size_t index>
 using field_type = std::remove_cvref_t<decltype(
     boost::pfr::get<index>(std::declval<type&>()))>;
 
+// Nothing is gathered at the place a leaf that reads its own groups stands on:
+// what it is built from are its groups, and they are gathered each at its own.
+struct no_gathering {};
+
+// The characters of one such group, kept until the leaf is put together. Where
+// the subject can be pointed at this is a view of it and costs nothing; off a
+// stream there is nothing left behind to point at, so it is held.
+struct gathered_group {
+  std::string text;
+};
+
+// How one group is gathered, made once and asked at every place that gathers.
+//
+// A leaf that is built from the groups its own pattern opens is not handed the
+// text it stands on, so its place gathers nothing and each of its groups
+// gathers characters. Every other group is gathered by the reader of the type
+// it holds, which is what it was before any of this.
+template <class type, fixed_string format, std::size_t group>
+struct gathering_of {
+  using held_type = leaf_kind<type, group>;
+  static constexpr bool by_groups = gathers_by_its_groups<held_type>;
+  static constexpr bool the_place = by_groups && leaf_offset_of<type, group> == 0;
+  static constexpr bool inside = by_groups && leaf_offset_of<type, group> != 0;
+
+  [[nodiscard]] static constexpr auto begin(std::string_view parameters) {
+    if constexpr (the_place) {
+      static_cast<void>(parameters);
+      return no_gathering{};
+    } else if constexpr (inside) {
+      static_cast<void>(parameters);
+      return gathered_group{};
+    } else {
+      static_assert(requires { scanner_begin<held_type>(parameters); },
+                    "single-pass input requires incremental scan::scanner<T>");
+      return scanner_begin<held_type>(parameters);
+    }
+  }
+
+  template <class state_type>
+  static constexpr void push(state_type& state, char letter) {
+    if constexpr (the_place) {
+      static_cast<void>(state);
+      static_cast<void>(letter);
+    } else if constexpr (inside) {
+      state.text.push_back(letter);
+    } else {
+      scanner_push<held_type>(state, letter);
+    }
+  }
+};
+
 // One gathering per value the pattern reads, not one per field of the output.
 //
 // They are the same thing only where every field is one place. A field that is
@@ -1708,10 +1759,8 @@ template <class type, fixed_string format, std::size_t... group>
     if constexpr (scanned_as_range<held_type>) {
       return held_type{};
     } else {
-      static_assert(requires {
-        scanner_begin<held_type>(spread.parameters[which].view());
-      }, "single-pass input requires incremental scan::scanner<T>");
-      return scanner_begin<held_type>(spread.parameters[which].view());
+      return gathering_of<type, format, which>::begin(
+          spread.parameters[which].view());
     }
   };
   return std::tuple{one.template operator()<group>()...};
@@ -1723,20 +1772,6 @@ template <class type, fixed_string format>
       std::make_index_sequence<groups_of<type>()>{});
 }
 
-// Following a reading instead of counting on the numbers.
-//
-// The machine stands in one state and in several readings of the input at once,
-// and the registers are how the readings are kept apart. A field's text cannot
-// be a piece of the subject here -- the subject is gone as it is read -- so it
-// is gathered as it arrives, one gathering per register that holds the opening
-// tag of that field. The gathering then goes where the register goes: a command
-// that copies a register copies it, a command that writes a fresh position
-// starts it again.
-//
-// Which register holds which tag, and which registers make up one reading, are
-// both said by the automaton. They used to be worked out by dividing a register
-// number by the number of tags, which was true of one way of handing registers
-// out and of nothing else.
 // Following a reading instead of counting on the numbers.
 //
 // The machine stands in one state and in several readings of the input at once,
@@ -1850,7 +1885,8 @@ constexpr void advance_scanner(
               std::get<group>(states[command.destination]) = held_type{};
             } else {
               std::get<group>(states[command.destination]) =
-                  scanner_begin<held_type>(spread.parameters[group].view());
+                  gathering_of<type, format, group>::begin(
+                      spread.parameters[group].view());
             }
           } else if (tag == closing && registers[command.destination] != position &&
                      command.source != packed_command::no_source &&
@@ -1907,7 +1943,8 @@ constexpr void advance_scanner(
       if (filled[open]) continue;
       if (registers[open] < 0 || registers[close] >= registers[open]) continue;
       filled[open] = true;
-      scanner_push<held_type>(std::get<group>(states[open]), symbol);
+      gathering_of<type, format, group>::push(std::get<group>(states[open]),
+                                              symbol);
     }
   }
 }
@@ -2081,7 +2118,44 @@ template <class root, class type, std::size_t offset, class reading_type,
 [[nodiscard]] constexpr type finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers) {
-  if constexpr (scanned_as_leaf<type>) {
+  if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
+    // A leaf built from its own groups. They are groups of this match like any
+    // others, and they were gathered each at its own register, so each is read
+    // the way any field is read: where it was still being gathered if it had
+    // not closed, and from the copy taken when it closed if it had.
+    using held = std::remove_cv_t<type>;
+    constexpr std::size_t inside = groups_a_leaf_opens<held>();
+    std::array<std::string_view, inside> theirs{};
+    std::array<bool, inside> took{};
+    [&]<std::size_t... at>(std::index_sequence<at...>) {
+      ((void)[&] {
+        constexpr std::size_t which = offset + 1 + at;
+        const std::uint32_t open = reading[which * 2];
+        const std::uint32_t close = reading[which * 2 + 1];
+        if (registers[open] < 0) return;
+        took[at] = true;
+        const bool still_reading = registers[close] < registers[open];
+        theirs[at] = std::get<which>(states[still_reading ? open : close]).text;
+      }(), ...);
+    }(std::make_index_sequence<inside>{});
+    if constexpr (requires(std::span<const std::string_view> given) {
+                    scan::scanner<held>::from_groups(given);
+                  }) {
+      return scan::scanner<held>::from_groups(
+          std::span<const std::string_view>(theirs));
+    } else {
+      auto state = scan::scanner<held>::begin_groups();
+      [&]<std::size_t... at>(std::index_sequence<at...>) {
+        ((void)[&] {
+          if (!took[at]) return;
+          open_one_group<held, at>(state);
+          for (char letter : theirs[at]) push_one_group<held, at>(state, letter);
+          close_one_group<held, at>(state);
+        }(), ...);
+      }(std::make_index_sequence<inside>{});
+      return scan::scanner<held>::finish_groups(std::move(state));
+    }
+  } else if constexpr (scanned_as_leaf<type>) {
     // A field still being read when the input ended is where it was being
     // gathered; one that ended earlier is the copy taken when it closed, which
     // the readings that went on adding to the opening cannot have changed.
@@ -2404,7 +2478,7 @@ class field_gatherer {
         if (registers[closing] >= registers[opening]) continue;
         auto& gathering = std::get<group>(states_[opening]);
         for (const char* letter = from; letter != to; ++letter) {
-          scanner_push<held_type>(gathering, *letter);
+          gathering_of<type, format, group>::push(gathering, *letter);
         }
       }
     }
@@ -2432,7 +2506,8 @@ class field_gatherer {
         const std::uint32_t opening = at.at[which];
         if (registers[opening] < 0) continue;
         if (registers[closing] >= registers[opening]) continue;
-        scanner_push<held_type>(std::get<group>(states_[opening]), letter);
+        gathering_of<type, format, group>::push(
+            std::get<group>(states_[opening]), letter);
       }
     }
   }
