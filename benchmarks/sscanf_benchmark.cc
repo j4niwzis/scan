@@ -44,7 +44,7 @@ void sscanf_two_numbers(harness::State& state) {
       const char* cursor = text.c_str();
       harness::DoNotOptimize(cursor);
       two_numbers value{};
-      const int taken = std::sscanf(cursor, "%d:%d", &value.left, &value.right);
+      int taken = std::sscanf(cursor, "%d:%d", &value.left, &value.right);
       harness::DoNotOptimize(taken);
       harness::DoNotOptimize(value);
     }
@@ -72,7 +72,7 @@ void sscanf_timestamp(harness::State& state) {
       const char* cursor = text.c_str();
       harness::DoNotOptimize(cursor);
       stamp value{};
-      const int taken =
+      int taken =
           std::sscanf(cursor, "%d-%d-%dT%d:%d:%d", &value.year, &value.month,
                       &value.day, &value.hour, &value.minute, &value.second);
       harness::DoNotOptimize(taken);
@@ -107,7 +107,7 @@ void sscanf_words(harness::State& state) {
       const char* cursor = text.c_str();
       harness::DoNotOptimize(cursor);
       char a[32]{}, b[32]{}, c[32]{}, d[32]{}, e[32]{};
-      const int taken = std::sscanf(
+      int taken = std::sscanf(
           cursor, "%31[a-z],%31[a-z],%31[a-z],%31[a-z],%31[a-z]", a, b, c, d, e);
       harness::DoNotOptimize(taken);
       harness::DoNotOptimize(a);
@@ -125,6 +125,53 @@ void scan_words(harness::State& state) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
       field_views value =
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
+              view);
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
+// Copying into room said in advance, which is what `sscanf` does with
+// `char[32]` and `%31[a-z]`: the pair that measures the same work.
+//
+// Not quite the same work, and the difference is worth knowing. A width in
+// `sscanf` stops the field there -- `%31[a-z]` reads thirty-one letters and
+// leaves the rest for whatever the format says next, which is usually a comma
+// and usually a failure. `held<32>` is a place to put characters, not a limit
+// on the match: the field takes every letter it can, the first thirty-two are
+// kept, and the rest are dropped with the overflow remembered.
+void scan_words_held(harness::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      field_buffers value =
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
+              view);
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
+// And into strings, which asks an allocator for the room instead. Nothing in
+// `sscanf` does this at all; it is here to price the third answer to the same
+// question.
+void scan_words_strings(harness::State& state) {
+  struct field_strings {
+    std::string a, b, c, d, e;
+  };
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::string_view view(text);
+      harness::DoNotOptimize(view);
+      field_strings value =
           scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
               view);
       harness::DoNotOptimize(value);
