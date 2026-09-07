@@ -668,49 +668,6 @@ template <class type>
   }
 }
 
-template <class type>
-[[nodiscard]] consteval bool a_flat_shape();
-
-// Whether a shape is made only of places -- values, and shapes of values, and
-// nothing that takes turns or chooses.
-//
-// A shape like that is put together from the groups of one match and nothing
-// else, which is what a type that reads its own groups does. One with a list
-// or a choice in it cannot be: what those are made of are the turns, and the
-// positions a match leaves behind hold the last turn and nothing before it.
-template <class type>
-[[nodiscard]] consteval bool a_flat_field() {
-  // Asked of what the type says, and never of how this library decided to
-  // read it: how it is read is decided by this very question, and a question
-  // that asks its own answer has none.
-  if constexpr (says_it_is_a_list<type>) {
-    return false;
-  } else if constexpr (says_a_format<type>) {
-    return a_flat_shape<type>();
-  } else if constexpr (requires { sizeof(scan::scanner<std::remove_cv_t<type>>); }) {
-    return true;
-  } else {
-    return false;
-  }
-}
-
-template <class type>
-[[nodiscard]] consteval bool a_flat_shape() {
-  if constexpr (!says_a_format<type>) {
-    return false;
-  } else if constexpr (requires { &scan::scanner<std::remove_cv_t<type>>::parse; }) {
-    // Made by the call it named rather than filled in: its places stand for
-    // arguments, and that is a shape of its own.
-    return false;
-  } else {
-    return []<std::size_t... field>(std::index_sequence<field...>) {
-      return (true && ... &&
-              a_flat_field<std::remove_cvref_t<decltype(boost::pfr::get<field>(
-                  std::declval<std::remove_cv_t<type>&>()))>>());
-    }(std::make_index_sequence<boost::pfr::tuple_size_v<std::remove_cv_t<type>>>{});
-  }
-}
-
 // A type that holds as many of something as the input turns out to have.
 //
 // Nothing in the format says how many; the type does, by being a range that can
