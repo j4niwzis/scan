@@ -565,12 +565,7 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
     static_cast<void>(self);
-    // A shape made by the call it named says no: its places stand for the
-    // arguments of that call and not for fields anybody can look at, so there
-    // is nothing here to hand groups to.
-    if constexpr (requires { &scanner<type>::parse; }) {
-      return false;
-    } else if constexpr (!detail::says_a_list_inside<type>()) {
+    if constexpr (!detail::says_a_list_inside<type>()) {
       // Made only of places: handed its groups when the match is over.
       return true;
     } else {
@@ -586,8 +581,7 @@ struct aggregate_scanner {
   // from the places of the reading around it: one builder, and this is a call
   // to it.
   template <class self_type>
-    requires(!requires { &scanner<scanner_target_t<self_type>>::parse; } &&
-             !detail::says_a_list_inside<scanner_target_t<self_type>>())
+    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
   [[nodiscard]] constexpr auto try_from_groups(
       this const self_type& self, std::span<const std::string_view> groups)
       -> std::expected<scanner_target_t<self_type>,
@@ -610,7 +604,6 @@ struct aggregate_scanner {
   // different way.
   template <class self_type>
     requires(detail::says_a_list_inside<scanner_target_t<self_type>>() &&
-             !requires { &scanner<scanner_target_t<self_type>>::parse; } &&
              detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {
     static_cast<void>(self);
