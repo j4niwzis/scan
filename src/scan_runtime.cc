@@ -758,8 +758,27 @@ template <class cursor_type, class kept_type = nothing_kept>
 struct walk_answer {
   bool matched = false;
   std::optional<cursor_type> at{};
+  // How far the characters the place was kept in went.
+  //
+  // A walk that goes past a match reads on, and where the input arrives in
+  // pieces it asks for the next piece while it does -- so by the time it dies
+  // the end it is reading towards belongs to a different piece than the place
+  // it kept. Going back to that place means going back to its end as well, or
+  // the reading that follows runs from one piece to the end of another.
+  std::optional<cursor_type> upto{};
   [[no_unique_address]] kept_type kept{};
 };
+
+// The end that goes with the place, where the two are the same kind of thing.
+//
+// A walk over characters in a row reads towards a pointer; a walk over
+// anything else reads towards a sentinel, which says nothing about where a
+// piece ends and is not kept.
+template <class answer_type, class sentinel_type>
+SCAN_FORCE_INLINE constexpr void keep_the_end(answer_type& best,
+                                              const sentinel_type& last) {
+  if constexpr (requires { best.upto = last; }) best.upto = last;
+}
 
 // The note taken where the machine stands in a match: the registers as they
 // are, with this state's final operations applied to the copy rather than to
@@ -905,6 +924,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   if constexpr (shape.longest && accepts_here) {
     best.matched = true;
     best.at = cursor;
+    keep_the_end(best, last);
     keep_the_place<automaton, state>(best, registers, cursor, place, into);
   }
   // Over the run this state keeps, in vectors -- only where the characters lie
@@ -933,6 +953,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     }
     if constexpr (shape.longest && accepts_here) {
       best.at = cursor;
+      keep_the_end(best, last);
       keep_the_place<automaton, state>(best, registers, cursor, place, into);
     }
   }
@@ -978,6 +999,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
       if constexpr (shape.longest && accepts_here) {
         best.at = cursor;
+        keep_the_end(best, last);
         keep_the_place<automaton, state>(best, registers, cursor, place, into);
       }
       continue;
@@ -1006,6 +1028,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     if constexpr (shape.longest) {
       best.matched = true;
       best.at = cursor;
+      keep_the_end(best, last);
     }
     if constexpr (by_place) {
       execute_static_final_commands<automaton, state>(registers, cursor);
@@ -2916,8 +2939,12 @@ template <class type, fixed_string format, class source_type>
                                         best)) {
     return said;
   }
-  // Where the match ended is where the next reading begins.
-  if (best.at) cursor = *best.at;
+  // Where the match ended is where the next reading begins -- and in the piece
+  // it ended in, which is not the piece the walk went on to read.
+  if (best.at) {
+    cursor = *best.at;
+    if (best.upto) last = *best.upto;
+  }
   auto got = into.taken();
   if (!got) return said;
   said.value = std::move(*got);
