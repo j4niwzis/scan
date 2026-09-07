@@ -9,25 +9,6 @@ export import scan.views;
 export namespace scan::detail {
 
 
-// Three characters the spread writes and this parser reads, and which no format
-// anyone writes can contain. A format has no grouping of its own and no
-// alternation except at the top, and a variant standing in a field needs both:
-// its branches have to be held together and each one has to be marked, so that
-// which branch ran can be read off afterwards. Rather than give the written
-// language a syntax for that, the spread says it in a spelling of its own.
-inline constexpr char format_group_begin = '\x01';
-inline constexpr char format_group_end = '\x02';
-inline constexpr char format_branch = '\x03';
-inline constexpr char format_mark = '\x04';
-inline constexpr char format_raw_begin = '\x05';
-inline constexpr char format_raw_end = '\x06';
-inline constexpr char format_repeat = '\x07';
-// A place standing for a leaf that is built from the groups its own pattern
-// opens. Inside it, and only inside it, a parenthesis is a group of this match:
-// the type asked for those groups, so they are numbered and kept like any
-// others. Everywhere else in a written format a parenthesis groups and keeps
-// nothing, which is what it has always done.
-inline constexpr char format_own_groups = '\x08';
 
 // The characters a backslash names. Without these a format can only say a
 // newline by holding one, which means a pattern cannot be written on one line,
@@ -57,157 +38,6 @@ class tre_parser {
         defaults_(defaults),
         capture_count_(capture_count),
         capture_parentheses_(capture_parentheses) {}
-
-  [[nodiscard]] constexpr scan::tre::node parse_format() {
-    std::vector<std::size_t> groups;
-    std::vector<scan::tre::node> branches = parse_format_branches(groups);
-    if (position_ != source_.size()) throw "invalid scan format";
-    if (branches.size() == 1) return std::move(branches.front());
-    return scan::tre::alt(std::move(branches));
-  }
-
-  // The branches of a format, in order, with how many groups each one holds.
-  //
-  // A bar at the top level of a format separates one whole shape of input from
-  // another, the way it separates one rule of a lexer from the next. Inside a
-  // group it has always meant alternation; outside one it used to be an
-  // ordinary character, and `\\|` is that character now.
-  [[nodiscard]] constexpr std::vector<scan::tre::node> parse_format_branches(
-      std::vector<std::size_t>& groups_in_branch) {
-    std::vector<scan::tre::node> branches;
-    while (true) {
-      const std::size_t before = capture_count_;
-      branches.push_back(parse_format_sequence());
-      groups_in_branch.push_back(capture_count_ - before);
-      if (at_end()) break;
-      if (peek() != '|') throw "invalid scan format";
-      ++position_;
-    }
-    return branches;
-  }
-
-  [[nodiscard]] constexpr scan::tre::node parse_regex() {
-    scan::tre::node result = parse_alternative('\0');
-    if (position_ != source_.size()) throw "invalid regular expression";
-    return result;
-  }
-
- private:
-  [[nodiscard]] constexpr bool at_end() const {
-    return position_ == source_.size();
-  }
-
-  [[nodiscard]] constexpr char peek(std::size_t offset = 0) const {
-    return position_ + offset < source_.size() ? source_[position_ + offset]
-                                                : '\0';
-  }
-
-  // A group of branches, held together, as the spread writes it.
-  [[nodiscard]] constexpr scan::tre::node parse_format_group() {
-    ++position_;
-    std::vector<scan::tre::node> branches;
-    while (true) {
-      branches.push_back(parse_format_sequence());
-      if (peek() != format_branch) break;
-      ++position_;
-    }
-    if (peek() != format_group_end) throw "unterminated group of branches";
-    ++position_;
-    if (branches.size() == 1) return std::move(branches.front());
-    return scan::tre::alt(std::move(branches));
-  }
-
-  [[nodiscard]] constexpr scan::tre::node parse_format_sequence() {
-    if (at_end() || peek() == '|' || peek() == format_group_end ||
-        peek() == format_branch) {
-      return scan::tre::epsilon();
-    }
-    if (peek() == format_group_begin) {
-      scan::tre::node group = parse_format_group();
-      return scan::tre::cat({std::move(group), parse_format_sequence()});
-    }
-    // A group that captures nothing and stands at the head of a branch. What it
-    // captured is never read; that it captured at all is how the branch is
-    // known to have run, and it is the only way to know for a branch whose
-    // alternative captures nothing of its own.
-    if (peek() == format_mark) {
-      ++position_;
-      const std::size_t capture = capture_count_++;
-      return scan::tre::cat(
-          {wrap_capture(capture, scan::tre::epsilon()), parse_format_sequence()});
-    }
-    // A pattern that has to be matched and is not kept: the run of spaces
-    // between two fields, the field somebody else's format has and this output
-    // does not want. It captures nothing, so it is no group and no value, and
-    // the places on either side of it go on counting as if it were not there.
-    // A group holding one or more of what follows, and holding it as a whole:
-    // the group is where the list is, and the places inside it are where each
-    // of its elements is, written over again on every turn round the loop.
-    if (peek() == format_repeat) {
-      ++position_;
-      const std::size_t capture = capture_count_++;
-      scan::tre::node body = parse_format_sequence();
-      if (peek() != format_group_end) throw "unterminated repeated group";
-      ++position_;
-      std::size_t least = 1;
-      std::size_t most = scan::tre::unbounded;
-      if (peek() == '*') { least = 0; ++position_; }
-      else if (peek() == '+') { ++position_; }
-      else if (peek() == '?') { least = 0; most = 1; ++position_; }
-      else if (peek() == '{') {
-        ++position_;
-        least = 0;
-        while (peek() >= '0' && peek() <= '9') {
-          least = least * 10 + static_cast<std::size_t>(peek() - '0');
-          ++position_;
-        }
-        most = least;
-        if (peek() == ',') {
-          ++position_;
-          if (peek() >= '0' && peek() <= '9') {
-            most = 0;
-            while (peek() >= '0' && peek() <= '9') {
-              most = most * 10 + static_cast<std::size_t>(peek() - '0');
-              ++position_;
-            }
-          } else {
-            most = scan::tre::unbounded;
-          }
-        }
-        if (peek() != '}') throw "unterminated repetition";
-        ++position_;
-      }
-      return scan::tre::cat(
-          {wrap_capture(capture,
-                        scan::tre::repeat(std::move(body), least, most)),
-           parse_format_sequence()});
-    }
-    if (peek() == format_raw_begin) {
-      ++position_;
-      scan::tre::node body = parse_alternative(format_raw_end);
-      if (peek() != format_raw_end) throw "unterminated unkept pattern";
-      ++position_;
-      return scan::tre::cat({std::move(body), parse_format_sequence()});
-    }
-    if (peek() == '\\') {
-      if (peek(1) == '\0') throw "dangling format escape";
-      const char literal = named_character(peek(1));
-      position_ += 2;
-      return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
-    }
-    if (peek() == format_own_groups) {
-      ++position_;
-      scan::tre::node capture = parse_capture(true);
-      return scan::tre::cat({std::move(capture), parse_format_sequence()});
-    }
-    if (peek() == '{') {
-      scan::tre::node capture = parse_capture();
-      return scan::tre::cat({std::move(capture), parse_format_sequence()});
-    }
-    const char literal = peek();
-    ++position_;
-    return scan::tre::cat({scan::tre::symbol(literal), parse_format_sequence()});
-  }
 
   [[nodiscard]] constexpr scan::tre::node parse_capture(
       bool parentheses_are_groups = false) {
@@ -1301,98 +1131,39 @@ struct spread_format {
   bool space_before_places = false;
 };
 
-// The spread, said either way.
+// The spelling the spread writes.
 //
-// One walk, two spellings. The first is this library's own: a place is `{`,
-// a repeated group is one character and a mark is another, and what the format
-// parser reads is that. The second is a plain regular expression, where a
-// place is a group, a mark is a group of nothing, and the whole thing can be
-// read by anybody -- which is what a type hands over when it says what it
-// matches.
-//
-// They are the same walk on purpose. The groups of the one are the places of
-// the other, in the same order, so a type that is handed its groups can be
-// built by the very code that builds it from the places.
-template <bool as_regex>
-constexpr void say_place_begin(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.push_back('(');
-  } else {
-    made.text.push_back('{');
-  }
-}
+// A place is a group, a mark is a group of nothing, a repeated group is a
+// repeated group, and text that stands for itself is written so that it still
+// does. That is a plain regular expression: the groups of it are the places of
+// the format, in the order the format has them, so a type handed its own groups
+// is handed its places, and the thing that reads a format is the thing that
+// reads an expression.
+constexpr void say_place_begin(spread_format& made) { made.text.push_back('('); }
 
-template <bool as_regex>
-constexpr void say_place_end(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.push_back(')');
-  } else {
-    made.text.push_back('}');
-  }
-}
+constexpr void say_place_end(spread_format& made) { made.text.push_back(')'); }
 
-template <bool as_regex>
 constexpr void say_repeat_begin(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.push_back('(');
-  } else {
-    made.text.push_back(format_repeat);
-  }
+  made.text.push_back('(');
 }
 
-template <bool as_regex>
 constexpr void say_group_begin(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.append(std::string_view("(?:"));
-  } else {
-    made.text.push_back(format_group_begin);
-  }
+  made.text.append(std::string_view("(?:"));
 }
 
-template <bool as_regex>
-constexpr void say_group_end(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.push_back(')');
-  } else {
-    made.text.push_back(format_group_end);
-  }
-}
+constexpr void say_group_end(spread_format& made) { made.text.push_back(')'); }
 
-template <bool as_regex>
-constexpr void say_branch(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.push_back('|');
-  } else {
-    made.text.push_back(format_branch);
-  }
-}
+constexpr void say_branch(spread_format& made) { made.text.push_back('|'); }
 
-template <bool as_regex>
 constexpr void say_mark(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.append(std::string_view("()"));
-  } else {
-    made.text.push_back(format_mark);
-  }
+  made.text.append(std::string_view("()"));
 }
 
-template <bool as_regex>
 constexpr void say_raw_begin(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.append(std::string_view("(?:"));
-  } else {
-    made.text.push_back(format_raw_begin);
-  }
+  made.text.append(std::string_view("(?:"));
 }
 
-template <bool as_regex>
-constexpr void say_raw_end(spread_format& made) {
-  if constexpr (as_regex) {
-    made.text.push_back(')');
-  } else {
-    made.text.push_back(format_raw_end);
-  }
-}
+constexpr void say_raw_end(spread_format& made) { made.text.push_back(')'); }
 
 // A character of the format that stands for itself.
 //
@@ -1400,17 +1171,41 @@ constexpr void say_raw_end(spread_format& made) {
 // anything it has no meaning for as the character it is. Said as a regular
 // expression it has to be written so that it still stands for itself, because
 // there a dot is every character and a plus is a repetition.
-template <bool as_regex>
 constexpr void say_literal(spread_format& made, char value) {
-  if constexpr (as_regex) {
-    if (std::string_view(".^$|()[]*+?{}\\").contains(value)) {
-      made.text.push_back('\\');
-    }
+  if (std::string_view(".^$|()[]*+?{}\\").contains(value)) {
+    made.text.push_back('\\');
   }
   made.text.push_back(value);
 }
 
-template <bool as_regex = false>
+// A pattern somebody wrote in the format: copied as it stands, except that a
+// group written there keeps nothing.
+//
+// A place is one value, and what is written inside it says what that value
+// matches -- not how many values there are. So `{(\d+)-(\d+)}` is one value
+// however many brackets it has, and the brackets are made into the kind that
+// group without keeping.
+constexpr void say_written_pattern(spread_format& made, std::string_view text) {
+  bool character_class = false;
+  for (std::size_t at = 0; at < text.size(); ++at) {
+    const char value = text[at];
+    if (value == '\\' && at + 1 < text.size()) {
+      made.text.push_back(value);
+      made.text.push_back(text[at + 1]);
+      ++at;
+      continue;
+    }
+    if (value == '[') character_class = true;
+    if (value == ']') character_class = false;
+    if (!character_class && value == '(' &&
+        !(at + 1 < text.size() && text[at + 1] == '?')) {
+      made.text.append(std::string_view("(?:"));
+      continue;
+    }
+    made.text.push_back(value);
+  }
+}
+
 constexpr void copy_until_place(spread_format& made, std::string_view text,
                                 std::size_t& position) {
   while (position < text.size()) {
@@ -1421,7 +1216,7 @@ constexpr void copy_until_place(spread_format& made, std::string_view text,
       continue;
     }
     if (text[position] == '{') return;
-    say_literal<as_regex>(made, text[position]);
+    say_literal(made, text[position]);
     ++position;
   }
 }
@@ -1485,24 +1280,23 @@ branches_of(std::string_view text, std::size_t& count) {
 // Literal text, and any place that keeps nothing, up to the next place that
 // does. A place whose body begins with a star is matched and thrown away, the
 // way `%*d` is read and not stored, and it takes no value with it.
-template <bool as_regex = false>
 constexpr void copy_until_kept_place(spread_format& made, std::string_view text,
                                      std::size_t& position) {
   while (true) {
-    copy_until_place<as_regex>(made, text, position);
+    copy_until_place(made, text, position);
     if (position == text.size()) return;
     const std::size_t close = end_of_place(text, position);
     const std::string_view body =
         text.substr(position + 1, close - position - 1);
     if (body.empty() || body.front() != '*') return;
-    say_raw_begin<as_regex>(made);
+    say_raw_begin(made);
     made.text.append(body.substr(1));
-    say_raw_end<as_regex>(made);
+    say_raw_end(made);
     position = close + 1;
   }
 }
 
-template <class type, bool within, bool as_regex = false>
+template <class type, bool within>
 constexpr void spread_into(spread_format& made, std::string_view text);
 
 // How many turns a place is written to take, as it is written: a star, a plus,
@@ -1523,18 +1317,18 @@ constexpr void spread_into(spread_format& made, std::string_view text);
   return text.substr(at, close - at + 1);
 }
 
-template <class kind, bool as_regex = false>
+template <class kind>
 constexpr void spread_place(spread_format& made, std::string_view body,
                             std::string_view repetition = {}) {
   if constexpr (scanned_as_range<kind>) {
     // The body is one element, and it is read for as long as it goes on. The
     // group around it is the list; the places inside it are the element, and
     // they are written over again on every turn.
-    say_repeat_begin<as_regex>(made);
+    say_repeat_begin(made);
     ++made.leaves;
-    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false,
-                as_regex>(made, body);
-    say_group_end<as_regex>(made);
+    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
+        made, body);
+    say_group_end(made);
     made.text.append(repetition);
   } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body
@@ -1550,32 +1344,32 @@ constexpr void spread_place(spread_format& made, std::string_view body,
         throw "a variant place must have one branch for each alternative";
       }
     }
-    say_group_begin<as_regex>(made);
+    say_group_begin(made);
     [&]<std::size_t... which>(std::index_sequence<which...>) {
       const auto one = [&]<std::size_t branch>() {
-        if constexpr (branch != 0) say_branch<as_regex>(made);
-        say_mark<as_regex>(made);
+        if constexpr (branch != 0) say_branch(made);
+        say_mark(made);
         // The mark is a group like any other and takes a number, so what comes
         // after it reads its own parameters and not the ones before.
         ++made.leaves;
         using alternative = branch_at<kind, branch>;
         if (body.empty()) {
-          spread_place<alternative, as_regex>(made, std::string_view{});
+          spread_place<alternative>(made, std::string_view{});
         } else {
-          spread_into<alternative, false, as_regex>(
+          spread_into<alternative, false>(
               made, body.substr(parts[branch].first,
                                 parts[branch].second - parts[branch].first));
         }
       };
       (one.template operator()<which>(), ...);
     }(std::make_index_sequence<count>{});
-    say_group_end<as_regex>(made);
+    say_group_end(made);
   } else if constexpr (scanned_by_format<kind>) {
     // Still spread into the pattern around it, which is what a shape made of
     // turns needs. A shape that reads its own groups is not one of these: it
     // stands in a place like any other value, and its groups follow it.
     if (!body.empty()) throw "a type that declares a format takes no body";
-    spread_into<kind, true, as_regex>(
+    spread_into<kind, true>(
         made, scan::scanner<std::remove_cv_t<kind>>::scan_format.view());
   } else if constexpr (!scanned_as_leaf<kind>) {
     // Only reached by a variant place left empty, which asks each alternative
@@ -1592,20 +1386,24 @@ constexpr void spread_place(spread_format& made, std::string_view body,
         throw "a type that reads its own groups keeps its own pattern -- a "
               "place standing for it takes parameters but not a pattern";
       }
-      // Said only in this library's own spelling: written as a regular
-      // expression, a parenthesis is a group already.
-      if constexpr (!as_regex) made.text.push_back(format_own_groups);
     }
-    say_place_begin<as_regex>(made);
+    say_place_begin(made);
     if (body.empty() || body.front() == ':') {
       const std::string_view given = body.empty() ? body : body.substr(1);
       made.parameters[made.leaves].append(given);
       const auto pattern = scanner_pattern<std::remove_cv_t<kind>>(given);
-      made.text.append(std::string_view{pattern});
+      if constexpr (gathers_by_its_groups<std::remove_cv_t<kind>>) {
+        // Its groups are what it is handed, so they are groups here.
+        made.text.append(pattern_view(pattern));
+      } else {
+        // A value is one place however its pattern is written, so whatever it
+        // wrote in brackets groups without keeping.
+        say_written_pattern(made, pattern_view(pattern));
+      }
     } else {
-      made.text.append(body);
+      say_written_pattern(made, body);
     }
-    say_place_end<as_regex>(made);
+    say_place_end(made);
     // The place, and then the groups its pattern opens, which take the numbers
     // straight after it. What is counted here is group numbers: the parameters
     // are read by the group that gathers, so everything that takes a number has
@@ -1617,12 +1415,12 @@ constexpr void spread_place(spread_format& made, std::string_view body,
   }
 }
 
-template <class type, bool within, bool as_regex>
+template <class type, bool within>
 constexpr void spread_into(spread_format& made, std::string_view text) {
   std::size_t position = 0;
   [&]<std::size_t... place>(std::index_sequence<place...>) {
     const auto one = [&]<std::size_t which>() {
-      copy_until_kept_place<as_regex>(made, text, position);
+      copy_until_kept_place(made, text, position);
       // A place can hold another, and the one inside is a value of its own:
       // `{{[a]+}}` is a group around a group, two values, one place at this
       // level. The body is copied as it stands, so the places within it are
@@ -1640,28 +1438,28 @@ constexpr void spread_into(spread_format& made, std::string_view text) {
       // which is what `%d` does, and what this format asked for by being
       // written `past_space`.
       if (made.space_before_places) {
-        say_raw_begin<as_regex>(made);
+        say_raw_begin(made);
         made.text.append("\\s*");
-        say_raw_end<as_regex>(made);
+        say_raw_end(made);
       }
-      spread_place<kind, as_regex>(
+      spread_place<kind>(
           made, text.substr(position + 1, close - position - 1), repetition);
       position = close + 1 + repetition.size();
     };
     (one.template operator()<place>(), ...);
   }(std::make_index_sequence<places_chosen<type, within>()>{});
-  copy_until_kept_place<as_regex>(made, text, position);
+  copy_until_kept_place(made, text, position);
   if (position != text.size()) throw "format has more places than values";
 }
 
-template <class type, fixed_string format, bool as_regex = false>
+template <class type, fixed_string format>
 [[nodiscard]] consteval spread_format spread_of() {
   spread_format made;
   made.space_before_places = format.space_before_places;
   if constexpr (scanned_as_variant<type>) {
     // The whole format is the list of branches, which is what a place standing
     // for a variant is written as anywhere else.
-    spread_place<type, as_regex>(made, format.view());
+    spread_place<type>(made, format.view());
   } else {
     // The type scanned into is always opened up: its fields are the places, and
     // it is never itself one. A format of a single place standing for the whole
@@ -1669,7 +1467,7 @@ template <class type, fixed_string format, bool as_regex = false>
     // one, without a word changing in the format, so it is not allowed to mean
     // anything. Whoever wants it writes the wrapper themselves, and then the
     // place is the field and says so.
-    spread_into<type, true, as_regex>(made, format.view());
+    spread_into<type, true>(made, format.view());
   }
   return made;
 }
@@ -1680,7 +1478,7 @@ template <class type, fixed_string format, bool as_regex = false>
 // own groups.
 template <class type, fixed_string format>
 [[nodiscard]] consteval pattern_buffer<> places_pattern() {
-  constexpr auto made = spread_of<type, format, true>();
+  constexpr auto made = spread_of<type, format>();
   pattern_buffer<> result;
   result.append(made.text.view());
   return result;
@@ -1760,10 +1558,13 @@ template <std::size_t extent>
 // order.
 template <class type, fixed_string format>
 [[nodiscard]] constexpr scan::tre::tnfa build_tnfa() {
+  // The spread writes a regular expression whose groups are the places of the
+  // format, in the order the format has them -- so what reads it is the reader
+  // of expressions, and there is no second language and no second reader.
   constexpr auto spread = spread_of<type, format>();
   std::size_t captures = 0;
-  tre_parser parser(spread.text.view(), {}, captures);
-  scan::tre::node expression = parser.parse_format();
+  tre_parser parser(spread.text.view(), {}, captures, true);
+  scan::tre::node expression = parser.parse_regex();
   if (captures != groups_of_output<type>()) {
     throw "capture count does not match output";
   }
