@@ -736,9 +736,14 @@ template <fixed_string pattern>
          std::numeric_limits<std::size_t>::max();
 }
 
+// Whether a subject that can only be read once can be searched at all: both
+// ends of the reading have to name a number -- what a failed attempt swallows
+// and what is read past a match.
 template <fixed_string pattern>
 [[nodiscard]] consteval bool holds_a_bounded_way() {
-  return detail::barren_walks<regex_automaton<pattern>>().bounded;
+  constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
+  return dead_end_window<pattern>() != unbounded &&
+         fallback_window<pattern>() != unbounded;
 }
 
 // Whether the group is being read where the machine stands now.

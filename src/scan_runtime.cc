@@ -1017,28 +1017,33 @@ template <auto& automaton, unsigned char terminator, bool in_words,
 // The head of characters in a row that the pattern takes, or nothing.
 // The longest walk out of each state that never lands in a final state.
 //
-// This one relaxation answers both of the questions a subject that can only
-// be read once has to ask, and they are the questions the TDFA papers ask
+// This one relaxation answers both of the questions a reading has to ask
+// about going past a match, and they are the questions the TDFA papers ask
 // about fallback: not whether the automaton has a cycle -- that was too blunt
 // by half -- but how long a walk can be that finds nothing.
 //
 // Out of a final state it is how far the machine can read past a match before
 // it dies, and out of the start it is how much an attempt that comes to
-// nothing can swallow. Only a cycle that never accepts has no answer.
+// nothing can swallow. Where a walk can go round a cycle with no match along
+// it, there is no number -- and that is said of the states it can happen from
+// and not of the whole automaton, because the two are far apart in practice.
+// The format `{},{}` spends the whole of its first field in such a cycle and
+// still cannot read one character past a match: from the end there is no way
+// back into it.
 template <auto& automaton>
 [[nodiscard]] consteval auto barren_walks() {
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
   struct answer_type {
-    bool bounded = true;
     std::array<std::size_t, state_count> longest{};
+    std::array<bool, state_count> forever{};
   };
   answer_type answer;
   const auto accepts = [&](std::size_t state) {
     return automaton.states[state].accepting_slot !=
            packed_state<0, 0, 0>::not_accepting;
   };
-  for (std::size_t round = 0; round <= state_count; ++round) {
+  const auto relax = [&](const std::array<std::size_t, state_count>& from) {
     std::array<std::size_t, state_count> next{};
     for (std::size_t state = 0; state < state_count; ++state) {
       const auto& packed = automaton.states[state];
@@ -1046,34 +1051,58 @@ template <auto& automaton>
       for (std::size_t index = 0; index < packed.range_count; ++index) {
         const std::size_t target = packed.ranges[index].target;
         if (accepts(target)) continue;
-        best = std::max(best, answer.longest[target] + 1);
+        best = std::max(best, from[target] + 1);
       }
       next[state] = best;
     }
+    return next;
+  };
+  // As many rounds as there are states settles every walk that ends. What is
+  // still growing after that is going round.
+  for (std::size_t round = 0; round < state_count; ++round) {
+    const auto next = relax(answer.longest);
     if (next == answer.longest) return answer;
     answer.longest = next;
   }
-  // Still growing after as many rounds as there are states: it is going round
-  // a cycle that never accepts, and there is no number to name.
-  answer.bounded = false;
+  const auto once_more = relax(answer.longest);
+  for (std::size_t state = 0; state < state_count; ++state) {
+    answer.forever[state] = once_more[state] != answer.longest[state];
+  }
+  // And a state that can step into one of those has no number either.
+  for (std::size_t round = 0; round < state_count; ++round) {
+    bool changed = false;
+    for (std::size_t state = 0; state < state_count; ++state) {
+      if (answer.forever[state]) continue;
+      const auto& packed = automaton.states[state];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (accepts(target) || !answer.forever[target]) continue;
+        answer.forever[state] = true;
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
   return answer;
 }
 
 // How far past a match the machine can read before it dies -- the fallback
 // window of the TDFA papers. For `a+` it is zero: every state the machine
 // stands in after a step is a final state, so wherever it stops it has a
-// match and nothing was ever read past one. For `abc|abd` it is two. For a
-// pattern with a cycle that never accepts, it is unbounded.
+// match and nothing was ever read past one. For `abc|abd` it is two. Where a
+// final state can walk into a cycle with no match along it, there is no
+// number.
 template <auto& automaton>
 [[nodiscard]] consteval std::size_t walk_past_a_match() {
   constexpr auto walks = barren_walks<automaton>();
-  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
   std::size_t window = 0;
   for (std::size_t state = 0; state < walks.longest.size(); ++state) {
     if (automaton.states[state].accepting_slot ==
         packed_state<0, 0, 0>::not_accepting) {
       continue;
     }
+    if (walks.forever[state]) return std::numeric_limits<std::size_t>::max();
     window = std::max(window, walks.longest[state]);
   }
   return window;
@@ -1088,7 +1117,9 @@ template <auto& automaton>
 template <auto& automaton>
 [[nodiscard]] consteval std::size_t walk_from_the_start() {
   constexpr auto walks = barren_walks<automaton>();
-  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
+  if (walks.forever[automaton.initial]) {
+    return std::numeric_limits<std::size_t>::max();
+  }
   return walks.longest[automaton.initial];
 }
 
@@ -2554,8 +2585,18 @@ template <class type, fixed_string format, class iterator_type,
   stream_state<type, format> state;
   std::optional<char> stopped;
   std::optional<stream_state<type, format>> note;
-  iterator_type note_at = first;
-  std::array<char, can_go_back || window == 0 ? 1 : window> since{};
+  // The place the note was taken at, kept the way this reading can keep it: an
+  // iterator where the reading can be gone back over, and nothing at all where
+  // it cannot -- an iterator of such a range cannot even be copied.
+  using place_type =
+      std::conditional_t<can_go_back, iterator_type, nothing_kept>;
+  place_type note_at{};
+  constexpr std::size_t held_here =
+      can_go_back || window == 0 ||
+              window == std::numeric_limits<std::size_t>::max()
+          ? 1
+          : window;
+  std::array<char, held_here> since{};
   std::size_t since_count = 0;
   if (state.accepting()) note = state;
   while (true) {
