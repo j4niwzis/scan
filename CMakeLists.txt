@@ -266,6 +266,7 @@ set(scan_tests
   streams_unbounded_custom_value_test
   tagged_automata_test
   the_head_of_an_input_test
+  the_walk_against_the_interpreter_test
   the_walk_said_outright_test
   the_leftmost_and_longest_test
   the_outer_branch_test

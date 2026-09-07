@@ -65,4 +65,23 @@ TEST(LazyRepetition, APlusStillTakesOne) {
   EXPECT_EQ(lazy.whole().to_view(), "a"sv);
 }
 
+TEST(LazyRepetition, TheCornerWhereNoTwoEnginesAgree) {
+  // A quantifier around something that can match nothing, which here is the
+  // lazy `[ab]*?` inside a greedy star. `([ab]*?)*` against "ba" is answered
+  // four ways: Perl and Python say the group is empty at the end, [2,2); RE2
+  // says it is the whole of it, [0,2); this says [1,2).
+  //
+  // Following the order a backtracking engine tries things in gives this one:
+  // the loop takes `b`, then takes `a`, and a third turn would match nothing.
+  // Perl divides it the same way and differs only in taking that last empty
+  // turn and leaving the group there. RE2 divides it differently from both.
+  //
+  // So this is written down rather than chased: it is what the rule this
+  // library follows gives, and the engines it would be chasing do not agree
+  // with each other.
+  const auto found = scan::match<"([ab]*?)*">("ba"sv);
+  ASSERT_TRUE(static_cast<bool>(found));
+  EXPECT_EQ(found.get<1>().to_view(), "a"sv);
+}
+
 }  // namespace
