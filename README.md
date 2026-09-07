@@ -1,98 +1,533 @@
-# TRE, TNFA, and TDFA
+# scan
 
-This is a compact C++23 implementation using C++20 named modules for tagged
-regular expressions and the
-leftmost-greedy TNFA/TDFA construction described in Ulya Trofimovich's
-*Tagged Deterministic Finite Automata with Lookahead*.
+Reading text into values, with the pattern known while the program is
+compiled.
 
-The library uses a layered module graph: `scan.core`, `scan.views`,
-`scan.compiler`, `scan.runtime`, `scan.range`, and `scan.scanners`. The `scan`
-module is only an umbrella that re-exports this graph. All units import the
-standard library with `import std;`. The AST uses a forward-declared
-`tre::node`. Concrete node structures live in `tre::ast`, while the completed
-`tre::node` publicly derives from their `std::variant`. This permits recursive
-`std::vector<node>` fields without owning pointers.
+A pattern or a format written here is turned into a tagged deterministic
+automaton at compile time, and the walk over that automaton is written out
+state by state. There is no pattern object at run time, no interpreter, and
+nothing is allocated to match. What comes out of a scan is a value of the type
+you asked for -- an aggregate, a variant, a list, a view into the subject --
+rather than a match object you then take apart.
 
-The public pipeline is:
+Two layers sit on one machine:
+
+* the **pattern layer** answers questions about text: does this match, what is
+  the head of it, where are the matches, what are the pieces between them;
+* the **format layer** reads text into a type: `{}` for each value, the
+  type's own fields deciding what each place means.
+
+Four kinds of subject are read by the same machine and answer the same way:
+characters in a row, input that arrives in pieces, a forward range, and a
+range that can only be read once.
 
 ```cpp
-tre::node expression = tre::cat({
-    tre::tag(0), tre::star(tre::symbol('a')), tre::tag(1)});
-tre::tnfa tnfa = tre::compile_tnfa(expression);
-tre::tdfa tdfa = tre::compile_tdfa(tnfa);
-tre::match match = tre::simulate(tdfa, "aaa");
+import scan;
+
+// A pattern, and whether the whole of the subject is it.
+if (scan::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}">(text)) { … }
+
+// A format, and the values out of it.
+struct point { int x; int y; };
+const point where = scan::scan<"{},{}">("12,34");
+
+// One record after another, off a stream, holding nothing.
+for (const point& one : scan::each<"{},{}\n">(std::cin).of<point>()) { … }
 ```
 
-Matches are anchored and consume the whole input. Tag histories contain input
-offsets; `tre::negative_tag` represents a negative tag. Alternation order and the
-consume-before-exit priority of repetition implement leftmost-greedy
-disambiguation. TDFA epsilon actions are attached to the preceding consuming
-transition, giving the one-symbol-lookahead form.
+## Before anything else
 
-Single-pass input ranges are not materialized. The conversion proxy retains
-the range until the aggregate output type is known, then consumes it once.
-Incremental scanners expose `state_type`, `begin()`, `push()`, and `finish()`;
-their states are propagated through speculative TDFA slots. Integral scanners
-use a fixed-size stack buffer derived from `numeric_limits<T>` and finish with
-`from_chars`, so they require neither an input allocation nor per-character
-arithmetic conversion.
+**The pattern has to be known where it is written.** It is a template
+argument, and the automaton is built from it while the program is compiled. If
+your patterns come from a configuration file, from a user, or from anywhere
+else at run time, this library cannot read them and is not the tool for the
+job.
 
-Typed placeholders accept scanner-specific parameters after `:`. The complete
-parameter string is evaluated at compile time and is passed to `pattern`,
-`begin` and `parse` when those overloads are provided:
+What it costs, and what it buys, both follow from that one decision. The cost
+is compile time: every distinct pattern is a constant evaluation that builds a
+machine, and a program with hundreds of them will feel it. What it buys is a
+walk with no dispatch in it, a cost model that can be asked questions before
+the program runs, and the ability to read a subject that can never be looked
+at twice.
+
+Today it wants clang, `import std`, and `boost::pfr`; a header form is coming.
+
+## A five-minute tour
+
+Everything below is a callable object, so it can be used as a function or
+piped into with `|`, which is what a range adaptor closure is for.
 
 ```cpp
-auto value = scan::scan<"hex={:hex} word={:upper}">(input);
+// Does the whole subject match?
+scan::match<"[a-z]+@[a-z.]+">(address);
+address | scan::match<"[a-z]+@[a-z.]+">;
 
+// With the groups.
+const auto found = scan::match<"([0-9]+)-([a-z]+)">("42-abc");
+found.get<1>().to_view();            // "42"
+found.get<2>().to_view();            // "abc"
+
+// The head of the subject that the pattern takes.
+scan::starts_with<"[a-z]+">("abc123").whole().to_view();   // "abc"
+
+// The leftmost match anywhere in it.
+scan::search<"[0-9]+">("id=4210x").to_view();              // "4210"
+
+// Every match, and the pieces between them. Both are lazy views.
+for (const auto& one : text | scan::search_all<"[a-z]+">) { … }
+const auto fields = "a,bb,,ccc" | scan::split<","> | std::ranges::to<std::vector>();
+
+// Values, not text.
+struct row { int id; std::string_view name; };
+const row one = scan::scan<"{},{[a-z]+}">(line);
+
+// The head of the input, and what is left of it.
+const auto [value, rest] = scan::scan_prefix<"{},{}">(line).take<point>();
+
+// A record at a time, out of anything.
+for (const row& one : scan::each<"{},{[a-z]+}\n">(text).of<row>()) { … }
+```
+
+## What the answers mean
+
+### Leftmost-first
+
+The rule is Perl's, which is also RE2's and CTRE's: **the first alternative
+under which the whole expression matches wins, however short it is.**
+Alternation is ordered, repetition is greedy unless it is written lazy, and
+where several parses are possible the one the order prefers is the one whose
+groups you get.
+
+```cpp
+scan::each<"{{for}|{each}|{foreach}}">("foreach")   // for, then each
+scan::each<"{{foreach}|{for}|{each}}">("foreach")   // foreach
+```
+
+Both are the same three branches. In the first, the match of `for` is the
+first walk in that state, so everything under it has lost and the record ends
+there -- the machine has nowhere to go and reads no further. In the second,
+the walk of `foreach` sits above that match and is still alive, so the machine
+goes on and finds the longer branch.
+
+This is not the longest match. `for|each|foreach` reading "foreach" stops at
+`for`, where a lexer would take the whole word.
+
+### Two readings, and why they differ
+
+A pattern is read in one of two ways, and the difference is what ends the
+reading:
+
+* **anchored** -- the subject ends it. `match` and `scan` read this way: the
+  whole of the subject must be the pattern.
+* **a head** -- the match ends it. `starts_with`, `search`, `scan_prefix`,
+  `each`, `split` and `search_all` read this way.
+
+The two need different machines. For a head, a walk below a match has lost and
+is cut where the automaton is built, which is what makes the machine stop at
+`for` above. Anchored, that same walk may be the only one that reaches the end
+of the subject, so it is kept:
+
+```cpp
+scan::match<"a|ab">("ab")          // matches: `ab`, because `a` cannot reach the end
+scan::starts_with<"a|ab">("ab")    // takes `a`, because `a` matched first
+```
+
+Both are the same rule said at the two ends: the first walk that gets to the
+end of what was asked for.
+
+### Nothing is walked back, except by a note
+
+A walk can go past a match on the chance of a longer one the order prefers,
+and die without finding it. `foreach|for|each` reading "fore" does that: it
+passes the match of `for` on the `e` and then the subject runs out. The answer
+is the place it passed.
+
+So the walk keeps a note -- the place, and the registers as they stood there
+where the automaton can walk past a match at all. That is the fallback of the
+TDFA papers, and whether this automaton has one is a question asked while it
+is compiled: where every step out of a match lands in another match, the note
+is a pointer and nothing is copied.
+
+There is no backtracking beyond that note. Nothing is ever tried a second way.
+
+### Groups
+
+Groups are numbered by their opening parenthesis, from one; nought is the
+whole match. A group that took no part in the parse that won says so rather
+than coming back empty, and a group in a repetition holds the turn that won,
+which for a greedy repetition is the last one.
+
+## The subject, and what each kind costs
+
+| subject | how it is read | what is held |
+| --- | --- | --- |
+| characters in a row (`string_view`, `string`, `vector<char>`) | in words and vectors past a threshold, a character at a time below it | nothing; groups are pointers into the subject |
+| pieces (a range of contiguous ranges) | each piece in words and vectors, the reading held between them | nothing; the place a record ended is an address inside a piece |
+| a forward range | a character at a time | nothing; the note is an iterator, and going back is assigning it |
+| a range read once (`views::istream`, `istreambuf_iterator`) | a character at a time, once | the characters read past a match, and no more |
+
+### A subject that can only be read once
+
+This is the one worth explaining, because most engines cannot do it and the
+ones that can give up submatches for it.
+
+A deterministic machine never looks ahead: it always knows where to go from
+the character in front of it. So it can read a range that has no way back --
+`std::views::istream`, a socket, a pipe -- and gather the fields as they
+arrive:
+
+```cpp
+std::istringstream source("set speed 42\nset gain 7\n");
+struct command { scan::held<16> name; int value; };
+for (const command& one :
+     scan::each<"set {[a-z]+} {[0-9]+}\n">(std::views::istream<char>(source))
+         .of<command>()) {
+  …
+}
+```
+
+Nothing is buffered. The characters go through the machine as they come, each
+field gathers into whatever collects it, and the record is built where the
+match ends.
+
+Two things do have to be held, and both are numbers the pattern names while it
+is compiled:
+
+* **what was read past a match**, where the walk went on for a longer one and
+  died -- those characters belong to the next record, and there is nowhere to
+  put them back, so they are carried;
+* **what a failed attempt swallowed**, where a search starts one character
+  later and needs the characters again.
+
+For most patterns both are zero. `\s+` holds nothing at all: every space is
+already a whole match, so nothing is ever read past one, and the first
+character that is not a space dies before it is taken. Where a number cannot
+be named -- a cycle with no match anywhere along it, like `a+b`, which can eat
+any number of characters and still not match -- the reading is refused where
+it is compiled, and told why. It is not silently buffered.
+
+The order of the alternatives decides this, which is the practical thing to
+know:
+
+```cpp
+scan::search_all<"a|abcd">   // holds nothing: the match of `a` ends the walk
+scan::search_all<"abcd|a">   // holds two characters: `abcd` outlives the match
+```
+
+## The pattern layer
+
+Every entry point is a callable object taking a subject, and every one of them
+is also a range adaptor closure, so `subject | scan::search<p>` is the same as
+`scan::search<p>(subject)`.
+
+| | what it answers |
+| --- | --- |
+| `scan::match<p>` | whether the whole subject is `p`, with the groups |
+| `scan::starts_with<p>` | the head of the subject that `p` takes |
+| `scan::search<p>` | the leftmost match anywhere |
+| `scan::search_all<p>` | every match in turn, as a lazy view |
+| `scan::split<p>` | the pieces between the matches, as a lazy view |
+| `scan::tokenize<p>`, `scan::iterator<p>`, `scan::range<p>` | other spellings of `search_all` |
+
+### Saying what the reading should be
+
+The three things that are the caller's business are said as methods, so they
+compose in any order and nothing is named twice:
+
+```cpp
+scan::match<p>(text)                          // the length says which walk
+scan::match<p>.sentinel()(text)               // there is a terminator: '\0'
+scan::match<p>.sentinel<'\n'>()(text)         // or this one
+scan::match<p>.scalar()(text)                 // a character at a time, always
+scan::match<p>.vec()(text)                    // in words and vectors, always
+scan::match<p>.sentinel().scalar()(text)      // both
+scan::match<p>.into<std::pmr::string>()(text) // where the answers are kept
+```
+
+`sized()` and `by_length()` are the opposites of `sentinel()` and the two walk
+choices.
+
+**A terminator** is a character the pattern can never match, sitting after the
+subject -- which a `std::string` always has and a `string_view` into the
+middle of something does not. Where there is one, the walk tests the character
+and not the end of the input as well. That the pattern cannot match it is
+checked while it is compiled; that it is really there is your promise.
+
+**The walk** is chosen by how long the subject is, unless you say. A subject
+of a few dozen characters is read faster one at a time, a long one is read
+faster in words -- and where you know which, saying so means the length is
+never looked at and the walk you did not name is not written at all.
+
+### Collectors
+
+By default a group comes back as the characters themselves, held however the
+subject affords: a view into it, a pair of iterators, or owned where there is
+nothing left to point at. `into` says otherwise, one collector per group:
+
+```cpp
+scan::match<"([0-9]+)-([a-z]+)">.into(
+    scan::as<int>(),                       // parsed into a value
+    scan::as<std::pmr::string>(&pool))     // with the arguments it needs
+scan::match<"([0-9]+)-([a-z]+)">.into(scan::skip(), scan::text())
+scan::match<"([0-9]+)">.into(scan::collecting(my_pusher{}, args…))
+```
+
+`as<T>` reads the group into a `T` -- which may be a type with a format of its
+own, in which case the groups the outer pattern already found are reused
+rather than the text being read a second time. `skip()` keeps nothing.
+`collecting` takes whatever pushes characters somewhere.
+
+## The format layer
+
+A format is a pattern with places in it, and each place is a value of the
+output type:
+
+```cpp
+struct row { int id; std::string_view name; double weight; };
+const row one = scan::scan<"{},{[a-z]+},{}">(line);
+```
+
+| written | means |
+| --- | --- |
+| `{}` | this field, read by whatever its type says |
+| `{[a-z]+}` | this field, read by this pattern |
+| `{:x}` | this field, with parameters for its scanner |
+| `{*…}` | matched and kept by nobody |
+| `{{a}\|{b}}` | a `std::variant`: whichever branch took the input |
+| `{…}*`, `{…}+`, `{…}{2,5}` | a list field: as many turns as it takes |
+
+Everything else in the format is a pattern and matches itself.
+
+| | |
+| --- | --- |
+| `scan::scan<f>(subject)` | the whole subject, as the type asked for |
+| `scan::scan_prefix<f>(subject)` | the head of it, and what is left |
+| `scan::each<f>(subject)` | one record after another, lazily |
+
+`scan` and `each` take the same policy methods as `match`, and the type can be
+said at either end, because a scan runs when its type is known and until then
+it is only a description of one:
+
+```cpp
+scan::scan<f>(text).of<row>()                     // said after
+scan::scan<f>.of<row>()(text)                     // said before: a whole reading
+scan::scan<f>(text).sentinel().vec().of<row>()
+scan::scan<f>.sentinel().vec().of<row>()(text)
+
+constexpr auto read_row = scan::scan<"{},{},{}">.sentinel().of<row>();
+for (const std::string& line : lines) rows.push_back(read_row(line));
+```
+
+Assigning the result of a scan converts it, and a conversion has nowhere to
+put a failure but an exception. `of<T>()` is that conversion under another
+name; `try_of<T>()` hands back `std::expected<T, scan_error>` instead.
+`scan_prefix` has `take<T>()` and `try_take<T>()`, which give the value and
+the rest of the subject.
+
+**`past_space`** says once what `{*\s*}` before every place says over and over:
+every place begins past whatever whitespace is in front of it, which is what
+`%d` does in a `scanf` format and `{}` does not.
+
+```cpp
+scan::scan<f>.past_space()(text)
+constexpr auto stamp = scan::fixed_string("{}-{}-{}T{}:{}:{}").past_space();
+```
+
+### The types a place can be
+
+* anything with a `scan::scanner<T>`: the integers, the floating-point types,
+  `bool`, `char`, `std::string`, `std::string_view`, and `scan::held<N>` --
+  characters in room said in advance, for a reading with no allocator;
+* an aggregate, whose fields are the places inside a nested `{…}`;
+* a `std::variant`, written as branches;
+* a range, written with a repetition, which takes as many turns as the subject
+  affords.
+
+A type says how it reads itself by specialising `scan::scanner`:
+
+```cpp
 template <>
-struct scan::scanner<word> {
-  static constexpr std::string pattern(std::string_view parameters);
-  // begin(parameters) selects the incremental mode; parse(text, parameters)
-  // selects the direct contiguous-input conversion mode.
+struct scan::scanner<weight> {
+  static constexpr std::string_view pattern() { return "[0-9]+"; }
+  static constexpr weight parse(std::string_view text) { … }
+
+  // And, for a subject that arrives a character at a time:
+  static constexpr state begin();
+  static constexpr void push(state&, char);
+  static constexpr weight finish(state);
 };
 ```
 
-`pattern(parameters)` may return an owning `std::string`. It is copied into
-compile-time pattern storage before the TRE is parsed; the resulting TDFA alone
-is retained in static fixed-size arrays. Use `{\\:...}` when a colon at the
-start of a capture is regex text rather than a parameter introducer.
+`parse` is enough for a subject held in memory. `begin`/`push`/`finish` are
+what a reading that cannot go back uses, and a type that has them can be a
+field of a record read off a stream.
 
-Aggregate scanners compose recursively without an intermediate input buffer:
+## The pattern syntax
 
-```cpp
-template <>
-struct scan::scanner<coordinates>
-    : scan::aggregate_scanner<"({}, {})"> {};
+Literals; `.`; classes `[a-z]`, `[^a-z]`, with ranges and escapes; the escapes
+`\d \D \s \S \w \W` and the usual `\n \t \\` and friends; groups `(…)` and
+`(?:…)`; alternation `|`; the repetitions `* + ? {n} {n,} {n,m}`, each of them
+lazy with a `?` after it (`*?`, `+?`, `??`, `{n,m}?`).
 
-template <>
-struct scan::scanner<rectangle>
-    : scan::aggregate_scanner<"[{} -> {}]"> {};
-```
+There is no lookaround, there are no backreferences, and there are no Unicode
+properties. Patterns are bytes: a UTF-8 literal matches itself, and `.` is one
+byte rather than one code point.
 
-`aggregate_scanner` uses an explicit object parameter to recover the target of
-the derived `scanner<T>` specialization, so no CRTP type argument is needed.
-Its nested TDFA state directly contains the incremental states of child
-scanners.
+## Where this differs from other engines
 
-GoogleTest is the modular fork `j4niwzis/googletest-modules`, pinned and
-downloaded by CPM.cmake. A local CMake 4.3.4 distribution is expected at
-`.tools/cmake-4.3.4-linux-x86_64`:
+**From `sscanf`.** Whitespace is not skipped unless the format says so
+(`past_space`); the whole subject must match unless you read a head with
+`scan_prefix`; a scan is all or nothing where `sscanf` hands back how many
+fields it filled and leaves the rest as they were; an integer too big for its
+type is an error rather than undefined behaviour; and nothing is
+locale-dependent.
+
+**From Perl and RE2, in one corner.** A quantifier around something that can
+match nothing is where every engine answers differently, including from each
+other. `([ab]*?)*` against "ba", anchored:
+
+| | group 1 |
+| --- | --- |
+| Perl | `[2,2)` |
+| Python | `[2,2)` |
+| this library | `[1,2)` |
+| RE2 | `[0,2)` |
+
+Following the order a backtracking engine tries things in gives this
+library's answer: the loop takes `b`, then takes `a`, and a third turn would
+match nothing. Perl divides it the same way and differs only by taking that
+last empty turn and leaving the group there. RE2 divides it differently from
+both. This is written down rather than chased.
+
+**Anchored and head readings differ where the order is what decides**, as
+`a|ab` above -- which is the same in Perl, where `^(?:a|ab)$` matches "ab" and
+`(?:a|ab)` matches "a".
+
+## What is known while it is compiled
+
+The automaton is asked these before your program runs, and they are what the
+refusals and the costs are made of:
+
+* **the shortest match** -- a subject shorter than it is answered without
+  reading a character;
+* **the walk past a match** (`fallback_window`) -- how far the machine can read
+  past a match before it dies, which is what a reading that cannot go back has
+  to hold, and whether it has to hold anything at all;
+* **the walk from the start** -- how much a failed attempt can swallow, which
+  is what a search over a subject read once has to give back;
+* **whether a terminator is safe** -- that the pattern cannot match it;
+* **how much of the walk to write out** -- the chain is written state by state
+  up to a budget, and only where the state has one way out.
+
+Determinization stops at twenty thousand states and says so. Determinizing
+costs exponentially more states than an expression has symbols for expressions
+that are perfectly ordinary -- anything that reads freely and then counts,
+`.*a.{20}` and its like -- and where that happens here it is not a slow
+program but a compilation nobody waits for.
+
+## Speed
+
+Measured against `re2c`, which generates a scanner from a pattern in a
+separate build step, and against `sscanf`. Take the numbers as shapes rather
+than as decimals; the methodology matters more.
+
+For a fixed-length pattern with a terminator and no length to check
+(`scan::match<p>.sentinel().scalar()`), the code generated for
+`[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}` is **71 instructions
+with no calls, which is what re2c generates for the same pattern, instruction
+for instruction**. The difference in the ordinary form is three instructions:
+the length checks re2c does not have, because it is given a pointer and a
+terminator rather than a range.
+
+Against `sscanf`, on the same work -- the same characters in, the same
+integers out:
+
+| | `sscanf` | here |
+| --- | --- | --- |
+| two numbers | 109 ns | 20 ns |
+| a timestamp of six | 207 ns | 64 ns |
+| five words into buffers | 299 ns | 75 ns |
+| five words into views | 299 ns | 39 ns |
+
+The third row is the honest pair: both copy each field into room said in
+advance. The fourth is a thing `sscanf` cannot do at all. What the numbers do
+not show is where its time goes: the format is a string it parses again on
+every call.
+
+## What this is built on
+
+The machine is a tagged deterministic finite automaton, and the construction
+is the one described in these papers:
+
+* Ville Laurikari, *NFAs with Tagged Transitions, their Conversion to
+  Deterministic Automata and Application to Regular Expressions* (2000) -- tags
+  on transitions, and the idea of determinizing them.
+* Ulya Trofimovich, *[Tagged Deterministic Finite Automata with
+  Lookahead](https://arxiv.org/abs/1907.08837)* (2019) -- TDFA(1): holding tags
+  back to the next symbol, which is what makes a field cost one write instead
+  of one per character.
+* Angelo Borsotti and Ulya Trofimovich, *[A closer look at
+  TDFA](https://arxiv.org/abs/2206.01398)* (2022) -- the algorithm in full,
+  with the register operations, the fallback registers, and the
+  optimizations.
+
+Two things here are not from those papers.
+
+The **disambiguation policy** is leftmost-first, which is Perl's rule, RE2's
+and CTRE's. The papers implement POSIX and what they call leftmost greedy --
+which is longest-prefix-then-leftmost-path, a lexer's rule, and a different
+thing from what is called leftmost-first here. The mechanism that makes the
+difference is the cut: where a walk in a state has matched, every walk below
+it in precedence has lost and is removed, so a state whose match is first has
+no transitions at all. That is the rule a Pike VM applies by killing
+lower-priority threads at a Match instruction, and it is described in Russ
+Cox's writing on RE2.
+
+The **format layer** -- reading a format against the type it scans into,
+building the value where the match ends, and reading records one after another
+off a subject that arrives as it is read -- has no paper behind it.
+
+## Tests and fuzzing
+
+Around eighty test files, each holding one or two patterns, because compiling
+a pattern is a constant evaluation and a translation unit holding ten of them
+costs ten times as much whenever one is touched.
+
+Two things are compared against something outside this library:
+
+* **A differential fuzzer against RE2.** Everything that happens while a
+  pattern is compiled is ordinary code that also runs, so the fuzzer builds
+  machines from patterns made up at run time and compares the answers --
+  matched or not, where a head ended, and where every group began and ended --
+  against RE2, whose default rule is the same leftmost-first. It found a real
+  fault within a minute of its first run: `a*?` was being read as `a*` followed
+  by a literal question mark.
+
+  ```sh
+  cmake -B build -DSCAN_BUILD_FUZZER=ON && cmake --build build --target differential_fuzz
+  ./build/differential_fuzz --seed 1 --rounds 200000
+  ```
+
+* **The walk against the interpreter.** The fuzzer cannot reach the walk
+  itself, which is written out state by state and exists only where something
+  is compiled. So a test compares it against the interpreter over an automaton
+  built from the same pattern by the same code, on every subject up to four
+  characters.
+
+## Building
 
 ```sh
-.tools/cmake-4.3.4-linux-x86_64/bin/cmake -S . -B build-modules -G Ninja \
-  -DCMAKE_CXX_COMPILER=clang++
-.tools/cmake-4.3.4-linux-x86_64/bin/cmake --build build-modules
-.tools/cmake-4.3.4-linux-x86_64/bin/ctest --test-dir build-modules
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+ctest --test-dir build
 ```
 
-The regex comparison benchmark uses Google Benchmark, CTRE, and code generated
-by re2c. Build it separately with full LTO:
+| option | |
+| --- | --- |
+| `SCAN_BUILD_BENCHMARKS` | the benchmarks, against re2c, CTRE and `sscanf` |
+| `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
+| `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
 
-```sh
-.tools/cmake-4.3.4-linux-x86_64/bin/cmake -S . -B build-benchmark -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ \
-  -DSCAN_BUILD_BENCHMARKS=ON
-.tools/cmake-4.3.4-linux-x86_64/bin/cmake --build build-benchmark \
-  --target regex_benchmark
-./build-benchmark/regex_benchmark
-```
+The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
+`scan.compiler`, `scan.runtime`, `scan.range`, `scan.scanners` -- with `scan`
+as an umbrella that re-exports it. Importing `scan` is all that is wanted.
