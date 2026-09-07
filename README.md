@@ -479,6 +479,18 @@ for instruction**. The difference in the ordinary form is three instructions:
 the length checks re2c does not have, because it is given a pointer and a
 terminator rather than a range.
 
+Against the other engines, on two shapes -- a timestamp recognised, and five
+fields taken out of a record. `engines_benchmark` runs all four on the same
+subjects; build it with `-DSCAN_BENCHMARK_RE2=ON`, which is what brings RE2
+and abseil in. What each is given differs, and the differences are the point:
+
+| | pattern known | given | hands back |
+| --- | --- | --- | --- |
+| this library | while compiling | a range, or a pointer and a terminator | views into the subject |
+| CTRE | while compiling | a range | views |
+| RE2 | while running | a range | views, after a dispatch inside its walk |
+| re2c | ahead of time, by a generator | a pointer and a terminator, no length | pointers |
+
 Against `sscanf`, on the same work -- the same characters in, the same
 integers out:
 

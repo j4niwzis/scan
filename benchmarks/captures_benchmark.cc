@@ -35,6 +35,48 @@ struct field_strings {
   std::string fifth;
 };
 
+// A subject that can only be read once, wrapped around characters that are
+// really in a row.
+//
+// The one-pass walk is what a stream gets, and measuring it against a stream
+// measures the stream. This is the same characters, handed over one at a time
+// and never again, with nothing else in the way: what it costs against the row
+// below it is what reading once costs, and nothing else.
+class read_once {
+ public:
+  class cursor {
+   public:
+    using iterator_concept = std::input_iterator_tag;
+    using value_type = char;
+    using difference_type = std::ptrdiff_t;
+
+    cursor() = default;
+    cursor(std::string_view text, std::size_t* at) : text_(text), at_(at) {}
+
+    [[nodiscard]] char operator*() const { return text_[*at_]; }
+    cursor& operator++() {
+      ++*at_;
+      return *this;
+    }
+    void operator++(int) { ++*this; }
+    [[nodiscard]] bool operator==(std::default_sentinel_t) const {
+      return *at_ == text_.size();
+    }
+
+   private:
+    std::string_view text_;
+    std::size_t* at_ = nullptr;
+  };
+
+  read_once(std::string_view text, std::size_t* at) : text_(text), at_(at) {}
+  [[nodiscard]] cursor begin() const { return cursor(text_, at_); }
+  [[nodiscard]] std::default_sentinel_t end() const { return {}; }
+
+ private:
+  std::string_view text_;
+  std::size_t* at_ = nullptr;
+};
+
 // What the loop around the work costs, and nothing else: the same subjects,
 // the same two barriers, no scanning between them. Every row below carries
 // this, so it is the floor none of them can go under, and the difference
@@ -174,6 +216,44 @@ void re2c_captures_long(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * text.size());
 }
 
+// The same fields off a subject read once. The fields have to be strings: what
+// they were read from is gone by the time they are looked at, so the row above
+// to compare this with is `scan_captures_strings` and not the views.
+void scan_captures_read_once(harness::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::size_t at = 0;
+      field_strings value =
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+              read_once(text, &at));
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
+// And the same again, gathered into room said in advance and read as pieces,
+// which is what buys the walk its vectors back. Thirty characters against a
+// piece of sixty-four: the whole record arrives in one piece, and what is
+// measured is a copy of every character against a walk that can step over
+// runs.
+void scan_captures_read_once_in_pieces(harness::State& state) {
+  const auto& texts = bench::copies_of(bench::csv, 32);
+  for (auto _ : state) {
+    for (const std::string& text : texts) {
+      std::size_t at = 0;
+      field_strings value =
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+              read_once(text, &at) | scan::in_pieces<64>);
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * texts.size() *
+                          bench::csv.size());
+}
+
 void ctre_captures(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -224,6 +304,8 @@ const int registered = [] {
   row("scan_captures_views", scan_captures_views);
   row("scan_captures_views_sentinel", scan_captures_views_sentinel);
   row("scan_captures_strings", scan_captures_strings);
+  row("scan_captures_read_once", scan_captures_read_once);
+  row("scan_captures_read_once_in_pieces", scan_captures_read_once_in_pieces);
   row("scan_captures_long", scan_captures_long);
   row("re2c_captures_long", re2c_captures_long);
   row("ctre_captures", ctre_captures);

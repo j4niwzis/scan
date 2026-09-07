@@ -366,7 +366,47 @@ if(SCAN_BUILD_BENCHMARKS)
   # reaches for when it wants numbers out of a string.
   scan_add_benchmark(sscanf NO_RE2C)
 
+  # Four engines on two shapes, so that the difference between the rows is the
+  # engine. RE2 reads its pattern at run time and brings abseil with it, which
+  # is a heavy thing to make every build carry -- so this one is asked for.
+  option(SCAN_BENCHMARK_RE2 "Include RE2 in the engine comparison" OFF)
+  if(SCAN_BENCHMARK_RE2)
+    set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
+    set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
+    CPMAddPackage(
+      NAME abseil
+      GITHUB_REPOSITORY abseil/abseil-cpp
+      GIT_TAG 20250127.0
+    )
+    CPMAddPackage(
+      NAME re2_source
+      GITHUB_REPOSITORY google/re2
+      GIT_TAG 2024-07-02
+    )
+    add_library(bench_re2)
+    target_sources(bench_re2 PUBLIC FILE_SET CXX_MODULES FILES
+      benchmarks/re2_engine.cppm)
+    target_link_libraries(bench_re2 PUBLIC re2::re2)
+    target_compile_features(bench_re2 PUBLIC cxx_std_23)
+
+    # The generated scanners this one measures are the ones the timestamp and
+    # captures benchmarks already asked for; the commands that write them are
+    # declared there, and naming the outputs here is enough.
+    add_executable(engines_benchmark
+      "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/engines_benchmark.cc"
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/timestamp_re2c.cc"
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/captures_re2c.cc")
+    target_link_libraries(engines_benchmark
+      PRIVATE scan bench_harness bench_inputs ctre_module bench_re2
+              benchmark::benchmark_main)
+    target_compile_options(engines_benchmark PRIVATE $<$<CONFIG:Release>:-O3>)
+  endif()
+
   add_custom_target(benchmarks DEPENDS
     word_benchmark timestamp_benchmark csv_benchmark address_benchmark
     captures_benchmark shape_benchmark sscanf_benchmark)
+  if(SCAN_BENCHMARK_RE2)
+    add_dependencies(benchmarks engines_benchmark)
+  endif()
 endif()
