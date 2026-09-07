@@ -646,7 +646,21 @@ template <auto& automaton, std::size_t state>
 // cannot do is point at what it has read: a piece is gone when the next one
 // arrives, so the marks count characters and the fields gather as they go,
 // exactly as they do for a subject read one character at a time.
-template <class gatherer_type, class pieces_type>
+// The walk's source of pieces, and what it has to remember about them.
+//
+// A piece is alive until the next one is asked for -- the room it lies in is
+// filled again after that -- so a walk that goes past a match and then goes
+// back to it cannot expect the characters it read to still be where it read
+// them. The stream reading has the same trouble and answers it the same way:
+// what was read past the place is carried, and handed out again before
+// anything new.
+//
+// How much can be carried is a number the automaton gives: the longest walk
+// out of a match that finds no other match, which is what the papers call the
+// fallback and what this library refuses to read a stream without. What ends
+// up here is at most that, because a walk that read further would have died
+// before it got here.
+template <class gatherer_type, class pieces_type, std::size_t hold = 0>
 struct gathers_from_pieces : gatherer_type {
   pieces_type pieces;
   std::optional<std::ranges::iterator_t<pieces_type>> at;
@@ -655,9 +669,27 @@ struct gathers_from_pieces : gatherer_type {
                                          pieces_type given)
       : gatherer_type(std::move(inner)), pieces(std::move(given)) {}
 
-  // The next piece, or nothing left. Empty pieces are passed over: a reading
-  // that hands one back has not ended, it has merely said nothing.
+  // Where the walk writes the place it kept, so that carrying the characters
+  // it stands in can move it along with them.
+  constexpr void watch(std::optional<const char*>& place,
+                       std::optional<const char*>& upto) {
+    place_ = &place;
+    upto_ = &upto;
+  }
+
+  // The next characters, which are one of three things: what was carried from
+  // a piece already given up, what is left of the piece the last reading
+  // stopped in, or a piece nobody has read yet.
   [[nodiscard]] constexpr bool refill(const char*& from, const char*& to) {
+    if (rest_from_ != rest_to_) {
+      from = rest_from_;
+      to = rest_to_;
+      rest_from_ = rest_to_;
+      piece_from_ = from;
+      piece_to_ = to;
+      return true;
+    }
+    carry_what_was_read_past();
     if (!at) at.emplace(std::ranges::begin(pieces));
     while (*at != std::ranges::end(pieces)) {
       auto piece = **at;
@@ -667,10 +699,90 @@ struct gathers_from_pieces : gatherer_type {
       if (size == 0) continue;
       from = first;
       to = first + size;
+      piece_from_ = from;
+      piece_to_ = to;
       return true;
     }
     return false;
   }
+
+  // Back to the place the walk kept, and to the characters that were there.
+  //
+  // Where the place is still in the piece the walk is standing in, that is all
+  // there is to it. Where it is not, it was carried when that piece was given
+  // up -- and what the walk read from this piece since is carried now, so that
+  // the next reading sees the same characters in the same order.
+  constexpr void go_back_to(const char*& cursor, const char*& last) {
+    if (place_ == nullptr || !place_->has_value()) return;
+    const char* const kept = **place_;
+    if constexpr (hold != 0) {
+      if (kept >= held_.data() && kept <= held_.data() + held_count_) {
+        std::array<char, hold> made{};
+        std::size_t count = 0;
+        for (const char* one = kept; one != held_.data() + held_count_ &&
+                                     count != made.size();
+             ++one) {
+          made[count++] = *one;
+        }
+        for (const char* one = piece_from_;
+             one != cursor && count != made.size(); ++one) {
+          made[count++] = *one;
+        }
+        held_ = made;
+        held_count_ = count;
+        rest_from_ = cursor;
+        rest_to_ = piece_to_;
+        cursor = held_.data();
+        last = held_.data() + held_count_;
+        return;
+      }
+    }
+    cursor = kept;
+    if (upto_ != nullptr && upto_->has_value()) last = **upto_;
+  }
+
+ private:
+  // A piece is about to be given up. Whatever of it the walk read after the
+  // place it kept goes into the carry, and the place goes with it.
+  constexpr void carry_what_was_read_past() {
+    if constexpr (hold != 0) {
+      if (place_ == nullptr || !place_->has_value()) return;
+      const char* const kept = **place_;
+      if (kept >= held_.data() && kept <= held_.data() + held_count_) {
+        // Already carried, and everything in the piece being given up came
+        // after it.
+        carry(piece_from_, piece_to_);
+      } else if (kept >= piece_from_ && kept <= piece_to_) {
+        const std::size_t was = held_count_;
+        carry(kept, piece_to_);
+        *place_ = held_.data() + was;
+        if (upto_ != nullptr) *upto_ = held_.data() + held_count_;
+      }
+    }
+  }
+
+  constexpr void carry(const char* from, const char* to) {
+    if constexpr (hold != 0) {
+      for (const char* one = from; one != to && held_count_ != held_.size();
+           ++one) {
+        held_[held_count_++] = *one;
+      }
+      if (upto_ != nullptr && upto_->has_value()) {
+        *upto_ = held_.data() + held_count_;
+      }
+    }
+  }
+
+  // How much can be here is what the automaton says: a walk that read further
+  // past a match than that would have died before it got here.
+  std::array<char, hold == 0 ? 1 : hold> held_{};
+  std::size_t held_count_ = 0;
+  const char* piece_from_ = nullptr;
+  const char* piece_to_ = nullptr;
+  const char* rest_from_ = nullptr;
+  const char* rest_to_ = nullptr;
+  std::optional<const char*>* place_ = nullptr;
+  std::optional<const char*>* upto_ = nullptr;
 };
 
 // Nothing gathered: what the walk hands over goes nowhere and costs nothing.
@@ -2914,6 +3026,20 @@ struct taken_from_pieces {
   bool matched = false;
 };
 
+// How much a reading of this format has to carry between one match and the
+// next, where the subject arrives in pieces. The same number the stream
+// reading asks for: the longest walk out of a match that finds no other one.
+template <class type, fixed_string format>
+inline constexpr std::size_t pieces_hold = [] consteval {
+  constexpr std::size_t window =
+      walk_past_a_match<streaming_automaton<type, format>>();
+  if constexpr (window == std::numeric_limits<std::size_t>::max()) {
+    return std::size_t{0};
+  } else {
+    return window * 2 + 1;
+  }
+}();
+
 template <class type, fixed_string format, class source_type>
 [[nodiscard]] constexpr auto take_from_pieces(source_type& into,
                                               const char*& cursor,
@@ -2934,17 +3060,16 @@ template <class type, fixed_string format, class source_type>
                          nothing_kept>;
   walk_answer<const char*, kept_type> best;
   constexpr walk_shape shape{.in_words = true, .longest = true};
+  into.watch(best.at, best.upto);
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
     return said;
   }
-  // Where the match ended is where the next reading begins -- and in the piece
-  // it ended in, which is not the piece the walk went on to read.
-  if (best.at) {
-    cursor = *best.at;
-    if (best.upto) last = *best.upto;
-  }
+  // Where the match ended is where the next reading begins. Which characters
+  // those are is the source's business: the piece they were in may have been
+  // given up while the walk read past them, and then they were carried.
+  into.go_back_to(cursor, last);
   auto got = into.taken();
   if (!got) return said;
   said.value = std::move(*got);
@@ -2967,7 +3092,8 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                    std::ptrdiff_t{0});
   auto view = std::views::all(std::forward<pieces_type>(pieces));
-  gathers_from_pieces<field_gatherer<type, format, automaton>, decltype(view)>
+  gathers_from_pieces<field_gatherer<type, format, automaton>, decltype(view),
+                      pieces_hold<type, format>>
       into(field_gatherer<type, format, automaton>{}, std::move(view));
   // Nothing in hand to begin with, so the first thing the walk does is ask.
   const char* cursor = nullptr;

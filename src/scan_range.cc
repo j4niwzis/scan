@@ -714,7 +714,9 @@ class each_pieces_view {
   using gatherer_type =
       detail::field_gatherer<type, format,
                              detail::streaming_automaton<type, format>>;
-  using source_type = detail::gathers_from_pieces<gatherer_type, pieces_type>;
+  using source_type =
+      detail::gathers_from_pieces<gatherer_type, pieces_type,
+                                  detail::pieces_hold<type, format>>;
 
   constexpr explicit each_pieces_view(pieces_type input)
       : source_(gatherer_type{}, std::move(input)) {}
