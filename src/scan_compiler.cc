@@ -571,6 +571,44 @@ concept scanned_by_format = says_a_format<type> && !requires {
       std::declval<std::span<const std::string_view>>());
 };
 
+// A type that says outright it is a list, though it could be read as one
+// value.
+//
+// `std::string` is a range and has a scanner, and reading it as a value is
+// what everybody wants -- so a type that is both is a value. Where that is the
+// wrong way round, the type says so:
+//
+//   template <> struct scan::scanner<my_bytes> { static constexpr bool as_a_list = true; … };
+template <class type>
+concept says_it_is_a_list = requires {
+  requires scan::scanner<std::remove_cv_t<type>>::as_a_list;
+};
+
+template <class type>
+concept scanned_as_leaf = requires {
+  sizeof(scan::scanner<std::remove_cv_t<type>>);
+} && !scanned_by_format<type> && !says_it_is_a_list<type>;
+
+// A type that says how it is read and also how it is made.
+//
+//   template <> struct scan::scanner<point> : scan::aggregate_scanner<"({}, {})"> {
+//     static constexpr point parse(int x, int y) { return point(x, y); }
+//   };
+//
+// The places of its format then stand for the arguments of that call rather
+// than for the fields of the type, and the type is built by making the call. So
+// it need not be an aggregate at all: it may have invariants to keep, members
+// nobody outside may touch, or an order of its own that has nothing to do with
+// the order it is written in.
+//
+// Both halves are required. A scanner with a `parse` and no format is an
+// ordinary leaf and reads itself from the text of one place; the format is what
+// says the places are the arguments.
+template <class type>
+concept scanned_from_values = scanned_by_format<type> && requires {
+  &scan::scanner<std::remove_cv_t<type>>::parse;
+};
+
 template <class type>
 [[nodiscard]] consteval bool a_flat_shape();
 
@@ -613,44 +651,6 @@ template <class type>
     }(std::make_index_sequence<boost::pfr::tuple_size_v<std::remove_cv_t<type>>>{});
   }
 }
-
-// A type that says outright it is a list, though it could be read as one
-// value.
-//
-// `std::string` is a range and has a scanner, and reading it as a value is
-// what everybody wants -- so a type that is both is a value. Where that is the
-// wrong way round, the type says so:
-//
-//   template <> struct scan::scanner<my_bytes> { static constexpr bool as_a_list = true; … };
-template <class type>
-concept says_it_is_a_list = requires {
-  requires scan::scanner<std::remove_cv_t<type>>::as_a_list;
-};
-
-template <class type>
-concept scanned_as_leaf = requires {
-  sizeof(scan::scanner<std::remove_cv_t<type>>);
-} && !scanned_by_format<type> && !says_it_is_a_list<type>;
-
-// A type that says how it is read and also how it is made.
-//
-//   template <> struct scan::scanner<point> : scan::aggregate_scanner<"({}, {})"> {
-//     static constexpr point parse(int x, int y) { return point(x, y); }
-//   };
-//
-// The places of its format then stand for the arguments of that call rather
-// than for the fields of the type, and the type is built by making the call. So
-// it need not be an aggregate at all: it may have invariants to keep, members
-// nobody outside may touch, or an order of its own that has nothing to do with
-// the order it is written in.
-//
-// Both halves are required. A scanner with a `parse` and no format is an
-// ordinary leaf and reads itself from the text of one place; the format is what
-// says the places are the arguments.
-template <class type>
-concept scanned_from_values = scanned_by_format<type> && requires {
-  &scan::scanner<std::remove_cv_t<type>>::parse;
-};
 
 // A type that holds as many of something as the input turns out to have.
 //
