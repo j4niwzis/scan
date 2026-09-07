@@ -86,6 +86,20 @@ TEST(TheWalkSaidOutright, AFormatReadsTheSameWayRoundToo) {
   EXPECT_EQ(after_terminated.left, 12);
   EXPECT_EQ(after_terminated.right, 34);
 
+  // And the type named before the subject, which finishes the reading: what
+  // comes back then is a whole scan with nothing left to say, and it can be
+  // kept and used again.
+  constexpr auto read = scan::scan<"{}:{}">.sentinel().of<pair>();
+  const pair ahead = read(text);
+  EXPECT_EQ(ahead.left, 12);
+  EXPECT_EQ(ahead.right, 34);
+
+  const auto maybe = scan::scan<"{}:{}">.try_of<pair>()(text);
+  ASSERT_TRUE(maybe.has_value());
+  EXPECT_EQ(maybe->right, 34);
+  const std::string nothing = "nope";
+  EXPECT_FALSE(scan::scan<"{}:{}">.try_of<pair>()(nothing).has_value());
+
   const pair terminated = scan::scan<"{}:{}">.sentinel()(text);
   const pair terminated_scalar = scan::scan<"{}:{}">.sentinel().scalar()(text);
   const pair terminated_vec = scan::scan<"{}:{}">.sentinel().vec()(text);

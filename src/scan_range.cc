@@ -776,13 +776,32 @@ template <fixed_string format, std::ranges::input_range range_type>
 // where they lie, pieces are read piece by piece, and anything else is read as
 // it arrives. Saying the walk means nothing for those last two -- there is no
 // length to ask about -- so they take what they are given and ignore it.
-template <fixed_string format, int terminator = -1,
-          how_to_walk walk = how_to_walk::by_length>
+template <fixed_string format, class type = void, bool no_throw = false,
+          int terminator = -1, how_to_walk walk = how_to_walk::by_length>
 struct scan_closure {
+  // The output type, named before the subject rather than after it.
+  //
+  // A scan runs when the type is known, and it can be known from either end:
+  // `scan<f>(text).of<T>()` says it after, `scan<f>.of<T>()(text)` says it
+  // before. The second one is a whole reading with nothing left to say -- it
+  // can be handed round, stored, or piped into.
+  template <class other>
+  [[nodiscard]] constexpr scan_closure<format, other, false, terminator, walk>
+  of() const {
+    return {};
+  }
+
+  // The same, handing back what went wrong instead of throwing it.
+  template <class other>
+  [[nodiscard]] constexpr scan_closure<format, other, true, terminator, walk>
+  try_of() const {
+    return {};
+  }
+
   // The subject ends where it ends, and the walk tests that as well as the
   // character -- except where the type of the subject carries a terminator of
   // its own, which is noticed without the caller having to say so.
-  [[nodiscard]] constexpr scan_closure<format, -1, walk> sized() const {
+  [[nodiscard]] constexpr scan_closure<format, type, no_throw, -1, walk> sized() const {
     return {};
   }
 
@@ -790,23 +809,23 @@ struct scan_closure {
   // really there is the caller's promise; whether the pattern can match it is
   // asked while the pattern is compiled.
   template <unsigned char byte = 0>
-  [[nodiscard]] constexpr scan_closure<format, byte, walk> sentinel() const {
+  [[nodiscard]] constexpr scan_closure<format, type, no_throw, byte, walk> sentinel() const {
     return {};
   }
 
-  [[nodiscard]] constexpr scan_closure<format, terminator,
+  [[nodiscard]] constexpr scan_closure<format, type, no_throw, terminator,
                                        how_to_walk::by_length>
   by_length() const {
     return {};
   }
 
-  [[nodiscard]] constexpr scan_closure<format, terminator,
+  [[nodiscard]] constexpr scan_closure<format, type, no_throw, terminator,
                                        how_to_walk::one_at_a_time>
   scalar() const {
     return {};
   }
 
-  [[nodiscard]] constexpr scan_closure<format, terminator,
+  [[nodiscard]] constexpr scan_closure<format, type, no_throw, terminator,
                                        how_to_walk::in_words>
   vec() const {
     return {};
@@ -820,12 +839,21 @@ struct scan_closure {
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
     const std::string_view text(std::ranges::data(input),
                                 std::ranges::size(input));
-    if constexpr (terminator < 0) {
-      return detail::borrowed_result<format, -1,
-                                     terminated_char_range<range_type>, walk>(
-          text);
+    auto reading = [&] {
+      if constexpr (terminator < 0) {
+        return detail::borrowed_result<format, -1,
+                                       terminated_char_range<range_type>,
+                                       walk>(text);
+      } else {
+        return detail::borrowed_result<format, terminator, false, walk>(text);
+      }
+    }();
+    if constexpr (std::is_void_v<type>) {
+      return reading;
+    } else if constexpr (no_throw) {
+      return reading.template try_of<type>();
     } else {
-      return detail::borrowed_result<format, terminator, false, walk>(text);
+      return reading.template of<type>();
     }
   }
 
@@ -836,8 +864,15 @@ struct scan_closure {
   template <detail::piecewise_char_range pieces_type>
     requires(!detail::contiguous_char_range<pieces_type>)
   [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    return detail::pieces_result<format, pieces_type>(
+    auto reading = detail::pieces_result<format, pieces_type>(
         std::forward<pieces_type>(input));
+    if constexpr (std::is_void_v<type>) {
+      return reading;
+    } else if constexpr (no_throw) {
+      return reading.template try_of<type>();
+    } else {
+      return reading.template of<type>();
+    }
   }
 
   // Input that has to be read as it comes. The proxy owns the view and
@@ -849,7 +884,14 @@ struct scan_closure {
                !std::ranges::borrowed_range<range_type>))
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
     auto view = std::views::all(std::forward<range_type>(input));
-    return detail::streaming_result<format, decltype(view)>(std::move(view));
+    auto reading = detail::streaming_result<format, decltype(view)>(std::move(view));
+    if constexpr (std::is_void_v<type>) {
+      return reading;
+    } else if constexpr (no_throw) {
+      return reading.template try_of<type>();
+    } else {
+      return reading.template of<type>();
+    }
   }
 
   // Stream-buffer iteration is unformatted and therefore keeps whitespace
@@ -857,7 +899,14 @@ struct scan_closure {
   [[nodiscard]] constexpr auto operator()(std::istream& input) const {
     auto range = std::ranges::subrange(std::istreambuf_iterator<char>(input),
                                        std::istreambuf_iterator<char>());
-    return detail::streaming_result<format, decltype(range)>(std::move(range));
+    auto reading = detail::streaming_result<format, decltype(range)>(std::move(range));
+    if constexpr (std::is_void_v<type>) {
+      return reading;
+    } else if constexpr (no_throw) {
+      return reading.template try_of<type>();
+    } else {
+      return reading.template of<type>();
+    }
   }
 };
 
