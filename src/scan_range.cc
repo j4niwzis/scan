@@ -23,7 +23,8 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   return build_value<format_parameters<type, format>, type, 0>(fields);
 }
 
-template <fixed_string format, int sentinel = -1, bool terminated = false>
+template <fixed_string format, int sentinel = -1, bool terminated = false,
+          how_to_walk walk = how_to_walk::by_length>
 class borrowed_result {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
@@ -44,9 +45,10 @@ class borrowed_result {
     const auto fields =
         [&] {
           if constexpr (holds_a_variant<type>()) {
-            return scan_branch_fields<type, format, sentinel, terminated>(input_);
+            return scan_branch_fields<type, format, sentinel, terminated, walk>(
+                input_);
           } else {
-            return scan_fields<type, format, sentinel, terminated>(input_);
+            return scan_fields<type, format, sentinel, terminated, walk>(input_);
           }
         }();
     return build_value<format_parameters<type, format>, type, 0>(fields);
@@ -59,7 +61,8 @@ class borrowed_result {
     requires scanned_as_variant<type>
   constexpr operator type() const {
     const auto groups =
-        scan_branch_fields<type, format, sentinel, terminated>(input_);
+        scan_branch_fields<type, format, sentinel, terminated, walk>(
+                input_);
     return build_value<format_parameters<type, format>, type, 0>(groups);
   }
 
@@ -193,6 +196,31 @@ template <fixed_string format, detail::contiguous_char_range range_type>
       std::string_view(std::ranges::data(input), std::ranges::size(input)));
 }
 
+// The same, with the walk said outright rather than picked by how much there
+// is. These are for a caller who knows what their subjects look like: a date
+// or a record of a few dozen characters is read a character at a time and the
+// question is never worth asking, and a subject of thousands is read in words
+// whatever else is true.
+template <fixed_string format, detail::contiguous_char_range range_type>
+  requires(std::is_lvalue_reference_v<range_type&&> ||
+           std::ranges::borrowed_range<range_type>)
+[[nodiscard]] constexpr auto scan_scalar(range_type&& input) {
+  return detail::borrowed_result<format, -1,
+                                 terminated_char_range<range_type>,
+                                 how_to_walk::one_at_a_time>(
+      std::string_view(std::ranges::data(input), std::ranges::size(input)));
+}
+
+template <fixed_string format, detail::contiguous_char_range range_type>
+  requires(std::is_lvalue_reference_v<range_type&&> ||
+           std::ranges::borrowed_range<range_type>)
+[[nodiscard]] constexpr auto scan_vec(range_type&& input) {
+  return detail::borrowed_result<format, -1,
+                                 terminated_char_range<range_type>,
+                                 how_to_walk::in_words>(
+      std::string_view(std::ranges::data(input), std::ranges::size(input)));
+}
+
 // The same, for input that carries a terminator the pattern never matches.
 //
 // Without one the loop tests the end of the input on every character as well
@@ -206,6 +234,33 @@ template <fixed_string format, int sentinel = 0,
 [[nodiscard]] constexpr auto scan_sentinel(range_type&& input) {
   return detail::borrowed_result<format, sentinel>(std::string_view(
       std::ranges::data(input), std::ranges::size(input)));
+}
+
+// The same readings with the walk said outright.
+//
+// A reading that picks by length asks once whether there is enough of the
+// subject to be worth reading in words. For a subject of a few dozen
+// characters the answer is always no and the asking is pure cost; for one that
+// is always long it is the same cost the other way. Said outright, the length
+// is not looked at and the walk that was not named is not written.
+template <fixed_string format, int sentinel = 0,
+          detail::contiguous_char_range range_type>
+  requires(std::is_lvalue_reference_v<range_type&&> ||
+           std::ranges::borrowed_range<range_type>)
+[[nodiscard]] constexpr auto scan_sentinel_scalar(range_type&& input) {
+  return detail::borrowed_result<format, sentinel, false,
+                                 how_to_walk::one_at_a_time>(
+      std::string_view(std::ranges::data(input), std::ranges::size(input)));
+}
+
+template <fixed_string format, int sentinel = 0,
+          detail::contiguous_char_range range_type>
+  requires(std::is_lvalue_reference_v<range_type&&> ||
+           std::ranges::borrowed_range<range_type>)
+[[nodiscard]] constexpr auto scan_sentinel_vec(range_type&& input) {
+  return detail::borrowed_result<format, sentinel, false,
+                                 how_to_walk::in_words>(
+      std::string_view(std::ranges::data(input), std::ranges::size(input)));
 }
 
 // What a scan of the head of an input hands back: the values, and what is left.

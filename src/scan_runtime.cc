@@ -1492,7 +1492,7 @@ template <auto& automaton>
 }
 
 template <class type, fixed_string format, int sentinel, bool terminated,
-          bool absent_is_empty, std::size_t... index>
+          bool absent_is_empty, how_to_walk walk, std::size_t... index>
 [[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
@@ -1592,33 +1592,41 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       if constexpr (by_terminator) {
         static_assert(is_safe_tagged_sentinel<automaton, terminator>(),
                       "the terminator must be rejected in every state");
-        // Two machines, and the subject picks one. A field of five characters is
-        // read faster one at a time than by a loop that first asks whether a
-        // whole word will fit; a field of two hundred is read four times faster
-        // in words. Asking once, here, costs one comparison for the match --
-        // asking inside would cost one for every state it passes through.
+        // Two machines, and the subject picks one. A field of five characters
+        // is read faster one at a time than by a loop that first asks whether
+        // a whole word will fit; a field of two hundred is read four times
+        // faster in words. Asking once, here, costs one comparison for the
+        // match -- asking inside would cost one for every state it passes
+        // through.
+        //
+        // Where the caller said which walk they want, nothing is asked: the
+        // length is not looked at, and only the walk they named is written.
         constexpr std::size_t worth_a_word = 32;
-        if (input.size() >= worth_a_word) {
+        constexpr bool asks = walk == how_to_walk::by_length;
+        if (asks ? input.size() < worth_a_word
+                 : walk == how_to_walk::one_at_a_time) {
           [[clang::always_inline]] matched =
-              run_to_terminator<automaton, terminator, true,
+              run_to_terminator<automaton, terminator, false,
                                 automaton.initial>(
                   cursor, cursor + input.size(), registers);
     } else {
           [[clang::always_inline]] matched =
-              run_to_terminator<automaton, terminator, false,
+              run_to_terminator<automaton, terminator, true,
                                 automaton.initial>(
                   cursor, cursor + input.size(), registers);
         }
     } else {
         const char* const end = cursor + input.size();
         constexpr std::size_t worth_a_word = 32;
-        if (input.size() >= worth_a_word) {
+        constexpr bool asks = walk == how_to_walk::by_length;
+        if (asks ? input.size() < worth_a_word
+                 : walk == how_to_walk::one_at_a_time) {
           [[clang::always_inline]] matched =
-              run_from_here<automaton, true, automaton.initial>(
+              run_from_here<automaton, false, automaton.initial>(
                   cursor, end, registers);
     } else {
           [[clang::always_inline]] matched =
-              run_from_here<automaton, false, automaton.initial>(
+              run_from_here<automaton, true, automaton.initial>(
                   cursor, end, registers);
         }
       }
@@ -1653,10 +1661,11 @@ template <class type, fixed_string format, int sentinel, bool terminated,
 }
 
 template <class type, fixed_string format, int sentinel = -1,
-          bool terminated = false>
+          bool terminated = false,
+          how_to_walk walk = how_to_walk::by_length>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
-  return scan_fields<type, format, sentinel, terminated, false>(
+  return scan_fields<type, format, sentinel, terminated, false, walk>(
       input, std::make_index_sequence<groups_of<type>()>{});
 }
 
@@ -1666,10 +1675,11 @@ template <class type, fixed_string format, int sentinel = -1,
 // with branches has a group for each branch on top of the ones written down,
 // and that is how the scan says which branch the input took.
 template <class type, fixed_string format, int sentinel = -1,
-          bool terminated = false>
+          bool terminated = false,
+          how_to_walk walk = how_to_walk::by_length>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_branch_fields(
     std::string_view input) {
-  return scan_fields<type, format, sentinel, terminated, true>(
+  return scan_fields<type, format, sentinel, terminated, true, walk>(
       input, std::make_index_sequence<groups_of<type>()>{});
 }
 

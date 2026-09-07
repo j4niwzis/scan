@@ -141,14 +141,17 @@ namespace detail {
 // weaker request that compilers ignore -- it stops the parse.
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA __forceinline
 #define SCAN_REGEX_NEVER_INLINE_CALL
+#define SCAN_REGEX_FORCE_INLINE_CALL
 #elif defined(__GNUC__) || defined(__clang__)
 #define SCAN_REGEX_FORCE_INLINE [[gnu::always_inline]] inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
 #define SCAN_REGEX_NEVER_INLINE_CALL [[clang::noinline]]
+#define SCAN_REGEX_FORCE_INLINE_CALL [[clang::always_inline]]
 #else
 #define SCAN_REGEX_FORCE_INLINE inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA
 #define SCAN_REGEX_NEVER_INLINE_CALL
+#define SCAN_REGEX_FORCE_INLINE_CALL
 #endif
 
 template <class state_type>
@@ -530,8 +533,9 @@ template <fixed_string pattern>
 // value would ask it to.
 template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
           class sentinel_type>
-[[nodiscard]] constexpr bool walk_over(cursor_type& cursor, sentinel_type last,
-                                       detail::walk_answer<cursor_type>& best) {
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool walk_over(
+    cursor_type& cursor, sentinel_type last,
+    detail::walk_answer<cursor_type>& best) {
   constexpr const auto& automaton = detail::regex_automaton<pattern>;
   using mark_type =
       std::conditional_t<std::is_pointer_v<cursor_type>, const char*,
@@ -547,6 +551,13 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
   // against the shortest match before the first one was read. A walk after a
   // head was given no such promise -- the head may be shorter than the whole
   // of what it was handed.
+  // Written where the caller is. A walk of a subject that was handed to us by
+  // name is a few dozen instructions, and leaving it as a call costs the call,
+  // the spills around it and an answer handed back through memory -- which for
+  // a subject of twenty characters is a third of the work. Whoever must not
+  // have it written out says so at their call: searching does, because it runs
+  // a match for every place it tries.
+  SCAN_REGEX_FORCE_INLINE_CALL
   return detail::run_continuation<automaton, shape, automaton.initial,
                                   shape.budget,
                                   shape.longest
@@ -559,8 +570,8 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
 // The same, where nobody is asking where it stopped.
 template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
           class sentinel_type>
-[[nodiscard]] constexpr bool matched_over(cursor_type cursor,
-                                          sentinel_type last) {
+[[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool matched_over(
+    cursor_type cursor, sentinel_type last) {
   detail::walk_answer<cursor_type> best;
   return walk_over<pattern, shape>(cursor, last, best);
 }
@@ -576,7 +587,7 @@ using regex_result_for =
 // subject does, so the walks below a match are kept and the answer is the
 // first of them still accepting when the characters run out. `a|ab` reads
 // "ab" as `ab`, where the same pattern searching for a head reads `a`.
-template <fixed_string pattern>
+template <fixed_string pattern, how_to_walk walk = how_to_walk::by_length>
 [[nodiscard]] constexpr regex_result_for<pattern.to_the_end()>
 regex_match(std::string_view input) {
   constexpr auto whole = pattern.to_the_end();
@@ -594,11 +605,19 @@ regex_match(std::string_view input) {
     // twenty characters more than half of what it takes to run. Past sixty-four
     // the skip is ahead however the runs fall, and by a few hundred characters
     // it is ahead by ten times.
-    constexpr std::size_t worth_a_vector = 64;
-    const bool matched =
-        input.size() >= worth_a_vector
-            ? matched_over<whole, bounded_shape<whole>(true)>(cursor, end)
-            : matched_over<whole, bounded_shape<whole>(false)>(cursor, end);
+    const bool matched = [&] {
+      if constexpr (walk == how_to_walk::by_length) {
+        constexpr std::size_t worth_a_vector = 64;
+        return input.size() >= worth_a_vector
+                   ? matched_over<whole, bounded_shape<whole>(true)>(cursor, end)
+                   : matched_over<whole, bounded_shape<whole>(false)>(cursor,
+                                                                     end);
+      } else {
+        return matched_over<whole, bounded_shape<whole>(
+                                       walk == how_to_walk::in_words)>(cursor,
+                                                                       end);
+      }
+    }();
     if (!matched) return {};
     return {regex_submatch(input), {}};
   } else {
@@ -613,13 +632,19 @@ regex_match(std::string_view input) {
     // The generated form, as the captureless branch above uses. Which of the
     // two walks runs is decided once, on the length of the subject: a short one
     // is read a character at a time, a long one in words and vectors.
-    constexpr std::size_t worth_a_word = 32;
-    const bool matched =
-        input.size() >= worth_a_word
-            ? run_from_here<automaton, true, automaton.initial>(cursor, end,
-                                                                registers)
-            : run_from_here<automaton, false, automaton.initial>(cursor, end,
-                                                                 registers);
+    const bool matched = [&] {
+      if constexpr (walk == how_to_walk::by_length) {
+        constexpr std::size_t worth_a_word = 32;
+        return input.size() >= worth_a_word
+                   ? run_from_here<automaton, true, automaton.initial>(
+                         cursor, end, registers)
+                   : run_from_here<automaton, false, automaton.initial>(
+                         cursor, end, registers);
+      } else {
+        return run_from_here<automaton, walk == how_to_walk::in_words,
+                             automaton.initial>(cursor, end, registers);
+      }
+    }();
     if (!matched) return {};
 
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
@@ -636,7 +661,21 @@ regex_match(std::string_view input) {
   }
 }
 
-template <fixed_string pattern, unsigned char sentinel>
+// A terminated subject, read either the way a measured one is read or the way
+// an unmeasured one would be.
+//
+// `measured` is what the length is spent on: the early answer where the
+// subject is shorter than the shortest match, and the choice between reading
+// one character at a time and reading in words. Neither is available to a
+// reading that arrives without a length, and neither is wanted where the
+// subject is known to be short -- a date is nineteen characters, and asking
+// twice whether it is long enough to be worth a vector costs more than it
+// saves.
+//
+// Nothing else changes. A walk that stops at a terminator never compares the
+// cursor with an end, so there is no end test to lose either way.
+template <fixed_string pattern, unsigned char sentinel,
+          how_to_walk walk = how_to_walk::by_length>
 [[nodiscard]] constexpr regex_result_for<pattern.to_the_end()>
 regex_match_sentinel(std::string_view input) {
   constexpr auto whole = pattern.to_the_end();
@@ -645,15 +684,24 @@ regex_match_sentinel(std::string_view input) {
                 "sentinel matching currently supports captureless patterns");
   static_assert(is_safe_sentinel<whole, sentinel>(),
                 "sentinel must be rejected in every automaton state");
-  if (input.size() < minimum_match_length<whole>()) return {};
   const char* const end = input.data() + input.size();
-  constexpr std::size_t worth_a_vector = 64;
-  const bool matched =
-      input.size() >= worth_a_vector
-          ? matched_over<whole, terminated_shape<whole, sentinel>(true)>(
-                input.data(), end)
-          : matched_over<whole, terminated_shape<whole, sentinel>(false)>(
-                input.data(), end);
+  const bool matched = [&] {
+    if constexpr (walk == how_to_walk::by_length) {
+      if (input.size() < minimum_match_length<whole>()) return false;
+      constexpr std::size_t worth_a_vector = 64;
+      return input.size() >= worth_a_vector
+                 ? matched_over<whole, terminated_shape<whole, sentinel>(true)>(
+                       input.data(), end)
+                 : matched_over<whole,
+                                terminated_shape<whole, sentinel>(false)>(
+                       input.data(), end);
+    } else {
+      return matched_over<
+          whole, terminated_shape<whole, sentinel>(walk ==
+                                                   how_to_walk::in_words)>(
+          input.data(), end);
+    }
+  }();
   if (!matched) return {};
   return {regex_submatch(input), {}};
 }
@@ -1444,14 +1492,15 @@ struct collected_match_closure
 // plain walk of the same automaton. Characters that can only be read once are
 // read into text of their own, and the answer owns it -- there is nothing left
 // behind to point at.
-template <fixed_string pattern, class held_type = std::string>
+template <fixed_string pattern, class held_type = std::string,
+          how_to_walk walk = how_to_walk::by_length>
 struct match_closure
-    : std::ranges::range_adaptor_closure<match_closure<pattern, held_type>> {
+    : std::ranges::range_adaptor_closure<match_closure<pattern, held_type, walk>> {
   // Where the answers are put, said rather than taken as it comes. What is
   // named here is what a subject read once is read into, and what its pieces
   // are handed back as.
   template <class other>
-  [[nodiscard]] constexpr match_closure<pattern, other> into() const {
+  [[nodiscard]] constexpr match_closure<pattern, other, walk> into() const {
     return {};
   }
 
@@ -1466,7 +1515,7 @@ struct match_closure
 
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_match<pattern>(std::string_view(
+    return detail::regex_match<pattern, walk>(std::string_view(
         std::ranges::data(input), std::ranges::size(input)));
   }
 
@@ -1546,21 +1595,34 @@ struct match_closure
 template <fixed_string pattern>
 inline constexpr match_closure<pattern> match{};
 
+// The same reading with the walk said outright rather than chosen by how much
+// there is. Nothing asks the length, and the walk that was not asked for is
+// not written at all.
+template <fixed_string pattern>
+inline constexpr match_closure<pattern, std::string,
+                               how_to_walk::one_at_a_time> match_scalar{};
+
+template <fixed_string pattern>
+inline constexpr match_closure<pattern, std::string, how_to_walk::in_words>
+    match_vec{};
+
 template <fixed_string pattern, unsigned char sentinel = 0,
-          class held_type = std::string>
+          class held_type = std::string,
+          how_to_walk walk = how_to_walk::by_length>
 struct match_sentinel_closure
     : std::ranges::range_adaptor_closure<
-          match_sentinel_closure<pattern, sentinel, held_type>> {
+          match_sentinel_closure<pattern, sentinel, held_type, walk>> {
   template <class other>
-  [[nodiscard]] constexpr match_sentinel_closure<pattern, sentinel, other>
+  [[nodiscard]] constexpr match_sentinel_closure<pattern, sentinel, other, walk>
   into() const {
     return {};
   }
 
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_match_sentinel<pattern, sentinel>(std::string_view(
-        std::ranges::data(input), std::ranges::size(input)));
+    return detail::regex_match_sentinel<pattern, sentinel, walk>(
+        std::string_view(std::ranges::data(input),
+                         std::ranges::size(input)));
   }
 
   // A terminator is what saves the walk a comparison, and a subject walked by
@@ -1578,6 +1640,16 @@ struct match_sentinel_closure
 
 template <fixed_string pattern, unsigned char sentinel = 0>
 inline constexpr match_sentinel_closure<pattern, sentinel> match_sentinel{};
+
+template <fixed_string pattern, unsigned char sentinel = 0>
+inline constexpr match_sentinel_closure<pattern, sentinel, std::string,
+                                        how_to_walk::one_at_a_time>
+    match_sentinel_scalar{};
+
+template <fixed_string pattern, unsigned char sentinel = 0>
+inline constexpr match_sentinel_closure<pattern, sentinel, std::string,
+                                        how_to_walk::in_words>
+    match_sentinel_vec{};
 
 // The head of the subject the pattern takes.
 template <fixed_string pattern, class held_type = std::string>

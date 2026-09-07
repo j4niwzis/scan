@@ -64,6 +64,19 @@ struct fixed_string {
   }
 };
 
+// How the walk over a subject held in memory is chosen.
+//
+// A subject long enough for words is read faster in them, and a short one is
+// read faster a character at a time -- so the reading asks how much there is
+// and picks, which costs one comparison. Where the caller knows which one they
+// want, they say it, and then nothing is asked and nothing is spent: the
+// length is not looked at, and the walk that was not chosen is not written.
+enum class how_to_walk {
+  by_length,      // ask once, and pick
+  one_at_a_time,  // a character at a time, whatever the length
+  in_words,       // in words and vectors, whatever the length
+};
+
 template <class type>
 struct scanner;
 
