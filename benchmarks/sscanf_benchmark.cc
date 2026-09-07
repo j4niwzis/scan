@@ -8,6 +8,21 @@
 // at all. Ours is read once, while the program is compiled, against the type
 // the values go into.
 //
+// So the formats here are written to do what `sscanf` does, rather than what we
+// would write for ourselves:
+//
+//   * `%d` skips any leading whitespace, so every number is preceded by
+//     `{*\s*}` -- an unkept place that takes as much of it as there is.
+//   * `sscanf` stops where the format runs out and ignores the rest of the
+//     subject, so these read a head: `scan_prefix`, not `scan`.
+//   * `%31[a-z]` takes at most thirty-one characters, so the fields are
+//     written `[a-z]{1,31}` and stop in the same place.
+//
+// That leaves two differences nothing can spell away. `sscanf` hands back how
+// many fields it filled and leaves the rest as they were, where a scan is all
+// or nothing; and an integer too big for its type is undefined behaviour
+// there, where here it is an error the caller is handed.
+//
 // The words are measured three ways, because otherwise the comparison would be
 // picked to suit us. `sscanf` copies each field into room the caller said in
 // advance; `scan_words_held` does exactly that and is the pair that compares
@@ -58,7 +73,7 @@ void scan_two_numbers(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      two_numbers value = scan::scan<"{}:{}">.sentinel()(view);
+      two_numbers value = scan::scan_prefix<"{*\\s*}{}:{*\\s*}{}">(view);
       harness::DoNotOptimize(value);
     }
   }
@@ -89,7 +104,8 @@ void scan_timestamp_fields(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      stamp value = scan::scan<"{}-{}-{}T{}:{}:{}">.sentinel()(view);
+      stamp value = scan::scan_prefix<
+          "{*\\s*}{}-{*\\s*}{}-{*\\s*}{}T{*\\s*}{}:{*\\s*}{}:{*\\s*}{}">(view);
       harness::DoNotOptimize(value);
     }
   }
@@ -125,8 +141,9 @@ void scan_words(harness::State& state) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
       field_views value =
-          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
-              view);
+          scan::scan_prefix<
+              "{[a-z]{1,31}},{[a-z]{1,31}},{[a-z]{1,31}},{[a-z]{1,31}},"
+              "{[a-z]{1,31}}">(view);
       harness::DoNotOptimize(value);
     }
   }
@@ -150,8 +167,9 @@ void scan_words_held(harness::State& state) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
       field_buffers value =
-          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
-              view);
+          scan::scan_prefix<
+              "{[a-z]{1,31}},{[a-z]{1,31}},{[a-z]{1,31}},{[a-z]{1,31}},"
+              "{[a-z]{1,31}}">(view);
       harness::DoNotOptimize(value);
     }
   }
@@ -172,8 +190,9 @@ void scan_words_strings(harness::State& state) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
       field_strings value =
-          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
-              view);
+          scan::scan_prefix<
+              "{[a-z]{1,31}},{[a-z]{1,31}},{[a-z]{1,31}},{[a-z]{1,31}},"
+              "{[a-z]{1,31}}">(view);
       harness::DoNotOptimize(value);
     }
   }
