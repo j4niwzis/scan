@@ -1446,7 +1446,7 @@ template <class type, fixed_string format, bool absent_is_empty = false>
         const char* const to = said_by[group * 2 + 1];
         if (from == nullptr || to == nullptr) {
           if constexpr (absent_is_empty) return std::string_view{};
-          throw scan_error("capture group did not participate in the match");
+          throw no_group("capture group did not participate in the match");
         }
         return std::string_view(from, static_cast<std::size_t>(to - from));
       }()),
@@ -1478,7 +1478,7 @@ template <class type, fixed_string format>
     std::string_view input) {
   const std::string_view head = taken_prefix_or_none<type, format>(input);
   if (head.data() == nullptr) {
-    throw scan_error("input does not begin with the pattern");
+    throw no_match("input does not begin with the pattern");
   }
   return head;
 }
@@ -1497,16 +1497,16 @@ template <class type, fixed_string format, int sentinel, bool terminated,
     std::string_view input, std::index_sequence<index...>) {
   if consteval {
     const auto matched = scan::tre::simulate(build_tnfa<type, format>(), input);
-    if (!matched.matched) throw scan_error("input does not match scan expression");
+    if (!matched.matched) throw no_match("input does not match scan expression");
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto& begins = matched.tags[capture_index * 2];
       const auto& ends = matched.tags[capture_index * 2 + 1];
       if (begins.empty() || ends.empty()) {
-        throw scan_error("capture group did not participate in the match");
+        throw no_group("capture group did not participate in the match");
       }
       const auto begin = begins.back();
       const auto end = ends.back();
-      if (begin < 0 || end < begin) throw scan_error("invalid capture group");
+      if (begin < 0 || end < begin) throw no_group("invalid capture group");
       return input.substr(static_cast<std::size_t>(begin),
                           static_cast<std::size_t>(end - begin));
     };
@@ -1523,7 +1523,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       std::vector<const char*> registers(automaton.register_count, nullptr);
       if (!run_tagged_runtime(automaton, input.data(),
                               input.data() + input.size(), registers)) {
-        throw scan_error("input does not match scan expression");
+        throw no_match("input does not match scan expression");
       }
       const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
         const char* const begin = registers[capture_index * 2];
@@ -1533,7 +1533,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
           // take part, and the ordinary state of affairs where the format has
           // branches and only one of them ran.
           if constexpr (absent_is_empty) return std::string_view{};
-          throw scan_error("capture group did not participate in the match");
+          throw no_group("capture group did not participate in the match");
         }
         return std::string_view(begin, static_cast<std::size_t>(end - begin));
       };
@@ -1630,7 +1630,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
                   cursor, end, registers);
         }
       }
-      if (!matched) throw scan_error("input does not match scan expression");
+      if (!matched) throw no_match("input does not match scan expression");
       // Two of the three tests this used to make were asking whether the machine
       // had done something it cannot do. A position is written as the cursor
       // stands somewhere inside the subject, so it is never past the end; the
@@ -1650,7 +1650,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
             // has branches and only one of them ran. There the empty view says
             // so: it points nowhere, which no group that did take part does.
             if constexpr (absent_is_empty) return std::string_view{};
-            throw scan_error("capture group did not participate in the match");
+            throw no_group("capture group did not participate in the match");
           }
         }
         return std::string_view(begin, static_cast<std::size_t>(end - begin));
@@ -1805,7 +1805,7 @@ constexpr void fold_one_step(
           // here to point at. Saying so is the only honest thing left: holding
           // the characters to hand them over at the end would be a hold with no
           // bound, which is the one thing this library will not do quietly.
-          throw scan_error(
+          throw wrong_subject(
               "a fold that only takes its groups whole needs a subject that "
               "can be pointed at: give it push_group to read a stream");
         }
@@ -2396,7 +2396,7 @@ template <class root, class type, std::size_t offset, class reading_type,
                                                       registers, text));
       };
       (take.template operator()<branch>(), ...);
-      if (!made) throw scan_error("no branch of the format took the input");
+      if (!made) throw no_match("no branch of the format took the input");
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
@@ -2540,11 +2540,11 @@ class stream_state {
 
   [[nodiscard]] constexpr type finish() && {
     if (state_ == packed_range<0>::reject) {
-      throw scan_error("input does not match scan expression");
+      throw no_match("input does not match scan expression");
     }
     const auto slot = automaton.states[state_].accepting_slot;
     if (slot == packed_state<0, 0, 0>::not_accepting) {
-      throw scan_error("input does not match scan expression");
+      throw no_match("input does not match scan expression");
     }
     // The reading that accepted says which register holds each value. Nothing
     // is written here: the commands that end a match are not run by this
@@ -2834,7 +2834,7 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
-    throw scan_error("input does not match scan expression");
+    throw no_match("input does not match scan expression");
   }
   return std::move(*into.made());
 }
@@ -2860,7 +2860,7 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   if (!run_continuation<automaton, shape, automaton.initial, 0, 0,
                         std::ptrdiff_t>(cursor, std::ranges::end(input),
                                         position, registers, into, best)) {
-    throw scan_error("input does not match scan expression");
+    throw no_match("input does not match scan expression");
   }
   return std::move(*into.made());
 }

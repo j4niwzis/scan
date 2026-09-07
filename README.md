@@ -678,6 +678,26 @@ name; `try_of<T>()` hands back `std::expected<T, scan_error>` instead.
 `scan_prefix` has `take<T>()` and `try_take<T>()`, which give the value and
 the rest of the subject.
 
+What is thrown says what went wrong by its type, and holds its message as a
+pointer to a literal -- so a failure allocates nothing either:
+
+| thrown | what it means |
+| --- | --- |
+| `scan::no_match` | the subject is not what the pattern says: nothing matched, nothing matched at the head, no branch took it |
+| `scan::no_group` | a value was asked for out of a group that took no part |
+| `scan::bad_field` | a place matched and what stood there is not that type |
+| `scan::out_of_range` | it is that type and it does not fit -- a `bad_field`, caught by either name |
+| `scan::wrong_subject` | the reading asked for cannot be had off this kind of subject |
+
+All of them are `scan::scan_error`, which is an `std::exception` and not an
+`std::runtime_error` -- the latter keeps its message in a `std::string`, and
+this one has nothing to keep. Catch `scan_error` to ask "did it read"; catch a
+kind to ask which question you are answering, because "is this line the right
+shape" and "does this number fit" are different questions and only the first
+is worth trying the next line after. `try_of` hands back the base, so the
+message survives it and the kind does not: catch the throw where the kind is
+what you are after.
+
 **`past_space`** says once what `{*\s*}` before every place says over and over:
 every place begins past whatever whitespace is in front of it, which is what
 `%d` does in a `scanf` format and `{}` does not.
@@ -881,7 +901,8 @@ is compiled. What allocates is what you asked for -- a collector that keeps
 text, a list that grows, a value whose type allocates -- and the default holder
 for a subject that is read once, which is a `std::string` because there is
 nothing to point at (`scan::held<N>` instead of it, and nothing allocates at
-all). Throwing `scan_error` allocates, as throwing does.
+all). Throwing allocates the exception object itself, as throwing does; what
+is thrown holds no string of its own.
 
 **A list** -- a field that is a range takes as many turns as the subject
 affords, and the place says what one turn looks like:

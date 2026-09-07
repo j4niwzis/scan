@@ -262,7 +262,7 @@ class prefix_scan {
         detail::taken_prefix_fields<type, format,
                                     detail::holds_a_variant<type>()>(input_);
     if (!found.matched) {
-      throw scan_error("input does not begin with the pattern");
+      throw no_match("input does not begin with the pattern");
     }
     return {detail::build_value<detail::format_parameters<type, format>, type,
                                 0>(found.groups),

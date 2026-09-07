@@ -2266,7 +2266,7 @@ template <class parameters, class type, std::size_t offset, std::size_t extent>
             build_value<parameters, alternative, mark + 1>(groups));
       };
       (take.template operator()<branch>(), ...);
-      if (!made) throw scan_error("no branch of the format took the input");
+      if (!made) throw no_match("no branch of the format took the input");
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {

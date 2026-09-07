@@ -201,15 +201,15 @@ struct scanner<char> {
   [[nodiscard]] static constexpr state_type begin() { return {}; }
   [[nodiscard]] static constexpr state_type begin(std::string_view) { return {}; }
   static constexpr void push(state_type& state, char value) {
-    if (state.present) throw scan_error("char scanner received multiple symbols");
+    if (state.present) throw bad_field("char scanner received multiple symbols");
     state = {.value = value, .present = true};
   }
   [[nodiscard]] static constexpr char finish(state_type state) {
-    if (!state.present) throw scan_error("empty char field");
+    if (!state.present) throw bad_field("empty char field");
     return state.value;
   }
   [[nodiscard]] static constexpr char parse(std::string_view text) {
-    if (text.size() != 1) throw scan_error("invalid char field");
+    if (text.size() != 1) throw bad_field("invalid char field");
     return text.front();
   }
   [[nodiscard]] static constexpr char parse(std::string_view text,
@@ -274,7 +274,7 @@ struct scanner<type> {
 
   [[nodiscard]] static constexpr type finish(state_type state) {
     if (state.overflow) {
-      throw scan_error("integer field is out of range");
+      throw out_of_range("integer field is out of range");
     }
     return parse_integer(std::string_view(state.buffer.data(), state.size),
                          state.base, state.automatic_base);
@@ -285,7 +285,7 @@ struct scanner<type> {
     const auto [end, error] =
         std::from_chars(text.data(), text.data() + text.size(), value);
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw scan_error("invalid integer field");
+      throw bad_field("invalid integer field");
     }
     return value;
   }
@@ -350,11 +350,11 @@ struct scanner<type> {
     const auto [end, error] = std::from_chars(
         text.data(), text.data() + text.size(), value, selected_base);
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw scan_error("invalid integer field");
+      throw bad_field("invalid integer field");
     }
     if (negative) {
       if constexpr (std::unsigned_integral<type>) {
-        throw scan_error("negative value for unsigned integer");
+        throw out_of_range("negative value for unsigned integer");
       } else {
         value = static_cast<type>(-value);
       }
@@ -408,7 +408,7 @@ struct scanner<type> {
   }
 
   [[nodiscard]] static constexpr type finish(state_type state) {
-    if (state.overflow) throw scan_error("floating-point field is too long");
+    if (state.overflow) throw out_of_range("floating-point field is too long");
     return parse_floating(std::string_view(state.buffer.data(), state.size),
                           state.format);
   }
@@ -457,7 +457,7 @@ struct scanner<type> {
     const auto [end, error] = std::from_chars(
         text.data(), text.data() + text.size(), value, format);
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw scan_error("invalid floating-point field");
+      throw bad_field("invalid floating-point field");
     }
     return value;
   }
@@ -469,7 +469,7 @@ struct scanner<bool> {
   [[nodiscard]] static constexpr bool parse(std::string_view text) {
     if (text == "true" || text == "1") return true;
     if (text == "false" || text == "0") return false;
-    throw scan_error("invalid boolean field");
+    throw bad_field("invalid boolean field");
   }
 };
 

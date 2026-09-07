@@ -262,9 +262,65 @@ struct pattern_buffer {
   }
 };
 
-class scan_error : public std::runtime_error {
+// What went wrong, said by the type and not by a string.
+//
+// The text is a literal and is held as a pointer to it, so making one of these
+// allocates nothing -- which matters, because everything else in this library
+// allocates nothing either, and a failure is not the moment to start. It is
+// also why this is an `std::exception` and not an `std::runtime_error`: the
+// latter keeps its message in a `std::string`.
+//
+// The kinds below are what is caught. Catching `scan_error` catches all of
+// them, which is what most callers want; catching one of the kinds says which
+// question you are answering -- "is this line of the right shape" is a
+// different question from "does this number fit", and only the first is worth
+// trying the next line after.
+class scan_error : public std::exception {
  public:
-  using std::runtime_error::runtime_error;
+  constexpr explicit scan_error(const char* said) noexcept : said_(said) {}
+
+  [[nodiscard]] const char* what() const noexcept override { return said_; }
+
+ private:
+  const char* said_;
+};
+
+// The subject is not what the pattern says it is: nothing matched, or nothing
+// matched at the head, or no branch of a format took it.
+class no_match : public scan_error {
+ public:
+  using scan_error::scan_error;
+};
+
+// A value was asked for out of a group that took no part in the match. The
+// match was fine; this group of it was not there.
+class no_group : public scan_error {
+ public:
+  using scan_error::scan_error;
+};
+
+// A place matched, and what stood there is not that type: `abc` where an
+// integer was written, an empty field where one character was.
+class bad_field : public scan_error {
+ public:
+  using scan_error::scan_error;
+};
+
+// It is that type, and it does not fit in it. A different question from the one
+// above, and usually a different answer: the input is well formed and the
+// output type is too small for it.
+class out_of_range : public bad_field {
+ public:
+  using bad_field::bad_field;
+};
+
+// The reading that was asked for cannot be had off this kind of subject -- a
+// fold that takes its groups whole, asked to read a stream, where there is
+// nothing to point at and holding the characters would be a hold with no
+// bound.
+class wrong_subject : public scan_error {
+ public:
+  using scan_error::scan_error;
 };
 
 }  // namespace scan
