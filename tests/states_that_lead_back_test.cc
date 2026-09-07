@@ -23,7 +23,7 @@ TEST(BothPathsTest, StatesThatLeadBack) {
   EXPECT_EQ(bounded.a, "ababab");
   EXPECT_EQ(bounded.b, "42");
   const two sentinel =
-      scan::scan_sentinel<"{(?:ab)+},{[0-9]+}">(std::string_view(text));
+      scan::scan<"{(?:ab)+},{[0-9]+}">.sentinel()(std::string_view(text));
   EXPECT_EQ(sentinel.a, "ababab");
   EXPECT_EQ(sentinel.b, "42");
 }

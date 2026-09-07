@@ -30,7 +30,7 @@ void scan_timestamp_sentinel(harness::State& state) {
     for (const std::string& text : texts) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
-      harness::DoNotOptimize(static_cast<bool>(scan::match_sentinel<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">(view)));
+      harness::DoNotOptimize(static_cast<bool>(scan::match<"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}">.sentinel()(view)));
     }
   }
   state.SetBytesProcessed(state.iterations() * texts.size() *

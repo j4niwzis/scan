@@ -23,7 +23,7 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   return build_value<format_parameters<type, format>, type, 0>(fields);
 }
 
-template <fixed_string format, int sentinel = -1, bool terminated = false,
+template <fixed_string format, int terminator = -1, bool terminated = false,
           how_to_walk walk = how_to_walk::by_length>
 class borrowed_result {
  public:
@@ -45,10 +45,10 @@ class borrowed_result {
     const auto fields =
         [&] {
           if constexpr (holds_a_variant<type>()) {
-            return scan_branch_fields<type, format, sentinel, terminated, walk>(
+            return scan_branch_fields<type, format, terminator, terminated, walk>(
                 input_);
           } else {
-            return scan_fields<type, format, sentinel, terminated, walk>(input_);
+            return scan_fields<type, format, terminator, terminated, walk>(input_);
           }
         }();
     return build_value<format_parameters<type, format>, type, 0>(fields);
@@ -61,7 +61,7 @@ class borrowed_result {
     requires scanned_as_variant<type>
   constexpr operator type() const {
     const auto groups =
-        scan_branch_fields<type, format, sentinel, terminated, walk>(
+        scan_branch_fields<type, format, terminator, terminated, walk>(
                 input_);
     return build_value<format_parameters<type, format>, type, 0>(groups);
   }
@@ -85,6 +85,52 @@ class borrowed_result {
     } catch (const scan_error& failure) {
       return std::unexpected(failure);
     }
+  }
+
+  // The same things the reading could be told before it was handed a subject,
+  // told after.
+  //
+  // Nothing has happened yet: a scan runs when the output type is named, so
+  // between `scan<f>(text)` and `of<T>()` the reading is still only a
+  // description of one, and saying more about it is free. So both of these are
+  // the same reading, and neither is the one that is written first:
+  //
+  //   scan::scan<f>.sentinel().vec()(text).of<T>()
+  //   scan::scan<f>(text).sentinel().vec().of<T>()
+  //
+  // The pattern layer's `match` has no such thing, and cannot: it walks where
+  // it is called and hands back the answer, so by the time there is something
+  // to say a method on, the walk it would have changed is over.
+  [[nodiscard]] constexpr borrowed_result<format, -1, terminated, walk> sized()
+      const {
+    return borrowed_result<format, -1, terminated, walk>(input_);
+  }
+
+  template <unsigned char byte = 0>
+  [[nodiscard]] constexpr borrowed_result<format, byte, false, walk> sentinel()
+      const {
+    return borrowed_result<format, byte, false, walk>(input_);
+  }
+
+  [[nodiscard]] constexpr borrowed_result<format, terminator, terminated,
+                                          how_to_walk::by_length>
+  by_length() const {
+    return borrowed_result<format, terminator, terminated,
+                           how_to_walk::by_length>(input_);
+  }
+
+  [[nodiscard]] constexpr borrowed_result<format, terminator, terminated,
+                                          how_to_walk::one_at_a_time>
+  scalar() const {
+    return borrowed_result<format, terminator, terminated,
+                           how_to_walk::one_at_a_time>(input_);
+  }
+
+  [[nodiscard]] constexpr borrowed_result<format, terminator, terminated,
+                                          how_to_walk::in_words>
+  vec() const {
+    return borrowed_result<format, terminator, terminated,
+                           how_to_walk::in_words>(input_);
   }
 
  private:
@@ -181,87 +227,6 @@ concept terminated_char_range =
      std::same_as<std::remove_cvref_t<range_type>,
                   std::basic_string<char, std::char_traits<char>,
                                     std::allocator<char>>>);
-
-// This overload borrows the original contiguous storage and allocates nothing.
-//
-// Where the input is of a type that carries a terminator, this says so, and the
-// scan then runs the loop that tests only the character and not the end of the
-// input as well -- provided the pattern is one the terminator cannot appear in,
-// which is asked while the pattern is compiled and answered without the caller
-// having to know it was asked.
-template <fixed_string format, detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan(range_type&& input) {
-  return detail::borrowed_result<format, -1, terminated_char_range<range_type>>(
-      std::string_view(std::ranges::data(input), std::ranges::size(input)));
-}
-
-// The same, with the walk said outright rather than picked by how much there
-// is. These are for a caller who knows what their subjects look like: a date
-// or a record of a few dozen characters is read a character at a time and the
-// question is never worth asking, and a subject of thousands is read in words
-// whatever else is true.
-template <fixed_string format, detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> ||
-           std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan_scalar(range_type&& input) {
-  return detail::borrowed_result<format, -1,
-                                 terminated_char_range<range_type>,
-                                 how_to_walk::one_at_a_time>(
-      std::string_view(std::ranges::data(input), std::ranges::size(input)));
-}
-
-template <fixed_string format, detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> ||
-           std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan_vec(range_type&& input) {
-  return detail::borrowed_result<format, -1,
-                                 terminated_char_range<range_type>,
-                                 how_to_walk::in_words>(
-      std::string_view(std::ranges::data(input), std::ranges::size(input)));
-}
-
-// The same, for input that carries a terminator the pattern never matches.
-//
-// Without one the loop tests the end of the input on every character as well
-// as the character itself; with one the terminator fails the class test like
-// any other symbol no transition takes. It is the caller's promise that the
-// terminator is there -- a `std::string` always has it, a `string_view` into
-// the middle of something does not.
-template <fixed_string format, int sentinel = 0,
-          detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan_sentinel(range_type&& input) {
-  return detail::borrowed_result<format, sentinel>(std::string_view(
-      std::ranges::data(input), std::ranges::size(input)));
-}
-
-// The same readings with the walk said outright.
-//
-// A reading that picks by length asks once whether there is enough of the
-// subject to be worth reading in words. For a subject of a few dozen
-// characters the answer is always no and the asking is pure cost; for one that
-// is always long it is the same cost the other way. Said outright, the length
-// is not looked at and the walk that was not named is not written.
-template <fixed_string format, int sentinel = 0,
-          detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> ||
-           std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan_sentinel_scalar(range_type&& input) {
-  return detail::borrowed_result<format, sentinel, false,
-                                 how_to_walk::one_at_a_time>(
-      std::string_view(std::ranges::data(input), std::ranges::size(input)));
-}
-
-template <fixed_string format, int sentinel = 0,
-          detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> ||
-           std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan_sentinel_vec(range_type&& input) {
-  return detail::borrowed_result<format, sentinel, false,
-                                 how_to_walk::in_words>(
-      std::string_view(std::ranges::data(input), std::ranges::size(input)));
-}
 
 // What a scan of the head of an input hands back: the values, and what is left.
 template <class type>
@@ -774,19 +739,6 @@ class each_pieces_view {
   std::optional<type> value_;
 };
 
-// The same scan, over input that arrives in pieces rather than all at once.
-//
-// Each piece is characters in a row, so the walk reads it in words and
-// vectors; where a piece runs out it asks for the next one and goes on where
-// it stood. Nothing is buffered and no piece is looked at twice, so what comes
-// back owns whatever it holds.
-template <fixed_string format, detail::piecewise_char_range pieces_type>
-  requires(!detail::contiguous_char_range<pieces_type>)
-[[nodiscard]] constexpr auto scan(pieces_type&& input) {
-  return detail::pieces_result<format, pieces_type>(
-      std::forward<pieces_type>(input));
-}
-
 // The head of the input that the pattern takes, and what follows it.
 template <fixed_string format, detail::contiguous_char_range range_type>
   requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
@@ -807,25 +759,110 @@ template <fixed_string format, std::ranges::input_range range_type>
   return prefix_stream_scan<format, decltype(view)>(std::move(view));
 }
 
-// The proxy owns the view and consumes it once after the output type is known.
-template <fixed_string format, std::ranges::input_range range_type>
-  requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
-           (!detail::contiguous_char_range<range_type> ||
-            (!std::is_lvalue_reference_v<range_type&&> &&
-             !std::ranges::borrowed_range<range_type>))
-[[nodiscard]] constexpr auto scan(range_type&& input) {
-  auto view = std::views::all(std::forward<range_type>(input));
-  return detail::streaming_result<format, decltype(view)>(std::move(view));
-}
+// Everything a scan is asked to be, said in one place.
+//
+// The same three questions the pattern layer's `match` answers, and the same
+// answer to the way they used to be written: as names they multiply --
+// `scan`, `scan_sentinel`, `scan_scalar`, `scan_sentinel_vec` and so on for
+// every combination anybody will ever want. As parameters with a method each
+// they compose, and the order they are written in does not matter:
+//
+//   scan::scan<f>(text)
+//   scan::scan<f>.sentinel()(text)
+//   scan::scan<f>.scalar()(text)
+//   scan::scan<f>.sentinel<'\n'>().vec()(text)
+//
+// What the reading is handed decides the rest: characters in a row are read
+// where they lie, pieces are read piece by piece, and anything else is read as
+// it arrives. Saying the walk means nothing for those last two -- there is no
+// length to ask about -- so they take what they are given and ignore it.
+template <fixed_string format, int terminator = -1,
+          how_to_walk walk = how_to_walk::by_length>
+struct scan_closure {
+  // The subject ends where it ends, and the walk tests that as well as the
+  // character -- except where the type of the subject carries a terminator of
+  // its own, which is noticed without the caller having to say so.
+  [[nodiscard]] constexpr scan_closure<format, -1, walk> sized() const {
+    return {};
+  }
 
-// Stream-buffer iteration is unformatted and therefore preserves whitespace
-// regardless of the stream's skipws formatting flag.
+  // The subject carries a character the pattern can never match. Whether it is
+  // really there is the caller's promise; whether the pattern can match it is
+  // asked while the pattern is compiled.
+  template <unsigned char byte = 0>
+  [[nodiscard]] constexpr scan_closure<format, byte, walk> sentinel() const {
+    return {};
+  }
+
+  [[nodiscard]] constexpr scan_closure<format, terminator,
+                                       how_to_walk::by_length>
+  by_length() const {
+    return {};
+  }
+
+  [[nodiscard]] constexpr scan_closure<format, terminator,
+                                       how_to_walk::one_at_a_time>
+  scalar() const {
+    return {};
+  }
+
+  [[nodiscard]] constexpr scan_closure<format, terminator,
+                                       how_to_walk::in_words>
+  vec() const {
+    return {};
+  }
+
+  // Characters in a row: the answers borrow the storage they were read from
+  // and nothing is allocated.
+  template <detail::contiguous_char_range range_type>
+    requires(std::is_lvalue_reference_v<range_type&&> ||
+             std::ranges::borrowed_range<range_type>)
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    const std::string_view text(std::ranges::data(input),
+                                std::ranges::size(input));
+    if constexpr (terminator < 0) {
+      return detail::borrowed_result<format, -1,
+                                     terminated_char_range<range_type>, walk>(
+          text);
+    } else {
+      return detail::borrowed_result<format, terminator, false, walk>(text);
+    }
+  }
+
+  // Input that arrives in pieces. Each piece is characters in a row, so the
+  // walk reads it in words and vectors; where a piece runs out it asks for the
+  // next one and goes on where it stood. Nothing is buffered and no piece is
+  // looked at twice, so what comes back owns whatever it holds.
+  template <detail::piecewise_char_range pieces_type>
+    requires(!detail::contiguous_char_range<pieces_type>)
+  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
+    return detail::pieces_result<format, pieces_type>(
+        std::forward<pieces_type>(input));
+  }
+
+  // Input that has to be read as it comes. The proxy owns the view and
+  // consumes it once, after the output type is known.
+  template <std::ranges::input_range range_type>
+    requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
+             (!detail::contiguous_char_range<range_type> ||
+              (!std::is_lvalue_reference_v<range_type&&> &&
+               !std::ranges::borrowed_range<range_type>))
+  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+    auto view = std::views::all(std::forward<range_type>(input));
+    return detail::streaming_result<format, decltype(view)>(std::move(view));
+  }
+
+  // Stream-buffer iteration is unformatted and therefore keeps whitespace
+  // whatever the stream's skipws flag says.
+  [[nodiscard]] constexpr auto operator()(std::istream& input) const {
+    auto range = std::ranges::subrange(std::istreambuf_iterator<char>(input),
+                                       std::istreambuf_iterator<char>());
+    return detail::streaming_result<format, decltype(range)>(std::move(range));
+  }
+};
+
 template <fixed_string format>
-[[nodiscard]] constexpr auto scan(std::istream& input) {
-  auto range = std::ranges::subrange(std::istreambuf_iterator<char>(input),
-                                     std::istreambuf_iterator<char>());
-  return detail::streaming_result<format, decltype(range)>(std::move(range));
-}
+inline constexpr scan_closure<format> scan{};
 
 template <class type, fixed_string format, std::ranges::input_range range_type>
 [[nodiscard]] constexpr type scan_as(range_type&& input) {

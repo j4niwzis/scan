@@ -1530,15 +1530,72 @@ struct collected_match_closure
 // plain walk of the same automaton. Characters that can only be read once are
 // read into text of their own, and the answer owns it -- there is nothing left
 // behind to point at.
+// Everything a match is asked to be, said in one place.
+//
+// A reading has three things about it that are nobody's business but the
+// caller's: what the answers are kept in, whether the subject carries a
+// terminator the pattern can never match, and which walk reads it. Written as
+// names they multiply -- `match`, `match_sentinel`, `match_scalar`,
+// `match_sentinel_scalar`, and so on for every combination that will ever be
+// wanted. Written as parameters with a method each, they compose:
+//
+//   scan::match<p>(text)
+//   scan::match<p>.sentinel()(text)
+//   scan::match<p>.sentinel().scalar()(text)
+//   text | scan::match<p>.scalar().into<std::pmr::string>()
+//
+// Each method hands back the same reading with one thing said differently, so
+// the order they are written in does not matter and nothing has to be named
+// twice.
 template <fixed_string pattern, class held_type = std::string,
-          how_to_walk walk = how_to_walk::by_length>
+          int terminator = -1, how_to_walk walk = how_to_walk::by_length>
 struct match_closure
-    : std::ranges::range_adaptor_closure<match_closure<pattern, held_type, walk>> {
+    : std::ranges::range_adaptor_closure<
+          match_closure<pattern, held_type, terminator, walk>> {
+  // The subject ends where it ends, and the walk tests that as well as the
+  // character. This is the reading for a `string_view` into the middle of
+  // something.
+  [[nodiscard]] constexpr match_closure<pattern, held_type, -1, walk> sized()
+      const {
+    return {};
+  }
+
+  // The subject carries a character the pattern can never match, so the walk
+  // tests only the character. Whether the terminator really is there is the
+  // caller's promise -- a `std::string` always has one; whether the pattern
+  // can match it is asked while it is compiled.
+  template <unsigned char byte = 0>
+  [[nodiscard]] constexpr match_closure<pattern, held_type, byte, walk>
+  sentinel() const {
+    return {};
+  }
+
+  // Which walk reads it: asked of the length, or said outright. Said outright,
+  // the length is not looked at and the walk that was not named is not written.
+  [[nodiscard]] constexpr match_closure<pattern, held_type, terminator,
+                                        how_to_walk::by_length>
+  by_length() const {
+    return {};
+  }
+
+  [[nodiscard]] constexpr match_closure<pattern, held_type, terminator,
+                                        how_to_walk::one_at_a_time>
+  scalar() const {
+    return {};
+  }
+
+  [[nodiscard]] constexpr match_closure<pattern, held_type, terminator,
+                                        how_to_walk::in_words>
+  vec() const {
+    return {};
+  }
+
   // Where the answers are put, said rather than taken as it comes. What is
   // named here is what a subject read once is read into, and what its pieces
   // are handed back as.
   template <class other>
-  [[nodiscard]] constexpr match_closure<pattern, other, walk> into() const {
+  [[nodiscard]] constexpr match_closure<pattern, other, terminator, walk>
+  into() const {
     return {};
   }
 
@@ -1553,8 +1610,14 @@ struct match_closure
 
   template <detail::contiguous_char_range range_type>
   [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_match<pattern, walk>(std::string_view(
-        std::ranges::data(input), std::ranges::size(input)));
+    const std::string_view text(std::ranges::data(input),
+                                std::ranges::size(input));
+    if constexpr (terminator < 0) {
+      return detail::regex_match<pattern, walk>(text);
+    } else {
+      return detail::regex_match_sentinel<
+          pattern, static_cast<unsigned char>(terminator), walk>(text);
+    }
   }
 
   template <detail::forward_char_range range_type>
@@ -1632,62 +1695,6 @@ struct match_closure
 
 template <fixed_string pattern>
 inline constexpr match_closure<pattern> match{};
-
-// The same reading with the walk said outright rather than chosen by how much
-// there is. Nothing asks the length, and the walk that was not asked for is
-// not written at all.
-template <fixed_string pattern>
-inline constexpr match_closure<pattern, std::string,
-                               how_to_walk::one_at_a_time> match_scalar{};
-
-template <fixed_string pattern>
-inline constexpr match_closure<pattern, std::string, how_to_walk::in_words>
-    match_vec{};
-
-template <fixed_string pattern, unsigned char sentinel = 0,
-          class held_type = std::string,
-          how_to_walk walk = how_to_walk::by_length>
-struct match_sentinel_closure
-    : std::ranges::range_adaptor_closure<
-          match_sentinel_closure<pattern, sentinel, held_type, walk>> {
-  template <class other>
-  [[nodiscard]] constexpr match_sentinel_closure<pattern, sentinel, other, walk>
-  into() const {
-    return {};
-  }
-
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_match_sentinel<pattern, sentinel, walk>(
-        std::string_view(std::ranges::data(input),
-                         std::ranges::size(input)));
-  }
-
-  // A terminator is what saves the walk a comparison, and a subject walked by
-  // iterators has none to promise -- so these read it as any other subject.
-  template <detail::forward_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return match_closure<pattern, held_type>{}(std::forward<range_type>(input));
-  }
-
-  template <detail::read_once_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return match_closure<pattern, held_type>{}(std::forward<range_type>(input));
-  }
-};
-
-template <fixed_string pattern, unsigned char sentinel = 0>
-inline constexpr match_sentinel_closure<pattern, sentinel> match_sentinel{};
-
-template <fixed_string pattern, unsigned char sentinel = 0>
-inline constexpr match_sentinel_closure<pattern, sentinel, std::string,
-                                        how_to_walk::one_at_a_time>
-    match_sentinel_scalar{};
-
-template <fixed_string pattern, unsigned char sentinel = 0>
-inline constexpr match_sentinel_closure<pattern, sentinel, std::string,
-                                        how_to_walk::in_words>
-    match_sentinel_vec{};
 
 // The head of the subject the pattern takes.
 template <fixed_string pattern, class held_type = std::string>

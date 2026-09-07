@@ -30,7 +30,7 @@ TEST(BothPathsTest, BoundedFiveFields) {
 TEST(BothPathsTest, SentinelFiveFields) {
   const std::string text = "alpha,bravo,charlie,delta,echo";
   const five value =
-      scan::scan_sentinel<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+      scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
           std::string_view(text));
   EXPECT_EQ(value.a, "alpha");
   EXPECT_EQ(value.c, "charlie");

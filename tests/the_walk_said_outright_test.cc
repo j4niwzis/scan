@@ -29,22 +29,22 @@ TEST(TheWalkSaidOutright, TheSameAnswerWhicheverWalks) {
   const std::string cut = "2024-05";
 
   EXPECT_TRUE(static_cast<bool>(scan::match<stamp>(yes)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_scalar<stamp>(yes)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_vec<stamp>(yes)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_sentinel<stamp>(yes)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_sentinel_scalar<stamp>(yes)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_sentinel_vec<stamp>(yes)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<stamp>.scalar()(yes)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<stamp>.vec()(yes)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<stamp>.sentinel()(yes)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<stamp>.sentinel().scalar()(yes)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<stamp>.sentinel().vec()(yes)));
 
-  EXPECT_FALSE(static_cast<bool>(scan::match_scalar<stamp>(no)));
-  EXPECT_FALSE(static_cast<bool>(scan::match_vec<stamp>(no)));
-  EXPECT_FALSE(static_cast<bool>(scan::match_sentinel_scalar<stamp>(no)));
-  EXPECT_FALSE(static_cast<bool>(scan::match_sentinel_vec<stamp>(no)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.scalar()(no)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.vec()(no)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.sentinel().scalar()(no)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.sentinel().vec()(no)));
 
   // The one the length used to answer by itself: shorter than the shortest
   // match. A walk that never asks the length has to walk into the end of it.
-  EXPECT_FALSE(static_cast<bool>(scan::match_scalar<stamp>(cut)));
-  EXPECT_FALSE(static_cast<bool>(scan::match_sentinel_scalar<stamp>(cut)));
-  EXPECT_FALSE(static_cast<bool>(scan::match_vec<stamp>(cut)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.scalar()(cut)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.sentinel().scalar()(cut)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<stamp>.vec()(cut)));
 }
 
 TEST(TheWalkSaidOutright, LongEnoughToBeWorthWordsAndShortEnoughNotToBe) {
@@ -53,21 +53,21 @@ TEST(TheWalkSaidOutright, LongEnoughToBeWorthWordsAndShortEnoughNotToBe) {
 
   // A character at a time over a field of two hundred, and in words over one
   // of five: each of them reading what the other was chosen for.
-  EXPECT_TRUE(static_cast<bool>(scan::match_scalar<row>(large)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_vec<row>(small)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_sentinel_scalar<row>(large)));
-  EXPECT_TRUE(static_cast<bool>(scan::match_sentinel_vec<row>(small)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<row>.scalar()(large)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<row>.vec()(small)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<row>.sentinel().scalar()(large)));
+  EXPECT_TRUE(static_cast<bool>(scan::match<row>.sentinel().vec()(small)));
 
   const std::string missing = "alpha,bravo,charlie,delta";
-  EXPECT_FALSE(static_cast<bool>(scan::match_scalar<row>(missing)));
-  EXPECT_FALSE(static_cast<bool>(scan::match_vec<row>(missing)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<row>.scalar()(missing)));
+  EXPECT_FALSE(static_cast<bool>(scan::match<row>.vec()(missing)));
 }
 
 TEST(TheWalkSaidOutright, AFormatReadsTheSameWayRoundToo) {
   const std::string text = "12:34";
   const pair by_length = scan::scan<"{}:{}">(text);
-  const pair one_at_a_time = scan::scan_scalar<"{}:{}">(text);
-  const pair in_words = scan::scan_vec<"{}:{}">(text);
+  const pair one_at_a_time = scan::scan<"{}:{}">.scalar()(text);
+  const pair in_words = scan::scan<"{}:{}">.vec()(text);
   EXPECT_EQ(by_length.left, 12);
   EXPECT_EQ(one_at_a_time.left, 12);
   EXPECT_EQ(in_words.left, 12);
@@ -75,9 +75,20 @@ TEST(TheWalkSaidOutright, AFormatReadsTheSameWayRoundToo) {
   EXPECT_EQ(one_at_a_time.right, 34);
   EXPECT_EQ(in_words.right, 34);
 
-  const pair terminated = scan::scan_sentinel<"{}:{}">(text);
-  const pair terminated_scalar = scan::scan_sentinel_scalar<"{}:{}">(text);
-  const pair terminated_vec = scan::scan_sentinel_vec<"{}:{}">(text);
+  // And the same things said after the subject rather than before it: a scan
+  // runs when the output type is named, so until then it is only a
+  // description of one and saying more about it is free.
+  const pair after = scan::scan<"{}:{}">(text).scalar().of<pair>();
+  const pair after_terminated =
+      scan::scan<"{}:{}">(text).sentinel().vec().of<pair>();
+  EXPECT_EQ(after.left, 12);
+  EXPECT_EQ(after.right, 34);
+  EXPECT_EQ(after_terminated.left, 12);
+  EXPECT_EQ(after_terminated.right, 34);
+
+  const pair terminated = scan::scan<"{}:{}">.sentinel()(text);
+  const pair terminated_scalar = scan::scan<"{}:{}">.sentinel().scalar()(text);
+  const pair terminated_vec = scan::scan<"{}:{}">.sentinel().vec()(text);
   EXPECT_EQ(terminated.right, 34);
   EXPECT_EQ(terminated_scalar.right, 34);
   EXPECT_EQ(terminated_vec.right, 34);
@@ -88,17 +99,17 @@ TEST(TheWalkSaidOutright, ATerminatedSubjectKeepsItsGroups) {
   // same operations whether the end is tested or not. This used to be refused
   // outright.
   const std::string text = "42-abc";
-  const auto found = scan::match_sentinel<"([0-9]+)-([a-z]+)">(text);
+  const auto found = scan::match<"([0-9]+)-([a-z]+)">.sentinel()(text);
   ASSERT_TRUE(static_cast<bool>(found));
   EXPECT_EQ(found.get<1>().to_view(), "42"sv);
   EXPECT_EQ(found.get<2>().to_view(), "abc"sv);
 
   const auto one_at_a_time =
-      scan::match_sentinel_scalar<"([0-9]+)-([a-z]+)">(text);
+      scan::match<"([0-9]+)-([a-z]+)">.sentinel().scalar()(text);
   ASSERT_TRUE(static_cast<bool>(one_at_a_time));
   EXPECT_EQ(one_at_a_time.get<2>().to_view(), "abc"sv);
 
-  const auto in_words = scan::match_sentinel_vec<"([0-9]+)-([a-z]+)">(text);
+  const auto in_words = scan::match<"([0-9]+)-([a-z]+)">.sentinel().vec()(text);
   ASSERT_TRUE(static_cast<bool>(in_words));
   EXPECT_EQ(in_words.get<1>().to_view(), "42"sv);
 }

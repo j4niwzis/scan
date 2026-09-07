@@ -100,7 +100,7 @@ void scan_captures_views_sentinel(harness::State& state) {
       std::string_view view(text);
       harness::DoNotOptimize(view);
       field_views value =
-          scan::scan_sentinel<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+          scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
               view);
       harness::DoNotOptimize(value);
     }
@@ -153,7 +153,7 @@ void scan_captures_long(harness::State& state) {
     std::string_view view(text);
     harness::DoNotOptimize(view);
     field_views value =
-        scan::scan_sentinel<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">(
+        scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
             view);
     harness::DoNotOptimize(value);
   }
