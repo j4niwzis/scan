@@ -2285,30 +2285,84 @@ constexpr void advance_scanner(
   }
 }
 
+// Where a value's gathering is, asked without saying how it is kept.
+//
+// The machine that gathers keeps one per register, and which register holds a
+// place depends on the reading the walk is in. A type that folds its own groups
+// keeps them all together in one state of its own. The putting together of a
+// value is the same work either way, so it is written once and asks for what it
+// needs through one of these.
+template <class reading_type, class states_type, std::size_t register_count>
+struct gathered_by_the_registers {
+  const reading_type& reading;
+  const states_type& states;
+  const std::array<std::ptrdiff_t, register_count>& registers;
+
+  // A field still being read when the input ended is where it was being
+  // gathered; one that ended earlier is the copy taken when it closed, which
+  // the readings that went on adding to the opening cannot have changed.
+  template <std::size_t place>
+  [[nodiscard]] constexpr const auto& gathering() const {
+    const std::uint32_t open = reading[place * 2];
+    const std::uint32_t close = reading[place * 2 + 1];
+    const bool still_reading = registers[close] < registers[open];
+    return std::get<place>(states[still_reading ? open : close]);
+  }
+
+  // A list is gathered and read at its opening throughout: its elements go on
+  // being added to the same list however the readings divide.
+  template <std::size_t place>
+  [[nodiscard]] constexpr const auto& list() const {
+    return std::get<place>(states[reading[place * 2]]);
+  }
+
+  template <std::size_t place>
+  [[nodiscard]] constexpr bool took_part() const {
+    return registers[reading[place * 2]] >= 0;
+  }
+
+  // What a place stood on, where the subject can be pointed at. Nothing where
+  // the place took no part.
+  //
+  // A position here is how many characters have been read and not the index of
+  // one, so what a place stood on begins one before where its opening says.
+  template <std::size_t place>
+  [[nodiscard]] constexpr std::string_view span(const char* text) const {
+    const std::ptrdiff_t began = registers[reading[place * 2]];
+    const std::ptrdiff_t ended = registers[reading[place * 2 + 1]];
+    if (began < 0 || ended < began) return {};
+    return std::string_view(text + (began > 0 ? began - 1 : 0),
+                            static_cast<std::size_t>(ended - began));
+  }
+
+  // A fold at this place, with the last step run into the copy: the end of the
+  // input is not a character, so what it left open is closed here.
+  template <std::size_t place, class held>
+  [[nodiscard]] constexpr auto fold_at() const {
+    auto fold = gathering<place>();
+    fold_one_step<place, held>(fold, reading, registers, '\0', false);
+    return fold;
+  }
+};
+
 template <class root, class type, std::size_t offset, bool as_output = false,
-          class failure_type = failure_for<root>, class reading_type,
-          class states_type, std::size_t register_count>
+          class failure_type = failure_for<root>, class source_type>
 [[nodiscard]] constexpr std::expected<type, failure_type> finish_value(
-    const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers,
-    const char* text);
+    const source_type& source, const char* text);
 
 // The parts of a product, and the arguments of a call, as named functions
 // rather than as lambdas called where they stand. A lambda holding references
 // and called inside the argument of something that itself holds references is
 // more than the constant evaluator will follow.
 template <class root, class type, std::size_t offset, class failure_type,
-          class reading_type, class states_type, std::size_t register_count,
-          std::size_t... part>
+          class source_type, std::size_t... part>
 [[nodiscard]] constexpr std::expected<type, failure_type> finish_parts(
-    const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers,
-    const char* text, std::index_sequence<part...>) {
+    const source_type& source, const char* text,
+    std::index_sequence<part...>) {
   auto parts =
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
                               offset + groups_before_field<type, part>(), false,
-                              failure_type>(reading, states, registers,
-                                            text)...};
+                              failure_type>(source, text)...};
   if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
@@ -2316,17 +2370,14 @@ template <class root, class type, std::size_t offset, class failure_type,
 }
 
 template <class root, class type, std::size_t offset, class failure_type,
-          class reading_type, class states_type, std::size_t register_count,
-          std::size_t... part>
+          class source_type, std::size_t... part>
 [[nodiscard]] constexpr std::expected<type, failure_type> finish_by_call(
-    const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers,
-    const char* text, std::index_sequence<part...>) {
+    const source_type& source, const char* text,
+    std::index_sequence<part...>) {
   auto parts =
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
                               offset + groups_before_field<type, part>(), false,
-                              failure_type>(reading, states, registers,
-                                            text)...};
+                              failure_type>(source, text)...};
   if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
@@ -2394,7 +2445,9 @@ constexpr void collect_element(
       if (done[into] || registers[open] < 0) continue;
       done[into] = true;
       auto one = finish_value<type, element, group, false, failure_type>(
-          packed.readings[reading], states, registers, text);
+          gathered_by_the_registers{packed.readings[reading], states,
+                                    registers},
+          text);
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;
@@ -2473,12 +2526,9 @@ template <class type, class state_type, std::size_t... index>
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
 template <class root, class type, std::size_t offset, bool as_output,
-          class failure_type, class reading_type, class states_type,
-          std::size_t register_count>
+          class failure_type, class source_type>
 [[nodiscard]] constexpr std::expected<type, failure_type> finish_value(
-    const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers,
-    const char* text) {
+    const source_type& source, const char* text) {
   // A shape that reads its own groups is a value where it stands in somebody
   // else's format and a product of places in its own. Where this is the whole
   // of what is being read, it is the second.
@@ -2490,11 +2540,11 @@ template <class root, class type, std::size_t offset, bool as_output,
     // still open when the reading stopped. The same step the walk runs says
     // both, asked once more with nothing to hand over.
     using held = std::remove_cv_t<type>;
-    const std::uint32_t open = reading[offset * 2];
-    const std::uint32_t close = reading[offset * 2 + 1];
-    const bool still_reading = registers[close] < registers[open];
-    auto fold = std::get<offset>(states[still_reading ? open : close]);
-    fold_one_step<offset, held>(fold, reading, registers, '\0', false);
+    static_assert(
+        requires { source.template fold_at<offset, held>(); },
+        "a shape whose places include a type that folds its own groups is read "
+        "by the machine that gathers, not by a fold of its own");
+    auto fold = source.template fold_at<offset, held>();
     if (fold.wanted_a_subject) {
       return std::unexpected(scan::as_a_failure<failure_type>(wrong_subject(
           "a fold that only takes its groups whole needs a subject that can be "
@@ -2518,16 +2568,17 @@ template <class root, class type, std::size_t offset, bool as_output,
     constexpr std::size_t inside = groups_a_leaf_opens<held>();
     std::array<std::string_view, inside> theirs{};
     std::array<bool, inside> took{};
+    static_assert(
+        requires { source.template span<offset>(text); },
+        "a shape whose places include a type built from its own groups is read "
+        "by the machine that gathers, not by a fold of its own");
     [&]<std::size_t... at>(std::index_sequence<at...>) {
       ((void)[&] {
         constexpr std::size_t which = offset + 1 + at;
-        const std::ptrdiff_t began = registers[reading[which * 2]];
-        const std::ptrdiff_t ended = registers[reading[which * 2 + 1]];
-        if (began < 0 || ended < began) return;
+        const std::string_view stood_on = source.template span<which>(text);
+        if (stood_on.data() == nullptr) return;
         took[at] = true;
-        // The same count-not-index the fold reads its spans by.
-        theirs[at] = std::string_view(text + (began > 0 ? began - 1 : 0),
-                                      static_cast<std::size_t>(ended - began));
+        theirs[at] = stood_on;
       }(), ...);
     }(std::make_index_sequence<inside>{});
     const auto given = std::span<const std::string_view>(theirs);
@@ -2559,17 +2610,9 @@ template <class root, class type, std::size_t offset, bool as_output,
       }
     }
   } else if constexpr (a_value) {
-    // A field still being read when the input ended is where it was being
-    // gathered; one that ended earlier is the copy taken when it closed, which
-    // the readings that went on adding to the opening cannot have changed.
-    // The same question the gathering asks of every character: has this group
-    // closed since it opened.
-    const std::uint32_t open = reading[offset * 2];
-    const std::uint32_t close = reading[offset * 2 + 1];
-    const bool still_reading = registers[close] < registers[open];
-    auto& gathered = std::get<offset>(states[still_reading ? open : close]);
+    const auto& gathered = source.template gathering<offset>();
     if constexpr (scan::says_what_went_wrong_finishing<type>) {
-      auto got = scan::scanner<std::remove_cv_t<type>>::try_finish(gathered);
+      auto got = scan::scanner<std::remove_cv_t<type>>{}.try_finish(gathered);
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
@@ -2580,12 +2623,12 @@ template <class root, class type, std::size_t offset, bool as_output,
     // What has been put in as each element ended, and then the one that was
     // still being read when the whole thing ended.
     using element = std::remove_cvref_t<std::ranges::range_value_t<type>>;
-    type made = std::get<offset>(states[reading[offset * 2]]);
+    type made = source.template list<offset>();
     // The turn that was still going when the whole thing ended. Where the list
     // is written to be allowed none at all, there may not have been one.
-    if (registers[reading[(offset + 1) * 2]] >= 0) {
+    if (source.template took_part<offset + 1>()) {
       auto last = finish_value<root, element, offset + 1, false, failure_type>(
-          reading, states, registers, text);
+          source, text);
       if (!last) return std::unexpected(std::move(last).error());
       append_to(made, std::move(*last));
     }
@@ -2601,11 +2644,10 @@ template <class root, class type, std::size_t offset, bool as_output,
       const auto take = [&]<std::size_t which>() {
         constexpr std::size_t mark =
             offset + groups_before_branch<type, which>();
-        if (made || registers[reading[mark * 2]] < 0) return;
+        if (made || !source.template took_part<mark>()) return;
         using alternative = branch_at<type, which>;
         auto part = finish_value<root, alternative, mark + 1, false,
-                                 failure_type>(reading, states, registers,
-                                               text);
+                                 failure_type>(source, text);
         if (!part) {
           made = std::unexpected(std::move(part).error());
           return;
@@ -2622,12 +2664,10 @@ template <class root, class type, std::size_t offset, bool as_output,
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
     return finish_by_call<root, type, offset, failure_type>(
-        reading, states, registers, text,
-        std::make_index_sequence<parts_of<type>::count>{});
+        source, text, std::make_index_sequence<parts_of<type>::count>{});
   } else {
     return finish_parts<root, type, offset, failure_type>(
-        reading, states, registers, text,
-        std::make_index_sequence<parts_of<type>::count>{});
+        source, text, std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
@@ -2779,7 +2819,9 @@ class stream_state {
     const auto& reached = automaton.states[state_];
     // Nothing to point at: this machine is fed and never holds the subject.
     return finish_value<type, type, 0, true, failure_type>(
-        reached.readings[slot], scanner_states_, registers_, nullptr);
+        gathered_by_the_registers{reached.readings[slot], scanner_states_,
+                                  registers_},
+        nullptr);
   }
 
  private:
@@ -2899,7 +2941,9 @@ class field_gatherer {
   constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
     auto got = finish_value<type, type, 0, true>(
-        packed.readings[packed.accepting_slot], states_, registers, text_);
+        gathered_by_the_registers{packed.readings[packed.accepting_slot],
+                                  states_, registers},
+        text_);
     if (!got) {
       failed_ = std::move(got).error();
       made_.reset();
