@@ -988,7 +988,20 @@ template <auto& automaton, walk_shape shape, std::size_t state,
                                                                    place);
         into.template moved<state, range.target>(
             move, static_cast<char>(symbol), registers, place);
-        if constexpr (budget != 0 && forks_of<automaton, state>() == 1) {
+        // What is left of the budget past this move. A step along a chain
+        // costs one; a fork shares what is left between the branches it can
+        // take, so everything written out from here is bounded by the budget
+        // however the automaton is shaped, and a fork no longer ends the
+        // writing outright.
+        //
+        // It used to: only a state with one way out wrote its continuation
+        // here, and every fork was a call. A row of comma-separated fields
+        // forks at every field -- the letters keep the machine where it is,
+        // the comma takes it on -- so every field was a body of its own,
+        // reached by a jump, with the registers in memory across it because a
+        // call cannot keep them anywhere else. That is what a generated
+        // scanner never does, and it cost half again the time of one.
+        if constexpr (budget != 0) {
           // Written out here rather than called, and said so rather than left
           // to be guessed.
           //
@@ -1185,7 +1198,58 @@ template <auto& automaton>
 [[nodiscard]] consteval std::size_t chain_budget() {
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  return state_count < 32 ? state_count : 32;
+  // How many bodies are written out is what has to be bounded, and the length
+  // of the chain is only a stand-in for it: a state with one way out writes
+  // one body a step, a state that forks writes one per branch, and a budget
+  // counted in steps says nothing about the difference.
+  //
+  // So the count is taken. Starting at whichever state is worst to start at,
+  // the moves are followed a step at a time, carrying how many bodies stand at
+  // each state, and the answer is the last depth whose total stays under the
+  // ceiling. A row of fields forks at every field and still writes a body a
+  // state; a pattern of diamonds stops early, which is what it should do.
+  constexpr std::size_t ceiling = 256;
+  std::size_t worst = state_count;
+  for (std::size_t from = 0; from < state_count; ++from) {
+    std::array<std::size_t, state_count> standing{};
+    standing[from] = 1;
+    std::size_t written = 1;
+    std::size_t depth = 0;
+    while (depth < state_count) {
+      std::array<std::size_t, state_count> next{};
+      std::size_t added = 0;
+      for (std::size_t at = 0; at < state_count; ++at) {
+        if (standing[at] == 0) continue;
+        const auto& packed = automaton.states[at];
+        std::array<std::size_t, packed.ranges.size()> named{};
+        std::size_t count = 0;
+        for (std::size_t index = 0; index < packed.range_count; ++index) {
+          const std::size_t target = packed.ranges[index].target;
+          if (target == at) continue;
+          bool already = false;
+          for (std::size_t seen = 0; seen < count; ++seen) {
+            if (named[seen] == target) already = true;
+          }
+          if (already) continue;
+          named[count++] = target;
+          next[target] += standing[at];
+          added += standing[at];
+        }
+      }
+      // Nowhere further to go from here: this start asks for nothing more,
+      // and so says nothing about how deep the writing may go.
+      if (added == 0) {
+        depth = state_count;
+        break;
+      }
+      if (written + added > ceiling) break;
+      written += added;
+      standing = next;
+      ++depth;
+    }
+    if (depth < worst) worst = depth;
+  }
+  return worst;
 }
 
 // Walking characters in a row to a terminator, gathering nothing.
