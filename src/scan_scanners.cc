@@ -565,13 +565,18 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
     static_cast<void>(self);
-    // A shape made by the call it named says no as well: its places stand for
-    // the arguments of that call and not for fields anybody can look at, so
-    // there is nothing here to hand groups to.
+    // A shape made by the call it named says no: its places stand for the
+    // arguments of that call and not for fields anybody can look at, so there
+    // is nothing here to hand groups to.
     if constexpr (requires { &scanner<type>::parse; }) {
       return false;
+    } else if constexpr (!detail::says_a_list_inside<type>()) {
+      // Made only of places: handed its groups when the match is over.
+      return true;
     } else {
-      return !detail::says_a_list_inside<type>();
+      // Made of turns as well: told its groups as they happen, where every
+      // place is something that can be told characters.
+      return detail::turns_can_be_folded<type, format>();
     }
   }
 
@@ -592,6 +597,67 @@ struct aggregate_scanner {
     return detail::build_value<detail::shape_failure<type>,
                                detail::format_parameters<type, format>, type, 0,
                                true>(groups);
+  }
+
+  // Told its groups as they happen, for a shape whose places take turns.
+  //
+  // A list is made of turns and the positions a match leaves behind hold the
+  // last turn and nothing before it, so such a shape cannot be handed its
+  // groups at the end. It is told them instead: every place gathers into the
+  // reader of the value it stands for, a turn ends where the list's own group
+  // closes, and the element is put together there and added -- by the same
+  // builder that puts together everything else, asked for the gatherings a
+  // different way.
+  template <class self_type>
+    requires(detail::says_a_list_inside<scanner_target_t<self_type>>() &&
+             !requires { &scanner<scanner_target_t<self_type>>::parse; } &&
+             detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {
+    static_cast<void>(self);
+    return detail::shape_turns<scanner_target_t<self_type>, format>{};
+  }
+
+  template <class self_type, std::size_t place, class state_type>
+    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+  constexpr void push_group(this const self_type& self, state_type& state,
+                            scan::group_at<place>, char letter) {
+    static_cast<void>(self);
+    detail::push_shape_place<scanner_target_t<self_type>, format, place>(
+        state, letter);
+  }
+
+  template <class self_type, std::size_t place, class state_type>
+    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+  constexpr void opened_group(this const self_type& self, state_type& state,
+                              scan::group_at<place>) {
+    static_cast<void>(self);
+    detail::open_shape_place<scanner_target_t<self_type>, format, place>(state);
+  }
+
+  template <class self_type, std::size_t place, class state_type>
+    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+  constexpr void closed_group(this const self_type& self, state_type& state,
+                              scan::group_at<place>) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    detail::close_shape_place<type, format, place,
+                              detail::shape_failure<type>>(state,
+                                                           state.went_wrong);
+  }
+
+  template <class self_type, class state_type>
+    requires(detail::says_a_list_inside<scanner_target_t<self_type>>())
+  [[nodiscard]] constexpr auto try_finish_groups(this const self_type& self,
+                                                 state_type state) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    using failure_type = detail::shape_failure<type>;
+    if (state.went_wrong) {
+      return std::expected<type, failure_type>(
+          std::unexpected(std::move(*state.went_wrong)));
+    }
+    return detail::finish_value<type, type, 0, true, failure_type>(
+        detail::gathered_by_a_fold<state_type>{state}, nullptr);
   }
 
   [[nodiscard]] constexpr auto begin(this const auto& self) {

@@ -2671,6 +2671,99 @@ template <class root, class type, std::size_t offset, bool as_output,
   }
 }
 
+// A shape's places, gathered together, and what the walk has told it.
+//
+// This is the other way of answering the builder's questions. Where the machine
+// keeps a gathering per register and works out which register holds a place,
+// this keeps them all in one object -- which is what a type is handed when it
+// is told its own groups, and it is told them because its places take turns.
+template <class type, fixed_string format>
+struct shape_turns {
+  using held = std::remove_cv_t<type>;
+  static constexpr std::size_t places = groups_of_output<held>();
+  using gatherings_type = decltype(make_scanner_state<held, format>());
+
+  gatherings_type gatherings = make_scanner_state<held, format>();
+  // An element that did not read, kept until there is somebody to hand it to:
+  // a turn ends in the middle of a walk, where there is nowhere to say so.
+  std::optional<shape_failure<held>> went_wrong{};
+  // Which places have been opened since they were last read out. A choice says
+  // which branch ran by which mark opened; a list says whether a turn is going.
+  std::array<bool, places == 0 ? 1 : places> took{};
+};
+
+template <class shape_type>
+struct gathered_by_a_fold {
+  shape_type& state;
+
+  template <std::size_t place>
+  [[nodiscard]] constexpr const auto& gathering() const {
+    return std::get<place>(state.gatherings);
+  }
+
+  template <std::size_t place>
+  [[nodiscard]] constexpr const auto& list() const {
+    return std::get<place>(state.gatherings);
+  }
+
+  template <std::size_t place>
+  [[nodiscard]] constexpr bool took_part() const {
+    return state.took[place];
+  }
+};
+
+// One character, to the place it fell in. A list's own group holds no
+// characters: what is inside it are the places of one turn, and they take them.
+template <class type, fixed_string format, std::size_t place, class shape_type>
+constexpr void push_shape_place(shape_type& state, char letter) {
+  using held = std::remove_cv_t<type>;
+  using stands_for = leaf_kind_of_output<held, place>;
+  if constexpr (!scanned_as_range<stands_for>) {
+    scanner_push<stands_for>(std::get<place>(state.gatherings), letter);
+  }
+}
+
+// A place opened. Said so that a choice can be asked which branch ran and a
+// list whether a turn is going.
+template <class type, fixed_string format, std::size_t place, class shape_type>
+constexpr void open_shape_place(shape_type& state) {
+  state.took[place] = true;
+}
+
+// A place closed. Where it is a list, that is one turn: the element is put
+// together out of the places inside it, added to the list, and those places
+// begin again for the turn that may follow.
+template <class type, fixed_string format, std::size_t place,
+          class failure_type, class shape_type>
+constexpr void close_shape_place(shape_type& state,
+                                 std::optional<failure_type>& failed) {
+  using held = std::remove_cv_t<type>;
+  using stands_for = leaf_kind_of_output<held, place>;
+  if constexpr (scanned_as_range<stands_for>) {
+    using element = std::remove_cvref_t<std::ranges::range_value_t<stands_for>>;
+    if (!state.took[place + 1]) return;
+    auto one = finish_value<held, element, place + 1, false, failure_type>(
+        gathered_by_a_fold<shape_type>{state}, nullptr);
+    if (!one) {
+      if (!failed) failed = std::move(one).error();
+      return;
+    }
+    append_to(std::get<place>(state.gatherings), std::move(*one));
+    // The turn is over: what its places gathered belongs to the element that
+    // has just been taken, and the next turn starts from nothing.
+    static constexpr auto spread = spread_of<held, format>();
+    [&]<std::size_t... inside>(std::index_sequence<inside...>) {
+      ((void)[&] {
+        constexpr std::size_t which = place + 1 + inside;
+        std::get<which>(state.gatherings) =
+            gathering_of<held, format, which>::begin(
+                spread.parameters[which].view());
+        state.took[which] = false;
+      }(), ...);
+    }(std::make_index_sequence<groups_of<element>()>{});
+  }
+}
+
 // Fed a character at a time. Whoever holds it says where the input ends, so
 // the reading is anchored by default -- the walks below a match are kept, and
 // the answer is the first still accepting when the feeding stops. A prefix

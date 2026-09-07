@@ -2682,6 +2682,22 @@ template <class type>
   }
 }
 
+// Whether a shape's turns can be folded by the shape itself.
+//
+// Its places are told to it one at a time, so every place has to be something
+// that takes characters: a value with a scanner, or a list of them. A place
+// standing for a type that reads groups of its own would have to be handed
+// those groups, and a fold has none to hand -- such a shape keeps the road
+// that spreads its places into the automaton around it.
+template <class type, fixed_string format>
+[[nodiscard]] consteval bool turns_can_be_folded() {
+  return []<std::size_t... place>(std::index_sequence<place...>) {
+    return (true && ... &&
+            !gathers_by_its_groups<std::remove_cv_t<
+                leaf_kind_of_output<std::remove_cv_t<type>, place>>>);
+  }(std::make_index_sequence<groups_of_output<std::remove_cv_t<type>>()>{});
+}
+
 // The same question, asked of what is inside an output rather than of the
 // output itself.
 //
