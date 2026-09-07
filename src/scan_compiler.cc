@@ -1174,10 +1174,6 @@ constexpr void say_place_begin(spread_format& made) { made.text.push_back('('); 
 
 constexpr void say_place_end(spread_format& made) { made.text.push_back(')'); }
 
-constexpr void say_repeat_begin(spread_format& made) {
-  made.text.push_back('(');
-}
-
 constexpr void say_group_begin(spread_format& made) {
   made.text.append(std::string_view("(?:"));
 }
@@ -1355,12 +1351,17 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     // The body is one element, and it is read for as long as it goes on. The
     // group around it is the list; the places inside it are the element, and
     // they are written over again on every turn.
-    say_repeat_begin(made);
+    // The group is the list and holds it whole; what repeats is inside it. The
+    // other way round -- a group repeated -- would open the list again on
+    // every turn, and a list opened again is an empty one.
+    say_place_begin(made);
     ++made.leaves;
+    say_group_begin(made);
     spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
         made, body);
     say_group_end(made);
     made.text.append(repetition);
+    say_place_end(made);
   } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body
     // of the place says them, one per alternative, separated by a bar. Left
