@@ -236,6 +236,54 @@ template <class type>
   }
 }
 
+// A scanner that says what went wrong rather than throwing it.
+//
+//   static std::expected<weight, too_heavy> try_parse(std::string_view);
+//
+// Where a scanner has this, it is what is called, and the kind of failure it
+// hands back is read off its return type -- nothing has to be declared and
+// nobody has to keep a list in step with the code. Where a value is asked for
+// rather than tried, the failure is thrown, which is why the kinds handed back
+// this way are `scan_error`s like the rest.
+template <class type>
+concept says_what_went_wrong = requires(std::string_view text) {
+  scanner<std::remove_cv_t<type>>::try_parse(text);
+} || requires(std::string_view text, std::string_view parameters) {
+  scanner<std::remove_cv_t<type>>::try_parse(text, parameters);
+};
+
+template <class type>
+[[nodiscard]] constexpr auto scanner_try_parse(std::string_view input,
+                                               std::string_view parameters) {
+  using held = std::remove_cv_t<type>;
+  if constexpr (requires { scanner<held>::try_parse(input, parameters); }) {
+    return scanner<held>::try_parse(input, parameters);
+  } else {
+    if (!parameters.empty()) throw "scanner does not accept parameters";
+    return scanner<held>::try_parse(input);
+  }
+}
+
+// The kind of failure such a scanner hands back.
+template <class type>
+using went_wrong_with =
+    typename decltype(scanner_try_parse<type>(std::string_view{},
+                                              std::string_view{}))::error_type;
+
+// What is thrown for a scanner that handed a failure back, where somebody
+// asked for the value itself. Where it said one kind, that kind; where it said
+// several -- an `expected` over a variant of them -- whichever one it is.
+template <class error_type>
+[[noreturn]] void throw_what_went_wrong(error_type&& said) {
+  if constexpr (requires { std::variant_size_v<std::remove_cvref_t<error_type>>; }) {
+    std::visit([](auto&& one) -> void { throw std::move(one); },
+               std::forward<error_type>(said));
+    throw scan_error("a failure that said it was nothing");
+  } else {
+    throw std::forward<error_type>(said);
+  }
+}
+
 template <class type>
 using scanner_state_t = decltype(scanner_begin<type>());
 
@@ -330,6 +378,44 @@ class wrong_subject : public scan_error {
   using scan_error::scan_error;
 };
 
+// A list of types, and the two things ever done to one: put another list on the
+// end of it, and drop what is already in it.
+template <class... kinds>
+struct kind_list {};
+
+template <class left, class right>
+struct joined_lists;
+template <class... left, class... right>
+struct joined_lists<kind_list<left...>, kind_list<right...>> {
+  using type = kind_list<left..., right...>;
+};
+
+template <class wanted, class list>
+inline constexpr bool listed = false;
+template <class wanted, class... kinds>
+inline constexpr bool listed<wanted, kind_list<kinds...>> =
+    (std::same_as<wanted, kinds> || ...);
+
+template <class list, class made = kind_list<>>
+struct without_repeats {
+  using type = made;
+};
+template <class first, class... rest, class made>
+struct without_repeats<kind_list<first, rest...>, made> {
+  using type = typename without_repeats<
+      kind_list<rest...>,
+      std::conditional_t<listed<first, made>, made,
+                         typename joined_lists<made, kind_list<first>>::type>>::
+      type;
+};
+
+template <class list>
+struct as_a_variant;
+template <class... kinds>
+struct as_a_variant<kind_list<kinds...>> {
+  using type = std::variant<kinds...>;
+};
+
 // A failure handed back rather than thrown, holding the kind it was.
 //
 // Thrown, the kind is the type and `catch` picks it. Handed back, there is
@@ -338,38 +424,76 @@ class wrong_subject : public scan_error {
 // only those -- `field_error` is a name for catching two things and is never
 // thrown itself, so nothing here is ever it. `scan_error` is on the list
 // because a scanner of your own throws that one.
-using failure =
-    std::variant<scan_error, no_match, no_group, bad_field, out_of_range,
-                 wrong_subject>;
+// The kinds this library itself throws.
+using our_kinds =
+    kind_list<scan_error, no_match, no_group, bad_field, out_of_range,
+              wrong_subject>;
+
+using failure = typename as_a_variant<our_kinds>::type;
 
 // What it said, whichever kind it is.
-[[nodiscard]] inline const char* what(const failure& said) {
+template <class... kinds>
+[[nodiscard]] const char* what(const std::variant<kinds...>& said) {
   return std::visit([](const scan_error& one) { return one.what(); }, said);
 }
 
-// The kinds, tried from the bottom of the hierarchy up, so the answer is the
-// kind that was thrown and not one of its names.
+// Which of the kinds a thrown failure really is.
 //
-// Written once here rather than at every place that hands a failure back: they
-// all catch the same six things in the same order, and getting that order
-// wrong turns an `out_of_range` into a `field_error` quietly.
-template <class function>
+// Several of them fit: a kind and every name above it in the hierarchy all
+// answer to a `dynamic_cast`, and the one wanted is the lowest of those. Which
+// is lowest is known while compiling -- one kind is below another where it is
+// derived from it -- so what is asked at runtime is only which ones fit, and
+// the answer is the one that fits and is below every other that fits.
+template <class failure_type>
+[[nodiscard]] failure_type as_a_failure(const scan_error& said) {
+  constexpr std::size_t count = std::variant_size_v<failure_type>;
+  constexpr auto below = []<std::size_t... one>(std::index_sequence<one...>) {
+    return std::array<std::array<bool, count>, count>{
+        ([]<std::size_t... other>(std::index_sequence<other...>) {
+          return std::array<bool, count>{
+              std::derived_from<std::variant_alternative_t<one, failure_type>,
+                                std::variant_alternative_t<other,
+                                                           failure_type>>...};
+        }(std::make_index_sequence<count>{}))...};
+  }(std::make_index_sequence<count>{});
+
+  std::array<bool, count> fits{};
+  [&]<std::size_t... at>(std::index_sequence<at...>) {
+    ((fits[at] = dynamic_cast<const std::variant_alternative_t<
+                     at, failure_type>*>(&said) != nullptr),
+     ...);
+  }(std::make_index_sequence<count>{});
+
+  std::optional<failure_type> made;
+  [&]<std::size_t... at>(std::index_sequence<at...>) {
+    ((void)[&] {
+      if (made || !fits[at]) return;
+      for (std::size_t other = 0; other < count; ++other) {
+        if (other != at && fits[other] && !below[at][other]) return;
+      }
+      made = failure_type(
+          std::in_place_index<at>,
+          *dynamic_cast<const std::variant_alternative_t<at, failure_type>*>(
+              &said));
+    }(), ...);
+  }(std::make_index_sequence<count>{});
+  // Every list holds `scan_error`, and everything thrown is one, so there is
+  // always an answer.
+  return made ? std::move(*made) : failure_type(said);
+}
+
+// The reading, and what went wrong instead of a value.
+//
+// One `catch` and not one a kind: which kind it was is asked of the failure
+// itself, so a kind the library never heard of -- one a scanner of your own
+// declares -- costs nothing here and needs no clause of its own.
+template <class failure_type, class function>
 [[nodiscard]] constexpr auto caught(function&& run)
-    -> std::expected<decltype(run()), failure> {
+    -> std::expected<decltype(run()), failure_type> {
   try {
     return std::forward<function>(run)();
-  } catch (const out_of_range& said) {
-    return std::unexpected(failure(said));
-  } catch (const bad_field& said) {
-    return std::unexpected(failure(said));
-  } catch (const no_match& said) {
-    return std::unexpected(failure(said));
-  } catch (const no_group& said) {
-    return std::unexpected(failure(said));
-  } catch (const wrong_subject& said) {
-    return std::unexpected(failure(said));
   } catch (const scan_error& said) {
-    return std::unexpected(failure(said));
+    return std::unexpected(as_a_failure<failure_type>(said));
   }
 }
 

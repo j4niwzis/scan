@@ -219,6 +219,7 @@ set(scan_tests
   a_shape_off_a_stream_test
   a_leaf_that_reads_its_groups_in_a_format_test
   a_fold_of_your_own_test
+  a_failure_of_your_own_test
   a_list_of_your_own_test
   a_shape_of_shapes_test
   a_sum_of_your_own_test

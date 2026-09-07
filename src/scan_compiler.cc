@@ -2087,9 +2087,19 @@ template <class type>
 [[nodiscard]] constexpr type parse_value(std::string_view text,
                                          std::string_view parameters) {
   using value_type = std::remove_cv_t<type>;
-  static_assert(requires { scanner_parse<value_type>(text); },
-                "scan::scanner<type> must provide parse(string_view)");
-  return scanner_parse<value_type>(text, parameters);
+  if constexpr (scan::says_what_went_wrong<value_type>) {
+    // It says what went wrong rather than throwing it, so nothing is thrown
+    // here either -- until somebody asks for the value itself, and then the
+    // failure it handed back is what is thrown.
+    auto got = scan::scanner_try_parse<value_type>(text, parameters);
+    if (got) return std::move(*got);
+    scan::throw_what_went_wrong(std::move(got).error());
+  } else {
+    static_assert(requires { scanner_parse<value_type>(text); },
+                  "scan::scanner<type> must provide parse(string_view) or "
+                  "try_parse(string_view)");
+    return scanner_parse<value_type>(text, parameters);
+  }
 }
 
 // Where a branch's mark stands, counting from the start of the variant: each
@@ -2144,6 +2154,132 @@ template <class type>
     }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
+
+// What a scanner says it can throw.
+//
+//   using throws = std::variant<my_error, my_other_error>;
+//
+// Said so that a failure handed back rather than thrown can hold it: the list
+// a reading hands back is this library's kinds and the ones every scanner
+// underneath the output declares, and nothing else. A scanner that says
+// nothing throws nothing of its own, or throws `scan::scan_error`, which is on
+// the list already.
+template <class variant>
+struct kinds_of_variant;
+template <class... kinds>
+struct kinds_of_variant<std::variant<kinds...>> {
+  static_assert((std::derived_from<kinds, scan::scan_error> && ...),
+                "the kinds a scanner declares in `throws` have to be "
+                "`scan::scan_error`s: a failure is handed back as one, and "
+                "what is not one cannot be asked which kind it is");
+  using list = scan::kind_list<kinds...>;
+};
+
+template <class... lists>
+struct joined_all {
+  using type = scan::kind_list<>;
+};
+template <class first>
+struct joined_all<first> {
+  using type = first;
+};
+template <class first, class... rest>
+struct joined_all<first, rest...> {
+  using type = typename scan::joined_lists<
+      first, typename joined_all<rest...>::type>::type;
+};
+
+// What a scanner says it can go wrong with, taken from wherever it says it.
+//
+// Two ways, and the first is the one worth having: a scanner that hands its
+// failure back says the kind in the return type of `try_parse`, so there is no
+// list to write and no list to keep in step. `throws` is for a scanner that
+// throws, where the type says nothing about what comes out, and it is optional
+// -- a scanner that says neither can still throw `scan::scan_error`, which is
+// on the list already.
+template <class type>
+struct thrown_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires requires { typename scan::scanner<std::remove_cv_t<type>>::throws; }
+struct thrown_kinds<type> {
+  using list = typename kinds_of_variant<
+      typename scan::scanner<std::remove_cv_t<type>>::throws>::list;
+};
+
+template <class type>
+struct handed_back_kinds {
+  using list = scan::kind_list<>;
+};
+template <class kind>
+struct kinds_handed_back {
+  static_assert(std::derived_from<kind, scan::scan_error>,
+                "what `try_parse` hands back has to be a `scan::scan_error`, "
+                "or a variant of them: asking for the value rather than trying "
+                "for it throws what went wrong, and what is not one cannot be "
+                "caught or asked which kind it is");
+  using list = scan::kind_list<kind>;
+};
+// Said as a variant where there is more than one of them.
+template <class... kinds>
+struct kinds_handed_back<std::variant<kinds...>> {
+  using list = typename kinds_of_variant<std::variant<kinds...>>::list;
+};
+
+template <class type>
+  requires scan::says_what_went_wrong<std::remove_cv_t<type>>
+struct handed_back_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_with<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct declared_kinds {
+  using list = typename joined_all<typename handed_back_kinds<type>::list,
+                                   typename thrown_kinds<type>::list>::type;
+};
+
+// Every kind declared anywhere inside an output, walked the way everything
+// else about an output is walked.
+template <class type,
+          int = scanned_as_leaf<type> ? 0
+                : scanned_as_range<type> ? 1
+                : scanned_as_variant<type> ? 3
+                                           : 2>
+struct kinds_in;
+template <class type>
+struct kinds_in<type, 0> {
+  using list = typename declared_kinds<type>::list;
+};
+template <class type>
+struct kinds_in<type, 1> {
+  using list = typename kinds_in<
+      std::remove_cvref_t<std::ranges::range_value_t<type>>>::list;
+};
+template <class type>
+struct kinds_in<type, 2> {
+  template <std::size_t... part>
+  static auto over(std::index_sequence<part...>) -> typename joined_all<
+      typename kinds_in<typename parts_of<type>::template at<part>>::list...>::
+      type;
+  using list = decltype(over(std::make_index_sequence<parts_of<type>::count>{}));
+};
+template <class type>
+struct kinds_in<type, 3> {
+  template <std::size_t... which>
+  static auto over(std::index_sequence<which...>) -> typename joined_all<
+      typename kinds_in<branch_at<type, which>>::list...>::type;
+  using list =
+      decltype(over(std::make_index_sequence<branch_count<type>()>{}));
+};
+
+// This library's kinds, and the ones this output's own scanners declare.
+template <class type>
+using failure_for = typename scan::as_a_variant<typename scan::without_repeats<
+    typename scan::joined_lists<scan::our_kinds,
+                                typename kinds_in<type>::list>::type>::type>::
+    type;
 
 // Whether a fold stands anywhere inside this output.
 //

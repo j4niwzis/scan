@@ -699,9 +699,29 @@ which question you are answering, because "is this line the right shape" and
 trying the next line after.
 
 Handed back rather than thrown, the kind survives: the error type of `try_of`
-and `try_take` is `scan::failure`, a `std::variant` of exactly the kinds that
-are ever thrown -- `field_error` is not among them, because nothing throws it.
-`scan::what(failure)` gives the message whichever kind it holds.
+and `try_take` is a `std::variant` of exactly the kinds that reading *that
+output* can produce -- this library's, and the ones its own scanners say.
+`field_error` is not among them, because nothing throws it. `scan::what(...)`
+gives the message whichever kind it holds.
+
+A scanner says its kinds in the best place there is -- the type it hands back:
+
+```cpp
+template <>
+struct scan::scanner<weight> {
+  static constexpr std::string_view pattern() { return "[0-9]+"; }
+  // One kind, or a variant of them. Nothing is written down twice, and nothing
+  // can fall out of step with the code.
+  static std::expected<weight, std::variant<too_heavy, not_a_weight>>
+  try_parse(std::string_view text);
+};
+```
+
+`try_parse` is used wherever `parse` would be. Asked for the value rather than
+tried for, what it handed back is thrown, which is why these kinds have to be
+`scan_error`s. A scanner that throws instead can say its kinds with
+`using throws = std::variant<...>`; that one is optional, and a scanner that
+says neither can still throw `scan_error`, which is on every list.
 
 ```cpp
 const auto got = scan::scan<"{},{}">(line).try_of<row>();

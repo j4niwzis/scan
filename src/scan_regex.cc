@@ -1120,7 +1120,15 @@ class as_collector {
     // Asked of the scanner itself, not of the helper: the helper is a template
     // whose body is what fails for a type that has no scanner, and a body
     // failing is not a question anyone can ask.
-    if constexpr (requires {
+    if constexpr (scan::says_what_went_wrong<type>) {
+      // It hands its failure back rather than throwing it. A collector has to
+      // give a value, so what it handed back is thrown here -- and the reading
+      // that was asked to try rather than to say catches it and hands it back
+      // again, as the kind it is.
+      auto got = scan::scanner_try_parse<type>(text, parameters);
+      if (got) return std::move(*got);
+      scan::throw_what_went_wrong(std::move(got).error());
+    } else if constexpr (requires {
                     std::declval<scan::scanner<type>&>().parse(text,
                                                                parameters);
                   } || requires {

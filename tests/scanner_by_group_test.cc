@@ -117,6 +117,8 @@ struct scan::scanner<pair_of_words> {
 
 namespace {
 
+using namespace std::string_view_literals;
+
 // Characters one at a time and never again.
 class read_once {
  public:
