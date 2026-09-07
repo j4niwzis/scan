@@ -1718,6 +1718,11 @@ struct fold_of {
   state_type state = scan::scanner<held_type>::begin_groups();
   std::array<std::ptrdiff_t, inside> told_at{};
   std::array<bool, inside> open{};
+  // The first character of the subject this walk started on, where there is
+  // one to point at. Then a group that closes is handed whole, and the
+  // characters are never handed over one at a time. Off a stream this stays
+  // nothing, and the fold is told the characters instead.
+  const char* text = nullptr;
 
   constexpr fold_of() { told_at.fill(-1); }
 };
@@ -1763,7 +1768,19 @@ constexpr void fold_one_step(
     [&]<std::size_t... which>(std::index_sequence<which...>) {
       ((void)[&] {
         if constexpr (takes_group_characters<held_type, which,
-                                             typename fold_type::state_type>) {
+                                             typename fold_type::state_type> &&
+                      !takes_the_group_whole<
+                          held_type, which,
+                          typename fold_type::state_type>) {
+          if (!fold.open[which]) return;
+          if (closing_of(which) >= opening_of(which)) return;
+          push_one_group<held_type, which>(fold.state, symbol);
+        } else if constexpr (takes_group_characters<
+                                 held_type, which,
+                                 typename fold_type::state_type>) {
+          // It would take the group whole, and will where there is something
+          // to point at. Where there is not, the characters are all there is.
+          if (fold.text != nullptr) return;
           if (!fold.open[which]) return;
           if (closing_of(which) >= opening_of(which)) return;
           push_one_group<held_type, which>(fold.state, symbol);
@@ -1775,11 +1792,48 @@ constexpr void fold_one_step(
     ((void)[&] {
       constexpr std::size_t which = inside - 1 - step;
       if (!fold.open[which]) return;
-      if (closing_of(which) < opening_of(which)) return;
+      const std::ptrdiff_t began = opening_of(which);
+      const std::ptrdiff_t ended = closing_of(which);
+      if (ended < began) return;
+      if constexpr (takes_the_group_whole<held_type, which,
+                                          typename fold_type::state_type>) {
+        // The whole of what the group stood on, pointed at rather than copied.
+        if (fold.text != nullptr) {
+          close_one_group<held_type, which>(
+              fold.state,
+              std::string_view(fold.text + began,
+                               static_cast<std::size_t>(ended - began)));
+          fold.open[which] = false;
+          return;
+        }
+        if constexpr (!takes_group_characters<held_type, which,
+                                              typename fold_type::state_type>) {
+          // It takes its groups whole and nothing else, and there is nothing
+          // here to point at. Saying so is the only honest thing left: holding
+          // the characters to hand them over at the end would be a hold with no
+          // bound, which is the one thing this library will not do quietly.
+          throw scan_error(
+              "a fold that only takes its groups whole needs a subject that "
+              "can be pointed at: give it push_group to read a stream");
+        }
+      }
       close_one_group<held_type, which>(fold.state);
       fold.open[which] = false;
     }(), ...);
   }(std::make_index_sequence<inside>{});
+}
+
+// Whether every group of a fold would take its group whole. Then a run of
+// characters the walk stepped over costs one step and not one a character:
+// nothing is handed over, and what opened and what closed is the same at both
+// ends of a run, because a run is where nothing is written.
+template <class held, class state_type>
+[[nodiscard]] consteval bool every_group_whole() {
+  using held_type = std::remove_cv_t<held>;
+  return []<std::size_t... which>(std::index_sequence<which...>) {
+    return (true && ... &&
+            takes_the_group_whole<held_type, which, state_type>);
+  }(std::make_index_sequence<groups_a_leaf_opens<held_type>()>{});
 }
 
 // The fold of every reading that stands at this state, told the same step once.
@@ -1793,16 +1847,21 @@ template <std::size_t place, class held, auto& automaton, class states_type,
 constexpr void fold_the_readings(
     std::size_t state,
     const std::array<std::ptrdiff_t, register_count>& registers,
-    states_type& states, char symbol, bool hands_the_character) {
+    states_type& states, char symbol, bool hands_the_character,
+    const char* text) {
   const auto& entered = automaton.states[state];
   std::array<bool, register_count> told{};
   for (std::size_t reading = 0; reading < entered.reading_count; ++reading) {
     const std::uint32_t at = entered.readings[reading][place * 2];
     if (told[at] || registers[at] < 0) continue;
     told[at] = true;
-    fold_one_step<place, held>(std::get<place>(states[at]),
-                               entered.readings[reading], registers, symbol,
-                               hands_the_character);
+    auto& folding = std::get<place>(states[at]);
+    // Said every step rather than once, because a fold is made where its place
+    // opens and carried where a reading divides, and neither of those knows
+    // what the walk is reading.
+    folding.text = text;
+    fold_one_step<place, held>(folding, entered.readings[reading], registers,
+                               symbol, hands_the_character);
   }
 }
 
@@ -1964,7 +2023,7 @@ constexpr void advance_scanner(
     const std::array<std::ptrdiff_t, register_count>& registers,
     const kept_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count) {
+    std::size_t count, const char* text) {
   static constexpr auto spread = spread_of<type, format>();
   constexpr std::size_t opening = group * 2;
   constexpr std::size_t closing = group * 2 + 1;
@@ -2030,7 +2089,7 @@ constexpr void advance_scanner(
     // order -- and told now, before the copy below, or a fold that ends where
     // its place ends would be copied one closing short.
     fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
-        state, registers, states, symbol, hands_the_character);
+        state, registers, states, symbol, hands_the_character, text);
   }
   if constexpr (!gathers_a_list) {
     // The groups that close on this step. What the field gathered is in the
@@ -2201,7 +2260,8 @@ constexpr void advance_scanners(
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, std::index_sequence<group...>) {
+    std::size_t count, std::index_sequence<group...>,
+    const char* text = nullptr) {
   // The old gatherings are only needed where a command copies one, and inside a
   // field nothing is copied and nothing is written -- that is what holding the
   // tags back bought. Copying the whole set on every character to be ready for
@@ -2219,12 +2279,12 @@ constexpr void advance_scanners(
     const auto old_states = keep_gatherings(states, commands, count);
     (advance_scanner<group, type, format, automaton, hands_the_character>(
          symbol, state, position, registers, old_states, states, commands,
-         count),
+         count, text),
      ...);
   } else {
     (advance_scanner<group, type, format, automaton, hands_the_character>(
          symbol, state, position, registers, states, states, commands,
-         count),
+         count, text),
      ...);
   }
 }
@@ -2580,7 +2640,7 @@ class field_gatherer {
       const auto& taken = automaton.states[state].ranges[move];
       advance_scanners<type, format, automaton, false>(
           letter, landed, position, registers, states_, taken.commands,
-          taken.command_count, std::make_index_sequence<field_count>{});
+          taken.command_count, std::make_index_sequence<field_count>{}, text_);
     }
     hand_over<landed>(letter, registers,
                       std::make_index_sequence<field_count>{});
@@ -2596,6 +2656,10 @@ class field_gatherer {
   }
 
   [[nodiscard]] constexpr std::optional<type>& made() { return made_; }
+
+  // Where the subject begins, for a walk that has all of it in front of it. A
+  // fold reading such a subject is handed each of its groups whole.
+  constexpr void points_at(const char* text) { text_ = text; }
 
  private:
   template <std::size_t state, class registers_type, std::size_t... group>
@@ -2616,10 +2680,19 @@ class field_gatherer {
       return;
     } else if constexpr (how::folds && how::the_place) {
       // The characters of a run, each to the group it fell in. The positions
-      // stand still across a run, so what opened and what closed is said once.
-      for (const char* letter = from; letter != to; ++letter) {
-        fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
-            state, registers, states_, *letter, true);
+      // stand still across a run, so what opened and what closed is said once,
+      // and where the subject can be pointed at nothing is handed over at all.
+      using folded = fold_of<std::remove_cv_t<held_type>>;
+      if constexpr (every_group_whole<held_type, typename folded::state_type>()) {
+        if (from != to) {
+          fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+              state, registers, states_, *from, true, text_);
+        }
+      } else {
+        for (const char* letter = from; letter != to; ++letter) {
+          fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+              state, registers, states_, *letter, true, text_);
+        }
       }
     } else {
       constexpr auto at = gathered_at<automaton, state, group>;
@@ -2655,7 +2728,7 @@ class field_gatherer {
       return;
     } else if constexpr (how::folds && how::the_place) {
       fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
-          landed, registers, states_, letter, true);
+          landed, registers, states_, letter, true, text_);
     } else {
       static constexpr auto spread = spread_of<type, format>();
       constexpr auto at = gathered_at<automaton, landed, group>;
@@ -2676,6 +2749,7 @@ class field_gatherer {
 
   states_type states_;
   std::optional<type> made_;
+  const char* text_ = nullptr;
 };
 
 // One match off input that arrives in pieces, and where the next one starts.
@@ -2761,6 +2835,9 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                    std::ptrdiff_t{0});
   field_gatherer<type, format, automaton> into;
+  if constexpr (std::ranges::contiguous_range<range_type>) {
+    into.points_at(std::ranges::data(input));
+  }
   auto cursor = std::ranges::begin(input);
   std::ptrdiff_t position = 0;
   constexpr walk_shape shape{};

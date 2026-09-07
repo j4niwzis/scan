@@ -680,6 +680,26 @@ concept names_its_groups = requires {
   typename scan::scanner<std::remove_cv_t<type>>::group;
 };
 
+// Whether the type would rather have the group whole than a character at a
+// time. Only a subject that can be pointed at can offer it, so this is asked
+// together with whether there is anything to point at.
+template <class type, std::size_t which, class state_type>
+concept takes_the_group_whole =
+    requires(state_type& state, std::string_view text) {
+      scan::scanner<std::remove_cv_t<type>>::closed_group(
+          state, scan::group_at<which>{}, text);
+    } || requires(state_type& state, std::string_view text) {
+      scan::scanner<std::remove_cv_t<type>>::closed_group(state, which, text);
+    } || (names_its_groups<type> &&
+          requires(state_type& state, std::string_view text) {
+            scan::scanner<std::remove_cv_t<type>>::closed_group(
+                state,
+                std::variant_alternative_t<
+                    which,
+                    typename scan::scanner<std::remove_cv_t<type>>::group>{},
+                text);
+          });
+
 // The state a type folds its groups in, as a type.
 template <class type>
 using group_state_of =
@@ -780,6 +800,17 @@ constexpr void close_one_group(state_type& state, std::string_view text) {
                          scanner_type::closed_group(state, which, text);
                        }) {
     scanner_type::closed_group(state, which, text);
+  } else if constexpr (names_its_groups<type> && requires {
+                         scanner_type::closed_group(
+                             state,
+                             std::variant_alternative_t<
+                                 which, typename scanner_type::group>{},
+                             text);
+                       }) {
+    scanner_type::closed_group(
+        state,
+        std::variant_alternative_t<which, typename scanner_type::group>{},
+        text);
   } else {
     for (char letter : text) push_one_group<type, which>(state, letter);
     close_one_group<type, which>(state);

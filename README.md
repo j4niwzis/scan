@@ -844,9 +844,14 @@ const row one = scan::scan<"{} {[a-z]+}">("1,22,333 stable").of<row>();
 
 An opening and a closing arrive once a turn, openings in the order the groups
 are written and closings innermost first. Where the subject can be pointed at,
-a closing may be handed the whole of what the group stood on --
+a closing is handed the whole of what the group stood on --
 `closed_group(state&, scan::group_at<k>, std::string_view)` -- and then the
-characters are not handed over one at a time. Every hook is optional but
+characters are not handed over at all, and a run the walk stepped over in
+vectors costs one call rather than one a character. Where the subject is read
+once there is nothing to point at, so the same fold is told the characters
+instead; a fold that says only the whole form and no `push_group` says, by
+that, that it wants a subject it can point at, and asking it to read a stream
+throws rather than quietly holding the characters for it. Every hook is optional but
 `begin_groups` and `finish_groups`: a fold made of edges alone never asks for a
 character, and one that only wants characters never hears about an edge.
 

@@ -32,7 +32,65 @@ struct version {
   int minor = 0;
 };
 
+// A list of words, by a type that would rather have each group whole than a
+// character at a time. What was counted says which way it was read.
+struct words {
+  std::vector<std::string> values;
+};
+
+inline int whole_groups = 0;
+inline int characters = 0;
+
 }  // namespace
+
+template <>
+struct scan::scanner<words> {
+  struct state {
+    std::vector<std::string> values;
+    std::string running;
+  };
+
+  static constexpr std::string_view pattern() {
+    return "([a-z]+)(?:;([a-z]+))*";
+  }
+
+  static constexpr state begin_groups() { return state{}; }
+
+  // Where the subject can be pointed at, this is what is called, once a turn.
+  static void closed_group(state& made, scan::group_at<0>,
+                           std::string_view text) {
+    ++whole_groups;
+    made.values.emplace_back(text);
+  }
+  static void closed_group(state& made, scan::group_at<1>,
+                           std::string_view text) {
+    ++whole_groups;
+    made.values.emplace_back(text);
+  }
+
+  // And where it cannot, these are: the same fold, told the only way a stream
+  // can tell it.
+  static void push_group(state& made, scan::group_at<0>, char value) {
+    ++characters;
+    made.running.push_back(value);
+  }
+  static void push_group(state& made, scan::group_at<1>, char value) {
+    ++characters;
+    made.running.push_back(value);
+  }
+  static void closed_group(state& made, scan::group_at<0>) {
+    made.values.push_back(std::move(made.running));
+    made.running.clear();
+  }
+  static void closed_group(state& made, scan::group_at<1>) {
+    made.values.push_back(std::move(made.running));
+    made.running.clear();
+  }
+
+  static words finish_groups(state made) {
+    return words{std::move(made.values)};
+  }
+};
 
 template <>
 struct scan::scanner<numbers> {
@@ -170,6 +228,38 @@ TEST(AFoldOfYourOwn, RecordAfterRecordOffAStream) {
     counts.push_back(one.list.values.size());
   }
   EXPECT_EQ(counts, std::vector<std::size_t>({2, 3}));
+}
+
+TEST(AFoldOfYourOwn, TheGroupWholeWhereItCanBePointedAt) {
+  struct line {
+    words list;
+    scan::held<16> name;
+  };
+  whole_groups = 0;
+  characters = 0;
+  const std::string text = "red;green;blue stable";
+  const line one = scan::scan<"{} {[a-z]+}">(text).of<line>();
+  EXPECT_EQ(one.list.values,
+            std::vector<std::string>({"red", "green", "blue"}));
+  EXPECT_EQ(whole_groups, 3);
+  EXPECT_EQ(characters, 0);
+}
+
+TEST(AFoldOfYourOwn, TheSameFoldOffAStreamTakesTheCharacters) {
+  struct line {
+    words list;
+    scan::held<16> name;
+  };
+  whole_groups = 0;
+  characters = 0;
+  const std::string text = "red;green;blue stable";
+  std::size_t at = 0;
+  const line one =
+      scan::scan<"{} {[a-z]+}">(read_once(text, &at)).of<line>();
+  EXPECT_EQ(one.list.values,
+            std::vector<std::string>({"red", "green", "blue"}));
+  EXPECT_EQ(whole_groups, 0);
+  EXPECT_EQ(characters, 12);
 }
 
 TEST(AFoldOfYourOwn, AFoldThatDoesNotRepeat) {
