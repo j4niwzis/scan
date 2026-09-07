@@ -341,28 +341,59 @@ scan::match<"([a-z]+)">.into(scan::collecting(
 
 #### Writing one of your own
 
-A collector is any type with these three, and none of them is virtual or
-inherited from anything:
+A collector is any type with the parts below, and none of them is virtual or
+inherited from anything. Write the ones your collector needs and leave the
+rest out.
 
 ```cpp
 struct hex_bytes {
+  // What it makes. Either one type…
   using value_type = std::vector<std::byte>;
+  // …or a type per holder, where what it makes depends on what the subject
+  // affords -- a view where the characters can be pointed at, something
+  // owning where they cannot.
+  template <class holder> using value_for = holder;
 
-  // The whole of the group at once, where the subject can be pointed at. The
+  // From the whole group at once, where the subject can be pointed at. The
   // second argument is whatever was written after the colon in the format.
   value_type from_text(std::string_view text, std::string_view parameters) const;
+  // Or the same, told what to make it as.
+  template <class holder>
+  holder from_text(std::string_view text, std::string_view parameters) const;
 
-  // Or a character at a time, where it cannot: this makes the value…
+  // A character at a time, where the subject cannot be pointed at: this makes
+  // the value…
   value_type begin_pushing(std::string_view parameters) const;
-  // …and this is handed every character of the group as it arrives.
+  template <class holder> holder begin_pushing(std::string_view parameters) const;
+  // …this is handed every character of the group as it arrives…
   void push_one(value_type& into, char letter) const;
+  // …and this turns it into the answer.
+  value_type finish_pushed(value_type state) const;
 };
 ```
 
-`from_text` is what a subject held in memory uses; `begin_pushing` and
-`push_one` are what a subject that arrives once uses. Write both and the
-collector works everywhere; write only the first and it works wherever the
-characters can be pointed at.
+`from_text` is what a subject held in memory uses; `begin_pushing`,
+`push_one` and `finish_pushed` are what a subject that arrives once uses.
+Write both halves and the collector works everywhere; write only the first and
+it works wherever the characters can be pointed at.
+
+The collector that keeps the characters -- the default one -- is written in
+exactly these terms and has no privileges of its own:
+
+```cpp
+struct text_collector {
+  template <class holder> using value_for = holder;
+
+  template <class holder>
+  constexpr holder from_text(std::string_view text, std::string_view) const {
+    return holder(text.begin(), text.end());
+  }
+  template <class holder>
+  constexpr holder begin_pushing(std::string_view) const { return holder{}; }
+  constexpr void push_one(auto& into, char letter) const { into.push_back(letter); }
+  constexpr auto finish_pushed(auto state) const { return state; }
+};
+```
 
 ### The groups are read once, not twice
 

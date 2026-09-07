@@ -1201,7 +1201,33 @@ template <class type, class... arguments>
 // The characters themselves, held however the subject affords: pointed at,
 // walked between, or owned. This is what every group is collected into when
 // nothing else is said.
-struct text_collector {};
+struct text_collector {
+  // What it makes is what the subject affords: a view where the characters
+  // can be pointed at, something owning where they cannot. Nothing here is
+  // privileged -- a collector of your own says the same three things and is
+  // treated the same way.
+  template <class holder>
+  using value_for = holder;
+
+  template <class holder>
+  [[nodiscard]] constexpr holder from_text(std::string_view text,
+                                           std::string_view) const {
+    return holder(text.begin(), text.end());
+  }
+
+  template <class holder>
+  [[nodiscard]] constexpr holder begin_pushing(std::string_view) const {
+    return holder{};
+  }
+
+  constexpr void push_one(auto& into, char letter) const {
+    into.push_back(letter);
+  }
+
+  [[nodiscard]] constexpr auto finish_pushed(auto state) const {
+    return state;
+  }
+};
 
 [[nodiscard]] constexpr text_collector text() { return {}; }
 
@@ -1312,14 +1338,26 @@ struct collected {
   using type = typename collector::value_type;
 };
 
-template <class holder>
-struct collected<skip_collector, holder> {
-  using type = skipped;
+// What a collector makes, which may depend on what the subject affords.
+//
+// A collector that keeps the characters themselves makes a view where they
+// can be pointed at and something owning where they cannot, so what it makes
+// is not one type but a type per holder. Saying `value_for` is how a collector
+// says that; saying `value_type` is how it says the one type it always makes.
+template <class collector, class holder>
+concept makes_by_holder = requires {
+  typename collector::template value_for<holder>;
+};
+
+template <class collector, class holder>
+  requires makes_by_holder<collector, holder>
+struct collected<collector, holder> {
+  using type = typename collector::template value_for<holder>;
 };
 
 template <class holder>
-struct collected<text_collector, holder> {
-  using type = holder;
+struct collected<skip_collector, holder> {
+  using type = skipped;
 };
 
 template <class collector, class holder>
@@ -1339,8 +1377,19 @@ template <fixed_string pattern, std::size_t group, class collector,
     const collector& one, const found_type& found) {
   if constexpr (std::same_as<collector, skip_collector>) {
     return {};
-  } else if constexpr (std::same_as<collector, text_collector>) {
-    return found.template get<group>().held();
+  } else if constexpr (requires {
+                         one.template from_text<holder>(std::string_view{},
+                                                        std::string_view{});
+                       }) {
+    // A collector that makes what the subject affords is handed the holder to
+    // make it as. Where the characters can be pointed at, that is a view of
+    // them and nothing is copied.
+    if constexpr (std::same_as<holder, std::string_view>) {
+      return found.template get<group>().held();
+    } else {
+      return one.template from_text<holder>(
+          found.template get<group>().to_view(), std::string_view{});
+    }
   } else if constexpr (group_is_the_types_pattern<
                            typename collector::value_type, pattern, group>()) {
     // The type says a pattern of its own with groups in it, and this group is
@@ -1594,10 +1643,8 @@ struct collected_match_closure
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
           for (const char* letter = from; letter != to; ++letter) {
-            if constexpr (std::same_as<collector, text_collector>) {
-              std::get<group>(states_).push_back(*letter);
-            } else if constexpr (owner_type::template gathers_its_own_groups<
-                                     group>()) {
+            if constexpr (owner_type::template gathers_its_own_groups<
+                              group>()) {
               hand_inner<landed, group>(
                   *letter, registers,
                   std::make_index_sequence<detail::groups_a_type_opens<
@@ -1634,10 +1681,8 @@ struct collected_match_closure
           constexpr std::uint32_t closing = entered.readings[0][group * 2 + 1];
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
-          if constexpr (std::same_as<collector, text_collector>) {
-            std::get<group>(states_).push_back(letter);
-          } else if constexpr (owner_type::template gathers_its_own_groups<
-                                   group>()) {
+          if constexpr (owner_type::template gathers_its_own_groups<
+                            group>()) {
             // The type has groups of its own, and they are groups of this
             // match: which of them is open says where the character goes.
             hand_inner<landed, group>(
@@ -1680,9 +1725,15 @@ struct collected_match_closure
   [[nodiscard]] constexpr auto begin_one() const {
     using collector =
         std::tuple_element_t<group, std::tuple<collectors...>>;
-    if constexpr (std::same_as<collector, skip_collector> ||
-                  std::same_as<collector, text_collector>) {
+    if constexpr (std::same_as<collector, skip_collector>) {
       return held_type{};
+    } else if constexpr (requires {
+                           std::declval<const collector&>()
+                               .template begin_pushing<held_type>(
+                                   std::string_view{});
+                         }) {
+      return std::get<group>(collectors_)
+          .template begin_pushing<held_type>(std::string_view{});
     } else if constexpr (gathers_its_own_groups<group>()) {
       return scan::scanner<std::remove_cv_t<
           typename collector::value_type>>::begin_groups();
@@ -1708,11 +1759,7 @@ struct collected_match_closure
       return;
     } else {
       if (!detail::group_is_open<pattern, group>(here, registers)) return;
-      if constexpr (std::same_as<collector, text_collector>) {
-        std::get<group>(states).push_back(letter);
-      } else {
-        std::get<group>(collectors_).push_one(std::get<group>(states), letter);
-      }
+      std::get<group>(collectors_).push_one(std::get<group>(states), letter);
     }
   }
 
@@ -1729,8 +1776,6 @@ struct collected_match_closure
         std::tuple_element_t<group, std::tuple<collectors...>>;
     if constexpr (std::same_as<collector, skip_collector>) {
       return skipped{};
-    } else if constexpr (std::same_as<collector, text_collector>) {
-      return state;
     } else if constexpr (gathers_its_own_groups<group>()) {
       return scan::scanner<std::remove_cv_t<
           typename collector::value_type>>::finish_groups(std::move(state));
