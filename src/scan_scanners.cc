@@ -581,10 +581,8 @@ struct aggregate_scanner {
   // from the places of the reading around it: one builder, and this is a call
   // to it.
   template <class self_type>
-    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>() &&
-             !requires {
-               &scanner<scanner_target_t<self_type>>::parse;
-             })
+    requires(!requires { &scanner<scanner_target_t<self_type>>::parse; } &&
+             !detail::says_a_list_inside<scanner_target_t<self_type>>())
   [[nodiscard]] constexpr auto try_from_groups(
       this const self_type& self, std::span<const std::string_view> groups)
       -> std::expected<scanner_target_t<self_type>,

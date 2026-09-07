@@ -659,6 +659,10 @@ template <class type>
 [[nodiscard]] consteval bool says_a_list_inside() {
   if constexpr (!says_a_format<type>) {
     return a_list_field<type>();
+  } else if constexpr (!std::is_aggregate_v<std::remove_cv_t<type>>) {
+    // Nothing to walk: a shape that is not an aggregate is made by the call it
+    // named, and its places stand for that call's arguments.
+    return false;
   } else {
     return []<std::size_t... field>(std::index_sequence<field...>) {
       return (false || ... ||
