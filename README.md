@@ -366,27 +366,40 @@ characters can be pointed at.
 
 ### The groups are read once, not twice
 
-Where the type a group is read into has a format of its own, the text is not
-handed to it to be parsed again. The two patterns are compared where they are
-compiled, and if the groups line up, the value is built out of the groups the
-outer pattern already found:
+Where a group is written with the very expression a type declares for its own
+values, the value is built out of the groups the machine has already found:
+nothing is matched twice and no substring is handed anywhere.
 
 ```cpp
 struct point { int x; int y; };
-template <> struct scan::scanner<point> {
-  static constexpr std::string_view pattern() { return "([0-9]+),([0-9]+)"; }
-  …
-};
+template <> struct scan::scanner<point> : scan::aggregate_scanner<"({},{})"> {};
 
-// The outer pattern already has the two numbers as groups. `point` is built
-// from them: nothing is matched twice, and no substring is handed anywhere.
-scan::match<"at ([0-9]+),([0-9]+)!">.into(scan::as<point>())(text);
+// `point` spells itself out as `\(([+-]?[0-9]+),([+-]?[0-9]+)\)`, and this
+// group is written with exactly that. The two numbers are already groups of
+// the big match, so `point` is built from them.
+scan::match<"at=(\(([+-]?[0-9]+),([+-]?[0-9]+)\))">.into(
+    scan::as<point>(), scan::skip(), scan::skip())(text);
 ```
 
-Where the groups do not line up -- the type wrote `(?:…)` where the outer
-pattern wrote a group, say -- there is nothing to reuse and the text is read
-the ordinary way. Which of the two happens is decided while the program is
-compiled, by comparing the two patterns.
+Three things have to hold, and all three are decided while the program is
+compiled: the type declares a **format** of its own rather than a pattern for
+one value, that format has more than one place in it, and the group is written
+with the same expression the format spells out.
+
+**The same expression, not the same characters.** Both are read, and the two
+trees are compared, so `+` and `{1,}` agree and a group that captures nothing
+leaves nothing to disagree about.
+
+What the reading does not make identical is left alone, deliberately. `a{2}`
+and `aa` are the same characters and not the same expression: put a group
+around them and they stop being alike at all, because `(a){2}` is one group
+that took two turns and `(a)(a)` is two groups. Since what is being decided
+here is whether the groups already found are that type's values, anything that
+could move the groups has to count as different.
+
+Where the two really are the same and this says they are not, the text is read
+the ordinary way and the cost is one reading. Where it said yes wrongly, the
+answer would be wrong. So it says no unless the trees are the same tree.
 
 ## The format layer
 

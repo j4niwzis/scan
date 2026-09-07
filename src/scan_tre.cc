@@ -92,6 +92,58 @@ class node : public ast::node_variant {
   using ast::node_variant::operator=;
 };
 
+// Whether two expressions are the same expression.
+//
+// Written out they may not look it. `a+` and `a{1,}` are the same repetition,
+// `[a]` and `a` are the same one symbol, `(?:ab)` and `ab` are the same
+// sequence -- what tells them apart is the writing, and what makes them the
+// same is that reading them gives the same tree. So the comparison is of the
+// trees, after the reading, and never of the characters.
+//
+// Tags are compared by their number, which means both sides have to have been
+// read with their own count starting from the same place. Two patterns read
+// on their own do.
+[[nodiscard]] constexpr bool same_expression(const node& left,
+                                             const node& right);
+
+[[nodiscard]] constexpr bool same_expressions(const std::vector<node>& left,
+                                              const std::vector<node>& right) {
+  if (left.size() != right.size()) return false;
+  for (std::size_t at = 0; at < left.size(); ++at) {
+    if (!same_expression(left[at], right[at])) return false;
+  }
+  return true;
+}
+
+[[nodiscard]] constexpr bool same_expression(const node& left,
+                                             const node& right) {
+  if (left.index() != right.index()) return false;
+  return std::visit(
+      [&](const auto& one) -> bool {
+        using kind = std::remove_cvref_t<decltype(one)>;
+        const auto& other = std::get<kind>(right);
+        if constexpr (std::same_as<kind, ast::empty> ||
+                      std::same_as<kind, ast::epsilon>) {
+          return true;
+        } else if constexpr (std::same_as<kind, ast::symbol>) {
+          return one.value == other.value;
+        } else if constexpr (std::same_as<kind, ast::tag>) {
+          return one.id == other.id;
+        } else if constexpr (std::same_as<kind, ast::character_class>) {
+          return one.symbols.words == other.symbols.words;
+        } else if constexpr (std::same_as<kind, ast::alternative>) {
+          return same_expressions(one.branches, other.branches);
+        } else if constexpr (std::same_as<kind, ast::concatenation>) {
+          return same_expressions(one.elements, other.elements);
+        } else {
+          return one.minimum == other.minimum &&
+                 one.maximum == other.maximum && one.greedy == other.greedy &&
+                 same_expressions(one.element, other.element);
+        }
+      },
+      static_cast<const ast::node_variant&>(left));
+}
+
 [[nodiscard]] constexpr node empty() { return ast::empty{}; }
 [[nodiscard]] constexpr node epsilon() { return ast::epsilon{}; }
 [[nodiscard]] constexpr node symbol(char value) { return ast::symbol{value}; }

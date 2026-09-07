@@ -952,8 +952,40 @@ template <class type, fixed_string pattern, std::size_t group>
   } else if constexpr (!scanned_by_format<std::remove_cv_t<type>>) {
     return false;
   } else {
+    // Both read, and the readings compared -- not the characters. `a+` and
+    // `a{1,}` are the same repetition and `(?:ab)` and `ab` the same
+    // sequence; what tells them apart is the writing, and the writing is not
+    // what decides this.
+    //
+    // Only what the reading itself makes identical, and nothing beyond. A
+    // count is compared as a count: `a{2}` and `aa` are the same characters
+    // and not the same expression, and putting a group around them shows why
+    // -- `(a){2}` is one group that took two turns and `(a)(a)` is two
+    // groups. Anything that moved the groups would be worse than useless
+    // here, because what is being decided is whether the groups already found
+    // are that type's values.
+    //
+    // Where two expressions really are the same and this says they are not,
+    // the text is read the ordinary way and the cost is one reading. Where it
+    // said yes wrongly, the answer would be wrong. So it says no unless the
+    // trees are the same tree.
+    //
+    // Each is read on its own, with its own count of the groups it opens, so
+    // the tags in the two trees are numbered from the same place and can be
+    // compared as they stand.
     constexpr auto declared = capturing_pattern<std::remove_cv_t<type>>();
-    return group_text<pattern>(group) == declared.view();
+    constexpr auto written = group_text<pattern>(group);
+    if constexpr (written.empty()) {
+      return false;
+    } else {
+      std::size_t here = 0;
+      tre_parser reading_the_group(written, {}, here, true);
+      const auto theirs = reading_the_group.parse_regex();
+      std::size_t there = 0;
+      tre_parser reading_the_type(declared.view(), {}, there, true);
+      const auto ours = reading_the_type.parse_regex();
+      return scan::tre::same_expression(theirs, ours);
+    }
   }
 }
 
