@@ -17,8 +17,11 @@ namespace {
 
 using namespace std::string_view_literals;
 
-constexpr auto stamp = "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}";
-constexpr auto row = "[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+";
+// Said as what a pattern is held in: `auto` over a literal is a pointer, and a
+// pointer has no length to compile a pattern out of.
+constexpr scan::fixed_string stamp =
+    "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}";
+constexpr scan::fixed_string row = "[a-z]+,[a-z]+,[a-z]+,[a-z]+,[a-z]+";
 
 struct pair { int left; int right; };
 
