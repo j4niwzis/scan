@@ -6,6 +6,19 @@ export import scan.runtime;
 
 export namespace scan::detail {
 
+// The value, or the failure thrown.
+//
+// This is the only place in the library where anything is thrown for a reading
+// that went wrong, and nothing anywhere catches it. Asking for a value has
+// nowhere to put a failure; trying for one does, and then nothing is thrown at
+// all.
+template <class type, class failure_type>
+[[nodiscard]] constexpr type or_thrown(
+    std::expected<type, failure_type> got) {
+  if (got) return std::move(*got);
+  scan::throw_what_went_wrong(std::move(got).error());
+}
+
 template <class type, fixed_string format, std::size_t extent, std::size_t... index>
 [[nodiscard]] constexpr type convert(
     const std::array<std::string_view, extent>& fields,
@@ -20,7 +33,9 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   // three times what initialising it once costs. It also demanded that every
   // field be default-constructible and assignable, which is more than an
   // aggregate has to be.
-  return build_value<format_parameters<type, format>, type, 0>(fields);
+  return or_thrown(build_value<failure_for<type>,
+                               format_parameters<type, format>, type, 0>(
+      fields));
 }
 
 template <fixed_string format, int terminator = -1, bool terminated = false,
@@ -29,9 +44,10 @@ class borrowed_result {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
 
+  // The reading itself, which hands back what it read or what went wrong.
+  // Everything below is this, asked for in one of the two ways.
   template <class type>
-    requires std::is_aggregate_v<type>
-  constexpr operator type() const {
+  [[nodiscard]] constexpr std::expected<type, failure_for<type>> read() const {
     static_assert(!scanned_by_format<type>,
                   "a type that declares its own format is read as a field, not "
                   "as the whole of what is scanned into: wrap it in a struct "
@@ -43,20 +59,31 @@ class borrowed_result {
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
       return detail::scan_stream<type, format>(input_);
     } else {
-    // A group that took no part is an error, unless somewhere in this output
-    // there is a variant, where exactly one branch takes part and the rest do
-    // not. Which it is, is known while the pattern is compiled.
-    const auto fields =
-        [&] {
-          if constexpr (holds_a_variant<type>()) {
-            return scan_branch_fields<type, format, terminator, terminated, walk>(
-                input_);
-          } else {
-            return scan_fields<type, format, terminator, terminated, walk>(input_);
-          }
-        }();
-    return build_value<format_parameters<type, format>, type, 0>(fields);
+      // A group that took no part is an error, unless somewhere in this output
+      // there is a variant, where exactly one branch takes part and the rest do
+      // not. Which it is, is known while the pattern is compiled.
+      auto fields = [&] {
+        if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
+          return scan_branch_fields<type, format, terminator, terminated, walk>(
+              input_);
+        } else {
+          return scan_fields<type, format, terminator, terminated, walk>(
+              input_);
+        }
+      }();
+      if (!fields) {
+        return std::unexpected(
+            scan::as_a_failure<failure_for<type>>(std::move(fields).error()));
+      }
+      return build_value<failure_for<type>, format_parameters<type, format>,
+                         type, 0>(*fields);
     }
+  }
+
+  template <class type>
+    requires std::is_aggregate_v<type>
+  constexpr operator type() const {
+    return or_thrown(read<type>());
   }
 
   // The same scan, for a format that says the input may be one of several
@@ -64,10 +91,7 @@ class borrowed_result {
   template <class type>
     requires scanned_as_variant<type>
   constexpr operator type() const {
-    const auto groups =
-        scan_branch_fields<type, format, terminator, terminated, walk>(
-                input_);
-    return build_value<format_parameters<type, format>, type, 0>(groups);
+    return or_thrown(read<type>());
   }
 
   // The same scan, said rather than implied, and the same scan that does not
@@ -85,8 +109,7 @@ class borrowed_result {
   template <class type>
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
   try_of() const {
-    return caught<detail::failure_for<type>>(
-        [&] { return static_cast<type>(*this); });
+    return read<type>();
   }
 
   // The same things the reading could be told before it was handed a subject,
@@ -153,9 +176,15 @@ class pieces_result {
   pieces_result& operator=(const pieces_result&) = delete;
 
   template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  read() {
+    return scan_pieces<type, format>(std::move(input_));
+  }
+
+  template <class type>
     requires std::is_aggregate_v<type>
   constexpr operator type() {
-    return scan_pieces<type, format>(std::move(input_));
+    return or_thrown(read<type>());
   }
 
   template <class type>
@@ -166,8 +195,7 @@ class pieces_result {
   template <class type>
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
   try_of() {
-    return caught<detail::failure_for<type>>(
-        [&] { return static_cast<type>(*this); });
+    return read<type>();
   }
 
  private:
@@ -186,9 +214,15 @@ class streaming_result {
   streaming_result& operator=(const streaming_result&) = delete;
 
   template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  read() {
+    return scan_stream<type, format>(input_);
+  }
+
+  template <class type>
     requires std::is_aggregate_v<type>
   constexpr operator type() {
-    return scan_stream<type, format>(input_);
+    return or_thrown(read<type>());
   }
 
   template <class type>
@@ -199,8 +233,7 @@ class streaming_result {
   template <class type>
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
   try_of() {
-    return caught<detail::failure_for<type>>(
-        [&] { return static_cast<type>(*this); });
+    return read<type>();
   }
 
  private:
@@ -248,26 +281,31 @@ class prefix_scan {
  public:
   constexpr explicit prefix_scan(std::string_view input) : input_(input) {}
 
+  // The head and what follows it, or what went wrong instead. The reading
+  // itself; `take` is this, asked for rather than tried for.
   template <class type>
-  [[nodiscard]] constexpr taken<type> take() const {
+  [[nodiscard]] constexpr std::expected<taken<type>, detail::failure_for<type>>
+  try_take() const {
     // One walk: where the head ends and what is in it come back together, out
     // of the registers the walk was carrying anyway.
     const auto found =
         detail::taken_prefix_fields<type, format,
                                     detail::holds_a_variant<type>()>(input_);
     if (!found.matched) {
-      throw no_match("input does not begin with the pattern");
+      return std::unexpected(
+          scan::as_a_failure<detail::failure_for<type>>(
+              no_match("input does not begin with the pattern")));
     }
-    return {detail::build_value<detail::format_parameters<type, format>, type,
-                                0>(found.groups),
-            input_.substr(found.head.size())};
+    auto made = detail::build_value<detail::failure_for<type>,
+                                    detail::format_parameters<type, format>,
+                                    type, 0>(found.groups);
+    if (!made) return std::unexpected(std::move(made).error());
+    return taken<type>{std::move(*made), input_.substr(found.head.size())};
   }
 
-  // The head and what follows it, or what went wrong instead.
   template <class type>
-  [[nodiscard]] constexpr std::expected<taken<type>, detail::failure_for<type>>
-  try_take() const {
-    return caught<detail::failure_for<type>>([&] { return take<type>(); });
+  [[nodiscard]] constexpr taken<type> take() const {
+    return detail::or_thrown(try_take<type>());
   }
 
   template <class type>
@@ -346,8 +384,14 @@ class each_view {
         detail::taken_prefix_fields<type, format,
                                     detail::holds_a_variant<type>()>(rest_);
     if (!found.matched) return;
-    value_ = detail::build_value<detail::format_parameters<type, format>, type,
-                                 0>(found.groups);
+    auto made = detail::build_value<detail::failure_for<type>,
+                                    detail::format_parameters<type, format>,
+                                    type, 0>(found.groups);
+    // A match whose values did not read ends the reading, the same way a
+    // subject that stopped matching does: the loop asked for values and there
+    // are none, and there is nowhere in a loop to hand a failure to.
+    if (!made) return;
+    value_ = std::move(*made);
     rest_ = rest_.substr(found.head.size());
   }
 
@@ -408,14 +452,14 @@ class each_stream_view {
   constexpr void advance() {
     value_.reset();
     if (carry_.empty() && first_ == std::ranges::end(input_)) return;
-    try {
-      auto got = detail::scan_stream_prefix<type, format>(
-          first_, std::ranges::end(input_), carry_);
-      value_ = std::move(got.value);
-      stopped_ = got.stopped;
-    } catch (const scan_error&) {
+    auto got = detail::scan_stream_prefix<type, format>(
+        first_, std::ranges::end(input_), carry_);
+    if (!got) {
       value_.reset();
+      return;
     }
+    value_ = std::move(got->value);
+    stopped_ = got->stopped;
   }
 
   range_type input_;
@@ -465,9 +509,16 @@ class reader {
   // next character need never be offered to find out.
   [[nodiscard]] constexpr bool settled() const { return state_.settled(); }
 
-  // The values. Reading further after this is reading further into the same
-  // match, so whoever wants the next one says so.
-  [[nodiscard]] constexpr type take() const { return state_.finish(); }
+  // The values, or what went wrong instead. Reading further after this is
+  // reading further into the same match, so whoever wants the next one says so.
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  try_take() const {
+    return state_.finish();
+  }
+
+  [[nodiscard]] constexpr type take() const {
+    return detail::or_thrown(try_take());
+  }
 
   // What has been gathered for a field so far, while the match is still going
   // on -- for showing a command back as it is typed, for finishing it for
@@ -508,15 +559,15 @@ class prefix_stream_scan {
   prefix_stream_scan& operator=(const prefix_stream_scan&) = delete;
 
   template <class type>
-  [[nodiscard]] constexpr detail::taken_ahead<type> take() {
+  [[nodiscard]] constexpr std::expected<detail::taken_ahead<type>,
+                                        detail::failure_for<type>>
+  try_take() {
     return detail::scan_stream_prefix<type, format>(input_);
   }
 
   template <class type>
-  [[nodiscard]] constexpr std::expected<detail::taken_ahead<type>,
-                                        detail::failure_for<type>>
-  try_take() {
-    return caught<detail::failure_for<type>>([&] { return take<type>(); });
+  [[nodiscard]] constexpr detail::taken_ahead<type> take() {
+    return detail::or_thrown(try_take<type>());
   }
 
   template <class type>

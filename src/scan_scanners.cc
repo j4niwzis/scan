@@ -196,25 +196,37 @@ struct scanner<char> {
   struct state_type {
     char value = '\0';
     bool present = false;
+    bool twice = false;
   };
 
   [[nodiscard]] static constexpr state_type begin() { return {}; }
   [[nodiscard]] static constexpr state_type begin(std::string_view) { return {}; }
+  // A push cannot say anything: the walk is not over and there is nobody to
+  // say it to. It is said in the state and handed back at the end, which is
+  // what every fold does.
   static constexpr void push(state_type& state, char value) {
-    if (state.present) throw bad_field("char scanner received multiple symbols");
+    if (state.present) {
+      state.twice = true;
+      return;
+    }
     state = {.value = value, .present = true};
   }
-  [[nodiscard]] static constexpr char finish(state_type state) {
-    if (!state.present) throw bad_field("empty char field");
+  [[nodiscard]] static constexpr std::expected<char, bad_field> try_finish(
+      state_type state) {
+    if (state.twice) {
+      return std::unexpected(bad_field("char scanner received two symbols"));
+    }
+    if (!state.present) return std::unexpected(bad_field("empty char field"));
     return state.value;
   }
-  [[nodiscard]] static constexpr char parse(std::string_view text) {
-    if (text.size() != 1) throw bad_field("invalid char field");
+  [[nodiscard]] static constexpr std::expected<char, bad_field> try_parse(
+      std::string_view text) {
+    if (text.size() != 1) return std::unexpected(bad_field("invalid char field"));
     return text.front();
   }
-  [[nodiscard]] static constexpr char parse(std::string_view text,
-                                            std::string_view) {
-    return parse(text);
+  [[nodiscard]] static constexpr std::expected<char, bad_field> try_parse(
+      std::string_view text, std::string_view) {
+    return try_parse(text);
   }
 };
 
@@ -272,27 +284,35 @@ struct scanner<type> {
     state.buffer[state.size++] = value;
   }
 
-  [[nodiscard]] static constexpr type finish(state_type state) {
+  using went_wrong = std::variant<bad_field, out_of_range>;
+
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_finish(
+      state_type state) {
     if (state.overflow) {
-      throw out_of_range("integer field is out of range");
+      return std::unexpected(
+          went_wrong(out_of_range("integer field is out of range")));
     }
     return parse_integer(std::string_view(state.buffer.data(), state.size),
                          state.base, state.automatic_base);
   }
 
-  [[nodiscard]] static constexpr type parse(std::string_view text) {
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+      std::string_view text) {
     type value{};
     const auto [end, error] =
         std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error == std::errc::result_out_of_range) {
+      return std::unexpected(
+          went_wrong(out_of_range("integer field is out of range")));
+    }
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw bad_field("invalid integer field");
+      return std::unexpected(went_wrong(bad_field("invalid integer field")));
     }
     return value;
   }
 
-
-  [[nodiscard]] static constexpr type parse(std::string_view text,
-                                            std::string_view parameters) {
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+      std::string_view text, std::string_view parameters) {
     const auto spec = integer_spec(parameters);
     return parse_integer(text, spec.base, spec.automatic_base);
   }
@@ -325,9 +345,8 @@ struct scanner<type> {
     throw "unsupported integer scanner parameters";
   }
 
-  [[nodiscard]] static constexpr type parse_integer(std::string_view text,
-                                                     int selected_base,
-                                                     bool automatic_base) {
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> parse_integer(
+      std::string_view text, int selected_base, bool automatic_base) {
     bool negative = false;
     if (!text.empty() && (text.front() == '+' || text.front() == '-')) {
       negative = text.front() == '-';
@@ -349,12 +368,17 @@ struct scanner<type> {
     type value{};
     const auto [end, error] = std::from_chars(
         text.data(), text.data() + text.size(), value, selected_base);
+    if (error == std::errc::result_out_of_range) {
+      return std::unexpected(
+          went_wrong(out_of_range("integer field is out of range")));
+    }
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw bad_field("invalid integer field");
+      return std::unexpected(went_wrong(bad_field("invalid integer field")));
     }
     if (negative) {
       if constexpr (std::unsigned_integral<type>) {
-        throw out_of_range("negative value for unsigned integer");
+        return std::unexpected(
+            went_wrong(out_of_range("negative value for unsigned integer")));
       } else {
         value = static_cast<type>(-value);
       }
@@ -407,18 +431,25 @@ struct scanner<type> {
     state.buffer[state.size++] = value;
   }
 
-  [[nodiscard]] static constexpr type finish(state_type state) {
-    if (state.overflow) throw out_of_range("floating-point field is too long");
+  using went_wrong = std::variant<bad_field, out_of_range>;
+
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_finish(
+      state_type state) {
+    if (state.overflow) {
+      return std::unexpected(
+          went_wrong(out_of_range("floating-point field is too long")));
+    }
     return parse_floating(std::string_view(state.buffer.data(), state.size),
                           state.format);
   }
 
-  [[nodiscard]] static constexpr type parse(std::string_view text) {
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+      std::string_view text) {
     return parse_floating(text, std::chars_format::general);
   }
 
-  [[nodiscard]] static constexpr type parse(std::string_view text,
-                                            std::string_view parameters) {
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+      std::string_view text, std::string_view parameters) {
     return parse_floating(text, floating_spec(parameters).format);
   }
 
@@ -447,7 +478,7 @@ struct scanner<type> {
     throw "unsupported floating-point scanner parameters";
   }
 
-  [[nodiscard]] static constexpr type parse_floating(
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> parse_floating(
       std::string_view text, std::chars_format format) {
     if (format == std::chars_format::hex &&
         (text.starts_with("0x") || text.starts_with("0X"))) {
@@ -456,8 +487,13 @@ struct scanner<type> {
     type value{};
     const auto [end, error] = std::from_chars(
         text.data(), text.data() + text.size(), value, format);
+    if (error == std::errc::result_out_of_range) {
+      return std::unexpected(
+          went_wrong(out_of_range("floating-point field is out of range")));
+    }
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw bad_field("invalid floating-point field");
+      return std::unexpected(
+          went_wrong(bad_field("invalid floating-point field")));
     }
     return value;
   }
@@ -466,10 +502,11 @@ struct scanner<type> {
 template <>
 struct scanner<bool> {
   static constexpr std::string_view pattern = "(?:true|false|1|0)";
-  [[nodiscard]] static constexpr bool parse(std::string_view text) {
+  [[nodiscard]] static constexpr std::expected<bool, bad_field> try_parse(
+      std::string_view text) {
     if (text == "true" || text == "1") return true;
     if (text == "false" || text == "0") return false;
-    throw bad_field("invalid boolean field");
+    return std::unexpected(bad_field("invalid boolean field"));
   }
 };
 
@@ -480,8 +517,12 @@ struct scanner<type> {
   [[nodiscard]] static constexpr std::string_view pattern() {
     return scanner_pattern<underlying_type>();
   }
-  [[nodiscard]] static constexpr type parse(std::string_view text) {
-    return static_cast<type>(scanner<underlying_type>::parse(text));
+  [[nodiscard]] static constexpr auto try_parse(std::string_view text)
+      -> std::expected<type,
+                       typename scanner<underlying_type>::went_wrong> {
+    auto got = scanner<underlying_type>::try_parse(text);
+    if (!got) return std::unexpected(std::move(got).error());
+    return static_cast<type>(*got);
   }
 };
 
@@ -519,16 +560,20 @@ struct aggregate_scanner {
     state.push(value);
   }
 
-  [[nodiscard]] constexpr auto finish(this const auto& self, auto state) {
+  // Handed back rather than thrown, both of them: this type is read by the
+  // same machine everything else is, and that machine says what went wrong
+  // instead of throwing it. Which means a shape used as a field of another
+  // shape carries its kinds up into what that reading can fail with.
+  [[nodiscard]] constexpr auto try_finish(this const auto& self, auto state) {
     static_cast<void>(self);
     return std::move(state).finish();
   }
 
-  [[nodiscard]] constexpr auto parse(this const auto& self,
-                                     std::string_view input) {
+  [[nodiscard]] constexpr auto try_parse(this const auto& self,
+                                         std::string_view input) {
     auto state = self.begin();
     for (char value : input) { self.push(state, value); }
-    return self.finish(std::move(state));
+    return self.try_finish(std::move(state));
   }
 };
 

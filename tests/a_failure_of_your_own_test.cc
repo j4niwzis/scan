@@ -58,9 +58,8 @@ template <>
 struct scan::scanner<label> {
   static constexpr std::string_view pattern() { return "[a-z]+"; }
 
-  // This one throws, and says what it throws so a reading can hand it back.
-  using throws = std::variant<thrown_at_you>;
-
+  // This one throws instead. Nothing in the library catches, so it goes past
+  // the reading to whoever called -- even a reading that was asked to try.
   static label parse(std::string_view text) {
     if (text == "no") throw thrown_at_you("that label is not allowed");
     return label{std::string(text)};
@@ -87,10 +86,13 @@ TEST(AFailureOfYourOwn, HandedBackAsTheKindItIs) {
   EXPECT_EQ(std::string_view(scan::what(got.error())), "over ten kilos");
 }
 
-TEST(AFailureOfYourOwn, AndSoIsOneThatWasThrown) {
-  const auto got = scan::scan<"{} {}">("450 no").try_of<package>();
-  ASSERT_FALSE(got.has_value());
-  EXPECT_TRUE(std::holds_alternative<thrown_at_you>(got.error()));
+TEST(AFailureOfYourOwn, AndOneThatThrowsGoesPastTheReading) {
+  // Nothing here catches. A scanner that throws is throwing at whoever called,
+  // and trying rather than asking does not change that -- what it changes is
+  // what a scanner that hands its failure back comes out as.
+  EXPECT_THROW(
+      static_cast<void>(scan::scan<"{} {}">("450 no").try_of<package>()),
+      thrown_at_you);
 }
 
 TEST(AFailureOfYourOwn, TheLibrarysOwnKindsAreStillThere) {

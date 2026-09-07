@@ -1444,10 +1444,10 @@ template <class type, fixed_string format, bool absent_is_empty = false>
     ((said.groups[group] = [&]() -> std::string_view {
         const char* const from = said_by[group * 2];
         const char* const to = said_by[group * 2 + 1];
-        if (from == nullptr || to == nullptr) {
-          if constexpr (absent_is_empty) return std::string_view{};
-          throw no_group("capture group did not participate in the match");
-        }
+        // Pointing nowhere is how a group that took no part is said, here as
+        // everywhere: whether that is a failure is decided by whoever asked,
+        // and there is nothing to throw it at from inside a walk.
+        if (from == nullptr || to == nullptr) return std::string_view{};
         return std::string_view(from, static_cast<std::size_t>(to - from));
       }()),
      ...);
@@ -1473,16 +1473,6 @@ template <class type, fixed_string format>
   return std::string_view(begin, static_cast<std::size_t>(best - begin));
 }
 
-template <class type, fixed_string format>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view taken_prefix(
-    std::string_view input) {
-  const std::string_view head = taken_prefix_or_none<type, format>(input);
-  if (head.data() == nullptr) {
-    throw no_match("input does not begin with the pattern");
-  }
-  return head;
-}
-
 // Whether the pattern is happy with nothing at all. Reading one match after
 // another, such a pattern never moves and the reading never ends.
 template <auto& automaton>
@@ -1494,23 +1484,43 @@ template <auto& automaton>
 template <class type, fixed_string format, int sentinel, bool terminated,
           bool absent_is_empty, how_to_walk walk, std::size_t... index>
 [[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(
-    std::string_view input, std::index_sequence<index...>) {
+    std::string_view input, std::index_sequence<index...>)
+    -> std::expected<std::array<std::string_view, sizeof...(index)>,
+                     scan::failure> {
+  // A group that took no part points nowhere, and that is how it is said all
+  // the way through here: the three walks below each write it, and one place
+  // at the end decides whether it is a failure or the ordinary state of
+  // affairs. Nothing throws, because nothing here would be caught.
+  const auto answer = [](std::array<std::string_view, sizeof...(index)> made)
+      -> std::expected<std::array<std::string_view, sizeof...(index)>,
+                       scan::failure> {
+    if constexpr (!absent_is_empty) {
+      for (const std::string_view one : made) {
+        if (one.data() == nullptr) {
+          return std::unexpected(scan::failure(
+              no_group("capture group did not participate in the match")));
+        }
+      }
+    }
+    return made;
+  };
   if consteval {
     const auto matched = scan::tre::simulate(build_tnfa<type, format>(), input);
-    if (!matched.matched) throw no_match("input does not match scan expression");
+    if (!matched.matched) {
+      return std::unexpected(
+          scan::failure(no_match("input does not match scan expression")));
+    }
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto& begins = matched.tags[capture_index * 2];
       const auto& ends = matched.tags[capture_index * 2 + 1];
-      if (begins.empty() || ends.empty()) {
-        throw no_group("capture group did not participate in the match");
-      }
+      if (begins.empty() || ends.empty()) return std::string_view{};
       const auto begin = begins.back();
       const auto end = ends.back();
-      if (begin < 0 || end < begin) throw no_group("invalid capture group");
+      if (begin < 0 || end < begin) return std::string_view{};
       return input.substr(static_cast<std::size_t>(begin),
                           static_cast<std::size_t>(end - begin));
     };
-    return std::array{capture.template operator()<index>()...};
+    return answer(std::array{capture.template operator()<index>()...});
   } else {
     // A compound statement, because that is what `if consteval` is written
     // with: the branch that is not the constant-evaluated one is a block, and
@@ -1523,21 +1533,20 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       std::vector<const char*> registers(automaton.register_count, nullptr);
       if (!run_tagged_runtime(automaton, input.data(),
                               input.data() + input.size(), registers)) {
-        throw no_match("input does not match scan expression");
+        return std::unexpected(
+            scan::failure(no_match("input does not match scan expression")));
       }
       const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
         const char* const begin = registers[capture_index * 2];
         const char* const end = registers[capture_index * 2 + 1];
-        if (begin == nullptr || end == nullptr) {
-          // A group that took no part is an error where every group was meant to
-          // take part, and the ordinary state of affairs where the format has
-          // branches and only one of them ran.
-          if constexpr (absent_is_empty) return std::string_view{};
-          throw no_group("capture group did not participate in the match");
-        }
+        // A group that took no part is an error where every group was meant to
+        // take part, and the ordinary state of affairs where the format has
+        // branches and only one of them ran. Which it is, is decided once, at
+        // the end.
+        if (begin == nullptr || end == nullptr) return std::string_view{};
         return std::string_view(begin, static_cast<std::size_t>(end - begin));
       };
-      return std::array{capture.template operator()<index>()...};
+      return answer(std::array{capture.template operator()<index>()...});
     } else {
       // Anchored to both ends of the subject, so the walks below a match are
       // kept: one of them may be the only walk that reaches the end, and the
@@ -1630,7 +1639,10 @@ template <class type, fixed_string format, int sentinel, bool terminated,
                   cursor, end, registers);
         }
       }
-      if (!matched) throw no_match("input does not match scan expression");
+      if (!matched) {
+        return std::unexpected(
+            scan::failure(no_match("input does not match scan expression")));
+      }
       // Two of the three tests this used to make were asking whether the machine
       // had done something it cannot do. A position is written as the cursor
       // stands somewhere inside the subject, so it is never past the end; the
@@ -1644,18 +1656,14 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         const auto end = registers[capture_index * 2 + 1];
         if constexpr (!(always_written[capture_index * 2] &&
                         always_written[capture_index * 2 + 1])) {
-          if (begin == nullptr) {
-            // A group that took no part is an error where every group was meant
-            // to take part, and is the ordinary state of affairs where the format
-            // has branches and only one of them ran. There the empty view says
-            // so: it points nowhere, which no group that did take part does.
-            if constexpr (absent_is_empty) return std::string_view{};
-            throw no_group("capture group did not participate in the match");
-          }
+          // A group that took no part points nowhere, which no group that did
+          // take part does. Whether that is a failure is decided once, at the
+          // end, and not here.
+          if (begin == nullptr) return std::string_view{};
         }
         return std::string_view(begin, static_cast<std::size_t>(end - begin));
       };
-      return std::array{capture.template operator()<index>()...};
+      return answer(std::array{capture.template operator()<index>()...});
     }
   }
 }
@@ -1711,6 +1719,9 @@ struct fold_of {
   state_type state = scan::scanner<held_type>::begin_groups();
   std::array<std::ptrdiff_t, inside> told_at{};
   std::array<bool, inside> open{};
+  // Whether it asked for something this subject cannot give: its groups whole,
+  // off a reading with nothing to point at.
+  bool wanted_a_subject = false;
   // The first character of the subject this walk started on, where there is
   // one to point at. Then a group that closes is handed whole, and the
   // characters are never handed over one at a time. Off a stream this stays
@@ -1802,12 +1813,13 @@ constexpr void fold_one_step(
         if constexpr (!takes_group_characters<held_type, which,
                                               typename fold_type::state_type>) {
           // It takes its groups whole and nothing else, and there is nothing
-          // here to point at. Saying so is the only honest thing left: holding
-          // the characters to hand them over at the end would be a hold with no
-          // bound, which is the one thing this library will not do quietly.
-          throw wrong_subject(
-              "a fold that only takes its groups whole needs a subject that "
-              "can be pointed at: give it push_group to read a stream");
+          // here to point at. Holding the characters to hand them over at the
+          // end would be a hold with no bound, so this reading cannot be had --
+          // said here and handed back where the value would have been, because
+          // a walk has nobody to say it to.
+          fold.wanted_a_subject = true;
+          fold.open[which] = false;
+          return;
         }
       }
       close_one_group<held_type, which>(fold.state);
@@ -2135,7 +2147,7 @@ constexpr void advance_scanner(
 
 template <class root, class type, std::size_t offset, class reading_type,
           class states_type, std::size_t register_count>
-[[nodiscard]] constexpr type finish_value(
+[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text);
@@ -2146,25 +2158,35 @@ template <class root, class type, std::size_t offset, class reading_type,
 // more than the constant evaluator will follow.
 template <class root, class type, std::size_t offset, class reading_type,
           class states_type, std::size_t register_count, std::size_t... part>
-[[nodiscard]] constexpr type finish_parts(
+[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_parts(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text, std::index_sequence<part...>) {
-  return type{finish_value<root, typename parts_of<type>::template at<part>,
-                           offset + groups_before_field<type, part>()>(
-      reading, states, registers, text)...};
+  auto parts =
+      std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
+                              offset + groups_before_field<type, part>()>(
+          reading, states, registers, text)...};
+  if (auto went_wrong = what_went_wrong<failure_for<root>>(parts)) {
+    return std::unexpected(std::move(*went_wrong));
+  }
+  return type{std::move(*std::get<part>(parts))...};
 }
 
 template <class root, class type, std::size_t offset, class reading_type,
           class states_type, std::size_t register_count, std::size_t... part>
-[[nodiscard]] constexpr type finish_by_call(
+[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_by_call(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text, std::index_sequence<part...>) {
+  auto parts =
+      std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
+                              offset + groups_before_field<type, part>()>(
+          reading, states, registers, text)...};
+  if (auto went_wrong = what_went_wrong<failure_for<root>>(parts)) {
+    return std::unexpected(std::move(*went_wrong));
+  }
   return scan::scanner<std::remove_cv_t<type>>::parse(
-      finish_value<root, typename parts_of<type>::template at<part>,
-                   offset + groups_before_field<type, part>()>(
-          reading, states, registers, text)...);
+      std::move(*std::get<part>(parts))...);
 }
 
 // An element ends where the next one begins, and where that is, is said by a
@@ -2194,7 +2216,8 @@ constexpr void collect_element(
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, const char* text) {
+    std::size_t count, const char* text,
+    std::optional<failure_for<type>>& failed) {
   if constexpr (group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind<type, group - 1>>) {
@@ -2225,9 +2248,13 @@ constexpr void collect_element(
       const std::uint32_t into = packed.readings[reading][list_group * 2];
       if (done[into] || registers[open] < 0) continue;
       done[into] = true;
-      append_to(std::get<list_group>(states[into]),
-                finish_value<type, element, group>(packed.readings[reading],
-                                                   states, registers, text));
+      auto one = finish_value<type, element, group>(packed.readings[reading],
+                                                    states, registers, text);
+      if (!one) {
+        if (!failed) failed = std::move(one).error();
+        continue;
+      }
+      append_to(std::get<list_group>(states[into]), std::move(*one));
     }
   }
 }
@@ -2240,10 +2267,11 @@ constexpr void collect_elements(
     const std::array<std::ptrdiff_t, register_count>& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, std::index_sequence<group...>,
-    const char* text = nullptr) {
+    std::size_t count, std::index_sequence<group...>, const char* text,
+    std::optional<failure_for<type>>& failed) {
   (collect_element<group, type, format, automaton>(state, registers, states,
-                                                   commands, count, text),
+                                                   commands, count, text,
+                                                   failed),
    ...);
 }
 
@@ -2302,10 +2330,11 @@ template <class type, class state_type, std::size_t... index>
 // its opening tag in the reading that accepted.
 template <class root, class type, std::size_t offset, class reading_type,
           class states_type, std::size_t register_count>
-[[nodiscard]] constexpr type finish_value(
+[[nodiscard]] constexpr std::expected<type, failure_for<root>> finish_value(
     const reading_type& reading, const states_type& states,
     const std::array<std::ptrdiff_t, register_count>& registers,
     const char* text) {
+  using failure_type = failure_for<root>;
   if constexpr (scanned_as_leaf<type> && folds_by_turns<std::remove_cv_t<type>>) {
     // A leaf that was told its groups as the walk passed them. What is left is
     // the end of the input, which is not a character and so was never handed
@@ -2318,7 +2347,19 @@ template <class root, class type, std::size_t offset, class reading_type,
     const bool still_reading = registers[close] < registers[open];
     auto fold = std::get<offset>(states[still_reading ? open : close]);
     fold_one_step<offset, held>(fold, reading, registers, '\0', false);
-    return scan::scanner<held>::finish_groups(std::move(fold.state));
+    if (fold.wanted_a_subject) {
+      return std::unexpected(scan::as_a_failure<failure_type>(wrong_subject(
+          "a fold that only takes its groups whole needs a subject that can be "
+          "pointed at: give it push_group to read a stream")));
+    }
+    if constexpr (scan::says_what_went_wrong_folding<held>) {
+      auto got = scan::scanner<held>::try_finish_groups(std::move(fold.state));
+      if (got) return std::move(*got);
+      return std::unexpected(
+          scan::as_a_failure<failure_type>(std::move(got).error()));
+    } else {
+      return scan::scanner<held>::finish_groups(std::move(fold.state));
+    }
   } else if constexpr (scanned_as_leaf<type> && gathers_by_its_groups<type>) {
     // A leaf built from its own groups once the match is over. They are groups
     // of this match like any others and the positions say where each one
@@ -2340,11 +2381,16 @@ template <class root, class type, std::size_t offset, class reading_type,
                                       static_cast<std::size_t>(ended - began));
       }(), ...);
     }(std::make_index_sequence<inside>{});
-    if constexpr (requires(std::span<const std::string_view> given) {
-                    scan::scanner<held>::from_groups(given);
-                  }) {
-      return scan::scanner<held>::from_groups(
-          std::span<const std::string_view>(theirs));
+    const auto given = std::span<const std::string_view>(theirs);
+    if constexpr (scan::says_what_went_wrong_from_groups<held>) {
+      auto got = scan::scanner<held>::try_from_groups(given);
+      if (got) return std::move(*got);
+      return std::unexpected(
+          scan::as_a_failure<failure_type>(std::move(got).error()));
+    } else if constexpr (requires {
+                           scan::scanner<held>::from_groups(given);
+                         }) {
+      return scan::scanner<held>::from_groups(given);
     } else {
       auto state = scan::scanner<held>::begin_groups();
       [&]<std::size_t... at>(std::index_sequence<at...>) {
@@ -2354,7 +2400,14 @@ template <class root, class type, std::size_t offset, class reading_type,
           close_one_group<held, at>(state, theirs[at]);
         }(), ...);
       }(std::make_index_sequence<inside>{});
-      return scan::scanner<held>::finish_groups(std::move(state));
+      if constexpr (scan::says_what_went_wrong_folding<held>) {
+        auto got = scan::scanner<held>::try_finish_groups(std::move(state));
+        if (got) return std::move(*got);
+        return std::unexpected(
+            scan::as_a_failure<failure_type>(std::move(got).error()));
+      } else {
+        return scan::scanner<held>::finish_groups(std::move(state));
+      }
     }
   } else if constexpr (scanned_as_leaf<type>) {
     // A field still being read when the input ended is where it was being
@@ -2365,8 +2418,15 @@ template <class root, class type, std::size_t offset, class reading_type,
     const std::uint32_t open = reading[offset * 2];
     const std::uint32_t close = reading[offset * 2 + 1];
     const bool still_reading = registers[close] < registers[open];
-    return scanner_finish<type>(
-        std::get<offset>(states[still_reading ? open : close]));
+    auto& gathered = std::get<offset>(states[still_reading ? open : close]);
+    if constexpr (scan::says_what_went_wrong_finishing<type>) {
+      auto got = scan::scanner<std::remove_cv_t<type>>::try_finish(gathered);
+      if (got) return std::move(*got);
+      return std::unexpected(
+          scan::as_a_failure<failure_type>(std::move(got).error()));
+    } else {
+      return scanner_finish<type>(gathered);
+    }
   } else if constexpr (scanned_as_range<type>) {
     // What has been put in as each element ended, and then the one that was
     // still being read when the whole thing ended.
@@ -2375,8 +2435,10 @@ template <class root, class type, std::size_t offset, class reading_type,
     // The turn that was still going when the whole thing ended. Where the list
     // is written to be allowed none at all, there may not have been one.
     if (registers[reading[(offset + 1) * 2]] >= 0) {
-      append_to(made, finish_value<root, element, offset + 1>(reading, states,
-                                                              registers, text));
+      auto last = finish_value<root, element, offset + 1>(reading, states,
+                                                          registers, text);
+      if (!last) return std::unexpected(std::move(last).error());
+      append_to(made, std::move(*last));
     }
     return made;
   } else if constexpr (scanned_as_variant<type>) {
@@ -2384,19 +2446,28 @@ template <class root, class type, std::size_t offset, class reading_type,
     // that took part was opened, and the others never were. The same question
     // the subject that can be pointed at answers by whether the group points
     // anywhere.
-    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
-      std::optional<type> made;
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>)
+               -> std::expected<type, failure_type> {
+      std::optional<std::expected<type, failure_type>> made;
       const auto take = [&]<std::size_t which>() {
         constexpr std::size_t mark =
             offset + groups_before_branch<type, which>();
         if (made || registers[reading[mark * 2]] < 0) return;
         using alternative = branch_at<type, which>;
+        auto part = finish_value<root, alternative, mark + 1>(reading, states,
+                                                              registers, text);
+        if (!part) {
+          made = std::unexpected(std::move(part).error());
+          return;
+        }
         made = scan::branches<std::remove_cv_t<type>>::template make<which>(
-            finish_value<root, alternative, mark + 1>(reading, states,
-                                                      registers, text));
+            std::move(*part));
       };
       (take.template operator()<branch>(), ...);
-      if (!made) throw no_match("no branch of the format took the input");
+      if (!made) {
+        return std::unexpected(scan::as_a_failure<failure_type>(
+            no_match("no branch of the format took the input")));
+      }
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
@@ -2456,7 +2527,8 @@ class stream_state {
     const auto* transition = &automaton.states[state_].ranges[run];
     collect_elements<type, format, automaton>(
         state_, registers_, scanner_states_, transition->commands,
-        transition->command_count, std::make_index_sequence<field_count>{});
+        transition->command_count, std::make_index_sequence<field_count>{},
+        nullptr, failed_);
     execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
     advance_scanners<type, format, automaton>(
@@ -2533,18 +2605,22 @@ class stream_state {
 
   constexpr void restart() { *this = stream_state{}; }
 
-  [[nodiscard]] constexpr type finish() const& {
+  [[nodiscard]] constexpr std::expected<type, failure_for<type>> finish()
+      const& {
     stream_state copy = *this;
     return std::move(copy).finish();
   }
 
-  [[nodiscard]] constexpr type finish() && {
+  [[nodiscard]] constexpr std::expected<type, failure_for<type>> finish() && {
+    if (failed_) return std::unexpected(std::move(*failed_));
     if (state_ == packed_range<0>::reject) {
-      throw no_match("input does not match scan expression");
+      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+          no_match("input does not match scan expression")));
     }
     const auto slot = automaton.states[state_].accepting_slot;
     if (slot == packed_state<0, 0, 0>::not_accepting) {
-      throw no_match("input does not match scan expression");
+      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+          no_match("input does not match scan expression")));
     }
     // The reading that accepted says which register holds each value. Nothing
     // is written here: the commands that end a match are not run by this
@@ -2561,6 +2637,9 @@ class stream_state {
   std::array<std::ptrdiff_t, automaton.register_count> registers_{};
   std::size_t state_ = automaton.initial;
   std::ptrdiff_t position_ = 0;
+  // An element of a list that did not read: met in the middle of the walk,
+  // where there is nothing to hand it back to yet, so it waits here.
+  std::optional<failure_for<type>> failed_;
 };
 
 // Which gatherings a group is added to where the machine stands.
@@ -2628,7 +2707,7 @@ class field_gatherer {
     constexpr const auto& taken = automaton.states[state].ranges[move];
     collect_elements<type, format, automaton>(
         state, registers, states_, taken.commands, taken.command_count,
-        std::make_index_sequence<field_count>{}, text_);
+        std::make_index_sequence<field_count>{}, text_, failed_);
   }
 
   // A run the walk stepped over in vectors: the fields that are open take all
@@ -2663,9 +2742,31 @@ class field_gatherer {
   // too, and the value is put together here rather than looked for afterwards.
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type& registers) {
+    if (failed_) return;
     constexpr const auto& packed = automaton.states[state];
-    made_.emplace(finish_value<type, type, 0>(
-        packed.readings[packed.accepting_slot], states_, registers, text_));
+    auto got = finish_value<type, type, 0>(
+        packed.readings[packed.accepting_slot], states_, registers, text_);
+    if (!got) {
+      failed_ = std::move(got).error();
+      return;
+    }
+    made_.emplace(std::move(*got));
+  }
+
+  // What was read, or what went wrong instead. An element of a list that did
+  // not read is kept here too: the walk that met it is not over, and there is
+  // nowhere to say so until it is.
+  [[nodiscard]] constexpr std::expected<type, failure_for<type>> taken() {
+    if (failed_) return std::unexpected(std::move(*failed_));
+    if (!made_) {
+      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+          no_match("input does not match scan expression")));
+    }
+    return std::move(*made_);
+  }
+
+  [[nodiscard]] constexpr std::optional<failure_for<type>>& went_wrong() {
+    return failed_;
   }
 
   [[nodiscard]] constexpr std::optional<type>& made() { return made_; }
@@ -2762,6 +2863,7 @@ class field_gatherer {
 
   states_type states_;
   std::optional<type> made_;
+  std::optional<failure_for<type>> failed_;
   const char* text_ = nullptr;
 };
 
@@ -2804,7 +2906,9 @@ template <class type, fixed_string format, class source_type>
   }
   // Where the match ended is where the next reading begins.
   if (best.at) cursor = *best.at;
-  said.value = std::move(*into.made());
+  auto got = into.taken();
+  if (!got) return said;
+  said.value = std::move(*got);
   said.matched = true;
   return said;
 }
@@ -2816,7 +2920,8 @@ template <class type, fixed_string format, class source_type>
 // field gathers, it gathers as the characters go by, and a piece is not looked
 // at again once the walk has left it.
 template <class type, fixed_string format, piecewise_char_range pieces_type>
-[[nodiscard]] constexpr type scan_pieces(pieces_type&& pieces) {
+[[nodiscard]] constexpr std::expected<type, failure_for<type>> scan_pieces(
+    pieces_type&& pieces) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
   std::array<std::ptrdiff_t, automaton.register_count> registers{};
   std::ranges::fill(registers, scan::tre::negative_tag);
@@ -2834,13 +2939,15 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
-    throw no_match("input does not match scan expression");
+    return std::unexpected(scan::as_a_failure<failure_for<type>>(
+        no_match("input does not match scan expression")));
   }
-  return std::move(*into.made());
+  return into.taken();
 }
 
 template <class type, fixed_string format, std::ranges::input_range range_type>
-[[nodiscard]] constexpr type scan_stream(range_type&& input) {
+[[nodiscard]] constexpr std::expected<type, failure_for<type>> scan_stream(
+    range_type&& input) {
   // The whole of the reading, so the walks below a match are kept.
   constexpr const auto& automaton = streaming_automaton<type, format, false>;
   std::array<std::ptrdiff_t, automaton.register_count> registers{};
@@ -2860,9 +2967,10 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   if (!run_continuation<automaton, shape, automaton.initial, 0, 0,
                         std::ptrdiff_t>(cursor, std::ranges::end(input),
                                         position, registers, into, best)) {
-    throw no_match("input does not match scan expression");
+    return std::unexpected(scan::as_a_failure<failure_for<type>>(
+        no_match("input does not match scan expression")));
   }
-  return std::move(*into.made());
+  return into.taken();
 }
 
 // The head of a range that is read once, and the character that ended it.
@@ -2927,8 +3035,9 @@ struct stream_carry {
 // cannot be gone back over.
 template <class type, fixed_string format, class iterator_type,
           class sentinel_type, std::size_t hold>
-[[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
-    iterator_type& first, sentinel_type last, stream_carry<hold>& carry) {
+[[nodiscard]] constexpr std::expected<taken_ahead<type>, failure_for<type>>
+scan_stream_prefix(iterator_type& first, sentinel_type last,
+                   stream_carry<hold>& carry) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
   constexpr std::size_t window = walk_past_a_match<automaton>();
   constexpr bool can_go_back = std::forward_iterator<iterator_type>;
@@ -2986,7 +3095,14 @@ template <class type, fixed_string format, class iterator_type,
       if (state.settled()) break;
     }
   }
-  if (state.accepting()) return {std::move(state).finish(), stopped};
+  const auto handed_back =
+      [](std::expected<type, failure_for<type>> got,
+         std::optional<char> ended_it)
+      -> std::expected<taken_ahead<type>, failure_for<type>> {
+    if (!got) return std::unexpected(std::move(got).error());
+    return taken_ahead<type>{std::move(*got), ended_it};
+  };
+  if (state.accepting()) return handed_back(std::move(state).finish(), stopped);
   if (note) {
     // Past the match and dead. The answer is the place that was kept, and what
     // was read after it goes back in front of the reading.
@@ -2995,10 +3111,10 @@ template <class type, fixed_string format, class iterator_type,
     } else {
       carry.put_in_front(since.data(), since_count);
     }
-    return {std::move(*note).finish(), std::optional<char>{}};
+    return handed_back(std::move(*note).finish(), std::optional<char>{});
   }
   // Nothing matched; `finish` says so in the way the caller expects.
-  return {std::move(state).finish(), stopped};
+  return handed_back(std::move(state).finish(), stopped);
 }
 
 // How much a reading of this format has to be able to hold: nothing where it
@@ -3026,8 +3142,8 @@ template <class type, fixed_string format, class iterator_type>
 using stream_carry_for = stream_carry<stream_hold<type, format, iterator_type>>;
 
 template <class type, fixed_string format, std::ranges::input_range range_type>
-[[nodiscard]] constexpr taken_ahead<type> scan_stream_prefix(
-    range_type&& input) {
+[[nodiscard]] constexpr std::expected<taken_ahead<type>, failure_for<type>>
+scan_stream_prefix(range_type&& input) {
   auto first = std::ranges::begin(input);
   stream_carry<stream_hold<type, format, decltype(first)>> carry;
   return scan_stream_prefix<type, format>(first, std::ranges::end(input),

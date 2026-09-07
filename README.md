@@ -693,10 +693,21 @@ All of them are `scan::scan_error`, which is an `std::exception` and not an
 `std::runtime_error` -- the latter keeps its message in a `std::string`, and
 this one has nothing to keep. `scan::field_error` sits between `scan_error` and
 the two field kinds and is never thrown itself: it is the name for catching
-either of them. Catch `scan_error` to ask "did it read"; catch a kind to ask
-which question you are answering, because "is this line the right shape" and
-"does this number fit" are different questions and only the first is worth
-trying the next line after.
+either of them.
+
+**Nothing in this library catches anything, and the reading itself never
+throws.** A reading hands back what it read or what went wrong, all the way
+down: a field that would not read, a subject that did not match, a branch that
+nothing took. Asking for the value rather than trying for it is the one place
+where a failure becomes a throw -- `of<T>()`, the conversion, `take<T>()` --
+and that throw happens at the asking, not inside the walk. So the whole reading
+is usable where exceptions are turned off or are too expensive to pay for,
+which is what an embedded target is.
+
+A scanner of your own that throws still throws, and it throws past everything:
+a reading that was asked to *try* does not turn it into a failure, because
+turning it into one would mean catching it. To have your failure handed back,
+hand it back -- that is what the `try_` shapes below are for.
 
 Handed back rather than thrown, the kind survives: the error type of `try_of`
 and `try_take` is a `std::variant` of exactly the kinds that reading *that
@@ -717,11 +728,23 @@ struct scan::scanner<weight> {
 };
 ```
 
-`try_parse` is used wherever `parse` would be. Asked for the value rather than
-tried for, what it handed back is thrown, which is why these kinds have to be
-`scan_error`s. A scanner that throws instead can say its kinds with
-`using throws = std::variant<...>`; that one is optional, and a scanner that
-says neither can still throw `scan_error`, which is on every list.
+Every function of yours that makes a value has this second shape, and each is
+used wherever the throwing one would be:
+
+| asked for | handed back |
+| --- | --- |
+| `parse(text[, parameters])` | `try_parse(text[, parameters])` |
+| `finish(state)` | `try_finish(state)` |
+| `from_groups(groups)` | `try_from_groups(groups)` |
+| `finish_groups(state)` | `try_finish_groups(state)` |
+
+A push has no such shape and needs none: the walk is not over when a character
+arrives and there is nobody to hand a failure to, so a push that finds
+something wrong says so in its own state and hands it back at the end -- which
+is what the library's own scanners do with a field too long to fit.
+
+The kinds have to be `scan_error`s, because asking for the value rather than
+trying for it throws what was handed back.
 
 ```cpp
 const auto got = scan::scan<"{},{}">(line).try_of<row>();

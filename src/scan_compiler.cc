@@ -2083,17 +2083,22 @@ template <fixed_string pattern>
 // values and the type is built from them -- no second automaton over the same
 // characters, and no reading of the same text twice.
 
-template <class type>
-[[nodiscard]] constexpr type parse_value(std::string_view text,
-                                         std::string_view parameters) {
+// One place's text, read as its type -- or what went wrong instead.
+//
+// A scanner that says `try_parse` never throws and its failure comes back from
+// here as one of the kinds this reading can fail with. One that says only
+// `parse` throws whatever it throws, past all of this: nothing in this library
+// catches, so a scanner that wants its failure handed back says so by handing
+// it back.
+template <class type, class failure_type>
+[[nodiscard]] constexpr std::expected<type, failure_type> parse_value(
+    std::string_view text, std::string_view parameters) {
   using value_type = std::remove_cv_t<type>;
   if constexpr (scan::says_what_went_wrong<value_type>) {
-    // It says what went wrong rather than throwing it, so nothing is thrown
-    // here either -- until somebody asks for the value itself, and then the
-    // failure it handed back is what is thrown.
     auto got = scan::scanner_try_parse<value_type>(text, parameters);
     if (got) return std::move(*got);
-    scan::throw_what_went_wrong(std::move(got).error());
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::move(got).error()));
   } else {
     static_assert(requires { scanner_parse<value_type>(text); },
                   "scan::scanner<type> must provide parse(string_view) or "
@@ -2155,23 +2160,17 @@ template <class type>
   }
 }
 
-// What a scanner says it can throw.
-//
-//   using throws = std::variant<my_error, my_other_error>;
-//
-// Said so that a failure handed back rather than thrown can hold it: the list
-// a reading hands back is this library's kinds and the ones every scanner
-// underneath the output declares, and nothing else. A scanner that says
-// nothing throws nothing of its own, or throws `scan::scan_error`, which is on
-// the list already.
+// The kinds a scanner hands back, where it hands back several of them: they
+// are said as a variant, and this is that variant read as a list.
 template <class variant>
 struct kinds_of_variant;
 template <class... kinds>
 struct kinds_of_variant<std::variant<kinds...>> {
   static_assert((std::derived_from<kinds, scan::scan_error> && ...),
-                "the kinds a scanner declares in `throws` have to be "
-                "`scan::scan_error`s: a failure is handed back as one, and "
-                "what is not one cannot be asked which kind it is");
+                "every kind a scanner hands back has to be a "
+                "`scan::scan_error`: it ends up in the list of what a reading "
+                "can fail with, and asking for a value rather than trying for "
+                "it throws it");
   using list = scan::kind_list<kinds...>;
 };
 
@@ -2189,36 +2188,21 @@ struct joined_all<first, rest...> {
       first, typename joined_all<rest...>::type>::type;
 };
 
-// What a scanner says it can go wrong with, taken from wherever it says it.
+// What a scanner says it can go wrong with, said in the only place it cannot
+// fall out of step with the code: the type it hands back.
 //
-// Two ways, and the first is the one worth having: a scanner that hands its
-// failure back says the kind in the return type of `try_parse`, so there is no
-// list to write and no list to keep in step. `throws` is for a scanner that
-// throws, where the type says nothing about what comes out, and it is optional
-// -- a scanner that says neither can still throw `scan::scan_error`, which is
-// on the list already.
-template <class type>
-struct thrown_kinds {
-  using list = scan::kind_list<>;
-};
-template <class type>
-  requires requires { typename scan::scanner<std::remove_cv_t<type>>::throws; }
-struct thrown_kinds<type> {
-  using list = typename kinds_of_variant<
-      typename scan::scanner<std::remove_cv_t<type>>::throws>::list;
-};
-
-template <class type>
-struct handed_back_kinds {
-  using list = scan::kind_list<>;
-};
+// Four places to say it, one for each of the user's functions that makes a
+// value -- `try_parse`, `try_finish`, `try_from_groups`, `try_finish_groups` --
+// and the kinds of all of them together are what a reading of this leaf can
+// fail with. A scanner that throws instead says nothing here and is caught
+// nowhere: it throws past the reading, to whoever asked for it.
 template <class kind>
 struct kinds_handed_back {
   static_assert(std::derived_from<kind, scan::scan_error>,
-                "what `try_parse` hands back has to be a `scan::scan_error`, "
-                "or a variant of them: asking for the value rather than trying "
-                "for it throws what went wrong, and what is not one cannot be "
-                "caught or asked which kind it is");
+                "what a `try_` function hands back has to be a "
+                "`scan::scan_error`, or a variant of them: it ends up in the "
+                "list of what a reading can fail with, and asking for a value "
+                "rather than trying for it throws it");
   using list = scan::kind_list<kind>;
 };
 // Said as a variant where there is more than one of them.
@@ -2228,16 +2212,55 @@ struct kinds_handed_back<std::variant<kinds...>> {
 };
 
 template <class type>
+struct parse_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
   requires scan::says_what_went_wrong<std::remove_cv_t<type>>
-struct handed_back_kinds<type> {
+struct parse_kinds<type> {
   using list = typename kinds_handed_back<
       scan::went_wrong_with<std::remove_cv_t<type>>>::list;
 };
 
 template <class type>
+struct finish_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong_finishing<std::remove_cv_t<type>>
+struct finish_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_finishing<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct from_groups_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong_from_groups<std::remove_cv_t<type>>
+struct from_groups_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_from_groups<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct folding_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong_folding<std::remove_cv_t<type>>
+struct folding_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_folding<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
 struct declared_kinds {
-  using list = typename joined_all<typename handed_back_kinds<type>::list,
-                                   typename thrown_kinds<type>::list>::type;
+  using list = typename joined_all<typename parse_kinds<type>::list,
+                                   typename finish_kinds<type>::list,
+                                   typename from_groups_kinds<type>::list,
+                                   typename folding_kinds<type>::list>::type;
 };
 
 // Every kind declared anywhere inside an output, walked the way everything
@@ -2350,12 +2373,29 @@ struct format_parameters {
   }
 };
 
+// The first of these that did not read, if any did not. Written once because
+// every shape that is made of parts asks it: a product, and a type made by the
+// call it named.
+template <class failure_type, class... parts>
+[[nodiscard]] constexpr std::optional<failure_type> what_went_wrong(
+    std::tuple<parts...>& read) {
+  std::optional<failure_type> went_wrong;
+  [&]<std::size_t... at>(std::index_sequence<at...>) {
+    ((void)[&] {
+      if (went_wrong || std::get<at>(read)) return;
+      went_wrong = std::move(std::get<at>(read)).error();
+    }(), ...);
+  }(std::index_sequence_for<parts...>{});
+  return went_wrong;
+}
+
 struct no_parameters {
   [[nodiscard]] static constexpr std::string_view at(std::size_t) { return {}; }
 };
 
-template <class parameters, class type, std::size_t offset, std::size_t extent>
-[[nodiscard]] constexpr type build_value(
+template <class failure_type, class parameters, class type,
+          std::size_t offset, std::size_t extent>
+[[nodiscard]] constexpr std::expected<type, failure_type> build_value(
     const std::array<std::string_view, extent>& groups) {
   if constexpr (scanned_as_leaf<type> && reads_its_own_groups<type>) {
     // The type's own groups are groups of this match, already found. It is
@@ -2364,15 +2404,23 @@ template <class parameters, class type, std::size_t offset, std::size_t extent>
     // same way in both places.
     using held = std::remove_cv_t<type>;
     constexpr std::size_t inside = groups_a_leaf_opens<held>();
-    if constexpr (requires(std::span<const std::string_view> given) {
+    if constexpr (scan::says_what_went_wrong_from_groups<held> ||
+                  requires(std::span<const std::string_view> given) {
                     scan::scanner<held>::from_groups(given);
                   }) {
       std::array<std::string_view, inside> theirs{};
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((theirs[at] = groups[offset + 1 + at]), ...);
       }(std::make_index_sequence<inside>{});
-      return scan::scanner<held>::from_groups(
-          std::span<const std::string_view>(theirs));
+      const auto given = std::span<const std::string_view>(theirs);
+      if constexpr (scan::says_what_went_wrong_from_groups<held>) {
+        auto got = scan::scanner<held>::try_from_groups(given);
+        if (got) return std::move(*got);
+        return std::unexpected(
+            scan::as_a_failure<failure_type>(std::move(got).error()));
+      } else {
+        return scan::scanner<held>::from_groups(given);
+      }
     } else {
       auto state = scan::scanner<held>::begin_groups();
       [&]<std::size_t... at>(std::index_sequence<at...>) {
@@ -2384,40 +2432,71 @@ template <class parameters, class type, std::size_t offset, std::size_t extent>
           close_one_group<held, at>(state, groups[offset + 1 + at]);
         }(), ...);
       }(std::make_index_sequence<inside>{});
-      return scan::scanner<held>::finish_groups(std::move(state));
+      if constexpr (scan::says_what_went_wrong_folding<held>) {
+        auto got = scan::scanner<held>::try_finish_groups(std::move(state));
+        if (got) return std::move(*got);
+        return std::unexpected(
+            scan::as_a_failure<failure_type>(std::move(got).error()));
+      } else {
+        return scan::scanner<held>::finish_groups(std::move(state));
+      }
     }
   } else if constexpr (scanned_as_leaf<type>) {
-    return parse_value<std::remove_cv_t<type>>(groups[offset],
-                                               parameters::at(offset));
+    return parse_value<std::remove_cv_t<type>, failure_type>(
+        groups[offset], parameters::at(offset));
   } else if constexpr (scanned_as_variant<type>) {
     // Exactly one branch ran, and its mark says so: a mark that took part
     // points into the subject, and the others point nowhere.
-    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> type {
-      std::optional<type> made;
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>)
+               -> std::expected<type, failure_type> {
+      std::optional<std::expected<type, failure_type>> made;
       const auto take = [&]<std::size_t which>() {
         constexpr std::size_t mark = offset + groups_before_branch<type, which>();
         if (made || groups[mark].data() == nullptr) return;
         using alternative = branch_at<type, which>;
+        auto part =
+            build_value<failure_type, parameters, alternative, mark + 1>(groups);
+        if (!part) {
+          made = std::unexpected(std::move(part).error());
+          return;
+        }
         made = scan::branches<std::remove_cv_t<type>>::template make<which>(
-            build_value<parameters, alternative, mark + 1>(groups));
+            std::move(*part));
       };
       (take.template operator()<branch>(), ...);
-      if (!made) throw no_match("no branch of the format took the input");
+      if (!made) {
+        return std::unexpected(scan::as_a_failure<failure_type>(
+            no_match("no branch of the format took the input")));
+      }
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
-    // Made by the call it named, out of the values its places stood for.
-    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+    // Made by the call it named, out of the values its places stood for. Each
+    // of them is read first and the call is made after, because a value that
+    // did not read is not an argument.
+    return [&]<std::size_t... index>(std::index_sequence<index...>)
+               -> std::expected<type, failure_type> {
+      auto parts = std::tuple{
+          build_value<failure_type, parameters,
+                      typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...};
+      if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+        return std::unexpected(std::move(*went_wrong));
+      }
       return scan::scanner<std::remove_cv_t<type>>::parse(
-          build_value<parameters, typename parts_of<type>::template at<index>,
-                      offset + groups_before_field<type, index>()>(groups)...);
+          std::move(*std::get<index>(parts))...);
     }(std::make_index_sequence<parts_of<type>::count>{});
   } else {
-    return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return type{build_value<parameters,
-                              typename parts_of<type>::template at<index>,
-                              offset + groups_before_field<type, index>()>(
-          groups)...};
+    return [&]<std::size_t... index>(std::index_sequence<index...>)
+               -> std::expected<type, failure_type> {
+      auto parts = std::tuple{
+          build_value<failure_type, parameters,
+                      typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...};
+      if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+        return std::unexpected(std::move(*went_wrong));
+      }
+      return type{std::move(*std::get<index>(parts))...};
     }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
