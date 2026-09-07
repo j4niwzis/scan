@@ -23,6 +23,15 @@ concept contiguous_char_range =
     std::ranges::sized_range<range_type> &&
     std::same_as<std::ranges::range_value_t<range_type>, char>;
 
+// A subject that is a string literal: an array of characters that cannot be
+// written to, and so an array the compiler put a nul at the end of. A buffer
+// somebody reads into is an array too, and a mutable one -- how much of it was
+// filled is a thing only its owner knows.
+template <class range_type>
+concept literal_char_range =
+    std::is_array_v<std::remove_reference_t<range_type>> &&
+    std::is_const_v<std::remove_extent_t<std::remove_reference_t<range_type>>>;
+
 // A subject that lies in a row, as the characters it stands for.
 //
 // A string literal is an array with a nul at the end of it, and nobody writing
@@ -37,9 +46,7 @@ template <class range_type>
   // buffer somebody reads into is as long as it says it is: how much of it was
   // filled is a thing only its owner knows, and guessing at it here would
   // quietly read a different subject than the one handed over.
-  if constexpr (std::is_array_v<std::remove_reference_t<range_type>> &&
-                std::is_const_v<
-                    std::remove_extent_t<std::remove_reference_t<range_type>>>) {
+  if constexpr (literal_char_range<range_type>) {
     if (many != 0 && from[many - 1] == '\0') --many;
   }
   return std::string_view(from, many);
