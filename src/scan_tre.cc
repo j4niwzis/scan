@@ -731,6 +731,10 @@ constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
     // once the input runs out. The same rule, said at the other end, and no
     // walking back either way.
     if (cut_at_match) {
+      const auto matched =
+          std::ranges::find_if(entries, [&](const configuration& one) {
+            return one.walk.state == automaton.final;
+          });
       if (matched != entries.end()) entries.erase(matched + 1, entries.end());
     }
     for (std::size_t id = 0; id < configurations.size(); ++id) {
