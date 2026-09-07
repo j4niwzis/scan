@@ -39,6 +39,22 @@ class tre_parser {
         capture_count_(capture_count),
         capture_parentheses_(capture_parentheses) {}
 
+  [[nodiscard]] constexpr scan::tre::node parse_regex() {
+    scan::tre::node result = parse_alternative('\0');
+    if (position_ != source_.size()) throw "invalid regular expression";
+    return result;
+  }
+
+ private:
+  [[nodiscard]] constexpr bool at_end() const {
+    return position_ == source_.size();
+  }
+
+  [[nodiscard]] constexpr char peek(std::size_t offset = 0) const {
+    return position_ + offset < source_.size() ? source_[position_ + offset]
+                                               : '\0';
+  }
+
   [[nodiscard]] constexpr scan::tre::node parse_capture(
       bool parentheses_are_groups = false) {
     ++position_;
@@ -69,12 +85,6 @@ class tre_parser {
       if (peek() == '\\' && peek(1) != '\0') ++position_;
       ++position_;
     }
-  }
-
- public:
-  [[nodiscard]] static constexpr scan::tre::node wrap_branch(
-      std::size_t capture, scan::tre::node body) {
-    return wrap_capture(capture, std::move(body));
   }
 
  private:
