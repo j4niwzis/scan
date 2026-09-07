@@ -147,6 +147,13 @@ struct answer {
 // out loud. Here they are stepped over, because what is being looked for is a
 // disagreement about meaning.
 struct too_big {};
+
+// Whether to say what is being tried before trying it. A run that ends in the
+// machine having no room left leaves no other trace.
+bool tracing() {
+  static const bool asked = std::getenv("SCAN_FUZZ_TRACE") != nullptr;
+  return asked;
+}
 inline constexpr std::size_t walkable = 2000;
 
 // Ours, over an automaton built from a pattern that was a string a moment ago.
@@ -201,14 +208,27 @@ void complain(std::string_view what, std::string_view pattern,
 }
 
 // True where the two agreed, or where the case says nothing.
-bool one_round(std::span<const std::uint8_t> bytes) {
-  if (bytes.size() < 4) return true;
+bool one_round(std::span<const std::uint8_t> whole) {
+  if (whole.size() < 4) return true;
+  // However many bytes arrive, this is how many are used. A fuzzer decides
+  // the length of its own input, and a long one here is not a more
+  // interesting pattern -- it is a longer subject, which costs room in
+  // proportion and finds nothing that a short one does not.
+  const std::span bytes = whole.subspan(0, std::min<std::size_t>(whole.size(), 96));
   const std::size_t split = 1 + bytes[0] % (bytes.size() - 2);
   pattern_maker maker(bytes.subspan(1, split));
   const std::string pattern = maker.make();
   const std::string subject = subject_of(bytes.subspan(1 + split));
   const std::size_t groups = maker.groups();
   if (pattern.empty() || pattern.size() > 200) return true;
+  // Said before the work rather than after it, because what is being guarded
+  // against here is the work not finishing: a machine that runs out of room
+  // says nothing about which pattern asked for it, and this is the only place
+  // that knows.
+  if (tracing()) {
+    std::println(stderr, "trying /{}/ against \"{}\"", pattern, subject);
+    std::fflush(stderr);
+  }
 
   const oracle::expression expression(pattern);
   if (!expression.ok()) return true;
