@@ -75,18 +75,17 @@ class borrowed_result {
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
       return or_thrown(detail::scan_stream<type, format>(input_));
     } else {
-      auto fields = [&] {
+      const auto fields = [&] {
         if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
-          return scan_branch_fields<type, format, terminator, terminated, walk>(
-              input_);
+          return scan_branch_fields<type, format, terminator, terminated, walk,
+                                    throws_a_failure>(input_);
         } else {
-          return scan_fields<type, format, terminator, terminated, walk>(
-              input_);
+          return scan_fields<type, format, terminator, terminated, walk,
+                             throws_a_failure>(input_);
         }
       }();
-      if (!fields) scan::throw_what_went_wrong(std::move(fields).error());
       return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0, false, throws_a_failure>(*fields);
+                         type, 0, false, throws_a_failure>(fields);
     }
   }
 

@@ -924,18 +924,18 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
 [[nodiscard]] constexpr bool run_continuation(
-    cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into,
-    answer_type& best);
+    cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
+    std::array<mark, register_count>& __restrict registers,
+    gatherer& __restrict into, answer_type& __restrict best);
 
 // Reached by a call, with the chain ahead of it written out again from there.
 template <auto& automaton, walk_shape shape, std::size_t state, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_state(
-    cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into,
-    answer_type& best) {
+    cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
+    std::array<mark, register_count>& __restrict registers,
+    gatherer& __restrict into, answer_type& __restrict best) {
   return run_continuation<automaton, shape, state, shape.budget, 0, mark>(
       cursor, last, place, registers, into, best);
 }
@@ -1024,9 +1024,9 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
 [[nodiscard]] constexpr bool run_continuation(
-    cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into,
-    answer_type& best) {
+    cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
+    std::array<mark, register_count>& __restrict registers,
+    gatherer& __restrict into, answer_type& __restrict best) {
   constexpr bool by_place = std::is_pointer_v<mark>;
   constexpr bool gathers = !std::same_as<gatherer, gathers_nothing>;
   constexpr bool accepts_here =
@@ -1069,6 +1069,22 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       keep_the_place<automaton, state>(best, registers, cursor, place, into);
     }
   }
+  // Where the walk is, held here rather than through the references it was
+  // handed.
+  //
+  // A run of characters that keeps the machine where it is, is most of what a
+  // reading does, and through a reference every one of them is a store: the
+  // caller's cursor and the caller's mark have to be right at every moment,
+  // because anything at all might look at them. Nothing does until the walk
+  // leaves this state, so they are written back there and nowhere else -- which
+  // takes two stores a character out of the loop that runs for most of the
+  // subject.
+  cursor_type here = cursor;
+  mark spot = place;
+  const auto put_back = [&] {
+    cursor = here;
+    place = spot;
+  };
   while (true) {
     // A character that is certainly there is read without asking whether it
     // is: the subject was measured against the shortest match before the first
@@ -1080,42 +1096,46 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     constexpr bool counts_here =
         certain != 0 && !runs_in_place<automaton, state>();
     if constexpr (!shape.by_terminator && !counts_here) {
-      if (cursor == last) {
+      if (here == last) {
         // The reading ran out. Whoever is gathering may have more of it --
         // input that arrives in pieces is contiguous inside a piece, and the
         // walk goes on in the state it is standing in, because the state is
         // where it stands in this code and not a number to be put back.
         if constexpr (requires { into.refill(cursor, last); }) {
+          put_back();
           if (!into.refill(cursor, last)) break;
+          here = cursor;
         } else {
+          put_back();
           break;
         }
       }
     }
-    const unsigned char symbol = static_cast<unsigned char>(*cursor);
-    ++cursor;
+    const unsigned char symbol = static_cast<unsigned char>(*here);
+    ++here;
     // The operations of a transition are the tags the state before it was
     // holding back, so they are written with the mark of this symbol.
     if constexpr (by_place) {
-      place = cursor - 1;
+      spot = here - 1;
     } else {
-      ++place;
+      ++spot;
     }
     const std::size_t stayed =
-        taken_self_move<automaton, state, gatherer>(symbol, registers, place,
+        taken_self_move<automaton, state, gatherer>(symbol, registers, spot,
                                                     into);
     if (stayed != no_run) {
       if constexpr (gathers) {
         into.template moved<state, state>(stayed, static_cast<char>(symbol),
-                                          registers, place);
+                                          registers, spot);
       }
       if constexpr (shape.longest && accepts_here) {
-        best.at = cursor;
+        best.at = here;
         keep_the_end(best, last);
-        keep_the_place<automaton, state>(best, registers, cursor, place, into);
+        keep_the_place<automaton, state>(best, registers, here, spot, into);
       }
       continue;
     }
+    put_back();
     // Tested after the class, not before: a terminator no state takes cannot
     // keep the machine where it is, so asking about it first would only add a
     // branch to every character.
@@ -1152,17 +1172,35 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   }
 }
 
+// How far a chain of states is written out before the next one is reached by a
+// call.
+//
+// A row of comma-separated fields is a dozen states in a row, each taking one
+// character. Reaching each of them by a call is a call for every character of
+// the subject, which is what a generated scanner never does -- so the chain is
+// followed, and the cap is only against a pattern long enough to make one
+// function of the whole of it. The pattern layer has said this for a long time;
+// the format layer walked with a budget of nothing, and paid a call a state.
+template <auto& automaton>
+[[nodiscard]] consteval std::size_t chain_budget() {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  return state_count < 32 ? state_count : 32;
+}
+
 // Walking characters in a row to a terminator, gathering nothing.
 template <auto& automaton, unsigned char terminator, bool in_words,
           std::size_t state, std::size_t register_count>
-[[nodiscard]] constexpr bool run_to_terminator(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_to_terminator(
     const char* cursor, const char* end,
     std::array<const char*, register_count>& registers) {
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
-  constexpr walk_shape shape{
-      .in_words = in_words, .by_terminator = true, .terminator = terminator};
+  constexpr walk_shape shape{.in_words = in_words,
+                             .by_terminator = true,
+                             .terminator = terminator,
+                             .budget = chain_budget<automaton>()};
   return run_continuation<automaton, shape, state, shape.budget, 0,
                           const char*>(cursor, end, place, registers, nothing,
                                        best);
@@ -1298,13 +1336,14 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
 // every caller wants, said once.
 template <auto& automaton, bool in_words, std::size_t state,
           std::size_t register_count>
-[[nodiscard]] constexpr bool run_from_here(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_here(
     const char* cursor, const char* end,
     std::array<const char*, register_count>& registers) {
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
-  constexpr walk_shape shape{.in_words = in_words};
+  constexpr walk_shape shape{.in_words = in_words,
+                             .budget = chain_budget<automaton>()};
   return run_continuation<automaton, shape, state, shape.budget, 0,
                           const char*>(cursor, end, place, registers, nothing,
                                        best);
@@ -1617,23 +1656,26 @@ template <auto& automaton>
 }
 
 template <class type, fixed_string format, int sentinel, bool terminated,
-          bool absent_is_empty, how_to_walk walk, std::size_t... index>
+          bool absent_is_empty, how_to_walk walk, class ending,
+          std::size_t... index>
 [[nodiscard]] [[gnu::flatten]] SCAN_FORCE_INLINE constexpr auto scan_fields(
-    std::string_view input, std::index_sequence<index...>)
-    -> std::expected<std::array<std::string_view, sizeof...(index)>,
-                     scan::failure> {
+    std::string_view input, std::index_sequence<index...>) ->
+    typename ending::template result<std::array<std::string_view,
+                                                sizeof...(index)>,
+                                     scan::failure> {
   // A group that took no part points nowhere, and that is how it is said all
   // the way through here: the three walks below each write it, and one place
   // at the end decides whether it is a failure or the ordinary state of
   // affairs. Nothing throws, because nothing here would be caught.
-  const auto answer = [](std::array<std::string_view, sizeof...(index)> made)
-      -> std::expected<std::array<std::string_view, sizeof...(index)>,
-                       scan::failure> {
+  using groups_type = std::array<std::string_view, sizeof...(index)>;
+  using answer_type = typename ending::template result<groups_type,
+                                                       scan::failure>;
+  const auto answer = [](groups_type made) -> answer_type {
     if constexpr (!absent_is_empty) {
       for (const std::string_view one : made) {
         if (one.data() == nullptr) {
-          return std::unexpected(scan::failure(
-              no_group("capture group did not participate in the match")));
+          return ending::template went_wrong<groups_type, scan::failure>(
+              no_group("capture group did not participate in the match"));
         }
       }
     }
@@ -1642,8 +1684,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
   if consteval {
     const auto matched = scan::tre::simulate(build_tnfa<type, format>(), input);
     if (!matched.matched) {
-      return std::unexpected(
-          scan::failure(no_match("input does not match scan expression")));
+      return ending::template went_wrong<groups_type, scan::failure>(
+          no_match("input does not match scan expression"));
     }
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto& begins = matched.tags[capture_index * 2];
@@ -1668,8 +1710,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       std::vector<const char*> registers(automaton.register_count, nullptr);
       if (!run_tagged_runtime(automaton, input.data(),
                               input.data() + input.size(), registers)) {
-        return std::unexpected(
-            scan::failure(no_match("input does not match scan expression")));
+        return ending::template went_wrong<groups_type, scan::failure>(
+            no_match("input does not match scan expression"));
       }
       const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
         const char* const begin = registers[capture_index * 2];
@@ -1775,8 +1817,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         }
       }
       if (!matched) {
-        return std::unexpected(
-            scan::failure(no_match("input does not match scan expression")));
+        return ending::template went_wrong<groups_type, scan::failure>(
+            no_match("input does not match scan expression"));
       }
       // Two of the three tests this used to make were asking whether the machine
       // had done something it cannot do. A position is written as the cursor
@@ -1815,10 +1857,11 @@ template <class type, fixed_string format, int sentinel, bool terminated,
 
 template <class type, fixed_string format, int sentinel = -1,
           bool terminated = false,
-          how_to_walk walk = how_to_walk::by_length>
+          how_to_walk walk = how_to_walk::by_length,
+          class ending = hands_a_failure_back>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_fields(
     std::string_view input) {
-  return scan_fields<type, format, sentinel, terminated, false, walk>(
+  return scan_fields<type, format, sentinel, terminated, false, walk, ending>(
       input, std::make_index_sequence<groups_of_output<type>()>{});
 }
 
@@ -1829,10 +1872,11 @@ template <class type, fixed_string format, int sentinel = -1,
 // and that is how the scan says which branch the input took.
 template <class type, fixed_string format, int sentinel = -1,
           bool terminated = false,
-          how_to_walk walk = how_to_walk::by_length>
+          how_to_walk walk = how_to_walk::by_length,
+          class ending = hands_a_failure_back>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scan_branch_fields(
     std::string_view input) {
-  return scan_fields<type, format, sentinel, terminated, true, walk>(
+  return scan_fields<type, format, sentinel, terminated, true, walk, ending>(
       input, std::make_index_sequence<groups_of_output<type>()>{});
 }
 
