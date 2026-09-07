@@ -655,17 +655,23 @@ struct aggregate_scanner {
         detail::gathered_by_a_fold<state_type>{state}, nullptr);
   }
 
-  [[nodiscard]] constexpr auto begin(this const auto& self) {
-    using type = scanner_target_t<decltype(self)>;
-    static_assert(
-        !requires { &scanner<type>::parse; },
-        "a type made by the call it named is read by spreading its format into "
-        "the automaton, which a range that is read once is not scanned by: "
-        "read it from something contiguous, or give the type a scanner that "
-        "gathers it a character at a time");
-    // The list of what can go wrong is built from this shape's fields and
-    // never from the shape: what the shape says it hands back is that very
-    // list, and a list that asked the shape would be asking its own answer.
+  // Gathered a character at a time, for whoever holds the characters and not
+  // the subject.
+  //
+  // Said as a question rather than as a refusal inside it: whether a type
+  // gathers this way is asked by things that are deciding how to read it, and
+  // an answer that stops the compiler is not an answer. A shape made by the
+  // call it named says no -- its places stand for that call's arguments, and
+  // there is nothing to hand a half-read one to.
+  //
+  // The list of what can go wrong is built from this shape's parts and never
+  // from the shape: what it says it hands back is that very list, and a list
+  // that asked the shape would be asking its own answer.
+  template <class self_type>
+    requires(!requires { &scanner<scanner_target_t<self_type>>::parse; })
+  [[nodiscard]] constexpr auto begin(this const self_type& self) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
     return detail::stream_state<type, format, false,
                                 detail::shape_failure<type>>{};
   }
