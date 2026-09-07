@@ -693,6 +693,34 @@ constexpr tdfa compile_tdfa(const tnfa& automaton) {
   const auto add_state = [&](std::vector<configuration> entries,
                              std::vector<register_command>& operations)
       -> std::size_t {
+    // Leftmost-first, which is Perl's rule and not the one the TDFA papers
+    // call leftmost greedy.
+    //
+    // Those two are different rules under names close enough to be walked
+    // into. RE2C's leftmost greedy is "match the longest possible prefix of
+    // the input and take the leftmost path through the expression that
+    // corresponds to this prefix": length first, precedence only to settle
+    // paths of the same length -- which is why the disambiguation theory in
+    // those papers compares paths that begin and end in the same place, and
+    // says nothing about where a match ends. A lexer wants that rule.
+    //
+    // Perl's rule, which is also RE2's and CTRE's, is that the first
+    // alternative under which the whole expression matches wins, however
+    // short it is. `for|each|foreach` reads "foreach" as `for` and then
+    // `each`, where the longest-prefix rule reads it as `foreach`.
+    //
+    // The whole of that rule is here. The walks in a state are held in the
+    // order of precedence, so where one of them has matched, every walk below
+    // it has lost -- no parse they could still find would be taken over this
+    // one, whatever they go on to read. Keeping them is what lets the machine
+    // walk on and answer with a parse the order says lost.
+    //
+    // Cut here rather than in the walk, because it is a fact about the state:
+    // a state whose match is first has nowhere to go, and says so by having no
+    // transitions at all. Nothing the papers do is touched -- the order of
+    // configurations, their bitcodes, and the tags of the walk that wins are
+    // all what they were, with the losers gone.
+    if (matched != entries.end()) entries.erase(matched + 1, entries.end());
     for (std::size_t id = 0; id < configurations.size(); ++id) {
       if (auto copies = mapping(configurations[id], entries)) {
         // The copies go on the transition that leads here -- but a transition
