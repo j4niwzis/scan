@@ -1186,11 +1186,6 @@ using leaf_kind_of_output = typename leaf_at<
     subject, index,
     scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3 : 2>::kind;
 
-template <class subject, std::size_t index>
-inline constexpr std::size_t leaf_offset_of_output = leaf_offset_at<
-    subject, index,
-    scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3
-                                                                : 2>::value;
 
 // Where within that type the group falls: nothing means the place the type
 // stands at, and anything after it is one of the groups the type's own pattern
@@ -1234,6 +1229,12 @@ struct leaf_offset_at<subject, index, 3> {
 
 template <class subject, std::size_t index>
 inline constexpr std::size_t leaf_offset_of = leaf_offset_at<subject, index>::value;
+
+template <class subject, std::size_t index>
+inline constexpr std::size_t leaf_offset_of_output = leaf_offset_at<
+    subject, index,
+    scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3
+                                                                : 2>::value;
 
 // A leaf that is put together from the groups its own pattern opens, rather
 // than from the text it stands on. Where it opens none, it is an ordinary leaf
