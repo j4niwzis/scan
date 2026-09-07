@@ -742,29 +742,60 @@ struct walk_shape {
 // Where a walk that is not looking for a head would have kept the place.
 struct nothing_kept {};
 
-template <class cursor_type>
+// What the walk keeps of the place it liked best.
+//
+// The place itself, and -- where the machine can read past a match and die
+// away from one -- the registers as they stood there, with that state's final
+// operations already applied. That is the backup the TDFA papers put on the
+// transitions out of a fallback state, and it is kept only by the walks whose
+// automaton has one: where every step out of a match lands in another match,
+// the registers at the end are the registers at the note and nothing is
+// copied.
+template <class cursor_type, class kept_type = nothing_kept>
 struct walk_answer {
   bool matched = false;
   std::optional<cursor_type> at{};
+  [[no_unique_address]] kept_type kept{};
 };
+
+// The note taken where the machine stands in a match: the registers as they
+// are, with this state's final operations applied to the copy rather than to
+// them. Where the answer keeps no registers this is nothing at all.
+template <auto& automaton, std::size_t state, class answer_type,
+          class cursor_type, class mark, std::size_t register_count>
+SCAN_FORCE_INLINE constexpr void keep_the_registers(
+    answer_type& best, const std::array<mark, register_count>& registers,
+    const cursor_type& cursor, mark place) {
+  if constexpr (requires { best.kept = registers; }) {
+    best.kept = registers;
+    // Where the machine stands, said the way this walk says it: an address
+    // where the characters lie in a row, and how far along otherwise.
+    if constexpr (std::is_pointer_v<mark>) {
+      execute_static_final_commands<automaton, state>(
+          best.kept, static_cast<mark>(cursor));
+    } else {
+      execute_static_final_commands<automaton, state>(best.kept, place);
+    }
+  }
+}
 
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer>
+          class gatherer, class answer_type>
 [[nodiscard]] constexpr bool run_continuation(
     cursor_type& cursor, sentinel_type last, mark& place,
     std::array<mark, register_count>& registers, gatherer& into,
-    walk_answer<cursor_type>& best);
+    answer_type& best);
 
 // Reached by a call, with the chain ahead of it written out again from there.
 template <auto& automaton, walk_shape shape, std::size_t state, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer>
+          class gatherer, class answer_type>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_state(
     cursor_type& cursor, sentinel_type last, mark& place,
     std::array<mark, register_count>& registers, gatherer& into,
-    walk_answer<cursor_type>& best) {
+    answer_type& best) {
   return run_continuation<automaton, shape, state, shape.budget, 0, mark>(
       cursor, last, place, registers, into, best);
 }
@@ -772,17 +803,19 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, std::size_t which = 0>
+          class gatherer, class answer_type, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool dispatch_continuation(
     unsigned char symbol, cursor_type& cursor, sentinel_type last, mark& place,
     std::array<mark, register_count>& registers, gatherer& into,
-    walk_answer<cursor_type>& best) {
+    answer_type& best) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
     // Nowhere to go. For a walk that wants the whole of the subject that is a
     // refusal; for one that wants a head, it is the head -- if this state
-    // accepts.
-    if constexpr (shape.head) {
+    // accepts. A walk that keeps a note has one either way: the place it is
+    // standing in now, or the last one it liked, and the operations that end a
+    // match are run here for the first of those.
+    if constexpr (shape.head || shape.longest) {
       constexpr bool accepts_here =
           automaton.states[state].accepting_slot !=
           packed_state<0, 0, 0>::not_accepting;
@@ -805,7 +838,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       // Whether the symbol keeps the machine here is asked before this.
       return dispatch_continuation<automaton, shape, state, budget, certain,
                                    mark, cursor_type, sentinel_type,
-                                   register_count, gatherer, which + 1>(
+                                   register_count, gatherer, answer_type,
+                                   which + 1>(
           symbol, cursor, last, place, registers, into, best);
     } else {
       if (makes_move<automaton, state, move>(symbol)) {
@@ -825,7 +859,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
       return dispatch_continuation<automaton, shape, state, budget, certain,
                                    mark, cursor_type, sentinel_type,
-                                   register_count, gatherer, which + 1>(
+                                   register_count, gatherer, answer_type,
+                                   which + 1>(
           symbol, cursor, last, place, registers, into, best);
     }
   }
@@ -834,11 +869,11 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer>
+          class gatherer, class answer_type>
 [[nodiscard]] constexpr bool run_continuation(
     cursor_type& cursor, sentinel_type last, mark& place,
     std::array<mark, register_count>& registers, gatherer& into,
-    walk_answer<cursor_type>& best) {
+    answer_type& best) {
   constexpr bool by_place = std::is_pointer_v<mark>;
   constexpr bool gathers = !std::same_as<gatherer, gathers_nothing>;
   constexpr bool accepts_here =
@@ -848,6 +883,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   if constexpr (shape.longest && accepts_here) {
     best.matched = true;
     best.at = cursor;
+    keep_the_registers<automaton, state>(best, registers, cursor, place);
   }
   // Over the run this state keeps, in vectors -- only where the characters lie
   // in a row and nobody is gathering them, because what is stepped over is not
@@ -873,7 +909,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       into.template took_run<state>(from, cursor, registers, place);
       if constexpr (!by_place) place += cursor - from;
     }
-    if constexpr (shape.longest && accepts_here) best.at = cursor;
+    if constexpr (shape.longest && accepts_here) {
+      best.at = cursor;
+      keep_the_registers<automaton, state>(best, registers, cursor, place);
+    }
   }
   while (true) {
     // A character that is certainly there is read without asking whether it
@@ -926,7 +965,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         into.template moved<state, state>(stayed, static_cast<char>(symbol),
                                           registers, place);
       }
-      if constexpr (shape.longest && accepts_here) best.at = cursor;
+      if constexpr (shape.longest && accepts_here) {
+      best.at = cursor;
+      keep_the_registers<automaton, state>(best, registers, cursor, place);
+    }
       continue;
     }
     // Tested after the class, not before: a terminator no state takes cannot
@@ -982,6 +1024,86 @@ template <auto& automaton, unsigned char terminator, bool in_words,
 }
 
 // The head of characters in a row that the pattern takes, or nothing.
+// The longest walk out of each state that never lands in a final state.
+//
+// This one relaxation answers both of the questions a subject that can only
+// be read once has to ask, and they are the questions the TDFA papers ask
+// about fallback: not whether the automaton has a cycle -- that was too blunt
+// by half -- but how long a walk can be that finds nothing.
+//
+// Out of a final state it is how far the machine can read past a match before
+// it dies, and out of the start it is how much an attempt that comes to
+// nothing can swallow. Only a cycle that never accepts has no answer.
+template <auto& automaton>
+[[nodiscard]] consteval auto barren_walks() {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  struct answer_type {
+    bool bounded = true;
+    std::array<std::size_t, state_count> longest{};
+  };
+  answer_type answer;
+  const auto accepts = [&](std::size_t state) {
+    return automaton.states[state].accepting_slot !=
+           packed_state<0, 0, 0>::not_accepting;
+  };
+  for (std::size_t round = 0; round <= state_count; ++round) {
+    std::array<std::size_t, state_count> next{};
+    for (std::size_t state = 0; state < state_count; ++state) {
+      const auto& packed = automaton.states[state];
+      std::size_t best = 0;
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (accepts(target)) continue;
+        best = std::max(best, answer.longest[target] + 1);
+      }
+      next[state] = best;
+    }
+    if (next == answer.longest) return answer;
+    answer.longest = next;
+  }
+  // Still growing after as many rounds as there are states: it is going round
+  // a cycle that never accepts, and there is no number to name.
+  answer.bounded = false;
+  return answer;
+}
+
+// How far past a match the machine can read before it dies -- the fallback
+// window of the TDFA papers. For `a+` it is zero: every state the machine
+// stands in after a step is a final state, so wherever it stops it has a
+// match and nothing was ever read past one. For `abc|abd` it is two. For a
+// pattern with a cycle that never accepts, it is unbounded.
+template <auto& automaton>
+[[nodiscard]] consteval std::size_t walk_past_a_match() {
+  constexpr auto walks = barren_walks<automaton>();
+  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
+  std::size_t window = 0;
+  for (std::size_t state = 0; state < walks.longest.size(); ++state) {
+    if (automaton.states[state].accepting_slot ==
+        packed_state<0, 0, 0>::not_accepting) {
+      continue;
+    }
+    window = std::max(window, walks.longest[state]);
+  }
+  return window;
+}
+
+// How many characters an attempt that comes to nothing can swallow -- the
+// longest walk out of the start that never reaches a final state. These are
+// the characters that have to be given back, because the attempt that starts
+// one character later needs them. For `\s+` it is zero: a space is already a
+// whole match, and anything else dies before it is taken. For `ab` it is one.
+// For `a+b` there is no such number, and that is the pattern this refuses.
+template <auto& automaton>
+[[nodiscard]] consteval std::size_t walk_from_the_start() {
+  constexpr auto walks = barren_walks<automaton>();
+  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
+  return walks.longest[automaton.initial];
+}
+
+
+
+
 template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr const char* run_head(
     const char* cursor, const char* end,
@@ -989,7 +1111,7 @@ template <auto& automaton, std::size_t state, std::size_t register_count>
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
-  constexpr walk_shape shape{.head = true};
+  constexpr walk_shape shape{.longest = true};
   const bool found =
       run_continuation<automaton, shape, state, shape.budget, 0, const char*>(
           cursor, end, place, registers, nothing, best);
@@ -1220,9 +1342,14 @@ inline void execute_runtime_commands(
 //
 // Finding where a head ends and reading what is in it were two walks over the
 // same characters: the first carried no registers and threw away everything
-// but the length, the second began again. The walk carries the registers, and
-// where it stops is where the head ends -- so what the second walk went to
-// fetch is already in hand.
+// but the length, the second began again. The walk carries the registers, so
+// what the second walk went to fetch is already in hand.
+//
+// The head ends at the last place the machine stood in a match, which is not
+// always where it stopped: a walk can go on past a match, on the chance of a
+// longer one that the order of the alternatives prefers, and die without
+// finding it. `foreach|for|each` reading "fore" is that -- it goes past `for`
+// after the `e`, dies at the end, and the answer is the place it kept.
 template <class type, fixed_string format, bool absent_is_empty = false>
 [[nodiscard]] constexpr auto taken_prefix_fields(std::string_view input) {
   constexpr const auto& automaton = packed_automaton<type, format>;
@@ -1243,10 +1370,18 @@ template <class type, fixed_string format, bool absent_is_empty = false>
                    begin);
 
   gathers_nothing nothing;
-  walk_answer<const char*> best;
+  // Where the machine can read past a match and die away from one, the
+  // registers of the head are not the registers it died holding, so the note
+  // keeps them. Where it cannot, the note is a pointer and nothing else.
+  constexpr bool walks_past = walk_past_a_match<automaton>() != 0;
+  using kept_type =
+      std::conditional_t<walks_past,
+                         std::array<const char*, automaton.register_count>,
+                         nothing_kept>;
+  walk_answer<const char*, kept_type> best;
   const char* cursor = begin;
   const char* place = begin;
-  constexpr walk_shape shape{.head = true};
+  constexpr walk_shape shape{.longest = true};
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         const char*>(cursor, begin + input.size(), place,
                                      registers, nothing, best)) {
@@ -1255,10 +1390,19 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   said.matched = true;
   said.head =
       std::string_view(begin, static_cast<std::size_t>(*best.at - begin));
+  // The registers of the head: the ones kept where it ended, or the ones in
+  // hand where the machine could not have gone past it.
+  const auto& said_by = [&]() -> const auto& {
+    if constexpr (walks_past) {
+      return best.kept;
+    } else {
+      return registers;
+    }
+  }();
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ((said.groups[group] = [&]() -> std::string_view {
-        const char* const from = registers[group * 2];
-        const char* const to = registers[group * 2 + 1];
+        const char* const from = said_by[group * 2];
+        const char* const to = said_by[group * 2 + 1];
         if (from == nullptr || to == nullptr) {
           if constexpr (absent_is_empty) return std::string_view{};
           throw scan_error("capture group did not participate in the match");

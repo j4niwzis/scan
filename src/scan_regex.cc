@@ -718,94 +718,16 @@ template <fixed_string pattern>
 
 namespace detail {
 
-// The machine as an object, fed a character at a time.
-//
-// A subject that can only be read once cannot be walked twice, so the walk
-// cannot be a chain of calls -- where it stands has to be a value that
-// survives between characters. What is generated here is the step: which run a
-// symbol takes is asked of the state's own runs, compared against constants,
-// rather than searched for in a table at every character.
-//
-// Nothing is kept but what the answer is made of. The characters go into the
-// collectors of whatever groups are open as they arrive, and a collector that
-// holds no text holds nothing at all.
-// The longest walk out of each state that never lands in a final state.
-//
-// This one relaxation answers both of the questions a subject that can only
-// be read once has to ask, and they are the questions the TDFA papers ask
-// about fallback: not whether the automaton has a cycle -- that was too blunt
-// by half -- but how long a walk can be that finds nothing.
-//
-// Out of a final state it is how far the machine can read past a match before
-// it dies, and out of the start it is how much an attempt that comes to
-// nothing can swallow. Only a cycle that never accepts has no answer.
-template <fixed_string pattern>
-[[nodiscard]] consteval auto barren_walks() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  struct answer_type {
-    bool bounded = true;
-    std::array<std::size_t, state_count> longest{};
-  };
-  answer_type answer;
-  const auto accepts = [&](std::size_t state) {
-    return automaton.states[state].accepting_slot !=
-           packed_state<0, 0, 0>::not_accepting;
-  };
-  for (std::size_t round = 0; round <= state_count; ++round) {
-    std::array<std::size_t, state_count> next{};
-    for (std::size_t state = 0; state < state_count; ++state) {
-      const auto& packed = automaton.states[state];
-      std::size_t best = 0;
-      for (std::size_t index = 0; index < packed.range_count; ++index) {
-        const std::size_t target = packed.ranges[index].target;
-        if (accepts(target)) continue;
-        best = std::max(best, answer.longest[target] + 1);
-      }
-      next[state] = best;
-    }
-    if (next == answer.longest) return answer;
-    answer.longest = next;
-  }
-  // Still growing after as many rounds as there are states: it is going round
-  // a cycle that never accepts, and there is no number to name.
-  answer.bounded = false;
-  return answer;
-}
-
-// How far past a match the machine can read before it dies -- the fallback
-// window of the TDFA papers. For `a+` it is zero: every state the machine
-// stands in after a step is a final state, so wherever it stops it has a
-// match and nothing was ever read past one. For `abc|abd` it is two. For a
-// pattern with a cycle that never accepts, it is unbounded.
+// The three questions asked of a pattern rather than of an automaton. The
+// arithmetic itself is in the runtime, where the format layer asks it too.
 template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t fallback_window() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  constexpr auto walks = barren_walks<pattern>();
-  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
-  std::size_t window = 0;
-  for (std::size_t state = 0; state < walks.longest.size(); ++state) {
-    if (automaton.states[state].accepting_slot ==
-        packed_state<0, 0, 0>::not_accepting) {
-      continue;
-    }
-    window = std::max(window, walks.longest[state]);
-  }
-  return window;
+  return detail::walk_past_a_match<regex_automaton<pattern>>();
 }
 
-// How many characters an attempt that comes to nothing can swallow -- the
-// longest walk out of the start that never reaches a final state. These are
-// the characters that have to be given back, because the attempt that starts
-// one character later needs them. For `\s+` it is zero: a space is already a
-// whole match, and anything else dies before it is taken. For `ab` it is one.
-// For `a+b` there is no such number, and that is the pattern this refuses.
 template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t dead_end_window() {
-  constexpr auto walks = barren_walks<pattern>();
-  if (!walks.bounded) return std::numeric_limits<std::size_t>::max();
-  return walks.longest[regex_automaton<pattern>.initial];
+  return detail::walk_from_the_start<regex_automaton<pattern>>();
 }
 
 template <fixed_string pattern>
@@ -814,73 +736,9 @@ template <fixed_string pattern>
          std::numeric_limits<std::size_t>::max();
 }
 
-// Whether a subject that can only be read once can be searched at all: what
-// has to be held is the failed attempt and the reading past a match, and both
-// have to be numbers.
 template <fixed_string pattern>
 [[nodiscard]] consteval bool holds_a_bounded_way() {
-  return barren_walks<pattern>().bounded;
-}
-
-// A match found in a window of a size known while compiling.
-//
-// A subject that can only be read once cannot be gone back over, so finding
-// the leftmost match means holding what has been read: the characters of an
-// attempt that fails belong to the attempt that starts one character later.
-// How many that can be is what the pattern says -- a match is at most so many
-// characters long -- and where the pattern says nothing, because it can match
-// any length at all, this is not offered.
-//
-// Within the window the machine walks forward and never back. Where it stands
-// in an accepting state it takes a note: how far it got, and what the
-// registers held, which is the backup the TDFA papers put on the transitions
-// out of a fallback state. Where it then dies, the note is the answer and the
-// registers are what they were -- no second walk over the same characters.
-template <fixed_string pattern, std::size_t window>
-struct window_match {
-  std::size_t length = 0;
-  bool matched = false;
-  std::array<std::ptrdiff_t, regex_automaton<pattern>.register_count>
-      registers{};
-};
-
-template <fixed_string pattern, std::size_t window>
-[[nodiscard]] constexpr window_match<pattern, window> match_in_window(
-    const std::array<char, window>& held, std::size_t count) {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  window_match<pattern, window> answer;
-  std::array<std::ptrdiff_t, automaton.register_count> registers{};
-  std::ranges::fill(registers, scan::tre::negative_tag);
-  execute_commands(automaton.initialize, automaton.initialize.size(),
-                   registers, std::ptrdiff_t{0});
-  std::size_t here = automaton.initial;
-  if (automaton.states[here].accepting_slot !=
-      packed_state<0, 0, 0>::not_accepting) {
-    answer.matched = true;
-    answer.registers = registers;
-  }
-  for (std::size_t at = 0; at < count; ++at) {
-    const auto symbol = static_cast<unsigned char>(held[at]);
-    const std::size_t run = run_taken<automaton>(here, symbol);
-    if (run == no_run) break;
-    const auto& taken = automaton.states[here].ranges[run];
-    execute_commands(taken.commands, taken.command_count, registers,
-                     static_cast<std::ptrdiff_t>(at + 1));
-    here = taken.target;
-    if (automaton.states[here].accepting_slot ==
-        packed_state<0, 0, 0>::not_accepting) {
-      continue;
-    }
-    // The note taken at every accepting place, which is what makes the death
-    // that follows cost nothing.
-    answer.length = at + 1;
-    answer.matched = true;
-    answer.registers = registers;
-    execute_commands(automaton.states[here].final_commands,
-                     automaton.states[here].final_command_count,
-                     answer.registers, static_cast<std::ptrdiff_t>(at + 1));
-  }
-  return answer;
+  return detail::barren_walks<regex_automaton<pattern>>().bounded;
 }
 
 // Whether the group is being read where the machine stands now.
