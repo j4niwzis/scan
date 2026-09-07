@@ -1620,7 +1620,8 @@ struct collected_match_closure
       using held = std::remove_cv_t<typename collector::value_type>;
       constexpr const auto& entered =
           detail::regex_automaton<pattern>.states[landed];
-      constexpr std::size_t theirs = group + 1 + inside;
+      constexpr std::size_t theirs =
+          owner_type::template group_of<group>() + 1 + inside;
       if constexpr (theirs * 2 + 1 >=
                     detail::regex_automaton<pattern>.tag_count) {
         return;
@@ -1651,8 +1652,9 @@ struct collected_match_closure
         constexpr const auto& entered =
             detail::regex_automaton<pattern>.states[landed];
         if constexpr (entered.reading_count != 0) {
-          constexpr std::uint32_t opening = entered.readings[0][group * 2];
-          constexpr std::uint32_t closing = entered.readings[0][group * 2 + 1];
+          constexpr std::size_t where = owner_type::template group_of<group>();
+          constexpr std::uint32_t opening = entered.readings[0][where * 2];
+          constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
           if constexpr (owner_type::template gathers_its_own_groups<group>()) {
@@ -1703,8 +1705,9 @@ struct collected_match_closure
         if constexpr (entered.reading_count == 0) {
           return;
         } else {
-          constexpr std::uint32_t opening = entered.readings[0][group * 2];
-          constexpr std::uint32_t closing = entered.readings[0][group * 2 + 1];
+          constexpr std::size_t where = owner_type::template group_of<group>();
+          constexpr std::uint32_t opening = entered.readings[0][where * 2];
+          constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
           if (registers[opening] < 0) return;
           if (registers[closing] >= registers[opening]) return;
           if constexpr (owner_type::template gathers_its_own_groups<
@@ -1733,8 +1736,50 @@ struct collected_match_closure
   }
 
   template <std::size_t group>
+  // Which group of the match each collector reads.
+  //
+  // One each, in the order they were written -- until one of them reads a type
+  // out of the groups inside its own. Those groups belong to that type, so the
+  // collector after it starts past them, and nobody has to write `skip()` for
+  // groups that were never theirs to skip:
+  //
+  //   into(as<version>())   over   v=(([0-9]+)\.([0-9]+)\.([0-9]+))!
+  //
+  // is one collector over four groups.
+  template <std::size_t which, std::size_t where>
+  [[nodiscard]] static consteval std::size_t swallowed() {
+    using collector = std::tuple_element_t<which, std::tuple<collectors...>>;
+    if constexpr (requires { typename collector::value_type; }) {
+      using held = std::remove_cv_t<typename collector::value_type>;
+      if constexpr (detail::group_gathers_by_group<held, pattern, where + 1>() ||
+                    detail::group_is_the_types_pattern<held, pattern,
+                                                       where + 1>()) {
+        return detail::groups_a_type_opens<held>();
+      } else if constexpr (detail::group_spells_out<held, pattern,
+                                                    where + 1>()) {
+        // A type that declares a format spells its places out as groups, and
+        // those are its too.
+        return detail::groups_of<held>();
+      } else {
+        return 0;
+      }
+    } else {
+      return 0;
+    }
+  }
+
+  template <std::size_t which>
+  [[nodiscard]] static consteval std::size_t group_of() {
+    if constexpr (which == 0) {
+      return 0;
+    } else {
+      constexpr std::size_t before = group_of<which - 1>();
+      return before + 1 + swallowed<which - 1, before>();
+    }
+  }
+
   // Whether the collector at this place is a type that gathers by its own
-  // groups, and whether this group is written as that type's own pattern. Both
+  // groups, and whether its group is written as that type's own pattern. Both
   // have to hold: the type asks for it, and the pattern gives it something to
   // ask about.
   template <std::size_t group>
@@ -1742,7 +1787,7 @@ struct collected_match_closure
     using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
     if constexpr (requires { typename collector::value_type; }) {
       return detail::group_gathers_by_group<typename collector::value_type,
-                                            pattern, group + 1>();
+                                            pattern, group_of<group>() + 1>();
     } else {
       return false;
     }
@@ -1784,7 +1829,9 @@ struct collected_match_closure
     if constexpr (requires { collector::takes_nothing; }) {
       return;
     } else {
-      if (!detail::group_is_open<pattern, group>(here, registers)) return;
+      if (!detail::group_is_open<pattern, group_of<group>()>(here, registers)) {
+        return;
+      }
       std::get<group>(collectors_).push_one(std::get<group>(states), letter);
     }
   }
@@ -1819,7 +1866,7 @@ struct collected_match_closure
         basic_submatch<holder>(found.whole()),
         std::tuple<detail::collected_type<collectors, holder>...>{
             detail::collect_one<
-                pattern, group + 1,
+                pattern, group_of<group>() + 1,
                 std::tuple_element_t<group, std::tuple<collectors...>>,
                 holder>(std::get<group>(collectors_), found)...}};
   }

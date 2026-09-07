@@ -67,7 +67,7 @@ TEST(ScannerFromGroups, HandedTheGroupsItWrote) {
   const std::string text = "v=1.22.333!";
   const auto found =
       scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))!">.into(
-          scan::as<version>(), scan::skip(), scan::skip(), scan::skip())(text);
+          scan::as<version>())(text);
   ASSERT_TRUE(static_cast<bool>(found));
   EXPECT_EQ(found.get<1>().major, 1);
   EXPECT_EQ(found.get<1>().minor, 22);
@@ -95,7 +95,7 @@ TEST(ScannerFromGroups, AndTheCountIsWrittenOutWhereItCan) {
   const std::string text = "v=1.22.333!";
   const auto found =
       scan::match<"v=(([0-9]{1,})\\.([0-9]+)\\.([0-9]+))!">.into(
-          scan::as<version>(), scan::skip(), scan::skip(), scan::skip())(text);
+          scan::as<version>())(text);
   ASSERT_TRUE(static_cast<bool>(found));
   EXPECT_EQ(found.get<1>().major, 1);
   EXPECT_EQ(times_read_as_text, 0);

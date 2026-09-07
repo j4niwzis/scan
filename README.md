@@ -339,6 +339,17 @@ scan::match<"([0-9]+)-([a-z]+)-([a-z]+)">.into(
 | `scan::skip()` | nothing at all; the group takes no room in the answer |
 | `scan::collecting(push, args…)` | a value of any type, made from `args…`, with every character handed to `push` |
 
+One collector to a group, in the order the groups were written -- until one of
+them reads a type out of the groups inside its own. Those groups are that
+type's, so the collector after it starts past them:
+
+```cpp
+// `version` wrote three groups of its own, so this is one collector over four
+// groups, and the second collector is the one after them.
+scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))-([a-z]+)!">.into(
+    scan::as<version>(), scan::text())(text);
+```
+
 `collecting` is the one to reach for when the answer is not a string and not a
 parsed value -- a count, a hash, a checksum:
 
@@ -481,9 +492,9 @@ struct scan::scanner<version> {
   static constexpr version parse(std::string_view text);
 };
 
-// The three numbers are groups of this match. `version` is handed them.
-scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))!">.into(
-    scan::as<version>(), scan::skip(), scan::skip(), scan::skip())(text);
+// The three numbers are groups of this match. `version` is handed them, and
+// they are its -- so one collector covers all four groups.
+scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))!">.into(scan::as<version>())(text);
 
 // Written without them, there is nothing to hand over, and `parse` reads the
 // text as usual.

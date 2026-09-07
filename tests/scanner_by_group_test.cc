@@ -33,6 +33,18 @@ struct pair_of_words {
   std::string second;
 };
 
+TEST(ScannerByGroup, AndTheGroupAfterItIsTheNextCollectors) {
+  // The type took the three groups it wrote, so the group after them is the
+  // second collector's -- nobody has to count them out by hand.
+  const std::string text = "v=1.22.333-stable!";
+  const auto found =
+      scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))-([a-z]+)!">.into(
+          scan::as<version>(), scan::text())(text);
+  ASSERT_TRUE(static_cast<bool>(found));
+  EXPECT_EQ(found.get<1>().minor, 22);
+  EXPECT_EQ(found.get<2>(), "stable"sv);
+}
+
 }  // namespace
 
 // Told by the name of the group: an overload each, and no switch anywhere.
@@ -158,7 +170,7 @@ TEST(ScannerByGroup, ToldByTheNameOfTheGroup) {
   const std::string text = "v=1.22.333!";
   const auto here =
       scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))!">.into(
-          scan::as<version>(), scan::skip(), scan::skip(), scan::skip())(text);
+          scan::as<version>())(text);
   ASSERT_TRUE(static_cast<bool>(here));
   EXPECT_EQ(here.get<1>().major, 1);
   EXPECT_EQ(here.get<1>().minor, 22);
@@ -170,8 +182,7 @@ TEST(ScannerByGroup, AndTheSameOffASubjectReadOnce) {
   std::size_t at = 0;
   const auto arriving =
       scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))!">.into(
-          scan::as<version>(), scan::skip(), scan::skip(),
-          scan::skip())(read_once(text, &at));
+          scan::as<version>())(read_once(text, &at));
   ASSERT_TRUE(static_cast<bool>(arriving));
   EXPECT_EQ(arriving.get<1>().major, 1);
   EXPECT_EQ(arriving.get<1>().minor, 22);
@@ -182,7 +193,7 @@ TEST(ScannerByGroup, ToldByTheNumber) {
   const std::string text = "[12-34]";
   std::size_t at = 0;
   const auto found = scan::match<"\\[(([0-9]+)-([0-9]+))\\]">.into(
-      scan::as<span_of_two>(), scan::skip(), scan::skip())(read_once(text, &at));
+      scan::as<span_of_two>())(read_once(text, &at));
   ASSERT_TRUE(static_cast<bool>(found));
   EXPECT_EQ(found.get<1>().from, 12);
   EXPECT_EQ(found.get<1>().to, 34);
@@ -192,8 +203,7 @@ TEST(ScannerByGroup, ToldWithTheVariantItself) {
   const std::string text = "<alpha,bravo>";
   std::size_t at = 0;
   const auto found = scan::match<"<(([a-z]+),([a-z]+))>">.into(
-      scan::as<pair_of_words>(), scan::skip(),
-      scan::skip())(read_once(text, &at));
+      scan::as<pair_of_words>())(read_once(text, &at));
   ASSERT_TRUE(static_cast<bool>(found));
   EXPECT_EQ(found.get<1>().first, "alpha");
   EXPECT_EQ(found.get<1>().second, "bravo");
