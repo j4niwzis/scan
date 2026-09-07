@@ -226,8 +226,10 @@ bool one_round(std::span<const std::uint8_t> whole) {
   // says nothing about which pattern asked for it, and this is the only place
   // that knows.
   if (tracing()) {
-    std::println(stderr, "trying /{}/ against \"{}\"", pattern, subject);
-    std::fflush(stderr);
+    // Written to the error stream and flushed there and then: what this is
+    // for is the line before a run that does not come back.
+    std::cerr << std::format("trying /{}/ against \"{}\"\n", pattern, subject)
+              << std::flush;
   }
 
   const oracle::expression expression(pattern);
