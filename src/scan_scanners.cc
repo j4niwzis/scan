@@ -561,7 +561,7 @@ struct aggregate_scanner {
   // automaton.
   template <class self_type>
     requires(!detail::holds_a_range<scanner_target_t<self_type>>())
-  [[nodiscard]] static constexpr auto try_from_groups(
+  [[nodiscard]] constexpr auto try_from_groups(
       this const self_type& self, std::span<const std::string_view> groups) {
     using type = scanner_target_t<self_type>;
     static_cast<void>(self);
@@ -578,16 +578,15 @@ struct aggregate_scanner {
   // stands for. Nothing is put together as text and nothing is read twice.
   template <class self_type>
     requires(detail::a_flat_shape<scanner_target_t<self_type>>())
-  [[nodiscard]] static constexpr auto begin_groups(this const self_type& self) {
+  [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {
     static_cast<void>(self);
     return detail::make_scanner_state<scanner_target_t<self_type>, format>();
   }
 
   template <class self_type, std::size_t group, class state_type>
     requires(detail::a_flat_shape<scanner_target_t<self_type>>())
-  static constexpr void push_group(this const self_type& self,
-                                   state_type& state, scan::group_at<group>,
-                                   char letter) {
+  constexpr void push_group(this const self_type& self, state_type& state,
+                            scan::group_at<group>, char letter) {
     static_cast<void>(self);
     using type = scanner_target_t<self_type>;
     scanner_push<detail::leaf_kind<type, group>>(std::get<group>(state),
@@ -596,7 +595,7 @@ struct aggregate_scanner {
 
   template <class self_type, class state_type>
     requires(detail::a_flat_shape<scanner_target_t<self_type>>())
-  [[nodiscard]] static constexpr auto try_finish_groups(
+  [[nodiscard]] constexpr auto try_finish_groups(
       this const self_type& self, state_type state) {
     static_cast<void>(self);
     return detail::shape_from_gatherings<scanner_target_t<self_type>, format>(
