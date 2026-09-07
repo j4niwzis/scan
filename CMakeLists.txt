@@ -304,8 +304,11 @@ if(SCAN_BUILD_BENCHMARKS)
   scan_add_benchmark(captures)
   # Neither: two loops written by hand, to price the shape itself.
   scan_add_benchmark(shape NO_RE2C)
+  # And against the one in the standard library, which is what a C++ program
+  # reaches for when it wants numbers out of a string.
+  scan_add_benchmark(sscanf NO_RE2C)
 
   add_custom_target(benchmarks DEPENDS
     word_benchmark timestamp_benchmark csv_benchmark address_benchmark
-    captures_benchmark shape_benchmark)
+    captures_benchmark shape_benchmark sscanf_benchmark)
 endif()
