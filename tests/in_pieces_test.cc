@@ -63,7 +63,7 @@ TEST(InPieces, TheSameRecordsAsOneCharacterAtATime) {
     for (const command& one :
          scan::each<"set {[a-z]+} {[0-9]+}\n">(std::forward<decltype(source)>(
                                                    source))
-             .of<command>()) {
+             .template of<command>()) {
       got.emplace_back(std::string(one.name.view()), one.value);
     }
     return got;
