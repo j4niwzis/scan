@@ -1099,8 +1099,17 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     say_place_begin(made);
     ++made.leaves;
     say_group_begin(made);
-    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
-        made, body);
+    using element = std::remove_cvref_t<std::ranges::range_value_t<kind>>;
+    if (body.empty()) {
+      // Nothing written between the braces means the same here as anywhere
+      // else: read the element by whatever it says about itself. Spread as a
+      // format instead, an empty body has no places in it and nothing was
+      // written at all -- a list of the empty pattern, which stood on no
+      // characters and gathered nothing.
+      spread_place<element>(made, body);
+    } else {
+      spread_into<element, false>(made, body);
+    }
     say_group_end(made);
     // How many turns, and one or more where the format did not say.
     //
