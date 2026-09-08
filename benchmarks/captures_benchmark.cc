@@ -193,6 +193,23 @@ void ctre_captures(harness::State& state) {
                           bench::csv.size());
 }
 
+// The same thousand characters, out of the two engines that are given a range.
+//
+// The long row is where a loop is measured rather than everything around it,
+// and where the walks differ most: a field of two hundred characters is either
+// stepped over or read one character at a time.
+void ctre_captures_long(harness::State& state) {
+  const std::string& text = bench::long_csv();
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    auto value =
+        ctre::match<"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)">(view);
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
 void re2c_captures_benchmark(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -240,6 +257,21 @@ void re2_captures(harness::State& state) {
                           bench::csv.size());
 }
 
+void re2_captures_long(harness::State& state) {
+  const bench::re2_engine engine("([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)");
+  const std::string& text = bench::long_csv();
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    std::array<std::string_view, 5> found{};
+    if (engine.whole_with_five(view, found)) {
+      field_views value{found[0], found[1], found[2], found[3], found[4]};
+      harness::DoNotOptimize(value);
+    }
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
 const int registered = [] {
   const auto row = [](const char* name, void (*body)(harness::State&)) {
     harness::RegisterBenchmark(name, body)
@@ -253,6 +285,8 @@ const int registered = [] {
   row("scan_captures_strings", scan_captures_strings);
   row("scan_captures_long", scan_captures_long);
   row("re2c_captures_long", re2c_captures_long);
+  row("ctre_captures_long", ctre_captures_long);
+  row("re2_captures_long", re2_captures_long);
   row("ctre_captures", ctre_captures);
   row("re2_captures", re2_captures);
   row("re2c_captures", re2c_captures_benchmark);
