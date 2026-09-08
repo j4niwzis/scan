@@ -1,22 +1,22 @@
-// The same five fields off a subject that can only be read once.
+// The same five fields off a subject that can only be read once, at the size
+// where reading is the work.
 //
-// A subject that can be pointed at is read by pointing: a field is where it
-// began and how long it was, and the reading keeps nothing. A subject that
-// arrives once and never again has to be gathered as it goes by -- and what it
-// is gathered into is what this measures, because on a short record the
-// gathering, and not the machine, is what such a reading costs.
+// The comparison is between two ways of reading one source, not between two
+// sources. A range that hands over a character at a time is read either as it
+// comes, or copied into a window and read out of the window -- and the second
+// is what `in_pieces` is for, because characters in a window lie in a row and
+// the walk can step over a run of them in vectors. Both rows pay the same
+// source, so what is between them is the buffering and nothing else.
 //
-// Three ways of keeping a field: a string, which asks an allocator for room; a
-// field of room said in advance, which never allocates and stops at the brim;
-// and a number, which keeps no characters at all. Two ways of feeding: one
-// character at a time, and in pieces -- where the characters of a piece lie in
-// a row, so the walk can step over a run of them in vectors and hand the run
-// over in one call rather than one a character.
+// Two rows stand outside that comparison and are not it. The subject pointed
+// at is the floor: no gathering at all, a field is where it began and how long
+// it was. Blocks handed over as they are -- a range of views, which is what a
+// reader that already holds them gives -- is a different subject, not a better
+// way of reading this one; it is here because it says what the seams between
+// blocks cost when nothing is copied to make them.
 //
-// The vectors only pay where the runs are long. Five fields of six characters
-// in a piece of sixty-four are five runs too short to step over, and all the
-// buffering buys them is a copy of every character; five fields of two hundred
-// are the other way round. Both are here.
+// And the same on a short record, because what a machine costs to enter is not
+// what it costs to run.
 import std;
 import bench.harness;
 import bench.inputs;
@@ -39,6 +39,14 @@ struct field_rooms {
   scan::held<16> third;
   scan::held<16> fourth;
   scan::held<16> fifth;
+};
+
+struct field_views {
+  std::string_view first;
+  std::string_view second;
+  std::string_view third;
+  std::string_view fourth;
+  std::string_view fifth;
 };
 
 struct field_numbers {
@@ -201,27 +209,87 @@ void in_pieces_numbers(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * text.size());
 }
 
-// A thousand characters, where a run is two hundred long and stepping over it
-// is worth the piece it is read out of.
-void read_once_long(harness::State& state) {
-  const std::string& text = bench::long_csv();
+// Four megabytes, where a field is eight hundred thousand characters long.
+const std::string& wide_csv() {
+  static const std::string storage = [] {
+    std::string made;
+    made.reserve(4000004);
+    for (std::size_t field = 0; field < 5; ++field) {
+      if (field) made.push_back(',');
+      made.append(800000, static_cast<char>('a' + field));
+    }
+    return made;
+  }();
+  return storage;
+}
+
+// The blocks a reader would hand over, made once.
+const std::vector<std::string_view>& blocks_of(std::size_t size) {
+  static std::vector<std::string_view> made;
+  static std::size_t theirs = 0;
+  if (theirs != size) {
+    theirs = size;
+    made.clear();
+    const std::string_view whole(wide_csv());
+    for (std::size_t at = 0; at < whole.size(); at += size) {
+      made.push_back(whole.substr(at, std::min(size, whole.size() - at)));
+    }
+  }
+  return made;
+}
+
+void wide_pointed_at(harness::State& state) {
+  const std::string& text = wide_csv();
   for (auto _ : state) {
-    std::size_t at = 0;
-    field_rooms value = scan::scan<letters>(read_once(text, &at));
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    field_views value = scan::scan<letters>(view);
     harness::DoNotOptimize(value);
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
 
-void in_pieces_long(harness::State& state) {
-  const std::string& text = bench::long_csv();
+void wide_read_once(harness::State& state) {
+  const std::string& text = wide_csv();
   for (auto _ : state) {
     std::size_t at = 0;
-    field_rooms value =
-        scan::scan<letters>(read_once(text, &at) | scan::in_pieces<512>);
+    field_strings value = scan::scan<letters>(read_once(text, &at));
     harness::DoNotOptimize(value);
   }
   state.SetBytesProcessed(state.iterations() * text.size());
+}
+
+void wide_in_pieces(harness::State& state) {
+  const std::string& text = wide_csv();
+  for (auto _ : state) {
+    std::size_t at = 0;
+    field_strings value =
+        scan::scan<letters>(read_once(text, &at) | scan::in_pieces<65536>);
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
+// Blocks handed over as they are, which is a different subject and not another
+// way of reading the one above: nothing is copied into a window, and the walk
+// reads each block the way it reads a string.
+void wide_blocks_handed(harness::State& state) {
+  const auto& blocks = blocks_of(65536);
+  for (auto _ : state) {
+    field_strings value = scan::scan<letters>(std::views::all(blocks));
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * wide_csv().size());
+}
+
+// The same subject in one block, which says what the seams between them cost.
+void wide_one_block(harness::State& state) {
+  const auto& blocks = blocks_of(4194304);
+  for (auto _ : state) {
+    field_strings value = scan::scan<letters>(std::views::all(blocks));
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * wide_csv().size());
 }
 
 const int registered = [] {
@@ -238,8 +306,11 @@ const int registered = [] {
   row("scan_in_pieces_strings", in_pieces_strings);
   row("scan_in_pieces_room_said", in_pieces_room_said);
   row("scan_in_pieces_numbers", in_pieces_numbers);
-  row("scan_read_once_long", read_once_long);
-  row("scan_in_pieces_long", in_pieces_long);
+  row("scan_wide_pointed_at", wide_pointed_at);
+  row("scan_wide_read_once", wide_read_once);
+  row("scan_wide_in_pieces", wide_in_pieces);
+  row("scan_wide_blocks_handed", wide_blocks_handed);
+  row("scan_wide_one_block", wide_one_block);
   return 0;
 }();
 

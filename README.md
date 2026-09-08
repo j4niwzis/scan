@@ -158,7 +158,6 @@ which for a greedy repetition is the last one.
 | pieces (a range of contiguous ranges) | each piece in words and vectors, the reading held between them | nothing; the place a record ended is an address inside a piece |
 | a forward range | a character at a time | nothing; the note is an iterator, and going back is assigning it |
 | a range read once (`views::istream`, `istreambuf_iterator`) | a character at a time, once | the characters read past a match, and no more |
-| a range read once, through `\| scan::in_pieces<N>` | as pieces: in words and vectors inside each | the room asked for, twice over |
 
 A string literal is a subject like any other, and the nul the compiler put at
 the end of it is not part of it: `scan<"{}">("450")` reads three characters.
@@ -180,6 +179,7 @@ arrive:
 
 ```cpp
 std::istringstream source("set speed 42\nset gain 7\n");
+source >> std::noskipws;  // or the spaces never reach the machine
 struct command { scan::held<16> name; int value; };
 for (const command& one :
      scan::each<"set {[a-z]+} {[0-9]+}\n">(std::views::istream<char>(source))
@@ -187,6 +187,12 @@ for (const command& one :
   …
 }
 ```
+
+`std::noskipws` is not this library's idea: a stream extracts a character with
+`>>`, which by default steps over whitespace before it, so a range made of
+`std::views::istream<char>` hands over `setspeed42setgain7` unless the stream
+is told otherwise. The pattern above wants the spaces and the newline, and
+they are what would be missing. Say it once on the stream, before the reading.
 
 Nothing is buffered. The characters go through the machine as they come, each
 field gathers into whatever collects it, and the record is built where the
@@ -207,49 +213,6 @@ character that is not a space dies before it is taken. Where a number cannot
 be named -- a cycle with no match anywhere along it, like `a+b`, which can eat
 any number of characters and still not match -- the reading is refused where
 it is compiled, and told why. It is not silently buffered.
-
-### Handing it over in pieces instead
-
-Reading one character at a time costs the walk its vectors: it cannot step
-over a run of thirty letters in one instruction when it is handed them one at
-a time. `in_pieces` gathers the characters into room said in advance and hands
-over the room, so the reading becomes the pieces one -- and a piece is
-characters in a row, which is what the fast walk wants:
-
-```cpp
-scan::each<f>(source | scan::in_pieces<512>).of<row>()
-```
-
-It is a separate thing rather than something a scan does for you, because it
-is not always the right trade. It costs a copy of every character and a buffer
-that has to live somewhere; it wins where the fields are long enough for the
-walk to step over them, and loses where they are a few characters each and the
-copying is the whole of the work. Which of the two you have is not something
-the library can know.
-
-The room is used two pieces at a time, in turn: the walk keeps an address
-inside the piece it is holding -- where a record ended, so that the next one
-starts there -- and asks for the next piece before it is done with that, so
-the piece handed over before this one is still where it was.
-
-**It changes what the program does, not only what it costs.** A range that
-reads a character at a time is read a character at a time, and this library
-reads exactly as far as the match needs and no further. That is what lets a
-scan sit on a console, a socket or a pipe: the characters arrive as they are
-typed or sent, a record is answered the moment it ends, and nothing further is
-taken.
-
-Put `in_pieces<512>` in front of that and the reading waits for five hundred
-and twelve characters, or for the range to end, before the machine sees the
-first one. On a terminal that means a program that answered every line stops
-answering until the buffer fills. On a socket it means more of the stream is
-consumed than the match needed -- and those characters are in the buffer, so
-whoever reads the range afterwards will not find them.
-
-So it is for a subject that is all there and merely arrives in a stream: a
-file, a pipe already full, a decompressor. For anything that answers as it is
-read, leave it out; reading one character at a time is what makes that work at
-all.
 
 The order of the alternatives decides this, which is the practical thing to
 know:
