@@ -2460,6 +2460,11 @@ struct fold_of {
 
   state_type state = scan::scanner<held_type>{}.begin_groups();
   std::array<std::ptrdiff_t, inside> told_at{};
+  // And which closing it has been told about, for the same reason: a group
+  // that is taken over and over writes its closing into the same register
+  // every turn, so what says a turn has ended is that the position moved --
+  // not that it stands anywhere in particular.
+  std::array<std::ptrdiff_t, inside> ended_at{};
   std::array<bool, inside> open{};
   // Whether it asked for something this subject cannot give: its groups whole,
   // off a reading with nothing to point at.
@@ -2470,23 +2475,36 @@ struct fold_of {
   // nothing, and the fold is told the characters instead.
   const char* text = nullptr;
 
-  constexpr fold_of() { told_at.fill(-1); }
+  constexpr fold_of() {
+    told_at.fill(-1);
+    ended_at.fill(-1);
+  }
 };
 
 // One step of a fold: what happened to the groups inside a place, said to the
 // type in the order it can make sense of.
 //
-// Opened first and in the order they are written, because a group that opens
-// inside another opens after it. Then the character, to every group it is
-// inside of. Then the closings, innermost first, because a group that opens
-// inside another closes before it.
+// Closed first, innermost outwards, because a group that opens inside another
+// closes before it. Then the openings, outermost inwards, for the same reason
+// read the other way. Then the character, to every group that is open once
+// those two have settled it.
+//
+// Closings come first because of the delay. A tag is written when the walk
+// takes the step after the character that wrote it, so the end of one turn of
+// a repeated group and the start of the next arrive together -- and a step
+// that opened before it closed would announce a turn that had not ended,
+// hand the next turn's characters to nobody, and lose the closing entirely.
+// `(X)*` over "XXX" was three openings, two closings and one character.
 //
 // Nothing here asks what step the walk is on. It asks the positions, which say
-// everything: a group whose opening has moved has begun a turn, one whose
-// closing has caught up with its opening has ended one. So the same step run
-// twice tells nothing twice, and the same step run at the end of the input --
-// where there is no character to hand over -- finishes what the characters
-// left open.
+// everything: a group whose opening has moved has begun a turn, and one whose
+// closing has moved has ended the turn this fold was told about. Both are
+// compared against what was announced rather than against each other, because
+// a group taken over and over writes into the same two registers every turn:
+// what says a turn ended is that the position moved, not where it stands. So
+// the same step run twice tells nothing twice, and the same step run at the end
+// of the input -- where there is no character to hand over -- finishes what the
+// characters left open.
 template <std::size_t place, class held, class reading_type, class fold_type,
           std::size_t register_count>
 constexpr void fold_one_step(
@@ -2501,6 +2519,49 @@ constexpr void fold_one_step(
   const auto closing_of = [&](std::size_t which) {
     return registers[reading[(place + 1 + which) * 2 + 1]];
   };
+  [&]<std::size_t... step>(std::index_sequence<step...>) {
+    ((void)[&] {
+      constexpr std::size_t which = inside - 1 - step;
+      if (!fold.open[which]) return;
+      const std::ptrdiff_t began = fold.told_at[which];
+      const std::ptrdiff_t ended = closing_of(which);
+      if (ended < 0 || ended < began) return;
+      if (ended == fold.ended_at[which]) return;
+      if constexpr (takes_the_group_whole<held_type, which,
+                                          typename fold_type::state_type>) {
+        // The whole of what the group stood on, pointed at rather than copied.
+        //
+        // A position here is how many characters have been read and not the
+        // index of one: the walk writes a tag with the count after the
+        // character that wrote it. So what a group stood on begins one before
+        // where its opening says.
+        if (fold.text != nullptr) {
+          close_one_group<held_type, which>(
+              fold.state,
+              std::string_view(fold.text + (began > 0 ? began - 1 : 0),
+                               static_cast<std::size_t>(ended - began)));
+          fold.open[which] = false;
+          fold.ended_at[which] = ended;
+          return;
+        }
+        if constexpr (!takes_group_characters<held_type, which,
+                                              typename fold_type::state_type>) {
+          // It takes its groups whole and nothing else, and there is nothing
+          // here to point at. Holding the characters to hand them over at the
+          // end would be a hold with no bound, so this reading cannot be had --
+          // said here and handed back where the value would have been, because
+          // a walk has nobody to say it to.
+          fold.wanted_a_subject = true;
+          fold.open[which] = false;
+          fold.ended_at[which] = ended;
+          return;
+        }
+      }
+      close_one_group<held_type, which>(fold.state);
+      fold.open[which] = false;
+      fold.ended_at[which] = ended;
+    }(), ...);
+  }(std::make_index_sequence<inside>{});
   [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
       const std::ptrdiff_t began = opening_of(which);
@@ -2519,7 +2580,6 @@ constexpr void fold_one_step(
                           held_type, which,
                           typename fold_type::state_type>) {
           if (!fold.open[which]) return;
-          if (closing_of(which) >= opening_of(which)) return;
           push_one_group<held_type, which>(fold.state, symbol);
         } else if constexpr (takes_group_characters<
                                  held_type, which,
@@ -2528,51 +2588,11 @@ constexpr void fold_one_step(
           // to point at. Where there is not, the characters are all there is.
           if (fold.text != nullptr) return;
           if (!fold.open[which]) return;
-          if (closing_of(which) >= opening_of(which)) return;
           push_one_group<held_type, which>(fold.state, symbol);
         }
       }(), ...);
     }(std::make_index_sequence<inside>{});
   }
-  [&]<std::size_t... step>(std::index_sequence<step...>) {
-    ((void)[&] {
-      constexpr std::size_t which = inside - 1 - step;
-      if (!fold.open[which]) return;
-      const std::ptrdiff_t began = opening_of(which);
-      const std::ptrdiff_t ended = closing_of(which);
-      if (ended < began) return;
-      if constexpr (takes_the_group_whole<held_type, which,
-                                          typename fold_type::state_type>) {
-        // The whole of what the group stood on, pointed at rather than copied.
-        //
-        // A position here is how many characters have been read and not the
-        // index of one: the walk writes a tag with the count after the
-        // character that wrote it. So what a group stood on begins one before
-        // where its opening says.
-        if (fold.text != nullptr) {
-          close_one_group<held_type, which>(
-              fold.state,
-              std::string_view(fold.text + (began > 0 ? began - 1 : 0),
-                               static_cast<std::size_t>(ended - began)));
-          fold.open[which] = false;
-          return;
-        }
-        if constexpr (!takes_group_characters<held_type, which,
-                                              typename fold_type::state_type>) {
-          // It takes its groups whole and nothing else, and there is nothing
-          // here to point at. Holding the characters to hand them over at the
-          // end would be a hold with no bound, so this reading cannot be had --
-          // said here and handed back where the value would have been, because
-          // a walk has nobody to say it to.
-          fold.wanted_a_subject = true;
-          fold.open[which] = false;
-          return;
-        }
-      }
-      close_one_group<held_type, which>(fold.state);
-      fold.open[which] = false;
-    }(), ...);
-  }(std::make_index_sequence<inside>{});
 }
 
 // Whether every group of a fold would take its group whole. Then a run of
