@@ -173,11 +173,18 @@ jobs:
             return one.left == "left" && one.right == "right" ? 0 : 1;
           }
           EOF
+          # The copy in the prefix, and no other. Left to decide for itself,
+          # the provider reads the port beside that copy, sees it pinned to a
+          # branch whose tip has moved, and fetches the library rather than
+          # taking what is here -- which is the right answer for a build that
+          # wants the pin, and the wrong one for the step whose whole question
+          # is whether what was just installed can be used.
           cmake -S /tmp/consumer -B /tmp/consumer/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=/usr/local/bin/clang \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
             -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCME_SYSTEM_scan=ALWAYS \
             -DCMAKE_PREFIX_PATH="$PWD/prefix"
           cmake --build /tmp/consumer/build
           /tmp/consumer/build/consumer
