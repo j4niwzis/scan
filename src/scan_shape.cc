@@ -1902,6 +1902,206 @@ scan_stream_prefix(range_type&& input) {
 
 }  // namespace scan::detail
 
+}  // namespace scan::detail
+
+// The helper that reads a shape, which is ordinary code and says so.
+//
+// It is here rather than higher up because the reading it does is the reading
+// everything else does -- one builder, one gathering, one fold -- and a
+// consumer that writes its own says the same things through the same hooks.
+// Nothing below this line knows that a type has fields; this is where that
+// knowledge lives.
+export namespace scan {
+
+template <fixed_string format>
+struct aggregate_scanner {
+  // The shape read out of groups that this format made, for a type that was
+  // named rather than inherited from.
+  //
+  // A caller writing `scan<"{},{}">.of<point>()` says the format at the call
+  // and the type at the call, and `point` may have no scanner at all. What
+  // reads it is this, asked for both: the library below hands over the groups
+  // and asks nothing about what a point is made of.
+  template <class type>
+  [[nodiscard]] static constexpr auto read(
+      std::span<const std::string_view> groups)
+      -> std::expected<type, detail::failure_for<type>> {
+    return detail::build_value<detail::failure_for<type>,
+                               detail::format_parameters<type, format>, type, 0,
+                               true>(groups);
+  }
+
+  // The same, where the caller asked for the value itself: what went wrong is
+  // thrown at the asking, which is the only place anything is thrown.
+  template <class type>
+  [[nodiscard]] static constexpr type read_or_throw(
+      std::span<const std::string_view> groups) {
+    return detail::build_value<detail::failure_for<type>,
+                               detail::format_parameters<type, format>, type, 0,
+                               true, detail::throws_a_failure>(groups);
+  }
+
+  // Nothing here is a member the library reads and reacts to. What this class
+  // does, it does through the hooks any scanner may write: the pattern its
+  // places make, the building from the groups that pattern opens, and the
+  // telling of those groups as they arrive. The format is a parameter of this
+  // class and is spoken by nobody else -- the library below knows patterns,
+  // groups and hooks, and has never heard of a format.
+
+  [[nodiscard]] constexpr auto pattern(this const auto& self) {
+    using type = scanner_target_t<decltype(self)>;
+    // What this shape matches, with its places as groups and in the order the
+    // format has them -- the very order the reading below counts on, because
+    // both come out of the one walk over the format.
+    return detail::places_pattern<type, format>();
+  }
+
+  // Whether this shape is read from its own groups, said outright.
+  //
+  // Asked as a question and not found out by whether the hook below is there:
+  // what that hook hands back is the list of everything reading this shape can
+  // fail with, and working that list out means knowing how the shape is read,
+  // which is what the question decides.
+  //
+  // A shape made only of places can be handed its groups when the match is
+  // over. One with a list in it is made of turns, and the positions a match
+  // leaves behind hold the last turn and nothing before it -- so it has to be
+  // told its groups as they happen, which every place of it has to be able to
+  // take. Where neither is true, the shape keeps the road that spreads its
+  // places into the automaton around it.
+  [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
+    using type = scanner_target_t<decltype(self)>;
+    static_cast<void>(self);
+    return true;
+  }
+
+  // The shape, out of the groups its pattern opened.
+  //
+  // Its groups are its places, so what builds it from them is what builds it
+  // from the places of the reading around it: one builder, and this is a call
+  // to it.
+  template <class self_type>
+    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
+  [[nodiscard]] constexpr auto try_from_groups(
+      this const self_type& self, std::span<const std::string_view> groups)
+      -> std::expected<scanner_target_t<self_type>,
+                       detail::shape_failure<scanner_target_t<self_type>>> {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    return detail::build_value<detail::shape_failure<type>,
+                               detail::format_parameters<type, format>, type, 0,
+                               true>(groups);
+  }
+
+  // Told its groups as they happen.
+  //
+  // Every shape that can be says this, not only one made of turns: a subject
+  // that is read once has nothing to point at, and a shape standing inside a
+  // shape that is being told its groups has to be told its own. Where the
+  // groups can be handed over instead, they are -- that is the faster of the
+  // two and the one that copies nothing.
+  //
+  // Every place gathers into the
+  // reader of the value it stands for, a turn ends where the list's own group
+  // closes, and the element is put together there and added -- by the same
+  // builder that puts together everything else, asked for the gatherings a
+  // different way.
+  template <class self_type>
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {
+    static_cast<void>(self);
+    return detail::shape_turns<scanner_target_t<self_type>, format>{};
+  }
+
+  template <class self_type, std::size_t place, class state_type>
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  constexpr void push_group(this const self_type& self, state_type& state,
+                            scan::group_at<place>, char letter) {
+    static_cast<void>(self);
+    detail::push_shape_place<scanner_target_t<self_type>, format, place>(
+        state, letter);
+  }
+
+  template <class self_type, std::size_t place, class state_type>
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  constexpr void opened_group(this const self_type& self, state_type& state,
+                              scan::group_at<place>) {
+    static_cast<void>(self);
+    detail::open_shape_place<scanner_target_t<self_type>, format, place>(state);
+  }
+
+  template <class self_type, std::size_t place, class state_type>
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  constexpr void closed_group(this const self_type& self, state_type& state,
+                              scan::group_at<place>) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    detail::close_shape_place<type, format, place,
+                              detail::shape_failure<type>>(state,
+                                                           state.went_wrong);
+  }
+
+  template <class self_type, class state_type>
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  [[nodiscard]] constexpr auto try_finish_groups(this const self_type& self,
+                                                 state_type state) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    using failure_type = detail::shape_failure<type>;
+    if (state.went_wrong) {
+      return std::expected<type, failure_type>(
+          std::unexpected(std::move(*state.went_wrong)));
+    }
+    return detail::finish_value<type, type, 0, true, failure_type>(
+        detail::gathered_by_a_fold<state_type>{state}, nullptr);
+  }
+
+  // Gathered a character at a time, for whoever holds the characters and not
+  // the subject.
+  //
+  // Said as a question rather than as a refusal inside it: whether a type
+  // gathers this way is asked by things that are deciding how to read it, and
+  // an answer that stops the compiler is not an answer. A shape made by the
+  // call it named says no -- its places stand for that call's arguments, and
+  // there is nothing to hand a half-read one to.
+  //
+  // The list of what can go wrong is built from this shape's parts and never
+  // from the shape: what it says it hands back is that very list, and a list
+  // that asked the shape would be asking its own answer.
+  template <class self_type>
+    requires(!requires { &scanner<scanner_target_t<self_type>>::parse; })
+  [[nodiscard]] constexpr auto begin(this const self_type& self) {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    return detail::stream_state<type, format, false,
+                                detail::shape_failure<type>>{};
+  }
+
+  constexpr void push(this const auto&, auto& state, char value) {
+    state.push(value);
+  }
+
+  // Handed back rather than thrown, both of them: this type is read by the
+  // same machine everything else is, and that machine says what went wrong
+  // instead of throwing it. Which means a shape used as a field of another
+  // shape carries its kinds up into what that reading can fail with.
+  [[nodiscard]] constexpr auto try_finish(this const auto& self, auto state) {
+    static_cast<void>(self);
+    return std::move(state).finish();
+  }
+
+  [[nodiscard]] constexpr auto try_parse(this const auto& self,
+                                         std::string_view input) {
+    auto state = self.begin();
+    for (char value : input) { self.push(state, value); }
+    return self.try_finish(std::move(state));
+  }
+};
+
+}  // namespace scan
+
+export namespace scan::detail {
+
 #undef SCAN_FORCE_INLINE
 
 }  // namespace scan::detail

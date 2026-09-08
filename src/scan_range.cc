@@ -66,9 +66,10 @@ class borrowed_result {
       // together from them. Read as a value here, such a type was handed the
       // whole match and read it by its own format a second time, so a shape of
       // two numbers was given "(3,-4)" where it expected "3".
-      return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0, says_it_reads_its_groups<std::remove_cv_t<type>>>(
-          *fields);
+      // Built by the helper that knows what a shape is made of, and not
+      // here. What this layer has is groups; what a type is made of is a
+      // question it does not ask.
+      return scan::aggregate_scanner<format>::template read<type>(*fields);
     }
   }
 
@@ -89,9 +90,8 @@ class borrowed_result {
                              throws_a_failure>(input_);
         }
       }();
-      return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0, says_it_reads_its_groups<std::remove_cv_t<type>>,
-                         throws_a_failure>(fields);
+      return scan::aggregate_scanner<format>::template read_or_throw<type>(
+          fields);
     }
   }
 
