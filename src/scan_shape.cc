@@ -1902,8 +1902,6 @@ scan_stream_prefix(range_type&& input) {
 
 }  // namespace scan::detail
 
-}  // namespace scan::detail
-
 // The helper that reads a shape, which is ordinary code and says so.
 //
 // It is here rather than higher up because the reading it does is the reading
