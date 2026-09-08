@@ -1360,7 +1360,17 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
         made, body);
     say_group_end(made);
-    made.text.append(repetition);
+    // How many turns, and one or more where the format did not say.
+    //
+    // The two spellings of the spread said this differently: the one the
+    // format reader took wrote a mark that meant "this place repeats", and how
+    // often was the reader's business, so a place with nothing written after
+    // it went round for as long as the subject afforded. Written as a regular
+    // expression there is no such mark -- what repeats is what carries a
+    // repetition -- and when the two became one the unwritten one was lost. A
+    // list read one turn and stopped: "7" was a list of one, and "1,2,3" was
+    // not a list at all.
+    made.text.append(repetition.empty() ? std::string_view("+") : repetition);
     say_place_end(made);
   } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body

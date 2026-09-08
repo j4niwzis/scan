@@ -1,12 +1,10 @@
-// The same subject read three ways gives the same answer.
+// A row of fields read three ways gives one answer.
 //
 // Characters that lie in a row are pointed at; characters that arrive once and
 // never again are gathered as they go by; characters that arrive in pieces are
 // pointed at inside a piece and gathered across the seams. Three machines,
-// three ways of keeping what was read -- and one answer, which is what this
-// asks about. It is the question the gathering machine is easiest to get wrong
-// on: a field that is still open when the input ends, a reading that divides
-// between two places, a list that goes on after a piece has been given up.
+// three ways of keeping what was read, and one answer -- which is what this
+// asks about.
 import std;
 import scan;
 import gtest;
@@ -55,39 +53,13 @@ struct five {
   std::string first, second, third, fourth, fifth;
 };
 
-struct version {
-  int major = 0;
-  int minor = 0;
-  int patch = 0;
-};
 
 }  // namespace
 
-template <>
-struct scan::scanner<version> : scan::aggregate_scanner<"{}.{}.{}"> {};
-
 namespace {
 
-struct release {
-  version number;
-  std::string name;
-};
-
-struct row {
-  std::vector<int> values;
-};
-
-struct two_words {
-  std::string head, tail;
-};
-
-struct counted {
-  std::string word;
-  int number = 0;
-};
-
 // One subject read three ways: pointed at, read once, and read in pieces small
-// enough that every one of these subjects crosses a seam.
+// enough that these subjects cross a seam.
 template <scan::fixed_string format, class type>
 [[nodiscard]] auto read_three_ways(std::string_view text) {
   constexpr auto read = scan::scan<format>.template try_of<type>();
@@ -99,7 +71,7 @@ template <scan::fixed_string format, class type>
   return std::tuple(std::move(direct), std::move(once), std::move(pieces));
 }
 
-TEST(ReadOnceAndInPiecesAgree, EveryFieldOfARow) {
+TEST(ReadOnceAndInPiecesAgreeOnARow, EveryField) {
   for (std::string_view text :
        {"alpha,bravo,charlie,delta,echo", "a,b,c,d,e",
         "aaaaaaaaaaaaaaaaaaaaaaaa,b,c,d,eeeeeeeeeeeeeeee"}) {
@@ -116,60 +88,14 @@ TEST(ReadOnceAndInPiecesAgree, EveryFieldOfARow) {
   }
 }
 
-TEST(ReadOnceAndInPiecesAgree, ARowThatDoesNotMatchIsRefusedByAllThree) {
+TEST(ReadOnceAndInPiecesAgreeOnARow, AndOnWhatIsNotOne) {
   for (std::string_view text : {"a,b,c,d", "a,b,c,d,e,f", ""}) {
     const auto [direct, once, pieces] =
         read_three_ways<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}", five>(
             text);
+    EXPECT_FALSE(direct.has_value());
     EXPECT_EQ(once.has_value(), direct.has_value());
     EXPECT_EQ(pieces.has_value(), direct.has_value());
-  }
-}
-
-TEST(ReadOnceAndInPiecesAgree, AShapeInsideAShape) {
-  const auto [direct, once, pieces] =
-      read_three_ways<"{} {[a-z]+}", release>("1.22.333 stable");
-  ASSERT_TRUE(direct.has_value());
-  ASSERT_TRUE(once.has_value());
-  ASSERT_TRUE(pieces.has_value());
-  EXPECT_EQ(once->number.patch, 333);
-  EXPECT_EQ(pieces->number.patch, 333);
-  EXPECT_EQ(once->name, "stable");
-  EXPECT_EQ(pieces->name, "stable");
-}
-
-TEST(ReadOnceAndInPiecesAgree, ALastFieldStillOpenAtTheEnd) {
-  const auto [direct, once, pieces] =
-      read_three_ways<"{[a-z]+} {}", counted>("abc 42");
-  ASSERT_TRUE(direct.has_value());
-  ASSERT_TRUE(once.has_value());
-  ASSERT_TRUE(pieces.has_value());
-  EXPECT_EQ(once->number, 42);
-  EXPECT_EQ(pieces->number, 42);
-}
-
-TEST(ReadOnceAndInPiecesAgree, AListOfAsManyAsThereAre) {
-  for (std::string_view text : {"1,2,3", "7", "1,2,3,4,5,6,7,8,9,10"}) {
-    const auto [direct, once, pieces] = read_three_ways<"{{}{*,?}}", row>(text);
-    ASSERT_TRUE(direct.has_value());
-    ASSERT_TRUE(once.has_value());
-    ASSERT_TRUE(pieces.has_value());
-    EXPECT_EQ(once->values, direct->values);
-    EXPECT_EQ(pieces->values, direct->values);
-  }
-}
-
-TEST(ReadOnceAndInPiecesAgree, AReadingThatDividesBetweenTwoPlaces) {
-  for (std::string_view text : {"abcdef", "a", "abcdefghijklmnopqrstuvwxyz"}) {
-    const auto [direct, once, pieces] =
-        read_three_ways<"{[a-z]*}{[a-z]*}", two_words>(text);
-    ASSERT_TRUE(direct.has_value());
-    ASSERT_TRUE(once.has_value());
-    ASSERT_TRUE(pieces.has_value());
-    EXPECT_EQ(once->head, direct->head);
-    EXPECT_EQ(once->tail, direct->tail);
-    EXPECT_EQ(pieces->head, direct->head);
-    EXPECT_EQ(pieces->tail, direct->tail);
   }
 }
 

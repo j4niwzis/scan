@@ -263,7 +263,9 @@ set(scan_tests
   past_space_test
   preserves_official_capture_and_range_test
   reads_no_further_than_the_record_test
-  read_once_and_in_pieces_agree_test
+  read_once_and_in_pieces_agree_on_a_list_test
+  read_once_and_in_pieces_agree_on_a_row_test
+  read_once_and_in_pieces_agree_on_a_shape_test
   record_after_record_off_one_stream_test
   scanner_by_group_test
   scanner_can_build_an_owning_pattern_test
