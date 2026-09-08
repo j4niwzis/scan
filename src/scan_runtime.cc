@@ -1125,11 +1125,19 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   // leaves this state, so they are written back there and nowhere else -- which
   // takes two stores a character out of the loop that runs for most of the
   // subject.
-  cursor_type here = cursor;
-  mark spot = place;
+  //
+  // Where the cursor can be copied at all. An iterator over a stream is
+  // move-only -- there is one of it, and reading through it is the reading --
+  // so there the caller's own is used and every step writes it, which is what
+  // such a subject costs anyway.
+  static constexpr bool keeps_its_own = std::copyable<cursor_type>;
+  std::conditional_t<keeps_its_own, cursor_type, cursor_type&> here = cursor;
+  std::conditional_t<keeps_its_own, mark, mark&> spot = place;
   const auto put_back = [&] {
-    cursor = here;
-    place = spot;
+    if constexpr (keeps_its_own) {
+      cursor = here;
+      place = spot;
+    }
   };
   while (true) {
     // A character that is certainly there is read without asking whether it
