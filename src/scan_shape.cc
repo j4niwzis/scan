@@ -24,6 +24,201 @@ export namespace scan::detail {
 #define SCAN_FORCE_INLINE inline
 #endif
 
+// Whether putting this value together out of groups can go wrong at all.
+//
+// Most readings cannot. A value whose scanner throws rather than hands a
+// failure back throws past all of this; a value whose scanner does neither
+// cannot fail; a product of such values cannot fail. What can are the readings
+// that have something to say: a scanner that hands a failure back, a choice
+// where no branch may have run, a list, and a type built from its own groups.
+//
+// Where nothing can, the value is built as it was before any of this: straight
+// into the aggregate, with no `expected` held anywhere along the way. That is
+// the path most scans take and it costs what it used to.
+template <class type, bool as_output = false>
+[[nodiscard]] consteval bool never_fails() {
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (a_value && reads_its_own_groups<type>) {
+    return false;
+  } else if constexpr (a_value) {
+    return !scan::says_what_went_wrong<std::remove_cv_t<type>>;
+  } else if constexpr (scanned_as_variant<type>) {
+    return false;
+  } else if constexpr (scanned_as_range<type>) {
+    return false;
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (true && ... &&
+              never_fails<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// The value itself, for a reading that cannot go wrong.
+template <class parameters, class type, std::size_t offset,
+          bool as_output = false>
+[[nodiscard]] constexpr type built_value(
+    std::span<const std::string_view> groups) {
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (a_value) {
+    return scanner_parse<std::remove_cv_t<type>>(groups[offset],
+                                                 parameters::at(offset));
+  } else if constexpr (scanned_from_values<type>) {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return scan::scanner<std::remove_cv_t<type>>{}.parse(
+          built_value<parameters, typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...);
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  } else {
+    return [&]<std::size_t... index>(std::index_sequence<index...>) {
+      return type{
+          built_value<parameters, typename parts_of<type>::template at<index>,
+                      offset + groups_before_field<type, index>()>(groups)...};
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+template <class failure_type, class parameters, class type,
+          std::size_t offset, bool as_output = false,
+          class ending = hands_a_failure_back>
+[[nodiscard]] constexpr typename ending::template result<type, failure_type>
+build_value(std::span<const std::string_view> groups) {
+  // Where this is the whole of what is being read, a shape that reads its own
+  // groups is a product of places rather than a value in a place.
+  constexpr bool a_value = scanned_as_leaf<type> && !as_output;
+  if constexpr (never_fails<type, as_output>() &&
+                !std::same_as<ending, throws_a_failure>) {
+    // Nothing here can hand a failure back, so nothing here holds one -- even
+    // where the caller asked to be handed one.
+    return built_value<parameters, type, offset, as_output>(groups);
+  } else if constexpr (a_value && reads_its_own_groups<type>) {
+    // The type's own groups are groups of this match, already found. It is
+    // handed them, or told which of them each character belongs to -- the same
+    // reading it gets where a subject arrives as it is read, so it reads the
+    // same way in both places.
+    using held = std::remove_cv_t<type>;
+    constexpr std::size_t inside = groups_a_leaf_opens<held>();
+    if constexpr (scan::says_what_went_wrong_from_groups<held> ||
+                  requires(std::span<const std::string_view> given) {
+                    scan::scanner<held>{}.from_groups(given);
+                  }) {
+      std::array<std::string_view, inside> theirs{};
+      [&]<std::size_t... at>(std::index_sequence<at...>) {
+        ((theirs[at] = groups[offset + 1 + at]), ...);
+      }(std::make_index_sequence<inside>{});
+      const auto given = std::span<const std::string_view>(theirs);
+      if constexpr (scan::says_what_went_wrong_from_groups<held>) {
+        auto got = scan::scanner<held>{}.try_from_groups(given);
+        if (got) return std::move(*got);
+        return ending::template went_wrong<type, failure_type>(
+            std::move(got).error());
+      } else {
+        return scan::scanner<held>{}.from_groups(given);
+      }
+    } else {
+      auto state = scan::scanner<held>{}.begin_groups();
+      [&]<std::size_t... at>(std::index_sequence<at...>) {
+        ((void)[&] {
+          // A group that took no part in the match is not opened at all, which
+          // is how the type is told it was not there.
+          if (groups[offset + 1 + at].data() == nullptr) return;
+          open_one_group<held, at>(state);
+          close_one_group<held, at>(state, groups[offset + 1 + at]);
+        }(), ...);
+      }(std::make_index_sequence<inside>{});
+      if constexpr (scan::says_what_went_wrong_folding<held>) {
+        auto got = scan::scanner<held>{}.try_finish_groups(std::move(state));
+        if (got) return std::move(*got);
+        return ending::template went_wrong<type, failure_type>(
+            std::move(got).error());
+      } else {
+        return scan::scanner<held>{}.finish_groups(std::move(state));
+      }
+    }
+  } else if constexpr (a_value) {
+    auto got = parse_value<std::remove_cv_t<type>, failure_type>(
+        groups[offset], parameters::at(offset));
+    if (got) return std::move(*got);
+    return ending::template went_wrong<type, failure_type>(
+        std::move(got).error());
+  } else if constexpr (scanned_as_variant<type>) {
+    // Exactly one branch ran, and its mark says so: a mark that took part
+    // points into the subject, and the others point nowhere.
+    using answer = typename ending::template result<type, failure_type>;
+    return [&]<std::size_t... branch>(std::index_sequence<branch...>) -> answer {
+      std::optional<answer> made;
+      const auto take = [&]<std::size_t which>() {
+        constexpr std::size_t mark = offset + groups_before_branch<type, which>();
+        if (made || groups[mark].data() == nullptr) return;
+        using alternative = branch_at<type, which>;
+        auto part = build_value<failure_type, parameters, alternative, mark + 1,
+                                false, ending>(groups);
+        if (!ending::read(part)) {
+          made = ending::template went_wrong<type, failure_type>(
+              ending::failure(std::move(part)));
+          return;
+        }
+        made = scan::branches<std::remove_cv_t<type>>::template make<which>(
+            ending::value(std::move(part)));
+      };
+      (take.template operator()<branch>(), ...);
+      if (!made) {
+        return ending::template went_wrong<type, failure_type>(
+            no_match("no branch of the format took the input"));
+      }
+      return std::move(*made);
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_from_values<type>) {
+    // Made by the call it named, out of the values its places stood for. Each
+    // of them is read first and the call is made after, because a value that
+    // did not read is not an argument.
+    using answer = typename ending::template result<type, failure_type>;
+    return [&]<std::size_t... index>(std::index_sequence<index...>) -> answer {
+      // Asked for a value, every step is the value it read and the call is
+      // written out of them where they stand. Asked to try, each is held until
+      // they are all in hand, because a call cannot be half made.
+      if constexpr (std::same_as<ending, throws_a_failure>) {
+        return scan::scanner<std::remove_cv_t<type>>{}.parse(
+            build_value<failure_type, parameters,
+                        typename parts_of<type>::template at<index>,
+                        offset + groups_before_field<type, index>(), false,
+                        ending>(groups)...);
+      } else {
+        auto parts = std::tuple{build_value<
+            failure_type, parameters, typename parts_of<type>::template at<index>,
+            offset + groups_before_field<type, index>(), false, ending>(
+            groups)...};
+        if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+          return std::unexpected(std::move(*went_wrong));
+        }
+        return scan::scanner<std::remove_cv_t<type>>{}.parse(
+            std::move(*std::get<index>(parts))...);
+      }
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  } else {
+    using answer = typename ending::template result<type, failure_type>;
+    return [&]<std::size_t... index>(std::index_sequence<index...>) -> answer {
+      // The same two ways: written straight into the value, or held until they
+      // are all in hand.
+      if constexpr (std::same_as<ending, throws_a_failure>) {
+        return type{build_value<failure_type, parameters,
+                                typename parts_of<type>::template at<index>,
+                                offset + groups_before_field<type, index>(),
+                                false, ending>(groups)...};
+      } else {
+        auto parts = std::tuple{build_value<
+            failure_type, parameters, typename parts_of<type>::template at<index>,
+            offset + groups_before_field<type, index>(), false, ending>(
+            groups)...};
+        if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
+          return std::unexpected(std::move(*went_wrong));
+        }
+        return type{std::move(*std::get<index>(parts))...};
+      }
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
 template <class type, std::size_t index>
 using field_type = typename scan::fields<type>::template at<index>;
 
