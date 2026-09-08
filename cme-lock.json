@@ -826,7 +826,7 @@
       ]
     },
     "cmake-everywhere": {
-      "version": "753c16c778d5a27d72e4108c4b8d2d2db6a82eba"
+      "version": "7e322f7ecc2ab4a32bd00e3ef44add37a9d6f548"
     },
     "cme-greeting": {
       "port": [
@@ -862,6 +862,10 @@
       "port": [
         "91b330bef7788c74252946a274fa543f6b9cf5e97f78e87065638b925d822baa"
       ]
+    },
+    "googletest-modules": {
+      "commit": "706920f1d230f0316d271466d8885735be3e300e",
+      "url": "https://github.com/j4niwzis/googletest-modules.git"
     },
     "harfbuzz": {
       "port": [
