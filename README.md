@@ -985,7 +985,7 @@ other. `([ab]*?)*` against "ba", anchored:
 | --- | --- |
 | Perl | `[2,2)` |
 | Python | `[2,2)` |
-| this library | `[1,2)` |
+| `scan::scan` | `[1,2)` |
 | RE2 | `[0,2)` |
 
 Following the order a backtracking engine tries things in gives this
@@ -1034,13 +1034,13 @@ for instruction**. The difference in the ordinary form is three instructions:
 the length checks re2c does not have, because it is given a pointer and a
 terminator rather than a range.
 
-Every benchmark asks its question of four engines -- this library, CTRE, RE2
+Every benchmark asks its question of four engines -- `scan::scan`, CTRE, RE2
 and re2c -- on the same subjects. What each of them is given differs, and the
 differences are the point:
 
 | | pattern known | given | hands back |
 | --- | --- | --- | --- |
-| this library | while compiling | a range, or a pointer and a terminator | views into the subject |
+| `scan::scan` | while compiling | a range, or a pointer and a terminator | views into the subject |
 | CTRE | while compiling | a range | views |
 | RE2 | while running | a range | views, after a dispatch inside its walk |
 | re2c | ahead of time, by a generator | a pointer and a terminator, no length | pointers |
@@ -1051,7 +1051,7 @@ whole subject and nothing else:
 
 | | what it was given |
 | --- | --- |
-| this library | `"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}"` |
+| `scan::scan` | `"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}"` |
 | CTRE | `"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)"` |
 | RE2 | `"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)"` |
 | re2c | `@t1 field @t2 "," … @t9 field @t10 "\x00"`, where `field = [a-z]+` |
