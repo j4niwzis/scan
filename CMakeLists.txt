@@ -72,7 +72,11 @@ option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 # would have had to come before, and that is not always this file -- a build
 # that fetches this library resolves what it needs before its CMakeLists is
 # added at all.
-set(CME_SYSTEM_boost_pfr NEVER CACHE STRING
+# And not the copy on the machine, whatever it is: what is installed anywhere
+# is headers, and a module is what this compiles against. Said as a rule of
+# this build rather than of the port, because a Boost.PFR built as a module is
+# a perfectly good answer if a machine ever has one.
+set(CME_SYSTEM_boost_pfr OFF CACHE BOOL
     "Boost.PFR is built here, because it is wanted as a module")
 cme_options(boost-pfr "BUILD_TESTING OFF")
 find_package(boost_pfr REQUIRED COMPONENTS modules)
@@ -271,10 +275,16 @@ endif()
 # module, because a test here imports `std` and a header that includes the
 # standard library textually gives the translation unit two views of it.
 if(SCAN_BUILD_TESTS)
+  # And never the one on the machine. A googletest installed anywhere is the
+  # one that is a header, and what these tests import is a module -- so there
+  # is no copy to find, whatever a prefix has under that name, and looking is
+  # how a build ends up asking FindGTest about a library it was never going
+  # to accept.
   cme_declare_port(NAME googletest-modules PROVIDES GTest
     GITHUB_REPOSITORY j4niwzis/googletest-modules
     GIT_TAG 706920f1d230f0316d271466d8885735be3e300e
     LICENSE BSD-3-Clause
+    SYSTEM NEVER
     TARGETS gtest_main)
   cme_options(googletest-modules
     "BUILD_GMOCK OFF" "INSTALL_GTEST OFF"
