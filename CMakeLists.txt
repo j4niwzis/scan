@@ -172,12 +172,14 @@ if(COMMAND cme_declare_port)
     GITHUB_REPOSITORY j4niwzis/scan
     GIT_TAG main
     LICENSE GPL-3.0-only
-    # What this needs is not said here, because it is not the same statement
-    # for a copy taken from a prefix and for one built from source: a build
-    # that fetches this learns what it needed while it builds it, and a
-    # consumer that finds it installed is told by the config file beside it,
-    # which is where a module library has to say it -- such a consumer
-    # compiles the module interface units itself.
+    # Boost.PFR as a module, said here as well as where it is asked for.
+    #
+    # Whoever fetches this resolves what it needs before this file is added,
+    # so a build that learns about the module only from the find_package
+    # below has already answered for Boost.PFR by then -- as headers, which
+    # is not the same library -- and has to be configured a second time. Said
+    # in the port, the first answer is the right one.
+    DEPENDS "boost-pfr[modules]"
     TARGETS scan::scan
   )
 endif()
