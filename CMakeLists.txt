@@ -308,18 +308,43 @@ if(SCAN_BUILD_TESTS)
       "gtest_main is a target in this build. A stored copy built by another "
       "compiler is the usual reason: clear the cmake-everywhere store.")
   endif()
-  # And that what it left behind can be compiled against. A target with no
-  # include directories is a copy whose headers are somewhere this build was
+  # And that what it left behind can be compiled against.
+  #
+  # Not of that target alone: a target carries only what it was told to carry,
+  # and gtest_main was told nothing -- the headers belong to gtest, which it
+  # links, and a build resolves that on the way to compiling. So what is asked
+  # here is whether anything in the link interface has them, which is what a
+  # test would find.
+  #
+  # A copy where nothing does is one whose headers are somewhere this build was
   # not told about, and every test then fails on the same missing header --
   # which says nothing about where it came from.
-  get_target_property(scan_gtest_includes ${scan_gtest}
-                      INTERFACE_INCLUDE_DIRECTORIES)
+  set(scan_gtest_reachable ${scan_gtest})
+  set(scan_gtest_includes "")
+  while(scan_gtest_reachable AND NOT scan_gtest_includes)
+    list(POP_FRONT scan_gtest_reachable scan_gtest_one)
+    if(NOT TARGET ${scan_gtest_one})
+      continue()
+    endif()
+    get_target_property(scan_gtest_includes ${scan_gtest_one}
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    if(scan_gtest_includes STREQUAL "scan_gtest_includes-NOTFOUND")
+      set(scan_gtest_includes "")
+    endif()
+    get_target_property(scan_gtest_linked ${scan_gtest_one}
+                        INTERFACE_LINK_LIBRARIES)
+    if(scan_gtest_linked AND NOT scan_gtest_linked STREQUAL
+                             "scan_gtest_linked-NOTFOUND")
+      list(APPEND scan_gtest_reachable ${scan_gtest_linked})
+    endif()
+  endwhile()
   if(NOT scan_gtest_includes)
     message(FATAL_ERROR
       "the googletest this build answered with (${scan_gtest}) carries no "
-      "include directories, so nothing can compile against it. A stored copy "
-      "built by another compiler is the usual reason: clear the "
-      "cmake-everywhere store, or configure with -DCME_STORE_ENABLED=OFF.")
+      "include directories, and neither does anything it links, so nothing "
+      "can compile against it. A stored copy that lost them is the usual "
+      "reason: clear the cmake-everywhere store, or configure with "
+      "-DCME_STORE_ENABLED=OFF.")
   endif()
 endif()
 
