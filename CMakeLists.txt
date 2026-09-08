@@ -395,6 +395,9 @@ if(SCAN_BUILD_BENCHMARKS)
   scan_add_benchmark(address)
   # Extraction: the fields are wanted, not only the answer.
   scan_add_benchmark(captures)
+  # The same fields off a subject that can only be read once, gathered three
+  # ways: into strings, into room said in advance, and into numbers.
+  scan_add_benchmark(read_once NO_RE2C)
   # Neither: two loops written by hand, to price the shape itself.
   scan_add_benchmark(shape NO_RE2C)
   # And against the one in the standard library, which is what a C++ program
@@ -403,6 +406,6 @@ if(SCAN_BUILD_BENCHMARKS)
 
   add_custom_target(benchmarks DEPENDS
     word_benchmark timestamp_benchmark csv_benchmark address_benchmark
-    captures_benchmark shape_benchmark sscanf_benchmark)
+    captures_benchmark read_once_benchmark shape_benchmark sscanf_benchmark)
 
 endif()
