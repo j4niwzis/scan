@@ -1191,3 +1191,9 @@ ctest --test-dir build
 The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
 `scan.compiler`, `scan.runtime`, `scan.range`, `scan.scanners` -- with `scan`
 as an umbrella that re-exports it. Importing `scan` is all that is wanted.
+
+## Licence
+
+GNU General Public License, version 3 -- the text is in `LICENSE`. A program
+that links this library is a work based on it, and the licence is what asks
+that whoever receives that program can have its source as well.
