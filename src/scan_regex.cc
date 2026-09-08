@@ -1444,9 +1444,15 @@ template <fixed_string pattern, std::size_t group, class collector,
     // A collector gives a value and has nowhere to put a failure, so a reading
     // that went wrong is thrown here -- at the asking, which is the only place
     // in this library anything is thrown.
+    // As what is being built, and not as a value standing in a place: the
+    // group is the whole of what the type matched, and the type's own places
+    // are the groups inside it -- which in this array, which begins at the
+    // first group, are the entries from this one on. Read as a value, a shape
+    // of two numbers was handed "(3,-4)" where it wanted "3".
     using held = typename collector::value_type;
     return scan::or_thrown(
-        build_value<failure_for<held>, no_parameters, held, group>(groups));
+        build_value<failure_for<held>, no_parameters, held, group, true>(
+            groups));
   } else {
     return one.from_text(found.template get<group>().to_view(),
                          std::string_view{});
@@ -1871,8 +1877,10 @@ struct collected_match_closure
       } else if constexpr (detail::group_spells_out<held, pattern,
                                                     where + 1>()) {
         // A type that declares a format spells its places out as groups, and
-        // those are its too.
-        return detail::groups_of<held>();
+        // those are its too -- its places, and not the group they were
+        // written inside, which the caller counts for itself. Counted with it,
+        // the next collector was handed the group after the one it wanted.
+        return detail::groups_a_leaf_opens<held>();
       } else {
         return 0;
       }

@@ -62,8 +62,18 @@ class borrowed_result {
         return std::unexpected(
             scan::as_a_failure<failure_for<type>>(std::move(fields).error()));
       }
+      // The whole of what is read, and not a value standing in a place.
+      //
+      // A type that declares a format is a field wherever one is wanted -- its
+      // own format is spread where it stands and its own reader is handed what
+      // that matched. Asked for as the whole output it is the other thing: the
+      // format the caller wrote is what made these groups, and the type is put
+      // together from them. Read as a value here, such a type was handed the
+      // whole match and read it by its own format a second time, so a shape of
+      // two numbers was given "(3,-4)" where it expected "3".
       return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0>(*fields);
+                         type, 0, says_a_format<std::remove_cv_t<type>>>(
+          *fields);
     }
   }
 
@@ -85,7 +95,8 @@ class borrowed_result {
         }
       }();
       return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0, false, throws_a_failure>(fields);
+                         type, 0, says_a_format<std::remove_cv_t<type>>,
+                         throws_a_failure>(fields);
     }
   }
 
