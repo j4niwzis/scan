@@ -2140,8 +2140,8 @@ template <class held, class state_type>
 // discipline a list is gathered by: readings that share that register share
 // what is gathered there, and where two readings would have to disagree the
 // machine has already given them registers of their own.
-template <std::size_t place, class held, auto& automaton, class states_type,
-          std::size_t register_count>
+template <std::size_t place, std::size_t slot, class held, auto& automaton,
+          class states_type, std::size_t register_count>
 constexpr void fold_the_readings(
     std::size_t state,
     const std::array<std::ptrdiff_t, register_count>& registers,
@@ -2153,7 +2153,7 @@ constexpr void fold_the_readings(
     const std::uint32_t at = entered.readings[reading][place * 2];
     if (told[at] || registers[at] < 0) continue;
     told[at] = true;
-    auto& folding = std::get<place>(states[at]);
+    auto& folding = std::get<slot>(states[at]);
     // Said every step rather than once, because a fold is made where its place
     // opens and carried where a reading divides, and neither of those knows
     // what the walk is reading.
@@ -2263,6 +2263,121 @@ template <class type, fixed_string format>
       std::make_index_sequence<groups_of_output<type>()>{});
 }
 
+// One slot per kind of gathering, not one per group.
+//
+// The machine keeps a gathering for every register, and a register is made for
+// one tag, which belongs to one group -- so all but one of the gatherings kept
+// in a register are for groups that register can never hold. A set of every
+// group in every register is what a row of five fields was paying a
+// microsecond and a half a scan for: five strings a register, made at the head
+// of the scan, copied wherever a reading divided, and thrown away at the end.
+//
+// So the set is by kind and not by group. Groups gathered the same way share a
+// slot, because no two of them are ever gathered in one register at once, and
+// each register is begun with the parameters of the group whose tag it holds.
+template <class... kinds>
+struct gathering_kinds {
+  using as_a_tuple = std::tuple<kinds...>;
+};
+
+template <class list, class kind>
+struct with_kind;
+
+template <class... kinds, class kind>
+struct with_kind<gathering_kinds<kinds...>, kind> {
+  using result = std::conditional_t<(std::is_same_v<kind, kinds> || ...),
+                                    gathering_kinds<kinds...>,
+                                    gathering_kinds<kinds..., kind>>;
+};
+
+template <class list, class kind>
+struct where_kind;
+
+template <class kind>
+struct where_kind<gathering_kinds<>, kind> {
+  static constexpr std::size_t at = 0;
+};
+
+template <class first, class... rest, class kind>
+struct where_kind<gathering_kinds<first, rest...>, kind> {
+  static constexpr std::size_t at =
+      std::is_same_v<first, kind>
+          ? 0
+          : 1 + where_kind<gathering_kinds<rest...>, kind>::at;
+};
+
+// What one group is gathered in, asked without asking for the others.
+template <class type, fixed_string format, std::size_t group,
+          bool a_list = scanned_as_range<leaf_kind_of_output<type, group>>>
+struct gathering_state {
+  using result = decltype(gathering_of<type, format, group>::begin(
+      std::string_view{}));
+};
+
+template <class type, fixed_string format, std::size_t group>
+struct gathering_state<type, format, group, true> {
+  using result = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+};
+
+template <class type, fixed_string format, class list, std::size_t group,
+          std::size_t count>
+struct kinds_from {
+  using result = typename kinds_from<
+      type, format,
+      typename with_kind<list,
+                         typename gathering_state<type, format, group>::result>::result,
+      group + 1, count>::result;
+};
+
+template <class type, fixed_string format, class list, std::size_t count>
+struct kinds_from<type, format, list, count, count> {
+  using result = list;
+};
+
+template <class type, fixed_string format>
+using gathering_kinds_of =
+    typename kinds_from<type, format, gathering_kinds<>, 0,
+                        groups_of_output<type>()>::result;
+
+// What one register holds.
+template <class type, fixed_string format>
+using register_state = typename gathering_kinds_of<type, format>::as_a_tuple;
+
+// Which slot of it a group is gathered in.
+template <class type, fixed_string format, std::size_t group>
+inline constexpr std::size_t gathering_slot =
+    where_kind<gathering_kinds_of<type, format>,
+               typename gathering_state<type, format, group>::result>::at;
+
+// A register, begun as the group whose tag it holds would begin.
+template <class type, fixed_string format, auto& automaton, std::size_t reg>
+[[nodiscard]] constexpr auto make_register_state() {
+  static constexpr auto spread = spread_of<type, format>();
+  register_state<type, format> made{};
+  constexpr std::size_t group =
+      static_cast<std::size_t>(automaton.register_tag[reg]) / 2;
+  if constexpr (group < groups_of_output<type>()) {
+    using held_type = leaf_kind_of_output<type, group>;
+    if constexpr (scanned_as_range<held_type>) {
+      std::get<gathering_slot<type, format, group>>(made) =
+          std::remove_cv_t<held_type>{};
+    } else {
+      std::get<gathering_slot<type, format, group>>(made) =
+          gathering_of<type, format, group>::begin(
+              spread.parameters[group].view());
+    }
+  }
+  return made;
+}
+
+template <class type, fixed_string format, auto& automaton>
+[[nodiscard]] constexpr auto make_register_states() {
+  return [&]<std::size_t... reg>(std::index_sequence<reg...>) {
+    return std::array<register_state<type, format>, automaton.register_count>{
+        make_register_state<type, format, automaton, reg>()...};
+  }(std::make_index_sequence<automaton.register_count>{});
+}
+
 // Following a reading instead of counting on the numbers.
 //
 // The machine stands in one state and in several readings of the input at once,
@@ -2294,15 +2409,19 @@ template <class states_type, std::size_t command_capacity>
 struct kept_gatherings {
   using held_type = typename states_type::value_type;
   std::array<std::size_t, command_capacity> which{};
-  std::array<held_type, command_capacity> held{};
+  // Room for as many as a transition could ask for, and a gathering made in
+  // none of them until one is asked for. A transition that copies two of them
+  // used to make one for every command it could have had, and throw the rest
+  // away unread -- a dozen strings a character where a field ends.
+  std::array<std::optional<held_type>, command_capacity> held{};
   std::size_t count = 0;
 
   [[nodiscard]] constexpr const held_type& operator[](
       std::size_t source) const {
     for (std::size_t at = 0; at < count; ++at) {
-      if (which[at] == source) return held[at];
+      if (which[at] == source) return *held[at];
     }
-    return held[0];
+    return *held[0];
   }
 };
 
@@ -2321,7 +2440,7 @@ template <class states_type, std::size_t command_count>
     }
     if (already) continue;
     kept.which[kept.count] = commands[index].source;
-    kept.held[kept.count] = states[commands[index].source];
+    kept.held[kept.count].emplace(states[commands[index].source]);
     ++kept.count;
   }
   return kept;
@@ -2375,12 +2494,16 @@ constexpr void advance_scanner(
             if (command.source != packed_command::no_source &&
                 command.value == -2) {
               // A reading that divides carries its gathering with it.
-              std::get<group>(states[command.destination]) =
-                  std::get<group>(old_states[command.source]);
+              std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]) =
+                  std::get<gathering_slot<type, format, group>>(
+                      old_states[command.source]);
             } else if constexpr (gathers_a_list) {
-              std::get<group>(states[command.destination]) = held_type{};
+              std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]) = held_type{};
             } else {
-              std::get<group>(states[command.destination]) =
+              std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]) =
                   gathering_of<type, format, group>::begin(
                       spread.parameters[group].view());
             }
@@ -2389,8 +2512,10 @@ constexpr void advance_scanner(
                      command.value == -2) {
             // A closing already written, only being carried along, keeps what
             // it holds.
-            std::get<group>(states[command.destination]) =
-                std::get<group>(old_states[command.source]);
+            std::get<gathering_slot<type, format, group>>(
+                states[command.destination]) =
+                std::get<gathering_slot<type, format, group>>(
+                    old_states[command.source]);
           }
         }(),
          ...);
@@ -2400,7 +2525,8 @@ constexpr void advance_scanner(
     // Everything that happened inside this place on this character, told in
     // order -- and told now, before the copy below, or a fold that ends where
     // its place ends would be copied one closing short.
-    fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+    fold_the_readings<group, gathering_slot<type, format, group>,
+                      std::remove_cv_t<held_type>, automaton>(
         state, registers, states, symbol, hands_the_character, text);
   }
   if constexpr (!gathers_a_list) {
@@ -2419,8 +2545,10 @@ constexpr void advance_scanner(
               if (entered.readings[reading][closing] != command.destination) {
                 continue;
               }
-              std::get<group>(states[command.destination]) =
-                  std::get<group>(states[entered.readings[reading][opening]]);
+              std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]) =
+                  std::get<gathering_slot<type, format, group>>(
+                      states[entered.readings[reading][opening]]);
               break;
             }
           }(),
@@ -2446,8 +2574,8 @@ constexpr void advance_scanner(
       if (filled[open]) continue;
       if (registers[open] < 0 || registers[close] >= registers[open]) continue;
       filled[open] = true;
-      gathering_of<type, format, group>::push(std::get<group>(states[open]),
-                                              symbol);
+      gathering_of<type, format, group>::push(
+          std::get<gathering_slot<type, format, group>>(states[open]), symbol);
     }
   }
 }
@@ -2459,7 +2587,8 @@ constexpr void advance_scanner(
 // keeps them all together in one state of its own. The putting together of a
 // value is the same work either way, so it is written once and asks for what it
 // needs through one of these.
-template <class reading_type, class states_type, std::size_t register_count>
+template <class type, fixed_string format, class reading_type,
+          class states_type, std::size_t register_count>
 struct gathered_by_the_registers {
   const reading_type& reading;
   const states_type& states;
@@ -2473,14 +2602,16 @@ struct gathered_by_the_registers {
     const std::uint32_t open = reading[place * 2];
     const std::uint32_t close = reading[place * 2 + 1];
     const bool still_reading = registers[close] < registers[open];
-    return std::get<place>(states[still_reading ? open : close]);
+    return std::get<gathering_slot<type, format, place>>(
+        states[still_reading ? open : close]);
   }
 
   // A list is gathered and read at its opening throughout: its elements go on
   // being added to the same list however the readings divide.
   template <std::size_t place>
   [[nodiscard]] constexpr const auto& list() const {
-    return std::get<place>(states[reading[place * 2]]);
+    return std::get<gathering_slot<type, format, place>>(
+        states[reading[place * 2]]);
   }
 
   template <std::size_t place>
@@ -2612,14 +2743,15 @@ constexpr void collect_element(
       if (done[into] || registers[open] < 0) continue;
       done[into] = true;
       auto one = finish_value<type, element, group, false, failure_type>(
-          gathered_by_the_registers{packed.readings[reading], states,
-                                    registers},
+          by_the_registers<type, format>(packed.readings[reading], states,
+                                         registers),
           text);
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;
       }
-      append_to(std::get<list_group>(states[into]), std::move(*one));
+      append_to(std::get<gathering_slot<type, format, list_group>>(states[into]),
+                std::move(*one));
     }
   }
 }
@@ -2887,6 +3019,17 @@ struct gathered_by_a_fold {
   }
 };
 
+// Made rather than named: the reading, the states and the registers are all
+// deduced, and the type and the format are what say where a group is gathered.
+template <class type, fixed_string format, class reading_type,
+          class states_type, std::size_t register_count>
+[[nodiscard]] constexpr auto by_the_registers(
+    const reading_type& reading, const states_type& states,
+    const std::array<std::ptrdiff_t, register_count>& registers) {
+  return gathered_by_the_registers<type, format, reading_type, states_type,
+                                   register_count>{reading, states, registers};
+}
+
 // Where a group of a shape belongs: the place it is, or the place it is inside
 // of and which of that type's own groups it is.
 template <class type, std::size_t group>
@@ -2998,11 +3141,11 @@ class stream_state {
   // belongs to and there is no arithmetic that says which registers go
   // together.
   inline static constexpr std::size_t slot_count = automaton.register_count;
-  using field_states = decltype(make_scanner_state<type, format>());
+  using field_states = register_state<type, format>;
 
  public:
   constexpr stream_state() {
-    std::ranges::fill(scanner_states_, make_scanner_state<type, format>());
+    scanner_states_ = make_register_states<type, format, automaton>();
     std::ranges::fill(registers_, scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers_, std::ptrdiff_t{0});
@@ -3125,8 +3268,8 @@ class stream_state {
     const auto& reached = automaton.states[state_];
     // Nothing to point at: this machine is fed and never holds the subject.
     return finish_value<type, type, 0, true, failure_type>(
-        gathered_by_the_registers{reached.readings[slot], scanner_states_,
-                                  registers_},
+        by_the_registers<type, format>(reached.readings[slot], scanner_states_,
+                                       registers_),
         nullptr);
   }
 
@@ -3191,11 +3334,10 @@ class field_gatherer {
       "groups as they are read, or scan it from something contiguous");
   static constexpr std::size_t field_count = groups_of_output<type>();
   using states_type =
-      std::array<decltype(make_scanner_state<type, format>()),
-                 automaton.register_count>;
+      std::array<register_state<type, format>, automaton.register_count>;
 
   constexpr field_gatherer() {
-    std::ranges::fill(states_, make_scanner_state<type, format>());
+    states_ = make_register_states<type, format, automaton>();
   }
 
   // A list takes in the turn that has just ended, and what says it ended is
@@ -3247,8 +3389,8 @@ class field_gatherer {
   constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
     auto got = finish_value<type, type, 0, true>(
-        gathered_by_the_registers{packed.readings[packed.accepting_slot],
-                                  states_, registers},
+        by_the_registers<type, format>(packed.readings[packed.accepting_slot],
+                                       states_, registers),
         text_);
     if (!got) {
       failed_ = std::move(got).error();
@@ -3305,12 +3447,14 @@ class field_gatherer {
       using folded = fold_of<std::remove_cv_t<held_type>>;
       if constexpr (every_group_whole<held_type, typename folded::state_type>()) {
         if (from != to) {
-          fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+          fold_the_readings<group, gathering_slot<type, format, group>,
+                            std::remove_cv_t<held_type>, automaton>(
               state, registers, states_, *from, true, text_);
         }
       } else {
         for (const char* letter = from; letter != to; ++letter) {
-          fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+          fold_the_readings<group, gathering_slot<type, format, group>,
+                            std::remove_cv_t<held_type>, automaton>(
               state, registers, states_, *letter, true, text_);
         }
       }
@@ -3325,7 +3469,8 @@ class field_gatherer {
         if (registers[opening] < 0) continue;
         if (registers[closing] >= registers[opening]) continue;
         gathering_of<type, format, group>::push_run(
-            std::get<group>(states_[opening]), from, to);
+            std::get<gathering_slot<type, format, group>>(states_[opening]),
+            from, to);
       }
     }
   }
@@ -3345,7 +3490,8 @@ class field_gatherer {
     } else if constexpr (how::folds && how::inside) {
       return;
     } else if constexpr (how::folds && how::the_place) {
-      fold_the_readings<group, std::remove_cv_t<held_type>, automaton>(
+      fold_the_readings<group, gathering_slot<type, format, group>,
+                        std::remove_cv_t<held_type>, automaton>(
           landed, registers, states_, letter, true, text_);
     } else {
       static constexpr auto spread = spread_of<type, format>();
@@ -3359,7 +3505,8 @@ class field_gatherer {
         if (registers[opening] < 0) continue;
         if (registers[closing] >= registers[opening]) continue;
         gathering_of<type, format, group>::push(
-            std::get<group>(states_[opening]), letter);
+            std::get<gathering_slot<type, format, group>>(states_[opening]),
+            letter);
       }
     }
   }
