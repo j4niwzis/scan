@@ -1045,6 +1045,21 @@ differences are the point:
 | RE2 | while running | a range | views, after a dispatch inside its walk |
 | re2c | ahead of time, by a generator | a pointer and a terminator, no length | pointers |
 
+All of it is `benchmarks/captures_benchmark.cc`, and all of it is one pattern
+said four ways -- five fields of lowercase letters, separated by commas, the
+whole subject and nothing else:
+
+| | what it was given |
+| --- | --- |
+| this library | `"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}"` |
+| CTRE | `"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)"` |
+| RE2 | `"([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)"` |
+| re2c | `@t1 field @t2 "," … @t9 field @t10 "\x00"`, where `field = [a-z]+` |
+
+The subjects are `alpha,bravo,charlie,delta,echo` -- thirty characters -- and,
+for the long rows, the same five fields of two hundred letters each, which is
+a thousand and four.
+
 Five fields taken out of thirty characters, thirty-two records to a pass, the
 median of seven passes:
 
