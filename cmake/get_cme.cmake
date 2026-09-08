@@ -16,8 +16,8 @@
 # revision from before the change. So the pin that was applied is
 # remembered, and a pin that differs from it wins -- while -DCME_VERSION=
 # on the command line still stands until this file says something else.
-set(CME_PINNED "900e7ca8766e9e40851309a454e2f7b6530bc173")
-set(CME_PINNED_SHA256 "1b0d8fa7f6020873e0f5ead83ad4055a063dd099a11fd2482d0a446d4f5c6860")
+set(CME_PINNED "d303c9ed94c25234030a4110bcc39e7a56399ebc")
+set(CME_PINNED_SHA256 "79513552a8e883e6516cc508881c513ff22560ef0f4b73df428dd2733f1dd6ae")
 if(NOT "${CME_PIN_APPLIED}" STREQUAL "${CME_PINNED}")
   set(CME_VERSION "${CME_PINNED}" CACHE STRING
     "cmake-everywhere revision" FORCE)

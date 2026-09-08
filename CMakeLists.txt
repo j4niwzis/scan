@@ -67,10 +67,15 @@ option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 # It is asked for as modules, and a copy of it installed on the machine is
 # headers -- so this one is built rather than taken, because what it is taken
 # as decides whether `import boost.pfr` means anything.
+# Asked for as a module, which is a thing the port can be rather than an
+# option set beside it: whoever resolves the port first is the one an option
+# would have had to come before, and that is not always this file -- a build
+# that fetches this library resolves what it needs before its CMakeLists is
+# added at all.
 set(CME_SYSTEM_boost_pfr NEVER CACHE STRING
     "Boost.PFR is built here, because it is wanted as a module")
-cme_options(boost-pfr "BOOST_USE_MODULES ON" "BUILD_TESTING OFF")
-find_package(boost_pfr REQUIRED)
+cme_options(boost-pfr "BUILD_TESTING OFF")
+find_package(boost_pfr REQUIRED COMPONENTS modules)
 
 add_library(scan)
 add_library(scan::scan ALIAS scan)
