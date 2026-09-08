@@ -2,7 +2,7 @@ export module scan.regex;
 
 import std;
 import scan.tre;
-export import scan.runtime;
+export import scan.shape;
 
 export namespace scan {
 

@@ -1,7 +1,7 @@
 export module scan.range;
 
 import std;
-export import scan.runtime;
+export import scan.shape;
 
 export namespace scan::detail {
 
