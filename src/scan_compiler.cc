@@ -812,7 +812,11 @@ template <class type>
 
 template <class type>
 [[nodiscard]] consteval std::size_t groups_a_leaf_opens() {
-  if constexpr (!says_it_reads_its_groups<type>) {
+  // Asked of the hooks and not of the plain answer: this is a count and not a
+  // decision. A type with `from_groups` and nothing else said opens the groups
+  // its pattern opens, and counting them is what tells the reading around it
+  // where its own places begin.
+  if constexpr (!reads_its_own_groups<type>) {
     return 0;
   } else {
     std::size_t counted = 0;
