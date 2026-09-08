@@ -1,0 +1,17 @@
+# What a build makes, wherever it is told to make it.
+build/
+build-*/
+out/
+cmake-build-*/
+
+# What cmake-everywhere unpacks and fetches into a build directory. The lock
+# beside them is committed; these are not.
+_cme/
+_deps/
+
+# Editors and the machines they run on.
+.cache/
+.vscode/
+.idea/
+compile_commands.json
+.DS_Store

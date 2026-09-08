@@ -1,0 +1,82 @@
+# What has to be true of every commit: it builds, and the tests pass.
+#
+# The three bugs found on the seventh of September all lived in the main branch
+# for hours -- a list that read one element, a register begun where nothing
+# read it, a shape handed the whole match instead of its places -- and every
+# one of them was caught by running a test that already existed. Nothing was
+# running them.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A push that lands while the last one is still building cancels it: what
+# matters is whether the tip is good.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clang:
+    name: clang ${{ matrix.llvm }}, libc++, import std
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm: [21]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The compiler, and the standard library as modules: `import std` is
+      # compiled from libc++'s own std.cppm, which is in the -dev package.
+      - name: Install clang and libc++
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh ${{ matrix.llvm }}
+          sudo apt-get install -y --no-install-recommends \
+            libc++-${{ matrix.llvm }}-dev libc++abi-${{ matrix.llvm }}-dev \
+            ninja-build
+
+      # CMake's `import std` support is behind a gate that moves with the
+      # release, and the one the runner ships is older than the gate this
+      # project names. So the release is taken as it is published.
+      - name: Install CMake
+        run: |
+          version=4.4.3
+          wget -qO cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
+          sudo tar -xzf cmake.tar.gz -C /usr/local --strip-components=1
+          cmake --version
+
+      # What the ports were fetched from last time. The lock says which
+      # revisions those are, so a cache hit is the same sources or none.
+      - name: Cache fetched sources
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/CPM
+          key: cpm-${{ runner.os }}-${{ hashFiles('cme-lock.json', 'cmake/get_cme.cmake') }}
+          restore-keys: cpm-${{ runner.os }}-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=clang++-${{ matrix.llvm }} \
+            -DCMAKE_C_COMPILER=clang-${{ matrix.llvm }} \
+            -DCMAKE_CXX_FLAGS=-stdlib=libc++ \
+            -DCPM_SOURCE_CACHE="$HOME/.cache/CPM"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      # And that what a consumer gets is what was built: the library, the
+      # module interface units beside it, and a package that can be found.
+      - name: Install
+        run: cmake --install build --prefix "${{ runner.temp }}/prefix"
