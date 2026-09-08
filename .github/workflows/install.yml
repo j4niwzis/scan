@@ -14,8 +14,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+# One run to a commit on the main branch, and they do not wait for each other:
+# what is being asked is whether that commit is good, and a commit does not
+# become good by being answered later. A branch under review is the other way
+# round -- only the tip is worth an answer, so a push cancels the run before
+# it.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
