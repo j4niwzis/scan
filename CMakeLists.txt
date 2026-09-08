@@ -295,8 +295,17 @@ if(SCAN_BUILD_TESTS)
   # and one built here is `gtest_main`.
   if(TARGET GTest::gtest_main)
     set(scan_gtest GTest::gtest_main)
-  else()
+  elseif(TARGET gtest_main)
     set(scan_gtest gtest_main)
+  else()
+    # Said here rather than found out one file at a time. A copy that answered
+    # for googletest without leaving a target behind is one the tests link by
+    # name and compile without the headers of, and what says so is every test
+    # failing to find `gtest/gtest-macros.h`.
+    message(FATAL_ERROR
+      "googletest answered find_package, and neither GTest::gtest_main nor "
+      "gtest_main is a target in this build. A stored copy built by another "
+      "compiler is the usual reason: clear the cmake-everywhere store.")
   endif()
 endif()
 

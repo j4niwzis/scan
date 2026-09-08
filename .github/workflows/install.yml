@@ -82,8 +82,13 @@ jobs:
           path: |
             ~/.cache/cmake-everywhere/sources
             ~/.cache/cmake-everywhere/store
-          key: scan-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-${{ github.sha }}
-          restore-keys: scan-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-
+          # The compiler is part of the key, and not a detail of it: what the
+          # store keeps are compiled modules, and a module built by one clang
+          # is not readable by another. A key without it restored a copy built
+          # by the release before this one, and what said so was a test that
+          # could not find a header.
+          key: scan-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-${{ github.sha }}
+          restore-keys: scan-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-
 
       - name: build
         run: |
