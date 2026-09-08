@@ -92,8 +92,12 @@ jobs:
           # is not readable by another. A key without it restored a copy built
           # by the release before this one, and what said so was a test that
           # could not find a header.
-          key: scan-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-${{ github.sha }}
-          restore-keys: scan-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-
+          # The generation is bumped by hand where a stored copy has to be
+          # thrown away. A key that only grew a compiler to it was not enough:
+          # the first run with the new compiler restored the old store through
+          # the old prefix, and then saved that mixture under the new name.
+          key: scan-2-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-${{ github.sha }}
+          restore-keys: scan-2-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-
 
       - name: build
         run: |

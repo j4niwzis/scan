@@ -308,6 +308,19 @@ if(SCAN_BUILD_TESTS)
       "gtest_main is a target in this build. A stored copy built by another "
       "compiler is the usual reason: clear the cmake-everywhere store.")
   endif()
+  # And that what it left behind can be compiled against. A target with no
+  # include directories is a copy whose headers are somewhere this build was
+  # not told about, and every test then fails on the same missing header --
+  # which says nothing about where it came from.
+  get_target_property(scan_gtest_includes ${scan_gtest}
+                      INTERFACE_INCLUDE_DIRECTORIES)
+  if(NOT scan_gtest_includes)
+    message(FATAL_ERROR
+      "the googletest this build answered with (${scan_gtest}) carries no "
+      "include directories, so nothing can compile against it. A stored copy "
+      "built by another compiler is the usual reason: clear the "
+      "cmake-everywhere store, or configure with -DCME_STORE_ENABLED=OFF.")
+  endif()
 endif()
 
 enable_testing()
