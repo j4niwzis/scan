@@ -11,10 +11,1866 @@ export module scan.shape;
 
 import std;
 import scan.tre;
+import boost.pfr;
 export import scan.compiler;
 export import scan.runtime;
 
+export namespace scan {
+
+// What a shape is made of, asked of the type rather than assumed of it.
+//
+// Three questions and nothing else: how many parts, what the part at an index
+// is, and how to reach it in a value. Everything in this library that puts a
+// shape together asks them here, and nowhere else does it look at a type's
+// members at all.
+//
+// The default answer is what an aggregate says about itself, read with
+// Boost.PFR. A type that is not an aggregate -- one with invariants to keep,
+// or members nobody outside may touch, or an order of its own that has nothing
+// to do with the order it was written in -- answers them itself:
+//
+//   template <> struct scan::fields<my_type> {
+//     static constexpr std::size_t count = 2;
+//     template <std::size_t index> using at = …;
+//     template <std::size_t index> static constexpr auto& of(my_type&);
+//   };
+template <class type>
+struct fields {
+  static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
+
+  template <std::size_t index>
+  using at = std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>;
+
+  template <std::size_t index>
+  [[nodiscard]] static constexpr auto& of(type& value) {
+    return boost::pfr::get<index>(value);
+  }
+
+  template <std::size_t index>
+  [[nodiscard]] static constexpr const auto& of(const type& value) {
+    return boost::pfr::get<index>(value);
+  }
+};
+
+}  // namespace scan
+
 export namespace scan::detail {
+
+template <class type, std::size_t... index>
+[[nodiscard]] constexpr auto default_patterns(std::index_sequence<index...>) {
+  static_assert(
+      (requires {
+        scanner_pattern<typename scan::fields<type>::template at<index>>();
+      } && ...),
+      "scan::scanner<type> must provide pattern");
+  return std::array<std::string_view, sizeof...(index)>{
+      scanner_pattern<typename scan::fields<type>::template at<index>>()...};
+}
+
+template <fixed_string format, std::size_t field_count>
+[[nodiscard]] consteval auto field_parameters() {
+  std::array<std::string_view, field_count> result{};
+  std::size_t field = 0;
+  std::size_t capture_depth = 0;
+  bool character_class = false;
+  const auto text = format.view();
+  for (std::size_t position = 0; position < text.size(); ++position) {
+    if (text[position] == '\\') {
+      ++position;
+      continue;
+    }
+    if (capture_depth != 0 && text[position] == '[') character_class = true;
+    if (capture_depth != 0 && text[position] == ']') character_class = false;
+    if (!character_class && text[position] == '{' &&
+        position + 1 < text.size() && text[position + 1] >= '0' &&
+        text[position + 1] <= '9') {
+      while (position < text.size() && text[position] != '}') ++position;
+      if (position == text.size()) throw "unterminated repetition";
+      continue;
+    }
+    if (!character_class && text[position] == '}') {
+      if (capture_depth != 0) --capture_depth;
+      continue;
+    }
+    if (character_class || text[position] != '{') {
+      continue;
+    }
+    if (field == field_count) throw "too many capture groups";
+    ++capture_depth;
+    if (position + 1 < text.size() && text[position + 1] == ':') {
+      const auto begin = position + 2;
+      auto end = begin;
+      while (end < text.size() && text[end] != '}') ++end;
+      if (end == text.size()) throw "unterminated scanner parameters";
+      result[field] = text.substr(begin, end - begin);
+    }
+    ++field;
+  }
+  if (field != field_count) throw "capture count does not match output";
+  return result;
+}
+
+// A type is a leaf when something knows how to read it out of text, and a
+// product when it does not and is an aggregate. A leaf takes one group; a
+// product takes as many as its fields take between them, in order, and its
+// fields may be products themselves. Nothing about that needs saying in the
+// format: a structure of structures is written out flat, because that is what
+// it is.
+// The question is whether a scanner has been written for this type, and it has
+// to be asked of the class and not of the call: naming `scanner_parse<type>` is
+// well formed for any type at all, because its declaration says nothing about
+// the body. Only asking for the size of `scanner<type>` makes the compiler
+// decide whether the specialisation is there.
+// A type may say how it is read as a format of its own, and then it is not a
+// leaf but a shape: the places in its format stand for its own fields, and its
+// groups are groups of whatever it is written into.
+// Whether a type is one of several: whatever `scan::branches` was told about,
+// which is `std::variant` and anything else somebody wrote a `branches` for.
+template <class type>
+concept scanned_as_variant = requires {
+  scan::branches<std::remove_cv_t<type>>::count;
+};
+
+// How many alternatives, and which type the k-th is, asked of whatever says
+// it.
+template <class type>
+[[nodiscard]] consteval std::size_t branch_count() {
+  return scan::branches<std::remove_cv_t<type>>::count;
+}
+
+template <class type, std::size_t which>
+using branch_at =
+    typename scan::branches<std::remove_cv_t<type>>::template at<which>;
+
+// A type that reads itself out of the groups its own pattern opens.
+//
+// Either handed them when the match is done, or told which of them each
+// character belongs to as it arrives -- and either way its pattern has groups
+// in it, which are groups of whatever it is written into.
+template <class type>
+concept reads_its_own_groups =
+    requires { scan::scanner<std::remove_cv_t<type>>{}.begin_groups(); } ||
+    requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
+    } || requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(given);
+    };
+
+// A type that says outright that it reads its own groups.
+//
+// Asked as a plain question, and not by whether a hook is there. What such a
+// hook hands back is a list of everything the reading can fail with, and
+// working that list out means asking how this type is read -- which is what is
+// being decided here. A member that is a plain bool has no such circle in it,
+// and saying it is the whole of what a shape has to do to be one.
+template <class type>
+concept says_it_reads_its_groups = requires {
+  { scan::scanner<std::remove_cv_t<type>>{}.reads_its_groups() } -> std::same_as<bool>;
+  requires scan::scanner<std::remove_cv_t<type>>{}.reads_its_groups();
+};
+
+// A type that says outright it is a list, though it could be read as one
+// value.
+//
+// `std::string` is a range and has a scanner, and reading it as a value is
+// what everybody wants -- so a type that is both is a value. Where that is the
+// wrong way round, the type says so:
+//
+//   template <> struct scan::scanner<my_bytes> { static constexpr bool as_a_list = true; … };
+template <class type>
+concept says_it_is_a_list = requires {
+  requires scan::scanner<std::remove_cv_t<type>>::as_a_list;
+};
+
+template <class type>
+concept scanned_as_leaf = requires {
+  sizeof(scan::scanner<std::remove_cv_t<type>>);
+} && !says_it_is_a_list<type>;
+
+// A type that says how it is read and also how it is made.
+//
+//   template <> struct scan::scanner<point> : scan::aggregate_scanner<"({}, {})"> {
+//     static constexpr point parse(int x, int y) { return point(x, y); }
+//   };
+//
+// The places of its format then stand for the arguments of that call rather
+// than for the fields of the type, and the type is built by making the call. So
+// it need not be an aggregate at all: it may have invariants to keep, members
+// nobody outside may touch, or an order of its own that has nothing to do with
+// the order it is written in.
+//
+// Both halves are required. A scanner with a `parse` and no format is an
+// ordinary leaf and reads itself from the text of one place; the format is what
+// says the places are the arguments.
+template <class type>
+concept scanned_from_values = says_it_reads_its_groups<type> && requires {
+  &scan::scanner<std::remove_cv_t<type>>::parse;
+};
+
+// A type that holds as many of something as the input turns out to have.
+//
+// Nothing in the format says how many; the type does, by being a range that can
+// be grown. The place stands for the whole list and its body is the format of
+// one element, read over again for as long as it goes on -- so a separator is
+// written the way anything matched and not kept is written, and the element may
+// be a value, a shape, a variant or another list.
+// A type read as a list: as many turns as the subject affords.
+//
+// A type that is both a value and a range is read as a value, because that is
+// what a `std::string` field means. `as_a_list` is how a type says otherwise,
+// and saying it stops the type being a leaf at all.
+template <class type>
+concept scanned_as_range =
+    !scanned_as_leaf<type> &&
+    !scanned_as_variant<type> && std::ranges::range<type> &&
+    requires(type& into, std::ranges::range_value_t<type> element) {
+      into.push_back(std::move(element));
+    };
+
+template <class function_type>
+struct call_parameters;
+template <class result_type, class... argument_types>
+struct call_parameters<result_type (*)(argument_types...)> {
+  static constexpr std::size_t count = sizeof...(argument_types);
+  template <std::size_t index>
+  using at = std::remove_cvref_t<
+      std::tuple_element_t<index, std::tuple<argument_types...>>>;
+};
+
+// What a type is made of, for the purpose of reading it: the arguments of the
+// call that makes it, where there is one, and its fields otherwise.
+template <class type, bool = scanned_from_values<type>>
+struct parts_of;
+template <class type>
+  requires scanned_as_range<type>
+struct parts_of<type, false> {
+  static constexpr std::size_t count = 1;
+  template <std::size_t index>
+  using at = std::remove_cvref_t<std::ranges::range_value_t<type>>;
+};
+template <class type>
+struct parts_of<type, false> {
+  static constexpr std::size_t count = scan::fields<type>::count;
+  template <std::size_t index>
+  using at = typename scan::fields<type>::template at<index>;
+};
+template <class type>
+struct parts_of<type, true> {
+  using call = call_parameters<
+      decltype(&scan::scanner<std::remove_cv_t<type>>::parse)>;
+  static constexpr std::size_t count = call::count;
+  template <std::size_t index>
+  using at = typename call::template at<index>;
+};
+
+// What a shape is made of, asked of what it says and not of how it is read.
+//
+// The same answer as the general one -- the arguments of the call that makes
+// it, or its fields -- but reached without asking whether the type is a list or
+// a leaf or a shape, because those are questions this one is used to answer.
+template <class type, bool = scanned_from_values<type>>
+struct shape_parts {
+  static constexpr std::size_t count =
+      scan::fields<std::remove_cv_t<type>>::count;
+  template <std::size_t index>
+  using at =
+      typename scan::fields<std::remove_cv_t<type>>::template at<index>;
+};
+template <class type>
+struct shape_parts<type, true> {
+  using call = call_parameters<
+      decltype(&scan::scanner<std::remove_cv_t<type>>::parse)>;
+  static constexpr std::size_t count = call::count;
+  template <std::size_t index>
+  using at = typename call::template at<index>;
+};
+
+// Whether a list stands anywhere inside a shape, asked of what the types say
+// and never of how this library reads them.
+//
+// The difference matters here and nowhere else: how a shape is read is decided
+// by whether it can hand its groups over, that is decided by whether it holds
+// a list, and a question that asks its own answer has none. So this one asks
+// only what a type is: a range that can be pushed into is a list, a type that
+// says it is one is one, and a shape or a choice is asked about what is in it.
+template <class type>
+concept a_list_by_itself =
+    !requires { sizeof(scan::scanner<std::remove_cv_t<type>>); } &&
+    std::ranges::range<type> &&
+    requires(type& into, std::ranges::range_value_t<type> one) {
+      into.push_back(std::move(one));
+    };
+
+template <class type>
+concept a_choice_by_itself = requires {
+  scan::branches<std::remove_cv_t<type>>::count;
+};
+
+template <class type>
+[[nodiscard]] consteval bool says_a_list_inside();
+
+template <class type>
+[[nodiscard]] consteval bool a_list_field() {
+  if constexpr (says_it_is_a_list<type> || a_list_by_itself<type>) {
+    return true;
+  } else if constexpr (says_it_reads_its_groups<type>) {
+    return says_a_list_inside<type>();
+  } else if constexpr (a_choice_by_itself<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... ||
+              a_list_field<std::remove_cv_t<branch_at<type, which>>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else {
+    return false;
+  }
+}
+
+template <class type>
+[[nodiscard]] consteval bool says_a_list_inside() {
+  if constexpr (!says_it_reads_its_groups<type>) {
+    return a_list_field<type>();
+  } else {
+    // What a shape is made of: the arguments of the call that makes it, where
+    // there is one, and its fields otherwise. Asked this way rather than by
+    // reflection, because a shape made by a call has no fields to reflect on
+    // and its arguments are as much a part of it as fields are of anything.
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              a_list_field<typename shape_parts<
+                  std::remove_cv_t<type>>::template at<field>>());
+    }(std::make_index_sequence<shape_parts<std::remove_cv_t<type>>::count>{});
+  }
+}
+
+// What one place in a format stands for. A leaf takes one; a type with a format
+// of its own takes one and spends it on the format it declared; anything else
+// is opened up and its fields take places of their own, which is why a
+// structure of structures can be written out flat.
+template <class type>
+[[nodiscard]] consteval std::size_t places_of() {
+  if constexpr (scanned_as_leaf<type> ||
+                scanned_as_variant<type> || scanned_as_range<type>) {
+    return 1;
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              places_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// Whether the type names its groups with types rather than with numbers.
+//
+//   using group = std::variant<major, minor, patch>;
+//
+// Then the k-th alternative is the name of the k-th group, and the pushes can
+// be overloads rather than a switch.
+template <class type>
+concept names_its_groups = requires {
+  typename scan::scanner<std::remove_cv_t<type>>::group;
+};
+
+// Whether the type would rather have the group whole than a character at a
+// time. Only a subject that can be pointed at can offer it, so this is asked
+// together with whether there is anything to point at.
+template <class type, std::size_t which, class state_type>
+concept takes_the_group_whole =
+    requires(state_type& state, std::string_view text) {
+      scan::scanner<std::remove_cv_t<type>>{}.closed_group(
+          state, scan::group_at<which>{}, text);
+    } || requires(state_type& state, std::string_view text) {
+      scan::scanner<std::remove_cv_t<type>>{}.closed_group(state, which, text);
+    } || (names_its_groups<type> &&
+          requires(state_type& state, std::string_view text) {
+            scan::scanner<std::remove_cv_t<type>>{}.closed_group(
+                state,
+                std::variant_alternative_t<
+                    which,
+                    typename scan::scanner<std::remove_cv_t<type>>::group>{},
+                text);
+          });
+
+// The state a type folds its groups in, as a type.
+template <class type>
+using group_state_of =
+    decltype(scan::scanner<std::remove_cv_t<type>>{}.begin_groups());
+
+// Whether the type takes the characters of this group at all. A fold may be
+// made of the edges alone -- counting the turns, saying which branch ran -- and
+// then there is nothing to hand a character to.
+template <class type, std::size_t which, class state_type>
+concept takes_group_characters =
+    requires(state_type& state, char letter) {
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(
+          state, scan::group_at<which>{}, letter);
+    } || requires(state_type& state, char letter) {
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(state, which, letter);
+    } || (names_its_groups<type> && requires(state_type& state, char letter) {
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(
+          state,
+          std::variant_alternative_t<
+              which, typename scan::scanner<std::remove_cv_t<type>>::group>{},
+          letter);
+    });
+
+// One character, handed to the group it belongs to, in whichever of the three
+// ways the type asked for: the name of the group, the group as a variant, or
+// its number. The choice is made here, where the number is a constant.
+template <class type, std::size_t which, class state_type>
+constexpr void push_one_group(state_type& state, char letter) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (requires {
+                  scanner_type{}.push_group(state, scan::group_at<which>{},
+                                           letter);
+                }) {
+    scanner_type{}.push_group(state, scan::group_at<which>{}, letter);
+  } else if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type{}.push_group(state, one{}, letter); }) {
+      scanner_type{}.push_group(state, one{}, letter);
+    } else if constexpr (requires {
+                           scanner_type{}.push_group(
+                               state, named(std::in_place_index<which>),
+                               letter);
+                         }) {
+      scanner_type{}.push_group(state, named(std::in_place_index<which>),
+                               letter);
+    } else {
+      scanner_type{}.push_group(state, which, letter);
+    }
+  } else {
+    scanner_type{}.push_group(state, which, letter);
+  }
+}
+
+// The two edges of a group, said the same three ways a push is said. A type
+// that only wants the characters says neither, and then nothing is said to it.
+template <class type, std::size_t which, class state_type>
+constexpr void open_one_group(state_type& state) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (requires {
+                  scanner_type{}.opened_group(state, scan::group_at<which>{});
+                }) {
+    scanner_type{}.opened_group(state, scan::group_at<which>{});
+  } else if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type{}.opened_group(state, one{}); }) {
+      scanner_type{}.opened_group(state, one{});
+    } else if constexpr (requires {
+                           scanner_type{}.opened_group(
+                               state, named(std::in_place_index<which>));
+                         }) {
+      scanner_type{}.opened_group(state, named(std::in_place_index<which>));
+    } else if constexpr (requires { scanner_type{}.opened_group(state, which); }) {
+      scanner_type{}.opened_group(state, which);
+    }
+  } else if constexpr (requires { scanner_type{}.opened_group(state, which); }) {
+    scanner_type{}.opened_group(state, which);
+  }
+}
+
+template <class type, std::size_t which, class state_type>
+constexpr void close_one_group(state_type& state);
+
+// A group closing, and where the subject can be pointed at, the whole of what
+// it stood on handed over with it. Off a stream there is no such thing to hand,
+// so the type is told the characters as they arrive and told the closing on its
+// own; the two are the same fold, said with what each reading has to give.
+template <class type, std::size_t which, class state_type>
+constexpr void close_one_group(state_type& state, std::string_view text) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (requires {
+                  scanner_type{}.closed_group(state, scan::group_at<which>{},
+                                             text);
+                }) {
+    scanner_type{}.closed_group(state, scan::group_at<which>{}, text);
+  } else if constexpr (requires {
+                         scanner_type{}.closed_group(state, which, text);
+                       }) {
+    scanner_type{}.closed_group(state, which, text);
+  } else if constexpr (names_its_groups<type> && requires {
+                         scanner_type{}.closed_group(
+                             state,
+                             std::variant_alternative_t<
+                                 which, typename scanner_type::group>{},
+                             text);
+                       }) {
+    scanner_type{}.closed_group(
+        state,
+        std::variant_alternative_t<which, typename scanner_type::group>{},
+        text);
+  } else {
+    for (char letter : text) push_one_group<type, which>(state, letter);
+    close_one_group<type, which>(state);
+  }
+}
+
+template <class type, std::size_t which, class state_type>
+constexpr void close_one_group(state_type& state) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (requires {
+                  scanner_type{}.closed_group(state, scan::group_at<which>{});
+                }) {
+    scanner_type{}.closed_group(state, scan::group_at<which>{});
+  } else if constexpr (names_its_groups<type>) {
+    using named = typename scanner_type::group;
+    using one = std::variant_alternative_t<which, named>;
+    if constexpr (requires { scanner_type{}.closed_group(state, one{}); }) {
+      scanner_type{}.closed_group(state, one{});
+    } else if constexpr (requires {
+                           scanner_type{}.closed_group(
+                               state, named(std::in_place_index<which>));
+                         }) {
+      scanner_type{}.closed_group(state, named(std::in_place_index<which>));
+    } else if constexpr (requires { scanner_type{}.closed_group(state, which); }) {
+      scanner_type{}.closed_group(state, which);
+    }
+  } else if constexpr (requires { scanner_type{}.closed_group(state, which); }) {
+    scanner_type{}.closed_group(state, which);
+  }
+}
+
+// How many groups a leaf's own pattern opens.
+//
+// Nought for every leaf that does not read itself out of them, which is every
+// leaf there was until now -- so the counting below is the counting that was
+// there before, for everything that came before.
+// The pattern a type declares, asked for in the way that works however it is
+// declared.
+//
+// A scanner may say `pattern()`, or `pattern(parameters)`, or both. Asked
+// without parameters, one that only has the second answers with the member
+// itself -- a pointer to a function, not a pattern -- and everything after
+// that is a puzzle. Asked with empty parameters, both answer with a pattern,
+// and empty parameters are what a place with nothing written after the colon
+// hands over anyway.
+template <class type>
+[[nodiscard]] constexpr auto declared_pattern() {
+  return scanner_pattern<std::remove_cv_t<type>>(std::string_view{});
+}
+
+// And its characters, however the pattern is held.
+[[nodiscard]] constexpr std::string_view pattern_view(const auto& declared) {
+  if constexpr (requires { std::string_view(declared); }) {
+    return std::string_view(declared);
+  } else {
+    return declared.view();
+  }
+}
+
+template <class type>
+[[nodiscard]] consteval std::size_t groups_a_leaf_opens() {
+  // Asked of the hooks and not of the plain answer: this is a count and not a
+  // decision. A type with `from_groups` and nothing else said opens the groups
+  // its pattern opens, and counting them is what tells the reading around it
+  // where its own places begin.
+  if constexpr (!reads_its_own_groups<type>) {
+    return 0;
+  } else {
+    std::size_t counted = 0;
+    const auto declared = declared_pattern<type>();
+    tre_parser reading(pattern_view(declared), {}, counted, true);
+    static_cast<void>(reading.parse_regex());
+    return counted;
+  }
+}
+
+template <class type>
+[[nodiscard]] consteval std::size_t groups_of() {
+  if constexpr (scanned_as_leaf<type>) {
+    // The place itself, and the groups the type's own pattern opens inside
+    // it, which are groups of this match like any others.
+    return 1 + groups_a_leaf_opens<type>();
+  } else if constexpr (scanned_as_variant<type>) {
+    // A mark for each branch, and then whatever that branch's alternative
+    // reads, in the order the branches are written.
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (std::size_t{0} + ... +
+              (1 + groups_of<branch_at<type, which>>()));
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    // One for the list itself, and then whatever one element reads -- written
+    // over again on every turn round the loop.
+    return 1 + groups_of<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              groups_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// The same count, asked of a type as the output of its own format rather than
+// as a value standing in somebody else's.
+//
+// A shape that reads its own groups is one value to whatever contains it -- a
+// place, and the groups its pattern opens after it -- and a product of places
+// to itself. Everything that builds a reading of a format asks the second
+// question, and asking the first would count a place nobody wrote.
+template <class type>
+[[nodiscard]] consteval std::size_t groups_of_output() {
+  if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (std::size_t{0} + ... + (1 + groups_of<branch_at<type, which>>()));
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return 1 +
+           groups_of<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... index>(std::index_sequence<index...>) {
+      return (std::size_t{0} + ... +
+              groups_of<typename parts_of<type>::template at<index>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+template <class type, std::size_t field>
+[[nodiscard]] consteval std::size_t groups_before_field() {
+  return []<std::size_t... index>(std::index_sequence<index...>) {
+    return (std::size_t{0} + ... +
+            groups_of<typename parts_of<type>::template at<index>>());
+  }(std::make_index_sequence<field>{});
+}
+
+// Which field of a product holds the group at this position, and where in that
+// field it falls.
+// Which field of a product holds the place at this position, and where in that
+// field it falls. The same walk as for groups, counting places.
+template <class subject>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_of_place(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        places_of<typename parts_of<subject>::template at<field>>()...};
+  }(std::make_index_sequence<parts_of<subject>::count>{});
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (index < counts[field]) return {field, index};
+    index -= counts[field];
+  }
+  throw "format has more places than the output type has values";
+}
+
+template <class subject, std::size_t index,
+          bool = scanned_as_leaf<subject> ||
+                 scanned_as_variant<subject> || scanned_as_range<subject>>
+struct place_at;
+template <class subject, std::size_t index>
+struct place_at<subject, index, true> {
+  using kind = subject;
+};
+template <class subject, std::size_t index>
+struct place_at<subject, index, false> {
+  static constexpr auto where = field_of_place<subject>(index);
+  using next = typename parts_of<subject>::template at<where.first>;
+  using kind = typename place_at<next, where.second>::kind;
+};
+
+template <class subject, std::size_t index>
+using place_kind = typename place_at<subject, index>::kind;
+
+// The places of a type's own format are its fields, not itself. A type that
+// declares a format is one place where it is used and a product of its fields
+// where that format is read, and the difference is the whole reason the reading
+// terminates.
+template <class subject>
+[[nodiscard]] consteval std::size_t places_within() {
+  return []<std::size_t... field>(std::index_sequence<field...>) {
+    return (std::size_t{0} + ... +
+            places_of<typename parts_of<subject>::template at<field>>());
+  }(std::make_index_sequence<parts_of<subject>::count>{});
+}
+
+template <class subject, std::size_t index>
+using place_within_kind = typename place_at<subject, index, false>::kind;
+
+// Choosing between the two by a conditional would ask for both, and asking a
+// variant how many places its fields make is asking a variant for fields. Only
+// the one taken may be named.
+template <class subject, bool within>
+[[nodiscard]] consteval std::size_t places_chosen() {
+  if constexpr (within) {
+    return places_within<subject>();
+  } else {
+    return places_of<subject>();
+  }
+}
+
+template <class subject, bool within, std::size_t index>
+struct place_chosen {
+  static constexpr bool stands_alone =
+      within ? false
+             : (scanned_as_leaf<subject> ||
+                scanned_as_variant<subject> || scanned_as_range<subject>);
+  using kind = typename place_at<subject, index, stands_alone>::kind;
+};
+
+template <class subject>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> field_holding(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... field>(
+                              std::index_sequence<field...>) {
+    return std::array<std::size_t, sizeof...(field)>{
+        groups_of<typename parts_of<subject>::template at<field>>()...};
+  }(std::make_index_sequence<parts_of<subject>::count>{});
+  for (std::size_t field = 0; field < counts.size(); ++field) {
+    if (index < counts[field]) return {field, index};
+    index -= counts[field];
+  }
+  throw "group index past the end of the output type";
+}
+
+template <class held_type>
+struct kind_is {
+  using kind = held_type;
+};
+
+// Which branch of a variant a group falls in, and where within it: nothing
+// means the mark that stands for the branch itself, and anything after it
+// belongs to what that branch reads.
+template <class type>
+[[nodiscard]] consteval std::pair<std::size_t, std::size_t> branch_holding(
+    std::size_t index) {
+  constexpr auto counts = []<std::size_t... which>(
+                              std::index_sequence<which...>) {
+    return std::array<std::size_t, sizeof...(which)>{
+        (1 + groups_of<branch_at<type, which>>())...};
+  }(std::make_index_sequence<branch_count<type>()>{});
+  for (std::size_t branch = 0; branch < counts.size(); ++branch) {
+    if (index < counts[branch]) return {branch, index};
+    index -= counts[branch];
+  }
+  throw "group index past the end of the variant";
+}
+
+// Which type gathers the value at this group. A list gathers at the group that
+// stands for the list itself -- the first of the ones it takes -- and its
+// element gathers at the ones after it, over and over.
+template <class subject, std::size_t index,
+          int = scanned_as_leaf<subject> ? 0
+                : scanned_as_range<subject> ? 1
+                : scanned_as_variant<subject> ? 3
+                                              : 2>
+struct leaf_at;
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 0> {
+  using kind = subject;
+};
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 1> {
+  using element = std::remove_cvref_t<std::ranges::range_value_t<subject>>;
+  using kind = typename std::conditional_t<
+      index == 0, kind_is<subject>,
+      leaf_at<element, (index == 0 ? 0 : index - 1)>>::kind;
+};
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 2> {
+  static constexpr auto where = field_holding<subject>(index);
+  using next = typename parts_of<subject>::template at<where.first>;
+  using kind = typename leaf_at<next, where.second>::kind;
+};
+
+// A variant is not a product and cannot be opened up like one: its groups are
+// a mark for each branch, followed by whatever that branch reads.
+template <class subject, std::size_t index>
+struct leaf_at<subject, index, 3> {
+  static constexpr auto where = branch_holding<subject>(index);
+  using branch = branch_at<subject, where.first>;
+  using kind = typename std::conditional_t<
+      where.second == 0, kind_is<branch_mark>,
+      leaf_at<branch, (where.second == 0 ? 0 : where.second - 1)>>::kind;
+};
+
+template <class subject, std::size_t index>
+using leaf_kind = typename leaf_at<subject, index>::kind;
+
+// The same two, asked of a type as the output of its own format: never as a
+// value standing in somebody else's place, which is what it looks like to
+// whatever contains it.
+template <class subject, std::size_t index>
+using leaf_kind_of_output = typename leaf_at<
+    subject, index,
+    scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3 : 2>::kind;
+
+
+// Where within that type the group falls: nothing means the place the type
+// stands at, and anything after it is one of the groups the type's own pattern
+// opens, counted in the order they are written.
+//
+// The walk is the one above, step for step. Only the answer differs, so if one
+// of them ever learns a new shape the other has to learn it too.
+template <class subject, std::size_t index,
+          int = scanned_as_leaf<subject> ? 0
+                : scanned_as_range<subject> ? 1
+                : scanned_as_variant<subject> ? 3
+                                              : 2>
+struct leaf_offset_at;
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 0> {
+  static constexpr std::size_t value = index;
+};
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 1> {
+  using element = std::remove_cvref_t<std::ranges::range_value_t<subject>>;
+  static constexpr std::size_t value =
+      index == 0 ? 0
+                 : leaf_offset_at<element, (index == 0 ? 0 : index - 1)>::value;
+};
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 2> {
+  static constexpr auto where = field_holding<subject>(index);
+  using next = typename parts_of<subject>::template at<where.first>;
+  static constexpr std::size_t value = leaf_offset_at<next, where.second>::value;
+};
+template <class subject, std::size_t index>
+struct leaf_offset_at<subject, index, 3> {
+  static constexpr auto where = branch_holding<subject>(index);
+  using branch = branch_at<subject, where.first>;
+  static constexpr std::size_t value =
+      where.second == 0
+          ? 0
+          : leaf_offset_at<branch, (where.second == 0 ? 0 : where.second - 1)>::
+                value;
+};
+
+template <class subject, std::size_t index>
+inline constexpr std::size_t leaf_offset_of = leaf_offset_at<subject, index>::value;
+
+template <class subject, std::size_t index>
+inline constexpr std::size_t leaf_offset_of_output = leaf_offset_at<
+    subject, index,
+    scanned_as_range<subject> ? 1 : scanned_as_variant<subject> ? 3
+                                                                : 2>::value;
+
+// A leaf that is put together from the groups its own pattern opens, rather
+// than from the text it stands on. Where it opens none, it is an ordinary leaf
+// and nothing below changes for it.
+template <class held>
+inline constexpr bool gathers_by_its_groups =
+    reads_its_own_groups<held> && groups_a_leaf_opens<held>() > 0;
+
+// A type that folds its groups as they happen, rather than reading them once
+// the match is over.
+//
+// The two are not a matter of taste. A machine with tags keeps a bounded number
+// of positions -- one per tag -- so what is there at the end is the last turn
+// round a loop and nothing before it. A type whose groups repeat can only be
+// built by folding the turns as they go, which is what a list has always done
+// here. So a type that says `begin_groups` is told its groups during the walk,
+// and one that only says `from_groups` is handed them afterwards, which is all
+// that can be handed to it.
+template <class type>
+concept folds_its_groups = requires {
+  scan::scanner<std::remove_cv_t<type>>{}.begin_groups();
+};
+
+template <class held>
+inline constexpr bool folds_by_turns =
+    gathers_by_its_groups<held> && folds_its_groups<held>;
+
+// A type that can only be told its groups as they happen: it folds them and
+// cannot be handed them afterwards.
+//
+// The two are not the same question. A type that can do both is folded where
+// the subject is read once -- there is no other way there -- and handed its
+// groups whole where they can be pointed at, which is the faster of the two
+// and the one that copies nothing. Only a type that cannot be handed them
+// forces the reading that gathers as it goes.
+template <class held>
+inline constexpr bool needs_the_turns =
+    folds_by_turns<held> && !requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<held>>{}.from_groups(given);
+    } && !requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<held>>{}.try_from_groups(given);
+    };
+
+// Reading a format against the type it is scanned into, and writing out the one
+// the automaton is built from.
+//
+// A place standing for a leaf becomes that leaf's own pattern, with whatever
+// was written after the colon handed to it and kept for the reading afterwards.
+// A place standing for a type that declared a format becomes that format, read
+// against that type -- so the places inside it mean that type's fields and
+// nothing about where it was used. That is the whole of the hygiene: a format
+// is only ever read against the type it belongs to.
+struct spread_format {
+  pattern_buffer<2048> text{};
+  pattern_buffer<64> parameters[32]{};
+  std::size_t leaves = 0;
+  // Carried rather than passed: the format says it, and everything that
+  // spreads a format is already handed this.
+  bool space_before_places = false;
+};
+
+// The spelling the spread writes.
+//
+// A place is a group, a mark is a group of nothing, a repeated group is a
+// repeated group, and text that stands for itself is written so that it still
+// does. That is a plain regular expression: the groups of it are the places of
+// the format, in the order the format has them, so a type handed its own groups
+// is handed its places, and the thing that reads a format is the thing that
+// reads an expression.
+constexpr void say_place_begin(spread_format& made) { made.text.push_back('('); }
+
+constexpr void say_place_end(spread_format& made) { made.text.push_back(')'); }
+
+constexpr void say_group_begin(spread_format& made) {
+  made.text.append(std::string_view("(?:"));
+}
+
+constexpr void say_group_end(spread_format& made) { made.text.push_back(')'); }
+
+constexpr void say_branch(spread_format& made) { made.text.push_back('|'); }
+
+constexpr void say_mark(spread_format& made) {
+  made.text.append(std::string_view("()"));
+}
+
+constexpr void say_raw_begin(spread_format& made) {
+  made.text.append(std::string_view("(?:"));
+}
+
+constexpr void say_raw_end(spread_format& made) { made.text.push_back(')'); }
+
+// A character of the format that stands for itself.
+//
+// In this library's own spelling that is what it is: the format parser reads
+// anything it has no meaning for as the character it is. Said as a regular
+// expression it has to be written so that it still stands for itself, because
+// there a dot is every character and a plus is a repetition.
+constexpr void say_literal(spread_format& made, char value) {
+  if (std::string_view(".^$|()[]*+?{}\\").contains(value)) {
+    made.text.push_back('\\');
+  }
+  made.text.push_back(value);
+}
+
+// A pattern somebody wrote in the format: copied as it stands, except that a
+// group written there keeps nothing.
+//
+// A place is one value, and what is written inside it says what that value
+// matches -- not how many values there are. So `{(\d+)-(\d+)}` is one value
+// however many brackets it has, and the brackets are made into the kind that
+// group without keeping.
+constexpr void say_written_pattern(spread_format& made, std::string_view text) {
+  bool character_class = false;
+  for (std::size_t at = 0; at < text.size(); ++at) {
+    const char value = text[at];
+    if (value == '\\' && at + 1 < text.size()) {
+      made.text.push_back(value);
+      made.text.push_back(text[at + 1]);
+      ++at;
+      continue;
+    }
+    if (value == '[') character_class = true;
+    if (value == ']') character_class = false;
+    if (!character_class && value == '(' &&
+        !(at + 1 < text.size() && text[at + 1] == '?')) {
+      made.text.append(std::string_view("(?:"));
+      continue;
+    }
+    made.text.push_back(value);
+  }
+}
+
+constexpr void copy_until_place(spread_format& made, std::string_view text,
+                                std::size_t& position) {
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      made.text.push_back(text[position]);
+      made.text.push_back(text[position + 1]);
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') return;
+    say_literal(made, text[position]);
+    ++position;
+  }
+}
+
+// The body of a place, and where it ends. A brace inside a character class or a
+// repetition is not the end of one.
+[[nodiscard]] constexpr std::size_t end_of_place(std::string_view text,
+                                                 std::size_t open) {
+  std::size_t position = open + 1;
+  bool character_class = false;
+  while (position < text.size()) {
+    const char symbol = text[position];
+    if (symbol == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (symbol == '[') character_class = true;
+    if (symbol == ']') character_class = false;
+    if (!character_class && symbol == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (!character_class && symbol == '}') return position;
+    ++position;
+  }
+  throw "unterminated placeholder";
+}
+
+// Read outside a type, one place is the whole of it; read inside its own
+// format, one place is one of its fields. The same walk, told which it is.
+// Where the top level of a format has branches, each is read against the
+// alternative standing in the same place, and each one's places mean that
+// alternative's values.
+[[nodiscard]] constexpr std::array<std::pair<std::size_t, std::size_t>, 16>
+branches_of(std::string_view text, std::size_t& count) {
+  std::array<std::pair<std::size_t, std::size_t>, 16> found{};
+  std::size_t begin = 0;
+  std::size_t position = 0;
+  count = 0;
+  while (position < text.size()) {
+    if (text[position] == '\\' && position + 1 < text.size()) {
+      position += 2;
+      continue;
+    }
+    if (text[position] == '{') {
+      position = end_of_place(text, position) + 1;
+      continue;
+    }
+    if (text[position] == '|') {
+      if (count == found.size()) throw "too many branches in a format";
+      found[count++] = {begin, position};
+      begin = position + 1;
+    }
+    ++position;
+  }
+  if (count == found.size()) throw "too many branches in a format";
+  found[count++] = {begin, text.size()};
+  return found;
+}
+
+// Literal text, and any place that keeps nothing, up to the next place that
+// does. A place whose body begins with a star is matched and thrown away, the
+// way `%*d` is read and not stored, and it takes no value with it.
+constexpr void copy_until_kept_place(spread_format& made, std::string_view text,
+                                     std::size_t& position) {
+  while (true) {
+    copy_until_place(made, text, position);
+    if (position == text.size()) return;
+    const std::size_t close = end_of_place(text, position);
+    const std::string_view body =
+        text.substr(position + 1, close - position - 1);
+    if (body.empty() || body.front() != '*') return;
+    say_raw_begin(made);
+    made.text.append(body.substr(1));
+    say_raw_end(made);
+    position = close + 1;
+  }
+}
+
+template <class type, bool within>
+constexpr void spread_into(spread_format& made, std::string_view text);
+
+// How many turns a place is written to take, as it is written: a star, a plus,
+// a question mark or a count in braces. Nothing written at all is one or more,
+// which is what a list of something usually is.
+[[nodiscard]] constexpr std::string_view repetition_after(std::string_view text,
+                                                          std::size_t at) {
+  if (at >= text.size()) return {};
+  const char first = text[at];
+  if (first == '*' || first == '+' || first == '?') return text.substr(at, 1);
+  if (first != '{') return {};
+  if (at + 1 >= text.size() || text[at + 1] < '0' || text[at + 1] > '9') {
+    return {};
+  }
+  std::size_t close = at + 1;
+  while (close < text.size() && text[close] != '}') ++close;
+  if (close == text.size()) throw "unterminated repetition";
+  return text.substr(at, close - at + 1);
+}
+
+template <class kind>
+constexpr void spread_place(spread_format& made, std::string_view body,
+                            std::string_view repetition = {}) {
+  if constexpr (scanned_as_range<kind>) {
+    // The body is one element, and it is read for as long as it goes on. The
+    // group around it is the list; the places inside it are the element, and
+    // they are written over again on every turn.
+    // The group is the list and holds it whole; what repeats is inside it. The
+    // other way round -- a group repeated -- would open the list again on
+    // every turn, and a list opened again is an empty one.
+    say_place_begin(made);
+    ++made.leaves;
+    say_group_begin(made);
+    spread_into<std::remove_cvref_t<std::ranges::range_value_t<kind>>, false>(
+        made, body);
+    say_group_end(made);
+    // How many turns, and one or more where the format did not say.
+    //
+    // The two spellings of the spread said this differently: the one the
+    // format reader took wrote a mark that meant "this place repeats", and how
+    // often was the reader's business, so a place with nothing written after
+    // it went round for as long as the subject afforded. Written as a regular
+    // expression there is no such mark -- what repeats is what carries a
+    // repetition -- and when the two became one the unwritten one was lost. A
+    // list read one turn and stopped: "7" was a list of one, and "1,2,3" was
+    // not a list at all.
+    made.text.append(repetition.empty() ? std::string_view("+") : repetition);
+    say_place_end(made);
+  } else if constexpr (scanned_as_variant<kind>) {
+    // The branches, held together, each headed by a mark. Written out, the body
+    // of the place says them, one per alternative, separated by a bar. Left
+    // empty, each alternative is asked how it reads itself -- which it can
+    // answer if it declares a format or if something knows how to read it.
+    constexpr std::size_t count = branch_count<kind>();
+    std::size_t written = 0;
+    std::array<std::pair<std::size_t, std::size_t>, 16> parts{};
+    if (!body.empty()) {
+      parts = branches_of(body, written);
+      if (written != count) {
+        throw "a variant place must have one branch for each alternative";
+      }
+    }
+    say_group_begin(made);
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      const auto one = [&]<std::size_t branch>() {
+        if constexpr (branch != 0) say_branch(made);
+        say_mark(made);
+        // The mark is a group like any other and takes a number, so what comes
+        // after it reads its own parameters and not the ones before.
+        ++made.leaves;
+        using alternative = branch_at<kind, branch>;
+        if (body.empty()) {
+          spread_place<alternative>(made, std::string_view{});
+        } else {
+          spread_into<alternative, false>(
+              made, body.substr(parts[branch].first,
+                                parts[branch].second - parts[branch].first));
+        }
+      };
+      (one.template operator()<which>(), ...);
+    }(std::make_index_sequence<count>{});
+    say_group_end(made);
+  } else if constexpr (!scanned_as_leaf<kind>) {
+    // Only reached by a variant place left empty, which asks each alternative
+    // how it reads itself. This one does not say.
+    throw "an alternative of a variant place left empty must say how it reads "
+          "itself -- give it a scanner or a format of its own, or write the "
+          "branches out with a bar between them";
+  } else {
+    if constexpr (gathers_by_its_groups<std::remove_cv_t<kind>>) {
+      // The groups are counted off the pattern the type declares, so that is
+      // the pattern it has to be read with. Written over, the count and the
+      // groups would be two different things.
+      if (!body.empty() && body.front() != ':') {
+        throw "a type that reads its own groups keeps its own pattern -- a "
+              "place standing for it takes parameters but not a pattern";
+      }
+    }
+    say_place_begin(made);
+    if (body.empty() || body.front() == ':') {
+      const std::string_view given = body.empty() ? body : body.substr(1);
+      made.parameters[made.leaves].append(given);
+      const auto pattern = scanner_pattern<std::remove_cv_t<kind>>(given);
+      if constexpr (gathers_by_its_groups<std::remove_cv_t<kind>>) {
+        // Its groups are what it is handed, so they are groups here.
+        made.text.append(pattern_view(pattern));
+      } else {
+        // A value is one place however its pattern is written, so whatever it
+        // wrote in brackets groups without keeping.
+        say_written_pattern(made, pattern_view(pattern));
+      }
+    } else {
+      say_written_pattern(made, body);
+    }
+    say_place_end(made);
+    // The place, and then the groups its pattern opens, which take the numbers
+    // straight after it. What is counted here is group numbers: the parameters
+    // are read by the group that gathers, so everything that takes a number has
+    // to move this on.
+    ++made.leaves;
+    if constexpr (gathers_by_its_groups<std::remove_cv_t<kind>>) {
+      made.leaves += groups_a_leaf_opens<std::remove_cv_t<kind>>();
+    }
+  }
+}
+
+template <class type, bool within>
+constexpr void spread_into(spread_format& made, std::string_view text) {
+  std::size_t position = 0;
+  [&]<std::size_t... place>(std::index_sequence<place...>) {
+    const auto one = [&]<std::size_t which>() {
+      copy_until_kept_place(made, text, position);
+      // A place can hold another, and the one inside is a value of its own:
+      // `{{[a]+}}` is a group around a group, two values, one place at this
+      // level. The body is copied as it stands, so the places within it are
+      // still groups when the pattern is read, and the values they take are
+      // the ones this walk has no place left for. Running out here is that,
+      // and not a format with too little in it.
+      if (position == text.size()) return;
+      const std::size_t close = end_of_place(text, position);
+      using kind = typename place_chosen<type, within, which>::kind;
+      std::string_view repetition;
+      if constexpr (scanned_as_range<kind>) {
+        repetition = repetition_after(text, close + 1);
+      }
+      // Whatever whitespace is in front of the place, taken and not kept --
+      // which is what `%d` does, and what this format asked for by being
+      // written `past_space`.
+      if (made.space_before_places) {
+        say_raw_begin(made);
+        made.text.append("\\s*");
+        say_raw_end(made);
+      }
+      spread_place<kind>(
+          made, text.substr(position + 1, close - position - 1), repetition);
+      position = close + 1 + repetition.size();
+    };
+    (one.template operator()<place>(), ...);
+  }(std::make_index_sequence<places_chosen<type, within>()>{});
+  copy_until_kept_place(made, text, position);
+  if (position != text.size()) throw "format has more places than values";
+}
+
+template <class type, fixed_string format>
+[[nodiscard]] consteval spread_format spread_of() {
+  spread_format made;
+  made.space_before_places = format.space_before_places;
+  if constexpr (scanned_as_variant<type>) {
+    // The whole format is the list of branches, which is what a place standing
+    // for a variant is written as anywhere else.
+    spread_place<type>(made, format.view());
+  } else {
+    // The type scanned into is always opened up: its fields are the places, and
+    // it is never itself one. A format of a single place standing for the whole
+    // output would read differently the day that type gained a scanner or lost
+    // one, without a word changing in the format, so it is not allowed to mean
+    // anything. Whoever wants it writes the wrapper themselves, and then the
+    // place is the field and says so.
+    spread_into<type, true>(made, format.view());
+  }
+  return made;
+}
+
+// The same spread, said as a regular expression: the groups of it are the
+// places of the format, in the order the format has them. This is what a type
+// that declares a format matches, and what it is handed when it is handed its
+// own groups.
+template <class type, fixed_string format>
+[[nodiscard]] consteval pattern_buffer<> places_pattern() {
+  constexpr auto made = spread_of<type, format>();
+  pattern_buffer<> result;
+  result.append(made.text.view());
+  return result;
+}
+
+// What one field of a shape matches, whatever kind of field it is.
+//
+// A value says it itself. A choice says a mark and a branch, over and over --
+// and a branch is a field like any other, so this is written once and asks
+// itself about them.
+template <class field_type>
+[[nodiscard]] constexpr pattern_buffer<> field_pattern(
+    std::string_view parameters);
+
+template <class type, std::size_t extent, std::size_t... index>
+[[nodiscard]] constexpr auto parameterized_patterns(
+    const std::array<std::string_view, extent>& parameters,
+    std::index_sequence<index...>) {
+  const auto make_pattern = []<class field_type>(
+                                std::string_view field_parameters) {
+    // A choice is written so that which branch ran can be read off the match:
+    // a group of nothing in front of each branch, which took part only if that
+    // branch did. The same mark the spread writes, said in the language
+    // everybody else can read.
+    return field_pattern<field_type>(field_parameters);
+  };
+  // By field, and not by the values a field opens up into: this builds the
+  // pattern a whole aggregate matches for the paths that match it whole -- the
+  // streaming one -- and there a field that is itself a shape contributes its
+  // own pattern, recursively, rather than being spread out here.
+  return std::array<pattern_buffer<>, extent>{
+      make_pattern.template operator()<
+          typename scan::fields<type>::template at<index>>(
+          parameters[index])...};
+}
+
+template <class field_type>
+[[nodiscard]] constexpr pattern_buffer<> field_pattern(
+    std::string_view parameters) {
+  pattern_buffer<> result;
+  if constexpr (scanned_as_variant<field_type>) {
+    // A mark, and then the branch in a group of its own -- the mark says which
+    // branch ran, because a group that took no part points nowhere, and the
+    // group beside it holds what that branch stood on.
+    result.append(std::string_view("(?:"));
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ((void)[&] {
+        if constexpr (which != 0) result.push_back('|');
+        result.append(std::string_view("()("));
+        const auto branch =
+            field_pattern<std::remove_cv_t<branch_at<field_type, which>>>(
+                std::string_view{});
+        result.append(branch.view());
+        result.push_back(')');
+      }(), ...);
+    }(std::make_index_sequence<branch_count<field_type>()>{});
+    result.push_back(')');
+  } else {
+    const auto pattern = scanner_pattern<field_type>(parameters);
+    result.append(std::string_view{pattern});
+  }
+  return result;
+}
+
+template <std::size_t extent>
+[[nodiscard]] constexpr auto pattern_views(
+    const std::array<pattern_buffer<>, extent>& patterns) {
+  std::array<std::string_view, extent> result{};
+  std::ranges::transform(patterns, result.begin(),
+                         [](const auto& pattern) { return pattern.view(); });
+  return result;
+}
+
+// Values built out of the groups a match left behind.
+//
+// This lived beside the format reader, which is the only thing that used it.
+// The pattern reader wants it too: where a group is written with the very
+// pattern a type declares for itself, the groups inside it are the type's own
+// values and the type is built from them -- no second automaton over the same
+// characters, and no reading of the same text twice.
+
+// One place's text, read as its type -- or what went wrong instead.
+//
+// A scanner that says `try_parse` never throws and its failure comes back from
+// here as one of the kinds this reading can fail with. One that says only
+// `parse` throws whatever it throws, past all of this: nothing in this library
+// catches, so a scanner that wants its failure handed back says so by handing
+// it back.
+template <class type, class failure_type>
+[[nodiscard]] constexpr std::expected<type, failure_type> parse_value(
+    std::string_view text, std::string_view parameters) {
+  using value_type = std::remove_cv_t<type>;
+  if constexpr (scan::says_what_went_wrong<value_type>) {
+    auto got = scan::scanner_try_parse<value_type>(text, parameters);
+    if (got) return std::move(*got);
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::move(got).error()));
+  } else {
+    static_assert(requires { scanner_parse<value_type>(text); },
+                  "scan::scanner<type> must provide parse(string_view) or "
+                  "try_parse(string_view)");
+    return scanner_parse<value_type>(text, parameters);
+  }
+}
+
+// Where a branch's mark stands, counting from the start of the variant: each
+// branch before it took a mark of its own and whatever its alternative reads.
+template <class type, std::size_t branch>
+[[nodiscard]] consteval std::size_t groups_before_branch() {
+  return []<std::size_t... which>(std::index_sequence<which...>) {
+    return (std::size_t{0} + ... +
+            (1 + groups_of<branch_at<type, which>>()));
+  }(std::make_index_sequence<branch>{});
+}
+
+// Whether a variant stands anywhere inside this output, at any depth. Where one
+// does, a group that took no part is the ordinary state of affairs rather than
+// a fault.
+template <class type>
+[[nodiscard]] consteval bool holds_a_variant() {
+  if constexpr (scanned_as_variant<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              holds_a_variant<typename parts_of<type>::template at<field>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// Whether a list stands anywhere inside this output.
+//
+// A list is read by gathering, and it has to be: the positions a match leaves
+// behind hold the last turn round the loop and nothing else, so an output with
+// a list in it cannot be put together by reading them afterwards, however well
+// they can be pointed at. It goes to the machine that gathers as it goes, over
+// the very same characters.
+template <class type>
+[[nodiscard]] consteval bool holds_a_range() {
+  if constexpr (scanned_as_range<type>) {
+    return true;
+  } else if constexpr (scanned_as_leaf<type>) {
+    return false;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... ||
+              holds_a_range<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_range<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// The kinds a scanner hands back, where it hands back several of them: they
+// are said as a variant, and this is that variant read as a list.
+template <class variant>
+struct kinds_of_variant;
+template <class... kinds>
+struct kinds_of_variant<std::variant<kinds...>> {
+  static_assert((std::derived_from<kinds, scan::scan_error> && ...),
+                "every kind a scanner hands back has to be a "
+                "`scan::scan_error`: it ends up in the list of what a reading "
+                "can fail with, and asking for a value rather than trying for "
+                "it throws it");
+  using list = scan::kind_list<kinds...>;
+};
+
+template <class... lists>
+struct joined_all {
+  using type = scan::kind_list<>;
+};
+template <class first>
+struct joined_all<first> {
+  using type = first;
+};
+template <class first, class... rest>
+struct joined_all<first, rest...> {
+  using type = typename scan::joined_lists<
+      first, typename joined_all<rest...>::type>::type;
+};
+
+// What a scanner says it can go wrong with, said in the only place it cannot
+// fall out of step with the code: the type it hands back.
+//
+// Four places to say it, one for each of the user's functions that makes a
+// value -- `try_parse`, `try_finish`, `try_from_groups`, `try_finish_groups` --
+// and the kinds of all of them together are what a reading of this leaf can
+// fail with. A scanner that throws instead says nothing here and is caught
+// nowhere: it throws past the reading, to whoever asked for it.
+template <class kind>
+struct kinds_handed_back {
+  static_assert(std::derived_from<kind, scan::scan_error>,
+                "what a `try_` function hands back has to be a "
+                "`scan::scan_error`, or a variant of them: it ends up in the "
+                "list of what a reading can fail with, and asking for a value "
+                "rather than trying for it throws it");
+  using list = scan::kind_list<kind>;
+};
+// Said as a variant where there is more than one of them.
+template <class... kinds>
+struct kinds_handed_back<std::variant<kinds...>> {
+  using list = typename kinds_of_variant<std::variant<kinds...>>::list;
+};
+
+template <class type>
+struct parse_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong<std::remove_cv_t<type>>
+struct parse_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_with<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct finish_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong_finishing<std::remove_cv_t<type>>
+struct finish_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_finishing<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct from_groups_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong_from_groups<std::remove_cv_t<type>>
+struct from_groups_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_from_groups<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct folding_kinds {
+  using list = scan::kind_list<>;
+};
+template <class type>
+  requires scan::says_what_went_wrong_folding<std::remove_cv_t<type>>
+struct folding_kinds<type> {
+  using list = typename kinds_handed_back<
+      scan::went_wrong_folding<std::remove_cv_t<type>>>::list;
+};
+
+template <class type>
+struct declared_kinds {
+  using list = typename joined_all<typename parse_kinds<type>::list,
+                                   typename finish_kinds<type>::list,
+                                   typename from_groups_kinds<type>::list,
+                                   typename folding_kinds<type>::list>::type;
+};
+
+// Every kind declared anywhere inside an output, walked the way everything
+// else about an output is walked.
+template <class type,
+          int = scanned_as_leaf<type> ? 0
+                : scanned_as_range<type> ? 1
+                : scanned_as_variant<type> ? 3
+                                           : 2>
+struct kinds_in;
+template <class type>
+struct kinds_in<type, 0> {
+  using list = typename declared_kinds<type>::list;
+};
+template <class type>
+struct kinds_in<type, 1> {
+  using list = typename kinds_in<
+      std::remove_cvref_t<std::ranges::range_value_t<type>>>::list;
+};
+template <class type>
+struct kinds_in<type, 2> {
+  template <std::size_t... part>
+  static auto over(std::index_sequence<part...>) -> typename joined_all<
+      typename kinds_in<typename parts_of<type>::template at<part>>::list...>::
+      type;
+  using list = decltype(over(std::make_index_sequence<parts_of<type>::count>{}));
+};
+template <class type>
+struct kinds_in<type, 3> {
+  template <std::size_t... which>
+  static auto over(std::index_sequence<which...>) -> typename joined_all<
+      typename kinds_in<branch_at<type, which>>::list...>::type;
+  using list =
+      decltype(over(std::make_index_sequence<branch_count<type>()>{}));
+};
+
+// What reading a shape can fail with, asked of its fields.
+//
+// Never of the shape itself: what the shape says it hands back is this very
+// list, so a list that asked the shape would be asking its own answer. Its
+// fields are other types, and asking them is asking something else.
+template <class type, class sequence>
+struct kinds_of_fields;
+template <class type, std::size_t... field>
+struct kinds_of_fields<type, std::index_sequence<field...>> {
+  using list = typename joined_all<
+      typename kinds_in<typename shape_parts<
+          std::remove_cv_t<type>>::template at<field>>::list...>::type;
+};
+
+template <class type>
+using shape_failure = typename scan::as_a_variant<typename scan::without_repeats<
+    typename scan::joined_lists<
+        scan::our_kinds,
+        typename kinds_of_fields<
+            type, std::make_index_sequence<shape_parts<std::remove_cv_t<type>>::
+                                               count>>::list>::type>::type>::
+    type;
+
+// This library's kinds, and the ones this output's own scanners declare.
+template <class type>
+using failure_for = typename scan::as_a_variant<typename scan::without_repeats<
+    typename scan::joined_lists<scan::our_kinds,
+                                typename kinds_in<type>::list>::type>::type>::
+    type;
+
+// Whether a fold stands anywhere inside this output.
+//
+// The same question as the one above, and the same answer for the same reason:
+// a fold is told its groups as the walk passes them, so an output holding one
+// cannot be put together from the positions left behind, however well they can
+// be pointed at. It goes to the machine that gathers as it goes.
+template <class type>
+[[nodiscard]] consteval bool holds_a_fold() {
+  if constexpr (scanned_as_leaf<type>) {
+    return needs_the_turns<std::remove_cv_t<type>>;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... || holds_a_fold<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return holds_a_fold<std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_fold<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// Whether a type that reads its own groups only once the match is over stands
+// anywhere inside this output.
+//
+// Such a type is handed views of the subject, so it needs a subject there is
+// something to point at. It can stand in the gathering machine -- a list or a
+// fold beside it puts the whole output there -- and then the walk has to be
+// one that started on characters lying in a row.
+template <class type>
+[[nodiscard]] consteval bool holds_a_flat_reader() {
+  if constexpr (scanned_as_leaf<type>) {
+    // One that can also be folded is not refused: off a stream it is told its
+    // groups as they arrive, which wants nothing to point at. Nor is one that
+    // gathers a character at a time, which is the ordinary way a leaf is read
+    // off a stream -- it is handed its groups only where they can be pointed
+    // at, and read as a value everywhere else.
+    return gathers_by_its_groups<std::remove_cv_t<type>> &&
+           !folds_by_turns<std::remove_cv_t<type>> &&
+           !scan::gathers_as_it_reads<std::remove_cv_t<type>>;
+  } else if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... || holds_a_flat_reader<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return holds_a_flat_reader<
+        std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... part>(std::index_sequence<part...>) {
+      return (false || ... ||
+              holds_a_flat_reader<typename parts_of<type>::template at<part>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+// Whether a shape's turns can be folded by the shape itself.
+//
+// Its places are told to it one at a time, so every place has to be something
+// that takes characters: a value with a scanner, or a list of them. A place
+// standing for a type that reads groups of its own would have to be handed
+// those groups, and a fold has none to hand -- such a shape keeps the road
+// that spreads its places into the automaton around it.
+template <class type, fixed_string format>
+[[nodiscard]] consteval bool turns_can_be_folded() {
+  return []<std::size_t... place>(std::index_sequence<place...>) {
+    return (true && ... && [] {
+      using stands_for =
+          std::remove_cv_t<leaf_kind_of_output<std::remove_cv_t<type>, place>>;
+      // A value that takes characters, or a type that folds its own groups and
+      // can be handed the ones that are its. What cannot be told this way is a
+      // type that wants its groups when the match is over: a fold has no views
+      // of the subject to give it.
+      return !gathers_by_its_groups<stands_for> || folds_by_turns<stands_for>;
+    }());
+  }(std::make_index_sequence<groups_of_output<std::remove_cv_t<type>>()>{});
+}
+
+// The same question, asked of what is inside an output rather than of the
+// output itself.
+//
+// A type read by the machine that gathers is being built out of its places,
+// however it looks to whatever contains it -- a shape that is one value to its
+// parent is a product of places to itself. Asking the question of the type
+// would ask how that type is read, and the answer to that is the machine doing
+// the asking.
+template <class type>
+[[nodiscard]] consteval bool a_flat_reader_inside() {
+  if constexpr (scanned_as_variant<type>) {
+    return []<std::size_t... which>(std::index_sequence<which...>) {
+      return (false || ... || holds_a_flat_reader<branch_at<type, which>>());
+    }(std::make_index_sequence<branch_count<type>()>{});
+  } else if constexpr (scanned_as_range<type>) {
+    return holds_a_flat_reader<
+        std::remove_cvref_t<std::ranges::range_value_t<type>>>();
+  } else {
+    return []<std::size_t... field>(std::index_sequence<field...>) {
+      return (false || ... ||
+              holds_a_flat_reader<
+                  typename parts_of<type>::template at<field>>());
+    }(std::make_index_sequence<parts_of<type>::count>{});
+  }
+}
+
+
+// A leaf is read from its one group; a product is built from its fields, each
+// of which takes as many groups as it needs, in order. Nothing about the
+// nesting is written in the format: a structure of structures is spelled out
+// flat, because a product of products is flat.
+// The parameters come from the same spread the automaton was built from, so a
+// colon written at the place a value is read from reaches that value however
+// deeply it sits, and a format declared by a type is read against that type
+// here exactly as it was there.
+// What a leaf was given after the colon, where anything was. A format says it
+// per place; a pattern written by hand says nothing at all.
+template <class root, fixed_string format>
+struct format_parameters {
+  [[nodiscard]] static constexpr std::string_view at(std::size_t place) {
+    static constexpr auto spread = spread_of<root, format>();
+    return spread.parameters[place].view();
+  }
+};
+
+// The first of these that did not read, if any did not. Written once because
+// every shape that is made of parts asks it: a product, and a type made by the
+// call it named.
+template <class failure_type, class... parts>
+[[nodiscard]] constexpr std::optional<failure_type> what_went_wrong(
+    std::tuple<parts...>& read) {
+  std::optional<failure_type> went_wrong;
+  [&]<std::size_t... at>(std::index_sequence<at...>) {
+    ((void)[&] {
+      if (went_wrong || std::get<at>(read)) return;
+      went_wrong = std::move(std::get<at>(read)).error();
+    }(), ...);
+  }(std::index_sequence_for<parts...>{});
+  return went_wrong;
+}
+
+struct no_parameters {
+  [[nodiscard]] static constexpr std::string_view at(std::size_t) { return {}; }
+};
+
+// The groups as a span and not as an array of a known length: the reading
+// hands over all of them, and a type that reads its own groups hands over the
+// few that are its. Both are the same thing to whoever reads them.
+// What a reading does when it goes wrong, chosen by whoever asked for it.
+//
+// Asked for a value, there is nowhere to put a failure but a throw, and the
+// throw happens where the failure is -- so nothing along the way holds one, and
+// the value is written straight into the value it belongs to. Asked to try,
+// every step hands its failure back, and the caller gets it as the kind it is.
+//
+// One builder either way. The difference is these two words and the type a
+// step comes back as.
+struct hands_a_failure_back {
+  template <class type, class failure_type>
+  using result = std::expected<type, failure_type>;
+
+  template <class type, class failure_type, class error_type>
+  [[nodiscard]] static constexpr result<type, failure_type> went_wrong(
+      error_type&& said) {
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::forward<error_type>(said)));
+  }
+
+  template <class step_type>
+  [[nodiscard]] static constexpr bool read(const step_type& step) {
+    return step.has_value();
+  }
+
+  template <class step_type>
+  [[nodiscard]] static constexpr decltype(auto) value(step_type&& step) {
+    return *std::forward<step_type>(step);
+  }
+
+  template <class step_type>
+  [[nodiscard]] static constexpr decltype(auto) failure(step_type&& step) {
+    return std::forward<step_type>(step).error();
+  }
+};
+
+struct throws_a_failure {
+  template <class type, class failure_type>
+  using result = type;
+
+  template <class type, class failure_type, class error_type>
+  [[noreturn]] static constexpr type went_wrong(error_type&& said) {
+    scan::throw_what_went_wrong(std::forward<error_type>(said));
+  }
+
+  template <class step_type>
+  [[nodiscard]] static constexpr bool read(const step_type&) {
+    return true;
+  }
+
+  template <class step_type>
+  [[nodiscard]] static constexpr decltype(auto) value(step_type&& step) {
+    return std::forward<step_type>(step);
+  }
+
+  template <class step_type>
+  [[nodiscard]] static constexpr scan::scan_error failure(step_type&&) {
+    return scan::scan_error("a reading that throws has nothing to hand back");
+  }
+};
+
+
+
+[[nodiscard]] constexpr bool is_regex_meta(char value) {
+  return std::string_view(".^$|()[]*+?{}\\").contains(value);
+}
+
+constexpr void append_literal(pattern_buffer<>& output, char value) {
+  if (is_regex_meta(value)) output.push_back('\\');
+  output.push_back(value);
+}
+
+[[nodiscard]] constexpr std::size_t find_capture_end(
+    std::string_view format, std::size_t position, std::size_t depth = 0) {
+  if (position == format.size()) throw "unterminated aggregate capture";
+  if (format[position] == '\\') {
+    return find_capture_end(format, position + 2, depth);
+  }
+  if (format[position] == '{') {
+    return find_capture_end(format, position + 1, depth + 1);
+  }
+  if (format[position] == '}') {
+    return depth == 0
+               ? position
+               : find_capture_end(format, position + 1, depth - 1);
+  }
+  return find_capture_end(format, position + 1, depth);
+}
+
+template <class type, fixed_string format, fixed_string opening,
+          std::size_t field_count>
+constexpr void append_aggregate_pattern(
+    pattern_buffer<>& output,
+    const std::array<std::string_view, field_count>& defaults,
+    std::size_t position = 0, std::size_t field = 0) {
+  const std::string_view text = format.view();
+  if (position == text.size()) {
+    if (field != field_count) throw "aggregate format field count mismatch";
+    return;
+  }
+  if (text[position] == '\\') {
+    if (position + 1 == text.size()) throw "dangling aggregate escape";
+    append_literal(output, text[position + 1]);
+    append_aggregate_pattern<type, format, opening>(output, defaults,
+                                                    position + 2, field);
+    return;
+  }
+  if (text[position] != '{') {
+    append_literal(output, text[position]);
+    append_aggregate_pattern<type, format, opening>(output, defaults,
+                                                    position + 1, field);
+    return;
+  }
+  if (field == field_count) throw "too many aggregate captures";
+  const std::size_t end = find_capture_end(text, position + 1);
+  output.append(opening.view());
+  if (end == position + 1 || text[position + 1] == ':') {
+    output.append(defaults[field]);
+  } else {
+    output.append(text.substr(position + 1, end - position - 1));
+  }
+  output.push_back(')');
+  append_aggregate_pattern<type, format, opening>(output, defaults, end + 1,
+                                                  field + 1);
+}
+
+template <class type, fixed_string format, fixed_string opening = "(?:">
+[[nodiscard]] consteval pattern_buffer<> make_aggregate_pattern() {
+  constexpr std::size_t field_count = scan::fields<type>::count;
+  constexpr auto parameters = field_parameters<format, field_count>();
+  constexpr auto pattern_storage = parameterized_patterns<type>(
+      parameters, std::make_index_sequence<field_count>{});
+  const auto defaults = pattern_views(pattern_storage);
+  pattern_buffer<> output;
+  append_aggregate_pattern<type, format, opening>(output, defaults);
+  return output;
+}
+
+
+
+
+
+
 
 #if defined(_MSC_VER)
 #define SCAN_FORCE_INLINE __forceinline
@@ -136,7 +1992,7 @@ template <class type, fixed_string format>
   const char* const begin = input.data();
   const char* best = nullptr;
   if constexpr (automata_at_runtime) {
-    best = run_prefix_runtime(runtime_automaton<type, format>(), begin,
+    best = run_prefix_runtime(runtime_text_automaton<spread_text<type, format>>(), begin,
                               begin + input.size());
   } else {
     constexpr const auto& automaton = packed_automaton<type, format>;
@@ -183,7 +2039,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
     return made;
   };
   if consteval {
-    const auto matched = scan::tre::simulate(build_tnfa<type, format>(), input);
+    const auto matched = scan::tre::simulate(build_text_tnfa<spread_text<type, format>>(), input);
     if (!matched.matched) {
       return ending::template went_wrong<groups_type, scan::failure>(
           no_match("input does not match scan expression"));
@@ -207,7 +2063,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       // Nothing here is a constant: the automaton is a value built on first use
       // and the walk is a loop over it. Not one instantiation per state, not one
       // determinisation per pattern while compiling.
-      const scan::tre::tdfa& automaton = runtime_automaton<type, format>();
+      const scan::tre::tdfa& automaton = runtime_text_automaton<spread_text<type, format>>();
       std::vector<const char*> registers(automaton.register_count, nullptr);
       if (!run_tagged_runtime(automaton, input.data(),
                               input.data() + input.size(), registers)) {
@@ -2465,6 +4321,9 @@ scan_stream_prefix(range_type&& input) {
 // knowledge lives.
 export namespace scan {
 
+
+
+
 template <fixed_string format>
 struct aggregate_scanner {
   // The shape read out of groups that this format made, for a type that was
@@ -2657,3 +4516,21 @@ export namespace scan::detail {
 #undef SCAN_FORCE_INLINE
 
 }  // namespace scan::detail
+
+
+export namespace scan {
+
+// How many groups a type's own pattern opens.
+//
+// Said out loud because a type built from its groups may want to hand some of
+// them on: a shape whose field is another shape has that field's groups inside
+// its own, and it can only pass them along if it knows how many there are.
+// What is counted is the pattern the type declares, which is the pattern the
+// match was made with.
+template <class type>
+[[nodiscard]] consteval std::size_t groups_in() {
+  return detail::groups_a_leaf_opens<std::remove_cv_t<type>>();
+}
+
+}  // namespace scan
+

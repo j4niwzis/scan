@@ -1,46 +1,6 @@
 export module scan.core;
 
 import std;
-import boost.pfr;
-
-export namespace scan {
-
-// What a shape is made of, asked of the type rather than assumed of it.
-//
-// Three questions and nothing else: how many parts, what the part at an index
-// is, and how to reach it in a value. Everything in this library that puts a
-// shape together asks them here, and nowhere else does it look at a type's
-// members at all.
-//
-// The default answer is what an aggregate says about itself, read with
-// Boost.PFR. A type that is not an aggregate -- one with invariants to keep,
-// or members nobody outside may touch, or an order of its own that has nothing
-// to do with the order it was written in -- answers them itself:
-//
-//   template <> struct scan::fields<my_type> {
-//     static constexpr std::size_t count = 2;
-//     template <std::size_t index> using at = …;
-//     template <std::size_t index> static constexpr auto& of(my_type&);
-//   };
-template <class type>
-struct fields {
-  static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
-
-  template <std::size_t index>
-  using at = std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>;
-
-  template <std::size_t index>
-  [[nodiscard]] static constexpr auto& of(type& value) {
-    return boost::pfr::get<index>(value);
-  }
-
-  template <std::size_t index>
-  [[nodiscard]] static constexpr const auto& of(const type& value) {
-    return boost::pfr::get<index>(value);
-  }
-};
-
-}  // namespace scan
 
 export namespace scan::detail {
 
@@ -125,7 +85,10 @@ struct fixed_string {
   // from one can be handed to a reading of the other.
   bool space_before_places = false;
 
-  consteval fixed_string(const char (&text)[extent]) { std::copy_n(text, extent, value); }
+  fixed_string() = default;
+  consteval fixed_string(const char (&text)[extent]) {
+    std::copy_n(text, extent, value);
+  }
 
   [[nodiscard]] constexpr fixed_string to_the_end() const {
     fixed_string made = *this;
