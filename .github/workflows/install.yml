@@ -46,19 +46,24 @@ jobs:
           sudo tar xzf cmake.tar.gz -C /opt
           echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
 
-      # Where libc++ keeps the source of its std module, said by pointing at
-      # the compiler that belongs to it.
+      # Where `import std` is read from, put where this build looks for it.
       #
-      # CMake reads it out of the toolchain's own prefix, and the prefix is
-      # worked out from the compiler's path. Given /usr/bin/clang++-21, which
-      # is a link, that walks one directory up and asks for
-      # /lib/share/libc++/v1/std.cppm, which is nowhere. Given the compiler
-      # where it really is, the prefix is /usr/lib/llvm-21 and the file is
-      # /usr/lib/llvm-21/share/libc++/v1/std.cppm.
-      - name: what import std reads from libc++
+      # The source of the std module is in the toolchain's own directory --
+      # /usr/lib/llvm-21/share/libc++/v1/std.cppm -- and what CMake asks for
+      # is /lib/share/libc++/v1/std.cppm, which no package puts there. It is
+      # worked out from where the compiler is, and the compiler a
+      # distribution installs is a link in a directory that says nothing
+      # about its toolchain. So both ends are said outright: the compiler
+      # under a prefix of its own, and the module sources where the answer
+      # lands.
+      - name: where import std is read from
         run: |
-          test -f /usr/lib/llvm-21/share/libc++/v1/std.cppm
-          test -f /usr/lib/llvm-21/share/libc++/v1/std.compat.cppm
+          sudo mkdir -p /lib/share/libc++
+          sudo ln -sfn /usr/lib/llvm-21/share/libc++/v1 /lib/share/libc++/v1
+          sudo ln -sf /usr/lib/llvm-21/bin/clang++ /usr/local/bin/clang++
+          sudo ln -sf /usr/lib/llvm-21/bin/clang /usr/local/bin/clang
+          test -f /lib/share/libc++/v1/std.cppm
+          test -f /lib/share/libc++/v1/std.compat.cppm
 
       # What the ports were fetched from and what came out of building them.
       # Keyed by the pin and the lock, so a run that changes neither fetches
@@ -76,8 +81,8 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/lib/llvm-21/bin/clang \
-            -DCMAKE_CXX_COMPILER=/usr/lib/llvm-21/bin/clang++ \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
             -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
             -DCME_STORE_ENABLED=ON \
             -DCME_SOURCES_ENABLED=ON \
@@ -157,8 +162,8 @@ jobs:
           EOF
           cmake -S /tmp/consumer -B /tmp/consumer/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/lib/llvm-21/bin/clang \
-            -DCMAKE_CXX_COMPILER=/usr/lib/llvm-21/bin/clang++ \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
             -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
             -DCMAKE_PREFIX_PATH="$PWD/prefix"
           cmake --build /tmp/consumer/build
