@@ -2349,33 +2349,63 @@ inline constexpr std::size_t gathering_slot =
     where_kind<gathering_kinds_of<type, format>,
                typename gathering_state<type, format, group>::result>::at;
 
-// A register, begun as the group whose tag it holds would begin.
-template <class type, fixed_string format, auto& automaton, std::size_t reg>
-[[nodiscard]] constexpr auto make_register_state() {
-  static constexpr auto spread = spread_of<type, format>();
+// One gathering of every kind, each begun as the first group of that kind
+// would begin it. Where two groups of a kind ask for different parameters, the
+// one that is not first is begun again when its group opens, which is where
+// every group but one begins in any case.
+template <class type, fixed_string format>
+[[nodiscard]] constexpr auto make_slots() {
   register_state<type, format> made{};
-  constexpr std::size_t group =
-      static_cast<std::size_t>(automaton.register_tag[reg]) / 2;
-  if constexpr (group < groups_of_output<type>()) {
-    using held_type = leaf_kind_of_output<type, group>;
-    if constexpr (scanned_as_range<held_type>) {
-      std::get<gathering_slot<type, format, group>>(made) =
-          std::remove_cv_t<held_type>{};
-    } else {
-      std::get<gathering_slot<type, format, group>>(made) =
-          gathering_of<type, format, group>::begin(
-              spread.parameters[group].view());
-    }
-  }
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    // Backwards, so that the first group of a kind is the one that is left.
+    const auto one = [&]<std::size_t which>() {
+      using held_type = leaf_kind_of_output<type, which>;
+      if constexpr (scanned_as_range<held_type>) {
+        std::get<gathering_slot<type, format, which>>(made) =
+            std::remove_cv_t<held_type>{};
+      } else {
+        static constexpr auto spread = spread_of<type, format>();
+        std::get<gathering_slot<type, format, which>>(made) =
+            gathering_of<type, format, which>::begin(
+                spread.parameters[which].view());
+      }
+    };
+    (one.template operator()<groups_of_output<type>() - 1 - group>(), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
   return made;
 }
 
+// Every register, begun.
+//
+// One gathering of each kind everywhere, and then the groups that are open
+// from the very first character begun where their reading says they are kept:
+// those never meet the command that begins a group, because they were opened
+// before there was a character to move on.
 template <class type, fixed_string format, auto& automaton>
 [[nodiscard]] constexpr auto make_register_states() {
-  return [&]<std::size_t... reg>(std::index_sequence<reg...>) {
-    return std::array<register_state<type, format>, automaton.register_count>{
-        make_register_state<type, format, automaton, reg>()...};
-  }(std::make_index_sequence<automaton.register_count>{});
+  std::array<register_state<type, format>, automaton.register_count> states{};
+  std::ranges::fill(states, make_slots<type, format>());
+  const auto& initial = automaton.states[automaton.initial];
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ([&] {
+      using held_type = leaf_kind_of_output<type, group>;
+      for (std::size_t reading = 0; reading < initial.reading_count;
+           ++reading) {
+        const std::uint32_t at = initial.readings[reading][group * 2];
+        if (at >= automaton.register_count) continue;
+        if constexpr (scanned_as_range<held_type>) {
+          std::get<gathering_slot<type, format, group>>(states[at]) =
+              std::remove_cv_t<held_type>{};
+        } else {
+          static constexpr auto spread = spread_of<type, format>();
+          std::get<gathering_slot<type, format, group>>(states[at]) =
+              gathering_of<type, format, group>::begin(
+                  spread.parameters[group].view());
+        }
+      }
+    }(), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  return states;
 }
 
 // Following a reading instead of counting on the numbers.
@@ -2642,6 +2672,18 @@ struct gathered_by_the_registers {
     return fold;
   }
 };
+
+// Made rather than named: the reading, the states and the registers are all
+// deduced, and the type and the format are what say where a group is gathered.
+template <class type, fixed_string format, class reading_type,
+          class states_type, std::size_t register_count>
+[[nodiscard]] constexpr auto by_the_registers(
+    const reading_type& reading, const states_type& states,
+    const std::array<std::ptrdiff_t, register_count>& registers) {
+  return gathered_by_the_registers<type, format, reading_type, states_type,
+                                   register_count>{reading, states, registers};
+}
+
 
 template <class root, class type, std::size_t offset, bool as_output = false,
           class failure_type = failure_for<root>, class source_type>
@@ -3018,17 +3060,6 @@ struct gathered_by_a_fold {
     return std::get<place>(state.gatherings);
   }
 };
-
-// Made rather than named: the reading, the states and the registers are all
-// deduced, and the type and the format are what say where a group is gathered.
-template <class type, fixed_string format, class reading_type,
-          class states_type, std::size_t register_count>
-[[nodiscard]] constexpr auto by_the_registers(
-    const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers) {
-  return gathered_by_the_registers<type, format, reading_type, states_type,
-                                   register_count>{reading, states, registers};
-}
 
 // Where a group of a shape belongs: the place it is, or the place it is inside
 // of and which of that type's own groups it is.
