@@ -35,10 +35,6 @@ class borrowed_result {
   // Everything below is this, asked for in one of the two ways.
   template <class type>
   [[nodiscard]] constexpr std::expected<type, failure_for<type>> read() const {
-    static_assert(!scanned_by_format<type>,
-                  "a type that declares its own format is read as a field, not "
-                  "as the whole of what is scanned into: wrap it in a struct "
-                  "with one member and scan into that");
     // A list or a fold is read by the machine that gathers as it goes, even
     // where the subject lies in a row and could be pointed at: what either of
     // them is made of are the turns, and the positions left behind hold the
@@ -72,7 +68,7 @@ class borrowed_result {
       // whole match and read it by its own format a second time, so a shape of
       // two numbers was given "(3,-4)" where it expected "3".
       return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0, says_a_format<std::remove_cv_t<type>>>(
+                         type, 0, says_it_reads_its_groups<std::remove_cv_t<type>>>(
           *fields);
     }
   }
@@ -95,7 +91,7 @@ class borrowed_result {
         }
       }();
       return build_value<failure_for<type>, format_parameters<type, format>,
-                         type, 0, says_a_format<std::remove_cv_t<type>>,
+                         type, 0, says_it_reads_its_groups<std::remove_cv_t<type>>,
                          throws_a_failure>(fields);
     }
   }

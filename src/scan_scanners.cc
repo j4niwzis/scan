@@ -660,18 +660,12 @@ namespace detail {
 
 template <fixed_string format>
 struct aggregate_scanner {
-  // The format, said out loud, so that whatever reads this type can read it as
-  // a shape and not as a value.
-  //
-  // Nothing about this class is privileged, and nothing in this library names
-  // it: `scan_format` is a member any scanner may declare, and a type that
-  // declares it is spread into the automaton around it -- its places, its
-  // lists, its choices -- exactly as this one is. What is here is the writing
-  // of the hooks that go with it: the pattern its places make, the building
-  // from its own groups, and the telling of those groups as they arrive. A
-  // scanner that would rather write them itself writes them itself, and this
-  // library cannot tell the difference, because it never asks.
-  static constexpr auto scan_format = format;
+  // Nothing here is a member the library reads and reacts to. What this class
+  // does, it does through the hooks any scanner may write: the pattern its
+  // places make, the building from the groups that pattern opens, and the
+  // telling of those groups as they arrive. The format is a parameter of this
+  // class and is spoken by nobody else -- the library below knows patterns,
+  // groups and hooks, and has never heard of a format.
 
   [[nodiscard]] constexpr auto pattern(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
@@ -697,11 +691,7 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
     using type = scanner_target_t<decltype(self)>;
     static_cast<void>(self);
-    if constexpr (!detail::says_a_list_inside<type>()) {
-      return true;
-    } else {
-      return detail::turns_can_be_folded<type, format>();
-    }
+    return true;
   }
 
   // The shape, out of the groups its pattern opened.

@@ -1049,7 +1049,7 @@ template <class type, fixed_string pattern, std::size_t group>
 
 template <class type, fixed_string pattern, std::size_t group>
 [[nodiscard]] consteval bool group_spells_out() {
-  if constexpr (!says_a_format<std::remove_cv_t<type>>) {
+  if constexpr (!says_it_reads_its_groups<std::remove_cv_t<type>>) {
     return false;
   } else if constexpr (groups_of_output<std::remove_cv_t<type>>() <= 1) {
     return false;

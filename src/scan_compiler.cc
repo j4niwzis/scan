@@ -393,26 +393,29 @@ template <class type, std::size_t which>
 using branch_at =
     typename scan::branches<std::remove_cv_t<type>>::template at<which>;
 
-template <class type>
-concept says_a_format = requires {
-  scan::scanner<std::remove_cv_t<type>>::scan_format;
-};
-
-// A type read by spreading the format it declares into the automaton around
-// it. A type that also says how to build itself out of its own groups is read
-// that way instead: the groups are the same groups, and reading them is the
-// user's own code rather than this library's.
-// A type read by spreading the format it declares into the automaton around
-// it. A type that says it reads its own groups is read that way instead: the
-// groups are the same groups, and reading them is the user's own code rather
-// than this library's.
+// A type that reads itself out of the groups its own pattern opens.
 //
-// Asked as a plain question and not by whether a hook is there. What such a
+// Either handed them when the match is done, or told which of them each
+// character belongs to as it arrives -- and either way its pattern has groups
+// in it, which are groups of whatever it is written into.
+template <class type>
+concept reads_its_own_groups =
+    requires { scan::scanner<std::remove_cv_t<type>>{}.begin_groups(); } ||
+    requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
+    } || requires(std::span<const std::string_view> given) {
+      scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(given);
+    };
+
+// A type that says outright that it reads its own groups.
+//
+// Asked as a plain question, and not by whether a hook is there. What such a
 // hook hands back is a list of everything the reading can fail with, and
 // working that list out means asking how this type is read -- which is what is
-// being decided here.
+// being decided here. A member that is a plain bool has no such circle in it,
+// and saying it is the whole of what a shape has to do to be one.
 template <class type>
-concept scanned_by_format = says_a_format<type> && !requires {
+concept says_it_reads_its_groups = requires {
   { scan::scanner<std::remove_cv_t<type>>{}.reads_its_groups() } -> std::same_as<bool>;
   requires scan::scanner<std::remove_cv_t<type>>{}.reads_its_groups();
 };
@@ -433,7 +436,7 @@ concept says_it_is_a_list = requires {
 template <class type>
 concept scanned_as_leaf = requires {
   sizeof(scan::scanner<std::remove_cv_t<type>>);
-} && !scanned_by_format<type> && !says_it_is_a_list<type>;
+} && !says_it_is_a_list<type>;
 
 // A type that says how it is read and also how it is made.
 //
@@ -451,7 +454,7 @@ concept scanned_as_leaf = requires {
 // ordinary leaf and reads itself from the text of one place; the format is what
 // says the places are the arguments.
 template <class type>
-concept scanned_from_values = says_a_format<type> && requires {
+concept scanned_from_values = says_it_reads_its_groups<type> && requires {
   &scan::scanner<std::remove_cv_t<type>>::parse;
 };
 
@@ -469,7 +472,7 @@ concept scanned_from_values = says_a_format<type> && requires {
 // and saying it stops the type being a leaf at all.
 template <class type>
 concept scanned_as_range =
-    !scanned_as_leaf<type> && !scanned_by_format<type> &&
+    !scanned_as_leaf<type> &&
     !scanned_as_variant<type> && std::ranges::range<type> &&
     requires(type& into, std::ranges::range_value_t<type> element) {
       into.push_back(std::move(element));
@@ -561,7 +564,7 @@ template <class type>
 [[nodiscard]] consteval bool a_list_field() {
   if constexpr (says_it_is_a_list<type> || a_list_by_itself<type>) {
     return true;
-  } else if constexpr (says_a_format<type>) {
+  } else if constexpr (says_it_reads_its_groups<type>) {
     return says_a_list_inside<type>();
   } else if constexpr (a_choice_by_itself<type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
@@ -575,7 +578,7 @@ template <class type>
 
 template <class type>
 [[nodiscard]] consteval bool says_a_list_inside() {
-  if constexpr (!says_a_format<type>) {
+  if constexpr (!says_it_reads_its_groups<type>) {
     return a_list_field<type>();
   } else {
     // What a shape is made of: the arguments of the call that makes it, where
@@ -596,7 +599,7 @@ template <class type>
 // structure of structures can be written out flat.
 template <class type>
 [[nodiscard]] consteval std::size_t places_of() {
-  if constexpr (scanned_as_leaf<type> || scanned_by_format<type> ||
+  if constexpr (scanned_as_leaf<type> ||
                 scanned_as_variant<type> || scanned_as_range<type>) {
     return 1;
   } else {
@@ -780,20 +783,6 @@ constexpr void close_one_group(state_type& state) {
   }
 }
 
-// A type that reads itself out of the groups its own pattern opens.
-//
-// Either handed them when the match is done, or told which of them each
-// character belongs to as it arrives -- and either way its pattern has groups
-// in it, which are groups of whatever it is written into.
-template <class type>
-concept reads_its_own_groups =
-    requires { scan::scanner<std::remove_cv_t<type>>{}.begin_groups(); } ||
-    requires(std::span<const std::string_view> given) {
-      scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
-    } || requires(std::span<const std::string_view> given) {
-      scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(given);
-    };
-
 // How many groups a leaf's own pattern opens.
 //
 // Nought for every leaf that does not read itself out of them, which is every
@@ -824,7 +813,7 @@ template <class type>
 
 template <class type>
 [[nodiscard]] consteval std::size_t groups_a_leaf_opens() {
-  if constexpr (!reads_its_own_groups<type>) {
+  if constexpr (!says_it_reads_its_groups<type>) {
     return 0;
   } else {
     std::size_t counted = 0;
@@ -912,7 +901,7 @@ template <class subject>
 }
 
 template <class subject, std::size_t index,
-          bool = scanned_as_leaf<subject> || scanned_by_format<subject> ||
+          bool = scanned_as_leaf<subject> ||
                  scanned_as_variant<subject> || scanned_as_range<subject>>
 struct place_at;
 template <class subject, std::size_t index>
@@ -960,7 +949,7 @@ template <class subject, bool within, std::size_t index>
 struct place_chosen {
   static constexpr bool stands_alone =
       within ? false
-             : (scanned_as_leaf<subject> || scanned_by_format<subject> ||
+             : (scanned_as_leaf<subject> ||
                 scanned_as_variant<subject> || scanned_as_range<subject>);
   using kind = typename place_at<subject, index, stands_alone>::kind;
 };
@@ -1406,13 +1395,6 @@ constexpr void spread_place(spread_format& made, std::string_view body,
       (one.template operator()<which>(), ...);
     }(std::make_index_sequence<count>{});
     say_group_end(made);
-  } else if constexpr (scanned_by_format<kind>) {
-    // Still spread into the pattern around it, which is what a shape made of
-    // turns needs. A shape that reads its own groups is not one of these: it
-    // stands in a place like any other value, and its groups follow it.
-    if (!body.empty()) throw "a type that declares a format takes no body";
-    spread_into<kind, true>(
-        made, scan::scanner<std::remove_cv_t<kind>>::scan_format.view());
   } else if constexpr (!scanned_as_leaf<kind>) {
     // Only reached by a variant place left empty, which asks each alternative
     // how it reads itself. This one does not say.
@@ -2949,24 +2931,7 @@ template <class type, fixed_string format, fixed_string opening = "(?:">
 }
 
 
-// The same pattern, written so that the values are groups.
-//
-// What a type declares for itself is written to match and nothing else, so its
-// places are `(?:...)`: the format layer puts its own marks around them and
-// has no use for groups. A pattern written by hand has no marks, so where one
-// stands for a type the values have to be groups -- and this is that pattern.
-template <class type>
-[[nodiscard]] consteval pattern_buffer<> capturing_pattern() {
-  return make_aggregate_pattern<
-      std::remove_cv_t<type>,
-      scan::scanner<std::remove_cv_t<type>>::scan_format, "(">();
-}
 
-// The same, for whoever already has the format in hand.
-template <class type, fixed_string format>
-[[nodiscard]] consteval pattern_buffer<> capturing_pattern() {
-  return make_aggregate_pattern<std::remove_cv_t<type>, format, "(">();
-}
 
 
 template <fixed_string pattern>
