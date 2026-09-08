@@ -286,12 +286,6 @@ if(SCAN_BUILD_TESTS)
     GIT_TAG 706920f1d230f0316d271466d8885735be3e300e
     LICENSE BSD-3-Clause
     SYSTEM NEVER
-    # And not kept between builds either. The fork compiles googletest's own
-    # sources as module units, and those include headers from inside its tree
-    # -- so a stored copy is one whose modules cannot be scanned, and every
-    # build that read it stopped on a header not found under a path that is a
-    # hash. It is quick to build; it is not quick to debug.
-    STORE NEVER
     TARGETS gtest_main)
   cme_options(googletest-modules
     "BUILD_GMOCK OFF" "INSTALL_GTEST OFF"
