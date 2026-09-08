@@ -663,12 +663,14 @@ struct aggregate_scanner {
   // The format, said out loud, so that whatever reads this type can read it as
   // a shape and not as a value.
   //
-  // What is done with it depends on the shape. A shape made only of places is
-  // read from its own groups, below, which is a thing any type can say for
-  // itself -- so this library does nothing for it that you could not. A shape
-  // with a list or a choice in it is made of turns rather than of places, and
-  // those are spread into the automaton around it, which is the one thing here
-  // that is still a privilege.
+  // Nothing about this class is privileged, and nothing in this library names
+  // it: `scan_format` is a member any scanner may declare, and a type that
+  // declares it is spread into the automaton around it -- its places, its
+  // lists, its choices -- exactly as this one is. What is here is the writing
+  // of the hooks that go with it: the pattern its places make, the building
+  // from its own groups, and the telling of those groups as they arrive. A
+  // scanner that would rather write them itself writes them itself, and this
+  // library cannot tell the difference, because it never asks.
   static constexpr auto scan_format = format;
 
   [[nodiscard]] constexpr auto pattern(this const auto& self) {
