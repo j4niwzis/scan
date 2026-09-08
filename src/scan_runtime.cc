@@ -2,7 +2,6 @@ export module scan.runtime;
 
 import std;
 import scan.tre;
-import boost.pfr;
 export import scan.compiler;
 
 export namespace scan::detail {
@@ -1995,8 +1994,7 @@ template <class type, fixed_string format, int sentinel = -1,
 }
 
 template <class type, std::size_t index>
-using field_type = std::remove_cvref_t<decltype(
-    boost::pfr::get<index>(std::declval<type&>()))>;
+using field_type = typename scan::fields<type>::template at<index>;
 
 // Nothing is gathered at the place a leaf that reads its own groups stands on:
 // what it is built from are its groups, and they are gathered each at its own.
@@ -2869,7 +2867,7 @@ template <class type, class state_type, std::size_t... index>
 [[nodiscard]] constexpr type finish_scanners(
     state_type state, std::index_sequence<index...>) {
   type result{};
-  ((boost::pfr::get<index>(result) =
+  ((scan::fields<type>::template of<index>(result) =
         scanner_finish<field_type<type, index>>(
             std::move(std::get<index>(state)))),
    ...);

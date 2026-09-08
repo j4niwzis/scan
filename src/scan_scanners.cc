@@ -1,7 +1,6 @@
 export module scan.scanners;
 
 import std;
-import boost.pfr;
 export import scan.range;
 
 export namespace scan {

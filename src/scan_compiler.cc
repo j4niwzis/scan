@@ -2,7 +2,6 @@ export module scan.compiler;
 
 import std;
 import scan.tre;
-import boost.pfr;
 export import scan.core;
 export import scan.views;
 
@@ -310,12 +309,12 @@ class tre_parser {
 template <class type, std::size_t... index>
 [[nodiscard]] constexpr auto default_patterns(std::index_sequence<index...>) {
   static_assert(
-      (requires { scanner_pattern<std::remove_cvref_t<decltype(
-          boost::pfr::get<index>(std::declval<type&>()))>>(); } && ...),
+      (requires {
+        scanner_pattern<typename scan::fields<type>::template at<index>>();
+      } && ...),
       "scan::scanner<type> must provide pattern");
   return std::array<std::string_view, sizeof...(index)>{
-      scanner_pattern<std::remove_cvref_t<decltype(
-          boost::pfr::get<index>(std::declval<type&>()))>>()...};
+      scanner_pattern<typename scan::fields<type>::template at<index>>()...};
 }
 
 template <fixed_string format, std::size_t field_count>
@@ -501,9 +500,9 @@ struct parts_of<type, false> {
 };
 template <class type>
 struct parts_of<type, false> {
-  static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
+  static constexpr std::size_t count = scan::fields<type>::count;
   template <std::size_t index>
-  using at = std::remove_cvref_t<boost::pfr::tuple_element_t<index, type>>;
+  using at = typename scan::fields<type>::template at<index>;
 };
 template <class type>
 struct parts_of<type, true> {
@@ -522,10 +521,10 @@ struct parts_of<type, true> {
 template <class type, bool = scanned_from_values<type>>
 struct shape_parts {
   static constexpr std::size_t count =
-      boost::pfr::tuple_size_v<std::remove_cv_t<type>>;
+      scan::fields<std::remove_cv_t<type>>::count;
   template <std::size_t index>
-  using at = std::remove_cvref_t<
-      boost::pfr::tuple_element_t<index, std::remove_cv_t<type>>>;
+  using at =
+      typename scan::fields<std::remove_cv_t<type>>::template at<index>;
 };
 template <class type>
 struct shape_parts<type, true> {
@@ -1534,8 +1533,9 @@ template <class type, std::size_t extent, std::size_t... index>
   // streaming one -- and there a field that is itself a shape contributes its
   // own pattern, recursively, rather than being spread out here.
   return std::array<pattern_buffer<>, extent>{
-      make_pattern.template operator()<std::remove_cvref_t<
-          boost::pfr::tuple_element_t<index, type>>>(parameters[index])...};
+      make_pattern.template operator()<
+          typename scan::fields<type>::template at<index>>(
+          parameters[index])...};
 }
 
 template <class field_type>
@@ -2920,7 +2920,7 @@ constexpr void append_aggregate_pattern(
 
 template <class type, fixed_string format, fixed_string opening = "(?:">
 [[nodiscard]] consteval pattern_buffer<> make_aggregate_pattern() {
-  constexpr std::size_t field_count = boost::pfr::tuple_size_v<type>;
+  constexpr std::size_t field_count = scan::fields<type>::count;
   constexpr auto parameters = field_parameters<format, field_count>();
   constexpr auto pattern_storage = parameterized_patterns<type>(
       parameters, std::make_index_sequence<field_count>{});
