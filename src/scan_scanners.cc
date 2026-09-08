@@ -259,14 +259,30 @@ struct scanner<type> {
     return std::string_view("[+-]?[0-9]+");
   }
 
+  // The number as it is read, rather than the characters it was written with.
+  //
+  // A field of digits used to be kept whole and read at the end: room for as
+  // many characters as the widest number can be written in, and a pass over
+  // them when the field closed. The machine that reads a subject once keeps a
+  // gathering per register, so that room was paid for in every one of them --
+  // sixty-four bytes a register for a number that is eight.
+  //
+  // Digits arrive one at a time and in a known base, and what they mean is a
+  // number, so the number is what is kept. What the characters were is gone as
+  // they are read, and nothing is left to parse when the field closes.
   struct state_type {
-    static constexpr std::size_t capacity =
-        static_cast<std::size_t>(std::numeric_limits<type>::digits) + 4;
-    std::array<char, capacity> buffer{};
-    std::size_t size = 0;
-    bool overflow = false;
-    int base = 10;
+    // The magnitude, which is where the range is decided: a signed type
+    // reaches one further down than up, and the sign is not known until the
+    // field is over anyway.
+    std::uint64_t magnitude = 0;
+    std::size_t digits = 0;
+    std::uint8_t base = 10;
     bool automatic_base = false;
+    bool negative = false;
+    bool overflowed = false;
+    bool refused = false;
+    // What the first characters looked like, for a base that is read off them.
+    bool leading_zero = false;
   };
 
   [[nodiscard]] static constexpr state_type begin() { return {}; }
@@ -292,44 +308,112 @@ struct scanner<type> {
       std::string_view parameters) {
     state_type state;
     const auto spec = integer_spec(parameters);
-    state.base = spec.base;
+    state.base = static_cast<std::uint8_t>(spec.base);
     state.automatic_base = spec.automatic_base;
     return state;
   }
 
+  // What a character is worth in this base, or nothing.
+  [[nodiscard]] static constexpr int digit_of(char value, int base) {
+    int worth = -1;
+    if (value >= '0' && value <= '9') worth = value - '0';
+    else if (value >= 'a' && value <= 'f') worth = value - 'a' + 10;
+    else if (value >= 'A' && value <= 'F') worth = value - 'A' + 10;
+    if (worth < 0 || worth >= base) return -1;
+    return worth;
+  }
+
   static constexpr void push(state_type& state, char value) {
-    if (state.size == state.buffer.size()) {
-      state.overflow = true;
+    // The sign, which only the first character may be.
+    if (state.digits == 0 && !state.leading_zero &&
+        (value == '+' || value == '-')) {
+      if (state.negative || state.magnitude != 0) {
+        state.refused = true;
+        return;
+      }
+      state.negative = value == '-';
       return;
     }
-    state.buffer[state.size++] = value;
+    // A base said by the characters themselves: `0x` for sixteen, a leading
+    // zero for eight, and anything else for ten.
+    if (state.leading_zero && (value == 'x' || value == 'X') &&
+        (state.automatic_base || state.base == 16)) {
+      state.base = 16;
+      state.leading_zero = false;
+      state.digits = 0;
+      return;
+    }
+    if (state.digits == 0 && !state.leading_zero && value == '0' &&
+        (state.automatic_base || state.base == 16)) {
+      state.leading_zero = true;
+      return;
+    }
+    if (state.leading_zero && state.automatic_base && state.digits == 0) {
+      // A zero and then a digit: written the way a machine writes eight.
+      state.base = 8;
+    }
+    const int worth = digit_of(value, state.base);
+    if (worth < 0) {
+      state.refused = true;
+      return;
+    }
+    ++state.digits;
+    const std::uint64_t base = state.base;
+    constexpr std::uint64_t ceiling = std::numeric_limits<std::uint64_t>::max();
+    if (state.magnitude > (ceiling - static_cast<std::uint64_t>(worth)) / base) {
+      state.overflowed = true;
+      return;
+    }
+    state.magnitude =
+        state.magnitude * base + static_cast<std::uint64_t>(worth);
   }
 
   using went_wrong = std::variant<bad_field, out_of_range>;
 
   [[nodiscard]] static constexpr std::expected<type, went_wrong> try_finish(
       state_type state) {
-    if (state.overflow) {
+    if (state.refused) {
+      return std::unexpected(went_wrong(bad_field("invalid integer field")));
+    }
+    if (state.digits == 0 && !state.leading_zero) {
+      return std::unexpected(went_wrong(bad_field("empty integer field")));
+    }
+    if (state.overflowed) {
       return std::unexpected(
           went_wrong(out_of_range("integer field is out of range")));
     }
-    return parse_integer(std::string_view(state.buffer.data(), state.size),
-                         state.base, state.automatic_base);
+    // Which magnitudes this type can hold, on each side of nothing.
+    constexpr std::uint64_t upward =
+        static_cast<std::uint64_t>(std::numeric_limits<type>::max());
+    if (state.negative) {
+      if constexpr (std::unsigned_integral<type>) {
+        if (state.magnitude != 0) {
+          return std::unexpected(
+              went_wrong(out_of_range("negative value for unsigned integer")));
+        }
+        return type{};
+      } else {
+        constexpr std::uint64_t downward = upward + 1;
+        if (state.magnitude > downward) {
+          return std::unexpected(
+              went_wrong(out_of_range("integer field is out of range")));
+        }
+        if (state.magnitude == downward) {
+          return std::numeric_limits<type>::min();
+        }
+        return static_cast<type>(-static_cast<std::int64_t>(state.magnitude));
+      }
+    }
+    if (state.magnitude > upward) {
+      return std::unexpected(
+          went_wrong(out_of_range("integer field is out of range")));
+    }
+    return static_cast<type>(state.magnitude);
   }
 
   [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
       std::string_view text) {
-    type value{};
-    const auto [end, error] =
-        std::from_chars(text.data(), text.data() + text.size(), value);
-    if (error == std::errc::result_out_of_range) {
-      return std::unexpected(
-          went_wrong(out_of_range("integer field is out of range")));
-    }
-    if (error != std::errc{} || end != text.data() + text.size()) {
-      return std::unexpected(went_wrong(bad_field("invalid integer field")));
-    }
-    return value;
+    return parse_integer(text, 10, false);
   }
 
   [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
@@ -386,9 +470,17 @@ struct scanner<type> {
                (text.starts_with("0x") || text.starts_with("0X"))) {
       text.remove_prefix(2);
     }
-    type value{};
+    // The magnitude, and the sign applied to it afterwards.
+    //
+    // Read into the type itself, the most negative value a type can hold is
+    // refused: its magnitude is one past what the type can hold the other way
+    // up, and it is only reachable through the sign. The walk that gathers a
+    // number as it reads has always to keep the magnitude apart from the sign,
+    // because the sign is known first and the range only at the end -- so this
+    // is the same rule said in the same way.
+    std::uint64_t magnitude = 0;
     const auto [end, error] = std::from_chars(
-        text.data(), text.data() + text.size(), value, selected_base);
+        text.data(), text.data() + text.size(), magnitude, selected_base);
     if (error == std::errc::result_out_of_range) {
       return std::unexpected(
           went_wrong(out_of_range("integer field is out of range")));
@@ -396,15 +488,30 @@ struct scanner<type> {
     if (error != std::errc{} || end != text.data() + text.size()) {
       return std::unexpected(went_wrong(bad_field("invalid integer field")));
     }
+    constexpr std::uint64_t upward =
+        static_cast<std::uint64_t>(std::numeric_limits<type>::max());
     if (negative) {
       if constexpr (std::unsigned_integral<type>) {
-        return std::unexpected(
-            went_wrong(out_of_range("negative value for unsigned integer")));
+        if (magnitude != 0) {
+          return std::unexpected(
+              went_wrong(out_of_range("negative value for unsigned integer")));
+        }
+        return type{};
       } else {
-        value = static_cast<type>(-value);
+        constexpr std::uint64_t downward = upward + 1;
+        if (magnitude > downward) {
+          return std::unexpected(
+              went_wrong(out_of_range("integer field is out of range")));
+        }
+        if (magnitude == downward) return std::numeric_limits<type>::min();
+        return static_cast<type>(-static_cast<std::int64_t>(magnitude));
       }
     }
-    return value;
+    if (magnitude > upward) {
+      return std::unexpected(
+          went_wrong(out_of_range("integer field is out of range")));
+    }
+    return static_cast<type>(magnitude);
   }
 };
 
