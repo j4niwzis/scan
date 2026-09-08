@@ -147,6 +147,41 @@ void scan_captures_strings(harness::State& state) {
   return field_views{field(0), field(1), field(2), field(3), field(4)};
 }
 
+// The same thousand characters with the fields copied out rather than pointed
+// at. Five copies of two hundred characters is work no engine can be compared
+// on -- it is an allocator and a memcpy -- but it is what a caller who cannot
+// point at the subject afterwards pays, and the row above says what the same
+// copies cost with nothing scanned.
+void scan_captures_strings_long(harness::State& state) {
+  const std::string& text = bench::long_csv();
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    field_strings value =
+        scan::scan<"{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+},{[a-z]+}">.sentinel()(
+            view);
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
+// What those copies cost on their own: the five fields are already known, and
+// all this does is make strings of them.
+void harness_floor_strings_long(harness::State& state) {
+  const std::string& text = bench::long_csv();
+  for (auto _ : state) {
+    std::string_view view(text);
+    harness::DoNotOptimize(view);
+    field_strings value{std::string(view.substr(0, 200)),
+                        std::string(view.substr(201, 200)),
+                        std::string(view.substr(402, 200)),
+                        std::string(view.substr(603, 200)),
+                        std::string(view.substr(804, 200))};
+    harness::DoNotOptimize(value);
+  }
+  state.SetBytesProcessed(state.iterations() * text.size());
+}
+
 // The same work on a subject a thousand bytes long, for both engines. What a
 // row like this reports is a cost per byte, which is what the loop decides;
 // everything around the match is the same handful of nanoseconds it was, and is
@@ -284,6 +319,8 @@ const int registered = [] {
   row("scan_captures_views_sentinel", scan_captures_views_sentinel);
   row("scan_captures_strings", scan_captures_strings);
   row("scan_captures_long", scan_captures_long);
+  row("harness_floor_strings_long", harness_floor_strings_long);
+  row("scan_captures_strings_long", scan_captures_strings_long);
   row("re2c_captures_long", re2c_captures_long);
   row("ctre_captures_long", ctre_captures_long);
   row("re2_captures_long", re2_captures_long);
