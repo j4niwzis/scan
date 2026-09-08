@@ -1,29 +1,51 @@
-cmake_minimum_required(VERSION 4.3.4 FATAL_ERROR)
+cmake_minimum_required(VERSION 4.2 FATAL_ERROR)
 
-set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
-    "451f2fe2-a8a2-47c3-bc32-94786d8fc91b")
-set(CMAKE_CXX_MODULE_STD ON)
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-project(scan LANGUAGES CXX)
+# scan -- regular expressions and scanning, as C++23 modules.
+#
+# A pattern becomes a machine while the program is compiled, and the machine is
+# written out as code rather than walked as a table. Everything here is one
+# library and eight module partitions of it; the tests and the benchmarks are
+# what this file builds beside it.
+
+# Where everything this needs comes from.
+#
+# cmake-everywhere answers find_package: from the machine when the machine has
+# the library, and from a pinned source when it does not. Named before
+# project(), because that is the only place a dependency provider may be
+# installed from -- and only when nothing is answering already, which is the
+# case where this library is built inside somebody else's build and that build
+# brought its own.
+if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
+  set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+      ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+endif()
+
+project(scan VERSION 0.1 LANGUAGES CXX)
+
+# CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call and
+# by no other, so a build configured from a subdirectory of this has no
+# provider and no sign of it: find_package(boost_pfr) then falls through to
+# whatever the machine happens to have, and what finally says something is a
+# compiler error about Boost rather than about this.
+if(NOT COMMAND cme_provider)
+  message(FATAL_ERROR
+    "cmake-everywhere is not installed in this build, so nothing answers "
+    "find_package(boost_pfr). CMAKE_PROJECT_TOP_LEVEL_INCLUDES is only read "
+    "by the top-level project() call: configure this directory, and not a "
+    "subdirectory of it.")
+endif()
+
+if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
+  message(FATAL_ERROR "In-source builds not allowed.")
+endif()
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-include(cmake/CPM.cmake)
-
-set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
-set(BOOST_USE_MODULES ON CACHE BOOL "" FORCE)
-CPMAddPackage(
-  NAME googletest_modules
-  GITHUB_REPOSITORY j4niwzis/googletest-modules
-  GIT_TAG 706920f1d230f0316d271466d8885735be3e300e
-  OPTIONS
-    "BUILD_GMOCK OFF"
-    "gtest_build_tests OFF"
-    "gtest_build_samples OFF"
-)
-
+option(SCAN_BUILD_TESTS "Build the test suite" ${PROJECT_IS_TOP_LEVEL})
 option(SCAN_BUILD_BENCHMARKS "Build regex engine comparison benchmarks" OFF)
 
 # The engine against another engine, on patterns nobody wrote.
@@ -39,97 +61,19 @@ option(SCAN_BUILD_BENCHMARKS "Build regex engine comparison benchmarks" OFF)
 # every build carry.
 option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 
-if(SCAN_BUILD_FUZZER)
-  set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-  set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
-  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-  CPMAddPackage(
-    NAME abseil
-    GITHUB_REPOSITORY abseil/abseil-cpp
-    GIT_TAG 20250127.0
-  )
-  CPMAddPackage(
-    NAME re2_source
-    GITHUB_REPOSITORY google/re2
-    GIT_TAG 2024-07-02
-  )
-  # The other engine is a header, and a translation unit that includes one
-  # textually while importing modules built against the `std` module gets two
-  # views of the standard library. So it is wrapped once, the way the
-  # benchmarks wrap theirs, and nothing else here names an RE2 type.
-  add_library(fuzz_oracle)
-  target_sources(fuzz_oracle PUBLIC FILE_SET CXX_MODULES FILES
-    fuzz/oracle.cppm)
-  target_link_libraries(fuzz_oracle PUBLIC re2::re2)
-  target_compile_features(fuzz_oracle PUBLIC cxx_std_23)
-
-  add_executable(differential_fuzz fuzz/differential.cc)
-  target_link_libraries(differential_fuzz PRIVATE scan fuzz_oracle)
-  target_compile_features(differential_fuzz PRIVATE cxx_std_23)
-
-  # And the same thing under libFuzzer, where the bytes are chosen to reach
-  # places rather than at random.
-  if(SCAN_FUZZER_LIBFUZZER)
-    add_executable(differential_libfuzzer fuzz/differential.cc)
-    target_link_libraries(differential_libfuzzer PRIVATE scan fuzz_oracle)
-    target_compile_definitions(differential_libfuzzer PRIVATE SCAN_FUZZ_ENTRY)
-    target_compile_options(differential_libfuzzer PRIVATE
-      -fsanitize=fuzzer,address)
-    target_link_options(differential_libfuzzer PRIVATE
-      -fsanitize=fuzzer,address)
-  endif()
-endif()
-
-if(SCAN_BUILD_BENCHMARKS)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    add_compile_options($<$<CONFIG:Release>:-flto>)
-    add_link_options($<$<CONFIG:Release>:-flto>)
-  endif()
-  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-  set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-  set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-  set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
-  CPMAddPackage(
-    NAME google_benchmark
-    GITHUB_REPOSITORY google/benchmark
-    GIT_TAG v1.9.4
-  )
-  target_compile_options(benchmark PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-c2y-extensions>
-  )
-  target_compile_options(benchmark_main PRIVATE
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-c2y-extensions>
-  )
-  CPMAddPackage(
-    NAME ctre
-    GITHUB_REPOSITORY hanickadot/compile-time-regular-expressions
-    GIT_TAG v3.10.0
-  )
-  set(RE2C_BUILD_RE2D OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2GO OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2HS OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2JAVA OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2JS OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2OCAML OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2PY OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2RUST OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2SWIFT OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2V OFF CACHE BOOL "" FORCE)
-  set(RE2C_BUILD_RE2ZIG OFF CACHE BOOL "" FORCE)
-  CPMAddPackage(
-    NAME re2c_source
-    GITHUB_REPOSITORY skvadrik/re2c
-    GIT_TAG 4.3
-  )
-endif()
-CPMAddPackage(
-  NAME boost_pfr
-  GITHUB_REPOSITORY boostorg/pfr
-  GIT_TAG d64c6993fee26d39cac7d77ed0efe3e3b052a9f9
-  OPTIONS "BOOST_USE_MODULES ON" "BUILD_TESTING OFF"
-)
+# ---- What this reads a shape with ----
+#
+# Boost.PFR, as a module: the fields of an aggregate, by nothing but the type.
+# It is asked for as modules, and a copy of it installed on the machine is
+# headers -- so this one is built rather than taken, because what it is taken
+# as decides whether `import boost.pfr` means anything.
+set(CME_SYSTEM_boost_pfr NEVER CACHE STRING
+    "Boost.PFR is built here, because it is wanted as a module")
+cme_options(boost-pfr "BOOST_USE_MODULES ON" "BUILD_TESTING OFF")
+find_package(boost_pfr REQUIRED)
 
 add_library(scan)
+add_library(scan::scan ALIAS scan)
 target_sources(
   scan
   PUBLIC FILE_SET CXX_MODULES FILES
@@ -144,7 +88,12 @@ target_sources(
     src/scan.cc
 )
 target_compile_features(scan PUBLIC cxx_std_23)
-target_link_libraries(scan PUBLIC Boost::pfr)
+# In this build only. A Boost.PFR the provider built is a target of this build
+# directory, and install(EXPORT) refuses to export something that links it --
+# rightly, since what would be installed is a library whose dependency exists
+# nowhere else. An installed copy names it the way a machine can answer for it,
+# which is what the config file below writes.
+target_link_libraries(scan PUBLIC $<BUILD_INTERFACE:Boost::pfr>)
 target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_options(scan PUBLIC
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=300000000>
@@ -199,7 +148,139 @@ option(SCAN_AUTOMATA_AT_RUNTIME
 if(SCAN_AUTOMATA_AT_RUNTIME)
   # PUBLIC: the choice is written into the module this builds, and whoever
   # imports it is reading the same one.
-  target_compile_definitions(scan PUBLIC SCAN_AUTOMATA_AT_RUNTIME=1)
+  target_compile_definitions(scan PUBLIC
+    $<BUILD_INTERFACE:SCAN_AUTOMATA_AT_RUNTIME=1>)
+endif()
+
+# ---- What this library is, said by the library ----
+#
+# A consumer writes find_package(scan) and this says the rest: where it comes
+# from, what it needs, and what it produces. The declaration is installed
+# beside the library, so a prefix that has scan has the description of scan --
+# which is what lets a machine answer for it instead of everyone fetching it
+# again.
+if(COMMAND cme_declare_port)
+  cme_declare_port(
+    NAME scan
+    PROVIDES scan
+    VERSION ${PROJECT_VERSION}
+    GITHUB_REPOSITORY j4niwzis/scan
+    GIT_TAG main
+    LICENSE GPL-3.0-only
+    # What this needs is not said here, because it is not the same statement
+    # for a copy taken from a prefix and for one built from source: a build
+    # that fetches this learns what it needed while it builds it, and a
+    # consumer that finds it installed is told by the config file beside it,
+    # which is where a module library has to say it -- such a consumer
+    # compiles the module interface units itself.
+    TARGETS scan::scan
+  )
+endif()
+
+# What this can optionally be, and what each of those needs.
+#
+# A feature rather than a dependency: what a library needs to run its own
+# tests is not what a program linking it needs, and a port that said so would
+# have every consumer of this fetch a testing framework. Said as a feature, it
+# is recorded as a fact about this copy and not about the library.
+if(COMMAND cme_port_feature)
+  cme_port_feature(scan tests
+    SUMMARY "the test suite"
+    DEPENDS googletest-modules
+    OPTIONS "SCAN_BUILD_TESTS ON")
+  cme_port_feature(scan benchmarks
+    SUMMARY "the comparison against CTRE, RE2 and re2c"
+    DEPENDS benchmark ctre re2
+    OPTIONS "SCAN_BUILD_BENCHMARKS ON")
+  cme_port_feature(scan fuzzer
+    SUMMARY "the differential fuzzer against RE2"
+    DEPENDS re2
+    OPTIONS "SCAN_BUILD_FUZZER ON")
+  set(scan_features "")
+  if(SCAN_BUILD_TESTS)
+    list(APPEND scan_features tests)
+  endif()
+  if(SCAN_BUILD_BENCHMARKS)
+    list(APPEND scan_features benchmarks)
+  endif()
+  if(SCAN_BUILD_FUZZER)
+    list(APPEND scan_features fuzzer)
+  endif()
+  if(scan_features)
+    cme_features(scan ${scan_features})
+  endif()
+endif()
+
+# ---- The fuzzer, and the engine it is compared against ----
+#
+# Neither of these is in anybody's registry, so the ports are written here,
+# which is where they are used. A name and where it is from is the whole of a
+# port for a library that says the rest about itself.
+if(SCAN_BUILD_FUZZER)
+  cme_declare_port(NAME abseil PROVIDES absl
+    GITHUB_REPOSITORY abseil/abseil-cpp
+    GIT_TAG 20250127.0
+    LICENSE Apache-2.0)
+  cme_options(abseil "ABSL_ENABLE_INSTALL ON" "ABSL_PROPAGATE_CXX_STD ON")
+  cme_declare_port(NAME re2 PROVIDES re2
+    GITHUB_REPOSITORY google/re2
+    GIT_TAG 2024-07-02
+    LICENSE BSD-3-Clause
+    DEPENDS absl
+    TARGETS re2::re2)
+  cme_options(re2 "RE2_BUILD_TESTING OFF")
+  find_package(re2 REQUIRED)
+
+  # The other engine is a header, and a translation unit that includes one
+  # textually while importing modules built against the `std` module gets two
+  # views of the standard library. So it is wrapped once, the way the
+  # benchmarks wrap theirs, and nothing else here names an RE2 type.
+  add_library(fuzz_oracle)
+  target_sources(fuzz_oracle PUBLIC FILE_SET CXX_MODULES FILES
+    fuzz/oracle.cppm)
+  target_link_libraries(fuzz_oracle PUBLIC re2::re2)
+  target_compile_features(fuzz_oracle PUBLIC cxx_std_23)
+
+  add_executable(differential_fuzz fuzz/differential.cc)
+  target_link_libraries(differential_fuzz PRIVATE scan fuzz_oracle)
+  target_compile_features(differential_fuzz PRIVATE cxx_std_23)
+
+  # And the same thing under libFuzzer, where the bytes are chosen to reach
+  # places rather than at random.
+  if(SCAN_FUZZER_LIBFUZZER)
+    add_executable(differential_libfuzzer fuzz/differential.cc)
+    target_link_libraries(differential_libfuzzer PRIVATE scan fuzz_oracle)
+    target_compile_definitions(differential_libfuzzer PRIVATE SCAN_FUZZ_ENTRY)
+    target_compile_options(differential_libfuzzer PRIVATE
+      -fsanitize=fuzzer,address)
+    target_link_options(differential_libfuzzer PRIVATE
+      -fsanitize=fuzzer,address)
+  endif()
+endif()
+
+# ---- The tests, and what runs them ----
+#
+# Not the googletest everybody has: this one is a fork that builds it as a
+# module, because a test here imports `std` and a header that includes the
+# standard library textually gives the translation unit two views of it.
+if(SCAN_BUILD_TESTS)
+  cme_declare_port(NAME googletest-modules PROVIDES GTest
+    GITHUB_REPOSITORY j4niwzis/googletest-modules
+    GIT_TAG 706920f1d230f0316d271466d8885735be3e300e
+    LICENSE BSD-3-Clause
+    TARGETS gtest_main)
+  cme_options(googletest-modules
+    "BUILD_GMOCK OFF" "INSTALL_GTEST OFF"
+    "gtest_build_tests OFF" "gtest_build_samples OFF")
+  find_package(GTest REQUIRED)
+  # The fork builds gtest as a module and names the target the way googletest
+  # named it before the aliases: a copy from a prefix is `GTest::gtest_main`,
+  # and one built here is `gtest_main`.
+  if(TARGET GTest::gtest_main)
+    set(scan_gtest GTest::gtest_main)
+  else()
+    set(scan_gtest gtest_main)
+  endif()
 endif()
 
 enable_testing()
@@ -295,13 +376,84 @@ set(scan_tests
   where_a_record_ends_test
   written_as_exactly_two_test
   written_as_one_or_more_test)
-foreach(one IN LISTS scan_tests)
-  add_executable(${one} tests/${one}.cc)
-  target_link_libraries(${one} PRIVATE scan gtest_main)
-  add_test(NAME ${one} COMMAND ${one})
-endforeach()
+if(SCAN_BUILD_TESTS)
+  foreach(one IN LISTS scan_tests)
+    add_executable(${one} tests/${one}.cc)
+    target_link_libraries(${one} PRIVATE scan ${scan_gtest})
+    add_test(NAME ${one} COMMAND ${one})
+  endforeach()
+endif()
 
 if(SCAN_BUILD_BENCHMARKS)
+  # Built the way the thing being measured is meant to be built.
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options($<$<CONFIG:Release>:-flto>)
+    add_link_options($<$<CONFIG:Release>:-flto>)
+  endif()
+
+  # The harness, the two engines and the generator. Ports written here because
+  # they are used here, and each is a name and where it comes from.
+  cme_declare_port(NAME benchmark PROVIDES benchmark
+    GITHUB_REPOSITORY google/benchmark
+    GIT_TAG v1.9.4
+    LICENSE Apache-2.0
+    TARGETS benchmark::benchmark benchmark::benchmark_main)
+  cme_options(benchmark
+    "BENCHMARK_ENABLE_TESTING OFF" "BENCHMARK_ENABLE_GTEST_TESTS OFF"
+    "BENCHMARK_ENABLE_INSTALL OFF" "BENCHMARK_ENABLE_WERROR OFF")
+  find_package(benchmark REQUIRED)
+  foreach(one IN ITEMS benchmark benchmark_main)
+    if(TARGET ${one})
+      target_compile_options(${one} PRIVATE
+        $<$<CXX_COMPILER_ID:Clang>:-Wno-c2y-extensions>)
+    endif()
+  endforeach()
+
+  cme_declare_port(NAME ctre PROVIDES ctre
+    GITHUB_REPOSITORY hanickadot/compile-time-regular-expressions
+    GIT_TAG v3.10.0
+    LICENSE Apache-2.0
+    TARGETS ctre::ctre)
+  find_package(ctre REQUIRED)
+
+  if(NOT SCAN_BUILD_FUZZER)
+    cme_declare_port(NAME abseil PROVIDES absl
+      GITHUB_REPOSITORY abseil/abseil-cpp
+      GIT_TAG 20250127.0
+      LICENSE Apache-2.0)
+    cme_options(abseil "ABSL_ENABLE_INSTALL ON" "ABSL_PROPAGATE_CXX_STD ON")
+    cme_declare_port(NAME re2 PROVIDES re2
+      GITHUB_REPOSITORY google/re2
+      GIT_TAG 2024-07-02
+      LICENSE BSD-3-Clause
+      DEPENDS absl
+      TARGETS re2::re2)
+    cme_options(re2 "RE2_BUILD_TESTING OFF")
+    find_package(re2 REQUIRED)
+  endif()
+
+  # The generator, which is a program and not a library: what is wanted is a
+  # command to run, so a copy on the machine is as good as one built here and
+  # is looked for first.
+  find_program(SCAN_RE2C_COMMAND re2c)
+  if(NOT SCAN_RE2C_COMMAND)
+    cme_declare_port(NAME re2c PROVIDES re2c
+      GITHUB_REPOSITORY skvadrik/re2c
+      GIT_TAG 4.3
+      LICENSE Unlicense
+      TARGETS re2c)
+    cme_options(re2c
+      "RE2C_BUILD_RE2D OFF" "RE2C_BUILD_RE2GO OFF" "RE2C_BUILD_RE2HS OFF"
+      "RE2C_BUILD_RE2JAVA OFF" "RE2C_BUILD_RE2JS OFF" "RE2C_BUILD_RE2OCAML OFF"
+      "RE2C_BUILD_RE2PY OFF" "RE2C_BUILD_RE2RUST OFF" "RE2C_BUILD_RE2SWIFT OFF"
+      "RE2C_BUILD_RE2V OFF" "RE2C_BUILD_RE2ZIG OFF")
+    find_package(re2c REQUIRED)
+    set(SCAN_RE2C_COMMAND $<TARGET_FILE:re2c>)
+    set(SCAN_RE2C_DEPENDS re2c)
+  else()
+    set(SCAN_RE2C_DEPENDS "")
+  endif()
+
   # Everything a benchmark uses is a module.
   #
   # A translation unit that imports a module built against the `std` module and
@@ -363,9 +515,9 @@ if(SCAN_BUILD_BENCHMARKS)
         OUTPUT "${generated}"
         COMMAND ${CMAKE_COMMAND} -E make_directory
                 "${CMAKE_CURRENT_BINARY_DIR}/generated"
-        COMMAND $<TARGET_FILE:re2c> -W -o "${generated}"
+        COMMAND ${SCAN_RE2C_COMMAND} -W -o "${generated}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/re2c/${name}.re"
-        DEPENDS re2c "benchmarks/re2c/${name}.re"
+        DEPENDS ${SCAN_RE2C_DEPENDS} "benchmarks/re2c/${name}.re"
         VERBATIM)
       list(APPEND sources "${generated}")
     endif()
@@ -408,4 +560,50 @@ if(SCAN_BUILD_BENCHMARKS)
     word_benchmark timestamp_benchmark csv_benchmark address_benchmark
     captures_benchmark read_once_benchmark shape_benchmark sscanf_benchmark)
 
+endif()
+
+# ---- Installing it ----
+#
+# The module interface units go with it: a consumer of a C++20 module library
+# compiles its own binary module interface from the source, so an installed
+# library that keeps its sources to itself cannot be consumed at all.
+# Installing is what a build of this library does; a build that embeds it does
+# not.
+#
+# Inside another build its dependency is that build's target -- Boost.PFR
+# comes from a port -- and exporting a target that links one of those is an
+# error, rightly: what would be installed is a library whose dependency exists
+# only in the build directory it came from.
+option(SCAN_INSTALL "Install scan and its CMake package" ${PROJECT_IS_TOP_LEVEL})
+if(SCAN_INSTALL)
+  include(GNUInstallDirs)
+  install(TARGETS scan
+    EXPORT scanTargets
+    FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/scan/modules
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(EXPORT scanTargets
+    NAMESPACE scan::
+    CXX_MODULES_DIRECTORY modules
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
+  # Whatever the exported target names has to be found again by whoever
+  # includes this, in the same words -- and whoever includes this may have no
+  # provider at all, which is the case this file is written for: a consumer
+  # with nothing but a prefix.
+  # And Boost.PFR put back on the target, since the exported one carries it
+  # only in the build interface. A consumer of this compiles the module
+  # interface units that are installed beside it, and those say
+  # `import boost.pfr`.
+  # Asked for only where nothing has answered for it already: a consumer with
+  # a provider has the port added by the provider, and adding it again is two
+  # copies of the same target.
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
+    "include(CMakeFindDependencyMacro)\n"
+    "if(NOT TARGET Boost::pfr)\n"
+    "  find_dependency(boost_pfr)\n"
+    "endif()\n"
+    "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n"
+    "set_property(TARGET scan::scan APPEND PROPERTY\n"
+    "             INTERFACE_LINK_LIBRARIES Boost::pfr)\n")
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
 endif()
