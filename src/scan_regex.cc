@@ -1545,8 +1545,15 @@ struct collected_match_closure
     auto cursor = std::ranges::begin(input);
     std::ptrdiff_t position = 0;
     detail::walk_answer<decltype(cursor)> best;
-    if (!detail::run_continuation<automaton, detail::walk_shape{},
-                                  automaton.initial, 0, 0, std::ptrdiff_t>(
+    // Written out, the same as every other walk. A subject handed over a
+    // character at a time cannot have the vectors -- there is nothing in a
+    // row to read -- but it can have the machine as code, and with a budget
+    // of nothing it was paying a call for every state it passed through, for
+    // every character.
+    constexpr detail::walk_shape once{.budget =
+                                          detail::chain_budget<pattern>()};
+    if (!detail::run_continuation<automaton, once, automaton.initial,
+                                  once.budget, 0, std::ptrdiff_t>(
             cursor, std::ranges::end(input), position, registers, into,
             best)) {
       return result_type{};
@@ -2152,8 +2159,15 @@ struct match_closure
     std::ptrdiff_t place = 0;
     auto cursor = std::ranges::begin(input);
     detail::walk_answer<decltype(cursor)> best;
-    if (!detail::run_continuation<automaton, detail::walk_shape{},
-                                  automaton.initial, 0, 0, std::ptrdiff_t>(
+    // Written out, the same as every other walk. A subject handed over a
+    // character at a time cannot have the vectors -- there is nothing in a
+    // row to read -- but it can have the machine as code, and with a budget
+    // of nothing it was paying a call for every state it passed through, for
+    // every character.
+    constexpr detail::walk_shape once{.budget =
+                                          detail::chain_budget<pattern>()};
+    if (!detail::run_continuation<automaton, once, automaton.initial,
+                                  once.budget, 0, std::ptrdiff_t>(
             cursor, std::ranges::end(input), place, registers, keep, best)) {
       return basic_result<held_type, 0>{};
     }
