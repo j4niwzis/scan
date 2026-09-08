@@ -405,12 +405,14 @@ template <fixed_string pattern, std::size_t state>
 // for every character of the subject, which is what a generated scanner never
 // does -- so the chain is followed here, and the cap is only against a pattern
 // long enough to make one function of the whole of it.
+// The same rule the format layer follows, asked of this layer's automaton: how
+// much of the chain is written out is bounded by how many bodies that writes,
+// and not by how many states it passes -- a state with one way out writes one
+// body a step, a state that forks writes one per branch, and the number of
+// steps says nothing about the difference.
 template <fixed_string pattern>
 [[nodiscard]] consteval std::size_t chain_budget() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  return state_count < 32 ? state_count : 32;
+  return bodies_worth_writing<regex_automaton<pattern>>();
 }
 
 

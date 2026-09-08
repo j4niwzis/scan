@@ -1228,7 +1228,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 // function of the whole of it. The pattern layer has said this for a long time;
 // the format layer walked with a budget of nothing, and paid a call a state.
 template <auto& automaton>
-[[nodiscard]] consteval std::size_t chain_budget() {
+[[nodiscard]] consteval std::size_t bodies_worth_writing() {
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
   // How many bodies are written out is what has to be bounded, and the length
@@ -1241,12 +1241,19 @@ template <auto& automaton>
   // each state, and the answer is the last depth whose total stays under the
   // ceiling. A row of fields forks at every field and still writes a body a
   // state; a pattern of diamonds stops early, which is what it should do.
-  constexpr std::size_t ceiling = 256;
+  // Counted in the comparisons the writing costs, not in the bodies it makes.
+  //
+  // A body is not a size: a state of a row of fields asks about two runs of
+  // symbols, and a state in the middle of an address asks about a dozen. Two
+  // hundred of the first is a function worth writing; two hundred of the
+  // second is a compiler out of memory. So what is counted is what each body
+  // is made of, and the ceiling is the same number for both.
+  constexpr std::size_t ceiling = 512;
   std::size_t worst = state_count;
   for (std::size_t from = 0; from < state_count; ++from) {
     std::array<std::size_t, state_count> standing{};
     standing[from] = 1;
-    std::size_t written = 1;
+    std::size_t written = automaton.states[from].range_count;
     std::size_t depth = 0;
     while (depth < state_count) {
       std::array<std::size_t, state_count> next{};
@@ -1266,7 +1273,7 @@ template <auto& automaton>
           if (already) continue;
           named[count++] = target;
           next[target] += standing[at];
-          added += standing[at];
+          added += standing[at] * automaton.states[target].range_count;
         }
       }
       // Nowhere further to go from here: this start asks for nothing more,
@@ -1297,7 +1304,7 @@ template <auto& automaton, unsigned char terminator, bool in_words,
   constexpr walk_shape shape{.in_words = in_words,
                              .by_terminator = true,
                              .terminator = terminator,
-                             .budget = chain_budget<automaton>()};
+                             .budget = bodies_worth_writing<automaton>()};
   return run_continuation<automaton, shape, state, shape.budget, 0,
                           const char*>(cursor, end, place, registers, nothing,
                                        best);
@@ -1440,7 +1447,7 @@ template <auto& automaton, bool in_words, std::size_t state,
   const char* place = cursor;
   walk_answer<const char*> best;
   constexpr walk_shape shape{.in_words = in_words,
-                             .budget = chain_budget<automaton>()};
+                             .budget = bodies_worth_writing<automaton>()};
   return run_continuation<automaton, shape, state, shape.budget, 0,
                           const char*>(cursor, end, place, registers, nothing,
                                        best);
@@ -3636,7 +3643,7 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   std::ptrdiff_t place = 0;
   walk_answer<const char*> best;
   constexpr walk_shape shape{.in_words = true,
-                             .budget = chain_budget<automaton>()};
+                             .budget = bodies_worth_writing<automaton>()};
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
@@ -3666,7 +3673,7 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   // Written out, the same as every other walk. A subject handed over a
   // character at a time is read by the machine written as code -- what it
   // cannot have is the vectors, because there is nothing in a row to read.
-  constexpr walk_shape shape{.budget = chain_budget<automaton>()};
+  constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
   walk_answer<decltype(cursor)> best;
   if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                         std::ptrdiff_t>(cursor, std::ranges::end(input),
