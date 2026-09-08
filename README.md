@@ -1091,6 +1091,26 @@ A field of two hundred characters is stepped over sixty-four at a time, and
 the others read it one character at a time, which is the whole of that
 difference.
 
+Recognition rather than extraction, which is the other half of what an engine
+is asked: `benchmarks/address_benchmark.cc` matches an address --
+`first.last@subdomain.example.com`, thirty-two characters -- against the
+pattern everybody writes for one, and takes nothing out of it. Thirty-two
+subjects to a pass:
+
+| | a pass |
+| --- | --- |
+| `scan::match<p>` | 1249 ns |
+| `scan::match<p>.sentinel()` | 752 ns |
+| re2c | 753 ns |
+| RE2 | 2683 ns |
+| CTRE | 9639 ns |
+
+The same story as the row of fields, and further along it: given what the
+generated scanner is given, the reading is the generated scanner to the
+nanosecond -- 752 against 753 -- and given a range instead it pays for the
+length test at every character. CTRE is what a backtracking matcher costs on a
+pattern with alternatives inside repetitions: it tries them.
+
 And the same records with the fields copied into strings rather than pointed
 at, which is what a subject that cannot be pointed at afterwards needs:
 
