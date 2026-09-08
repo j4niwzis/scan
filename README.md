@@ -1045,6 +1045,45 @@ differences are the point:
 | RE2 | while running | a range | views, after a dispatch inside its walk |
 | re2c | ahead of time, by a generator | a pointer and a terminator, no length | pointers |
 
+Five fields taken out of thirty characters, thirty-two records to a pass, the
+median of seven passes. The first row is the loop with nothing scanned in it,
+which every row below carries:
+
+| | a pass | over the floor |
+| --- | --- | --- |
+| the loop, nothing scanned | 192 ns | -- |
+| this library, given a range | 741 ns | 549 ns |
+| this library, given a nul to stop at | 512 ns | 320 ns |
+| CTRE | 528 ns | 336 ns |
+| re2c | 543 ns | 351 ns |
+| RE2 | 19610 ns | 19418 ns |
+
+Which walk reads the subject is the difference between the first two: told
+where the subject ends, the loop tests it at every character; told a character
+that ends it -- which is what re2c is given, and what a `std::string` already
+has -- it does not. Given the same thing as the generated scanner, the reading
+is the generated scanner's speed.
+
+The same five fields out of a thousand characters, one record to a pass, where
+what is measured is the loop rather than everything around it:
+
+| | a pass |
+| --- | --- |
+| this library, given a nul to stop at | 69 ns |
+| re2c | 338 ns |
+
+A field of two hundred characters is stepped over sixty-four at a time, and a
+generated scanner reads it one character at a time, which is the whole of that
+difference.
+
+And the same records with the fields copied into strings rather than pointed
+at, which is what a subject that cannot be pointed at afterwards needs:
+
+| | a pass |
+| --- | --- |
+| making the strings, nothing scanned | 4090 ns |
+| this library | 5239 ns |
+
 Against `sscanf`, on the same work -- the same characters in, the same
 integers out:
 
