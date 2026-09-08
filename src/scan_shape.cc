@@ -24,6 +24,36 @@ export namespace scan::detail {
 #define SCAN_FORCE_INLINE inline
 #endif
 
+// The text a format is spread into, and the machine of that text.
+//
+// A format is a way of writing a pattern, and everything built from it is
+// built from the pattern it is written as. So the spread happens here and the
+// layer below is asked for a machine by the text alone -- it has never heard
+// of a format, and two formats that spread to the same characters are one
+// machine to it.
+template <class type, fixed_string format>
+inline constexpr auto spread_text = [] {
+  constexpr auto made = places_pattern<type, format>();
+  fixed_string<made.length + 1> text{};
+  for (std::size_t at = 0; at < made.length; ++at) {
+    text.value[at] = made.storage[at];
+  }
+  text.anchored = format.anchored;
+  text.space_before_places = format.space_before_places;
+  return text;
+}();
+
+template <class type, fixed_string format, bool cut = true>
+inline constexpr auto& packed_automaton =
+    packed_text_automaton<spread_text<type, format>, true, cut>;
+
+// The same, for the machine that gathers as it reads: its registers are not
+// allocated, because a gathering follows the register its tag is in and
+// allocation would put two tags in one place.
+template <class type, fixed_string format, bool cut = true>
+inline constexpr auto& streaming_automaton =
+    packed_text_automaton<spread_text<type, format>, false, cut>;
+
 // The head of the input and the fields out of it, in one walk.
 //
 // Finding where a head ends and reading what is in it were two walks over the
