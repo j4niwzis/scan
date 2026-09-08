@@ -1,0 +1,165 @@
+# What this library is, built the way somebody else would build it.
+#
+# Three questions, and the third is the one nothing here ever asked: does it
+# build, do the tests pass, and is what it installs something a consumer can
+# use? A module library installs its interface units beside the archive --
+# whoever links it compiles them itself -- so an install that is wrong is a
+# library nobody can consume, and every part of that is written in
+# CMakeLists.txt where nothing runs it.
+name: install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clang and libc++, which is where `import std` comes from: the library
+      # ships the source of the std module and CMake compiles it. The -dev
+      # package is what carries it.
+      - name: clang 21 and libc++
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y ninja-build lsb-release software-properties-common gnupg curl
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 21
+          sudo apt-get install -y libc++-21-dev libc++abi-21-dev
+          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+
+      - name: cmake
+        run: |
+          version=4.4.3
+          curl -sSL -o cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
+          sudo tar xzf cmake.tar.gz -C /opt
+          echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      # Where libc++ keeps the source of its std module, said by pointing at
+      # the compiler that belongs to it.
+      #
+      # CMake reads it out of the toolchain's own prefix, and the prefix is
+      # worked out from the compiler's path. Given /usr/bin/clang++-21, which
+      # is a link, that walks one directory up and asks for
+      # /lib/share/libc++/v1/std.cppm, which is nowhere. Given the compiler
+      # where it really is, the prefix is /usr/lib/llvm-21 and the file is
+      # /usr/lib/llvm-21/share/libc++/v1/std.cppm.
+      - name: what import std reads from libc++
+        run: |
+          test -f /usr/lib/llvm-21/share/libc++/v1/std.cppm
+          test -f /usr/lib/llvm-21/share/libc++/v1/std.compat.cppm
+
+      # What the ports were fetched from and what came out of building them.
+      # Keyed by the pin and the lock, so a run that changes neither fetches
+      # and builds nothing.
+      - name: what was fetched and built before
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cmake-everywhere/sources
+            ~/.cache/cmake-everywhere/store
+          key: scan-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-${{ github.sha }}
+          restore-keys: scan-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-
+
+      - name: build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/lib/llvm-21/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/lib/llvm-21/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
+            -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
+          cmake --build build
+
+      # One pattern to a test, and every one of them is a machine built while
+      # it compiles -- so this is the long part of the run and the part worth
+      # having.
+      - name: the tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: install
+        run: cmake --install build
+
+      # What is in the prefix, said out loud: the archive, the module sources
+      # a consumer compiles its own interfaces from, a CMake package, and the
+      # port declaration that answers for this library on a machine that has
+      # it.
+      - name: what is in the prefix
+        run: |
+          find prefix -type f | sort
+          test -f prefix/lib/cmake/scan/scanConfig.cmake
+          test -f prefix/lib/cmake/scan/scanTargets.cmake
+          test -f prefix/lib/scan/modules/src/scan.cc
+          test -f prefix/share/cmake-everywhere/ports/scan/port.cmake
+
+      # And a consumer: the sources of this library nowhere in sight, only the
+      # prefix. It says two things before project() that are about `import
+      # std` rather than about this library -- the gate CMake keeps that
+      # support behind, and the request itself; an installed target built with
+      # CXX_MODULE_STD says so, and a consumer that has not asked is told the
+      # toolchain was never scanned for it.
+      #
+      # And it installs the provider, which is not a formality here: what this
+      # library needs is Boost.PFR as a module, and no machine carries one.
+      # The port beside the installed copy says so, and something has to be
+      # there to answer it -- so this is the consumer a consumer would
+      # actually be, and it uses the same pin this repository does.
+      - name: something built against the installed copy
+        run: |
+          mkdir -p /tmp/consumer/cmake
+          cp cmake/get_cme.cmake /tmp/consumer/cmake/
+          cat > /tmp/consumer/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
+          set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
+              "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
+          set(CMAKE_CXX_MODULE_STD 1)
+          if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
+            set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+                ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+          endif()
+          project(scan_consumer LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 23)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          find_package(scan REQUIRED)
+          add_executable(consumer main.cc)
+          target_link_libraries(consumer PRIVATE scan::scan)
+          EOF
+          cat > /tmp/consumer/main.cc <<'EOF'
+          import std;
+          import scan;
+
+          // The smallest thing that needs all of it: a pattern compiled while
+          // this is compiled, the module interfaces to compile it against, and
+          // the archive to link.
+          struct row {
+            std::string_view left;
+            std::string_view right;
+          };
+
+          int main() {
+            const std::string_view text = "left,right";
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(text);
+            return one.left == "left" && one.right == "right" ? 0 : 1;
+          }
+          EOF
+          cmake -S /tmp/consumer -B /tmp/consumer/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/lib/llvm-21/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/lib/llvm-21/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build /tmp/consumer/build
+          /tmp/consumer/build/consumer
