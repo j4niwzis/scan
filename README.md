@@ -1046,10 +1046,14 @@ differences are the point:
 | re2c | ahead of time, by a generator | a pointer and a terminator, no length | pointers |
 
 Five fields taken out of thirty characters, thirty-two records to a pass, the
-median of seven passes. The first row is the loop with nothing scanned in it,
-which every row below carries:
+median of seven passes.
 
-| | a pass | over the floor |
+The first row is that pass with nothing scanned in it -- the same thirty-two
+subjects, the same barriers around them, no engine between. Every row below
+pays it too, so the second column is the row less that first one: what the
+reading costs, with the loop around it taken away.
+
+| | a pass | the reading alone |
 | --- | --- | --- |
 | the loop, nothing scanned | 192 ns | -- |
 | this library, given a range | 741 ns | 549 ns |
