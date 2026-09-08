@@ -20,23 +20,31 @@ concurrency:
 
 jobs:
   install:
+    name: clang ${{ matrix.llvm }}, libc++, import std
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry, and a second is one line: the library is written against
+        # C++23 modules and asks nothing of a compiler that a release before
+        # this one does not have.
+        llvm: [22]
     steps:
       - uses: actions/checkout@v4
 
       # Clang and libc++, which is where `import std` comes from: the library
       # ships the source of the std module and CMake compiles it. The -dev
       # package is what carries it.
-      - name: clang 21 and libc++
+      - name: clang and libc++
         run: |
           sudo apt-get update || true
           sudo apt-get install -y ninja-build lsb-release software-properties-common gnupg curl
           curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
           chmod +x /tmp/llvm.sh
-          sudo /tmp/llvm.sh 21
-          sudo apt-get install -y libc++-21-dev libc++abi-21-dev
-          echo /usr/lib/llvm-21/bin >> "$GITHUB_PATH"
+          sudo /tmp/llvm.sh ${{ matrix.llvm }}
+          sudo apt-get install -y libc++-${{ matrix.llvm }}-dev libc++abi-${{ matrix.llvm }}-dev
+          echo /usr/lib/llvm-${{ matrix.llvm }}/bin >> "$GITHUB_PATH"
 
       - name: cmake
         run: |
@@ -49,8 +57,8 @@ jobs:
       # Where `import std` is read from, put where this build looks for it.
       #
       # The source of the std module is in the toolchain's own directory --
-      # /usr/lib/llvm-21/share/libc++/v1/std.cppm -- and what CMake asks for
-      # is /lib/share/libc++/v1/std.cppm, which no package puts there. It is
+      # <toolchain>/share/libc++/v1/std.cppm -- and what CMake asks for is
+      # /lib/share/libc++/v1/std.cppm, which no package puts there. It is
       # worked out from where the compiler is, and the compiler a
       # distribution installs is a link in a directory that says nothing
       # about its toolchain. So both ends are said outright: the compiler
@@ -59,9 +67,9 @@ jobs:
       - name: where import std is read from
         run: |
           sudo mkdir -p /lib/share/libc++
-          sudo ln -sfn /usr/lib/llvm-21/share/libc++/v1 /lib/share/libc++/v1
-          sudo ln -sf /usr/lib/llvm-21/bin/clang++ /usr/local/bin/clang++
-          sudo ln -sf /usr/lib/llvm-21/bin/clang /usr/local/bin/clang
+          sudo ln -sfn /usr/lib/llvm-${{ matrix.llvm }}/share/libc++/v1 /lib/share/libc++/v1
+          sudo ln -sf /usr/lib/llvm-${{ matrix.llvm }}/bin/clang++ /usr/local/bin/clang++
+          sudo ln -sf /usr/lib/llvm-${{ matrix.llvm }}/bin/clang /usr/local/bin/clang
           test -f /lib/share/libc++/v1/std.cppm
           test -f /lib/share/libc++/v1/std.compat.cppm
 
