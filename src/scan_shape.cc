@@ -4394,9 +4394,6 @@ class field_gatherer {
   // reading would be told the same things, so there is one fold to tell and it
   // can live in the walk -- which is what lets it stay in a register of the
   // processor rather than in an array indexed by a number read from memory.
-  using plain_folds_type = decltype(make_slots<type, format, mark_kind>());
-  [[no_unique_address]] plain_folds_type plain_folds_ =
-      make_slots<type, format, mark_kind>();
 
  public:
 
@@ -4713,6 +4710,17 @@ class field_gatherer {
   }
 
 
+  using plain_folds_type = decltype(make_slots<type, format, mark_kind>());
+  // Kept first, and by itself.
+  //
+  // What the walk touches on every character is here; everything else it holds
+  // -- the answer, the failure, where the subject begins, the gatherings that
+  // do follow a register -- is touched once a match or once a field. Put first
+  // in the object, the hot part shares no cache line with the cold, and an
+  // optimiser that will not promote a whole gatherer to registers can still
+  // keep this much of it in one.
+  [[no_unique_address]] plain_folds_type plain_folds_ =
+      make_slots<type, format, mark_kind>();
   states_type states_;
   std::optional<type> made_;
   std::optional<failure_for<type>> failed_;
