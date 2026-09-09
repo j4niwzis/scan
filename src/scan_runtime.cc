@@ -1221,12 +1221,12 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
       continue;
     }
-    put_back();
     // Tested after the class, not before: a terminator no state takes cannot
     // keep the machine where it is, so asking about it first would only add a
     // branch to every character.
     if constexpr (shape.by_terminator) {
       if (symbol == shape.terminator) {
+        put_back();
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, place);
           into.template ended<state>(registers);
@@ -1236,23 +1236,36 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         }
       }
     }
-    return dispatch_continuation<automaton, shape, state, budget,
-                                 counts_here ? certain - 1 : 0, mark>(
-        symbol, cursor, last, place, registers, into, best);
+    // Handed on where the walk is, not where the caller last heard it was.
+    //
+    // The state after this one is written out here, and the one after that,
+    // and every one of them would begin by reading a cursor out of memory and
+    // end by writing it back -- two stores and two loads a character, along a
+    // chain that is most of what a reading does. What the chain is handed is
+    // this walk's own cursor and mark, and the caller's are written once, when
+    // the chain is done with them.
+    const bool said = dispatch_continuation<automaton, shape, state, budget,
+                                            counts_here ? certain - 1 : 0,
+                                            mark>(symbol, here, last, spot,
+                                                  registers, into, best);
+    put_back();
+    return said;
   }
   if constexpr (!accepts_here) {
+    put_back();
     return best.matched;
   } else {
     if constexpr (shape.longest) {
       best.matched = true;
-      best.at = cursor;
+      best.at = here;
       keep_the_end(best, last);
     }
     if constexpr (by_place) {
-      execute_static_final_commands<automaton, state>(registers, cursor);
+      execute_static_final_commands<automaton, state>(registers, here);
     } else {
-      execute_static_final_commands<automaton, state>(registers, place);
+      execute_static_final_commands<automaton, state>(registers, spot);
     }
+    put_back();
     into.template ended<state>(registers);
     return true;
   }
