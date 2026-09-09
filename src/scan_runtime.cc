@@ -92,20 +92,78 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 // character, through pointers.
 
 
-template <auto& automaton, std::size_t state, std::size_t range, class mark,
-          std::size_t register_count>
+// Which registers anything will ever read.
+//
+// A register is read where it holds a tag of a group somebody asks about, and
+// where a command copies out of it into a register that is read. Everything
+// else a walk writes is written and thrown away: the tags of a group whose
+// type only takes the characters are the marks of a place nobody will ever
+// ask about.
+//
+// That matters because writing them is not free. A move that begins a turn
+// writes half a dozen positions into the register file, and a subject made of
+// short turns is a subject made of those stores -- which is the whole of the
+// difference between this walk and the loop somebody would have written by
+// hand for the same expression, where a position nobody reads is a position
+// nobody writes either.
+//
+// The reading is closed under copying: a register that feeds a live one is
+// live too, however many moves the copy takes to arrive.
+template <auto& automaton, std::uint64_t tags_read>
+inline constexpr auto registers_worth_writing = [] consteval {
+  constexpr std::size_t count = automaton.register_count;
+  std::array<bool, count> live{};
+  for (std::size_t at = 0; at < count; ++at) {
+    const std::size_t group = automaton.register_tag[at] / 2;
+    live[at] = group >= 64 || (tags_read & (std::uint64_t{1} << group)) != 0;
+  }
+  bool again = true;
+  while (again) {
+    again = false;
+    for (std::size_t state = 0; state < automaton.states.size(); ++state) {
+      const auto& packed = automaton.states[state];
+      const auto feeds = [&](const auto& one) {
+        if (one.destination >= count || !live[one.destination]) return;
+        if (one.source == packed_command::no_source) return;
+        if (one.source >= count || live[one.source]) return;
+        live[one.source] = true;
+        again = true;
+      };
+      for (std::size_t at = 0; at < packed.range_count; ++at) {
+        const auto& range = packed.ranges[at];
+        for (std::size_t index = 0; index < range.command_count; ++index) {
+          feeds(range.commands[index]);
+        }
+      }
+      for (std::size_t index = 0; index < packed.final_command_count; ++index) {
+        feeds(packed.final_commands[index]);
+      }
+    }
+  }
+  return live;
+}();
+
+template <auto& automaton, std::size_t state, std::size_t range,
+          std::uint64_t tags_read, class mark, std::size_t register_count>
 SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
     std::array<mark, register_count>& registers, mark here) {
   constexpr const auto& transition =
       automaton.states[state].ranges[range];
+  static constexpr auto live = registers_worth_writing<automaton, tags_read>;
   [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
       std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
-            (transition.commands[index].source == packed_command::no_source
+            (!live[transition.commands[index].destination] ||
+                     transition.commands[index].source ==
+                         packed_command::no_source
                  ? absent_mark<mark>
                  : registers[transition.commands[index].source])...};
-        (execute_command(transition.commands[index], source_values[index],
-                         registers, here),
+        ([&] SCAN_FORCE_INLINE_LAMBDA {
+          if constexpr (live[transition.commands[index].destination]) {
+            execute_command(transition.commands[index], source_values[index],
+                            registers, here);
+          }
+        }(),
          ...);
       }(std::make_index_sequence<transition.command_count>{});
 }
@@ -559,8 +617,8 @@ template <auto& automaton, std::size_t state, std::size_t move>
   }
 }
 
-template <auto& automaton, std::size_t state, class mark,
-          std::size_t register_count, std::size_t which = 0>
+template <auto& automaton, std::size_t state, std::uint64_t tags_read,
+          class mark, std::size_t register_count, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 execute_tagged_self_transition(
     unsigned char symbol, std::array<mark, register_count>& registers,
@@ -576,17 +634,17 @@ execute_tagged_self_transition(
     // comparison and one branch on every letter, to find something that happens
     // once. The runs of a state do not overlap, so a symbol skipped here
     // cannot make any of the other moves either, and the answer is the same.
-    return execute_tagged_self_transition<automaton, state, mark,
+    return execute_tagged_self_transition<automaton, state, tags_read, mark,
                                           register_count, which + 1>(
         symbol, registers, here);
   } else {
     constexpr std::size_t move = moves.at[which];
     if (makes_move<automaton, state, move>(symbol)) {
-      execute_static_transition_commands<automaton, state, move>(registers,
+      execute_static_transition_commands<automaton, state, move, tags_read>(registers,
                                                                  here);
       return true;
     }
-    return execute_tagged_self_transition<automaton, state, mark,
+    return execute_tagged_self_transition<automaton, state, tags_read, mark,
                                           register_count, which + 1>(
         symbol, registers, here);
   }
@@ -597,8 +655,9 @@ execute_tagged_self_transition(
 
 // Which move keeps the machine here, or none. The move is what the gatherer
 // needs: its commands are what a field's gathering follows.
-template <auto& automaton, std::size_t state, class gatherer, class mark,
-          std::size_t register_count, std::size_t which = 0>
+template <auto& automaton, std::size_t state, std::uint64_t tags_read,
+          class gatherer, class mark, std::size_t register_count,
+          std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::size_t taken_self_move(
     unsigned char symbol, std::array<mark, register_count>& registers,
     mark here, gatherer& into) {
@@ -607,8 +666,9 @@ template <auto& automaton, std::size_t state, class gatherer, class mark,
     return no_run;
   } else if constexpr (automaton.states[state].ranges[moves.at[which]].target !=
                        state) {
-    return taken_self_move<automaton, state, gatherer, mark, register_count,
-                           which + 1>(symbol, registers, here, into);
+    return taken_self_move<automaton, state, tags_read, gatherer, mark,
+                           register_count, which + 1>(symbol, registers, here,
+                                                      into);
   } else {
     constexpr std::size_t move = moves.at[which];
     if (makes_move<automaton, state, move>(symbol)) {
@@ -616,7 +676,7 @@ template <auto& automaton, std::size_t state, class gatherer, class mark,
       // takes in the turn that is ending, and what says the turn ended is the
       // registers as they stand now.
       into.template moving<state, move>(registers, here);
-      execute_static_transition_commands<automaton, state, move>(registers,
+      execute_static_transition_commands<automaton, state, move, tags_read>(registers,
                                                                  here);
       // Handed over here rather than by whoever called: which move this is, is
       // a constant only while this frame is written out, and what a character
@@ -630,8 +690,9 @@ template <auto& automaton, std::size_t state, class gatherer, class mark,
       }
       return move;
     }
-    return taken_self_move<automaton, state, gatherer, mark, register_count,
-                           which + 1>(symbol, registers, here, into);
+    return taken_self_move<automaton, state, tags_read, gatherer, mark,
+                           register_count, which + 1>(symbol, registers, here,
+                                                      into);
   }
 }
 
@@ -1013,11 +1074,31 @@ SCAN_FORCE_INLINE constexpr void keep_the_place(
   }
 }
 
+// What a chain of states said, and where it stopped.
+//
+// A machine written out as code is a chain of frames, one to a state. Where a
+// move goes back to a state the chain is already standing in, writing that
+// state out again writes out the whole cycle again -- and a cycle written out
+// eleven deep is eleven copies of everything inside it, each with its own call
+// to whoever is gathering. A hand writing the same machine would have written
+// a loop.
+//
+// So a move back into the chain is not written: the frame says which state it
+// went back to, the frames between pass the word along, and the frame standing
+// in that state goes round again. The state is a constant at every step of
+// this, so the comparison that carries it costs one instruction and the jump
+// it turns into is the loop the hand would have written.
+struct walk_went {
+  bool said = false;
+  std::size_t back_to = no_run;
+  [[nodiscard]] constexpr explicit operator bool() const { return said; }
+};
+
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type>
-[[nodiscard]] constexpr bool run_continuation(
+          class gatherer, class answer_type, std::uint64_t chain = 0>
+[[nodiscard]] constexpr walk_went run_body(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
     std::array<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best);
@@ -1026,19 +1107,25 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 template <auto& automaton, walk_shape shape, std::size_t state, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_state(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr walk_went run_from_state(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
     std::array<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
-  return run_continuation<automaton, shape, state, shape.budget, 0, mark>(
-      cursor, last, place, registers, into, best);
+  // A call is where a chain ends, so the chain begins again empty: nothing
+  // written out beyond here can go back into a frame this side of the call.
+  return {run_body<automaton, shape, state, shape.budget, 0, mark, cursor_type,
+                   sentinel_type, register_count, gatherer, answer_type, 0>(
+              cursor, last, place, registers, into, best)
+              .said,
+          no_run};
 }
 
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type, std::size_t which = 0>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr bool dispatch_continuation(
+          class gatherer, class answer_type, std::uint64_t chain,
+          std::size_t which = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr walk_went dispatch_continuation(
     unsigned char symbol, cursor_type& cursor, sentinel_type last, mark& place,
     std::array<mark, register_count>& registers, gatherer& into,
     answer_type& best) {
@@ -1061,10 +1148,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         }
         into.template ended<state>(registers);
         best.matched = true;
-        return true;
+        return {true, no_run};
       }
     }
-    return best.matched;
+    return {best.matched, no_run};
   } else {
     constexpr std::size_t move = moves.at[which];
     constexpr const auto& range = automaton.states[state].ranges[move];
@@ -1072,7 +1159,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       // Whether the symbol keeps the machine here is asked before this.
       return dispatch_continuation<automaton, shape, state, budget, certain,
                                    mark, cursor_type, sentinel_type,
-                                   register_count, gatherer, answer_type,
+                                   register_count, gatherer, answer_type, chain,
                                    which + 1>(
           symbol, cursor, last, place, registers, into, best);
     } else {
@@ -1086,8 +1173,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       // it there for every character but the last.
       if (makes_move<automaton, state, move>(symbol)) [[likely]] {
         into.template moving<state, move>(registers, place);
-        execute_static_transition_commands<automaton, state, move>(registers,
-                                                                   place);
+        execute_static_transition_commands<automaton, state, move,
+                                           shape.tags_read>(registers, place);
         into.template moved<state, range.target, move>(
             static_cast<char>(symbol), registers, place);
         // What is left of the budget past this move. A step along a chain
@@ -1103,7 +1190,11 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         // reached by a jump, with the registers in memory across it because a
         // call cannot keep them anywhere else. That is what a generated
         // scanner never does, and it cost half again the time of one.
-        if constexpr (budget != 0) {
+        // A move back into the chain, which is a loop and not a body.
+        if constexpr (range.target < 64 &&
+                      (chain & (std::uint64_t{1} << range.target)) != 0) {
+          return {false, range.target};
+        } else if constexpr (budget != 0) {
           // Written out here rather than called, and said so rather than left
           // to be guessed.
           //
@@ -1117,9 +1208,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           // Only this call. The one below ends the chain, and forcing that one
           // would ask an automaton with a cycle to write itself out for ever.
           SCAN_FORCE_INLINE_CALL
-          return run_continuation<automaton, shape, range.target, budget - 1,
-                                  certain>(cursor, last, place, registers, into,
-                                           best);
+          return run_body<automaton, shape, range.target, budget - 1, certain,
+                          mark, cursor_type, sentinel_type, register_count,
+                          gatherer, answer_type, chain>(
+              cursor, last, place, registers, into, best);
         } else {
           return run_from_state<automaton, shape, range.target, mark>(
               cursor, last, place, registers, into, best);
@@ -1127,7 +1219,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
       return dispatch_continuation<automaton, shape, state, budget, certain,
                                    mark, cursor_type, sentinel_type,
-                                   register_count, gatherer, answer_type,
+                                   register_count, gatherer, answer_type, chain,
                                    which + 1>(
           symbol, cursor, last, place, registers, into, best);
     }
@@ -1137,8 +1229,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type>
-[[nodiscard]] constexpr bool run_continuation(
+          class gatherer, class answer_type, std::uint64_t chain = 0>
+[[nodiscard]] constexpr walk_went run_body(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
     std::array<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
@@ -1148,43 +1240,6 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       automaton.states[state].accepting_slot !=
       packed_state<0, 0, 0>::not_accepting;
 
-  if constexpr (shape.longest && accepts_here) {
-    best.matched = true;
-    best.at = cursor;
-    keep_the_end(best, last);
-    keep_the_place<automaton, state>(best, registers, cursor, place, into);
-  }
-  // Over the run this state keeps, in vectors -- only where the characters lie
-  // in a row and nobody is gathering them, because what is stepped over is not
-  // read. A head may be read this way too: what is stepped over is a run that
-  // keeps the machine here, and where it stops is where the run ends.
-  // Over the run this state keeps, in vectors.
-  //
-  // Wants the characters to lie in a row, which is a question about the
-  // reading and not about the marks: input that arrives in pieces is in a row
-  // inside a piece. Where somebody is gathering, what is stepped over is
-  // handed to them as a piece -- one append instead of one a character -- and
-  // where they cannot take a piece, the run is read a character at a time as
-  // before.
-  constexpr bool by_pointer = std::is_pointer_v<cursor_type>;
-  constexpr bool takes_a_piece = requires(gatherer& one, const char* from) {
-    one.template took_run<state>(from, from, registers, place);
-  };
-  if constexpr (shape.in_words && by_pointer && (!gathers || takes_a_piece) &&
-                runs_in_place<automaton, state, shape.tags_read>()) {
-    const cursor_type from = cursor;
-    cursor = skip_class<staying_of<automaton, state, shape.tags_read>()>(cursor,
-                                                                        last);
-    if constexpr (gathers && takes_a_piece) {
-      into.template took_run<state>(from, cursor, registers, place);
-      if constexpr (!by_place) place += cursor - from;
-    }
-    if constexpr (shape.longest && accepts_here) {
-      best.at = cursor;
-      keep_the_end(best, last);
-      keep_the_place<automaton, state>(best, registers, cursor, place, into);
-    }
-  }
   // Where the walk is, held here rather than through the references it was
   // handed.
   //
@@ -1209,6 +1264,51 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       place = spot;
     }
   };
+  // This state, standing in the chain -- and the loop that lets a move come
+  // back to it without the whole of it being written out a second time.
+  constexpr std::uint64_t walked =
+      chain | (state < 64 ? std::uint64_t{1} << state : std::uint64_t{0});
+  for (;;) {
+  if constexpr (shape.longest && accepts_here) {
+    best.matched = true;
+    best.at = here;
+    keep_the_end(best, last);
+    keep_the_place<automaton, state>(best, registers, here, spot, into);
+  }
+  // Over the run this state keeps, in vectors -- only where the characters lie
+  // in a row and nobody is gathering them, because what is stepped over is not
+  // read. A head may be read this way too: what is stepped over is a run that
+  // keeps the machine here, and where it stops is where the run ends.
+  // Over the run this state keeps, in vectors.
+  //
+  // Wants the characters to lie in a row, which is a question about the
+  // reading and not about the marks: input that arrives in pieces is in a row
+  // inside a piece. Where somebody is gathering, what is stepped over is
+  // handed to them as a piece -- one append instead of one a character -- and
+  // where they cannot take a piece, the run is read a character at a time as
+  // before.
+  constexpr bool by_pointer = std::is_pointer_v<cursor_type>;
+  constexpr bool takes_a_piece = requires(gatherer& one, const char* from) {
+    one.template took_run<state>(from, from, registers, spot);
+  };
+  if constexpr (shape.in_words && by_pointer && (!gathers || takes_a_piece) &&
+                runs_in_place<automaton, state, shape.tags_read>()) {
+    const cursor_type from = here;
+    here = skip_class<staying_of<automaton, state, shape.tags_read>()>(here,
+                                                                      last);
+    if constexpr (gathers && takes_a_piece) {
+      into.template took_run<state>(from, here, registers, spot);
+      if constexpr (!by_place) spot += here - from;
+    }
+    if constexpr (shape.longest && accepts_here) {
+      best.at = here;
+      keep_the_end(best, last);
+      keep_the_place<automaton, state>(best, registers, here, spot, into);
+    }
+  }
+  // Whether the chain came back to this state, which is the one way out of
+  // the loop below that is not the end of the reading.
+  bool came_back = false;
   while (true) {
     // A character that is certainly there is read without asking whether it
     // is: the subject was measured against the shortest match before the first
@@ -1245,8 +1345,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       ++spot;
     }
     const std::size_t stayed =
-        taken_self_move<automaton, state, gatherer>(symbol, registers, spot,
-                                                    into);
+        taken_self_move<automaton, state, shape.tags_read, gatherer>(
+            symbol, registers, spot, into);
     if (stayed != no_run) {
       if constexpr (shape.longest && accepts_here) {
         best.at = here;
@@ -1264,9 +1364,9 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, place);
           into.template ended<state>(registers);
-          return true;
+          return {true, no_run};
         } else {
-          return best.matched;
+          return {best.matched, no_run};
         }
       }
     }
@@ -1278,16 +1378,25 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     // chain that is most of what a reading does. What the chain is handed is
     // this walk's own cursor and mark, and the caller's are written once, when
     // the chain is done with them.
-    const bool said = dispatch_continuation<automaton, shape, state, budget,
-                                            counts_here ? certain - 1 : 0,
-                                            mark>(symbol, here, last, spot,
-                                                  registers, into, best);
+    const walk_went said =
+        dispatch_continuation<automaton, shape, state, budget,
+                              counts_here ? certain - 1 : 0, mark, cursor_type,
+                              sentinel_type, register_count, gatherer,
+                              answer_type, walked>(symbol, here, last, spot,
+                                                   registers, into, best);
+    // A move that went back to this state: the chain did not write this state
+    // out again, so it is this frame that goes round.
+    if (said.back_to == state) {
+      came_back = true;
+      break;
+    }
     put_back();
     return said;
   }
+  if (came_back) continue;
   if constexpr (!accepts_here) {
     put_back();
-    return best.matched;
+    return {best.matched, no_run};
   } else {
     if constexpr (shape.longest) {
       best.matched = true;
@@ -1301,8 +1410,27 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     }
     put_back();
     into.template ended<state>(registers);
-    return true;
+    return {true, no_run};
   }
+  }
+}
+
+// The walk, for whoever is not one of its own frames.
+//
+// Everything above passes a chain along; a caller outside has none, and what
+// it wants back is whether the reading was a match.
+template <auto& automaton, walk_shape shape, std::size_t state,
+          std::size_t budget, std::size_t certain, class mark,
+          class cursor_type, class sentinel_type, std::size_t register_count,
+          class gatherer, class answer_type>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_continuation(
+    cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
+    std::array<mark, register_count>& __restrict registers,
+    gatherer& __restrict into, answer_type& __restrict best) {
+  return run_body<automaton, shape, state, budget, certain, mark, cursor_type,
+                  sentinel_type, register_count, gatherer, answer_type, 0>(
+             cursor, last, place, registers, into, best)
+      .said;
 }
 
 // How far a chain of states is written out before the next one is reached by a
