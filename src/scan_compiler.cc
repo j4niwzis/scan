@@ -635,6 +635,13 @@ struct packed_range {
   // belongs to costs nothing to find out.
   std::uint64_t groups_open = 0;
   bool groups_known = false;
+  // And which groups this move begins again.
+  //
+  // A group taken over and over is open on both sides of the turn, so what is
+  // open says nothing about a turn ending -- the mask before and after is the
+  // same. What says it is the move writing the group's opening tag, which is
+  // as much a fact about the move as the mask is.
+  std::uint64_t groups_reopened = 0;
 };
 
 template <std::size_t command_capacity, std::size_t final_command_capacity,
@@ -835,6 +842,17 @@ template <std::size_t state_count, std::size_t register_count,
               range.target = transition.target;
               range.groups_open = transition.groups_open;
               range.groups_known = transition.groups_known;
+              range.groups_reopened = 0;
+              for (const scan::tre::register_command& command :
+                   transition.commands) {
+                const std::uint32_t tag =
+                    tdfa.register_tag[command.destination];
+                if (tag % 2 != 0) continue;
+                const std::size_t group = tag / 2;
+                if (group < 64) {
+                  range.groups_reopened |= std::uint64_t{1} << group;
+                }
+              }
               range.command_count = transition.commands.size();
               std::ranges::transform(transition.commands,
                                      range.commands.begin(), pack_command);

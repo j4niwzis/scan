@@ -2660,6 +2660,26 @@ template <class held, class state_type>
   }(std::make_index_sequence<groups_a_leaf_opens<held_type>()>{});
 }
 
+// Whether every move of a machine says what the character it reads lies
+// inside.
+//
+// Then no gathering has to follow a reading. Two readings differ in where the
+// tags will land, and a fold is never told where a tag landed -- it is told
+// that a group opened, that a character fell in it, that it closed. If every
+// move agrees about which groups a character is inside, every reading would be
+// told the very same things in the very same order, so one fold answers for
+// all of them and lives in the walk itself rather than in a register.
+template <auto& automaton>
+[[nodiscard]] consteval bool every_move_says_the_groups() {
+  for (std::size_t state = 0; state < automaton.states.size(); ++state) {
+    const auto& here = automaton.states[state];
+    for (std::size_t move = 0; move < here.range_count; ++move) {
+      if (!here.ranges[move].groups_known) return false;
+    }
+  }
+  return true;
+}
+
 // Whether a step can say what happened to a fold's groups without looking at
 // anything.
 //
@@ -2671,12 +2691,10 @@ template <class held, class state_type>
 // costs the user's own arithmetic and nothing else.
 template <auto& automaton, std::size_t from, std::size_t move>
 [[nodiscard]] consteval bool step_says_the_groups() {
-  // The move says what the character it reads lies inside. Where the state it
-  // lands in holds a single reading there is a single gathering to say it to,
-  // and the whole step is then a fact about the code and not about the input.
-  const auto& taken = automaton.states[from].ranges[move];
-  return taken.groups_known &&
-         automaton.states[taken.target].reading_count == 1;
+  // Asked of the whole machine and not of this move alone: a fold that is kept
+  // in the walk has to be kept there for the whole of it, and what puts it
+  // there is that no move anywhere needs a reading followed.
+  return every_move_says_the_groups<automaton>();
 }
 
 // The one register a fold stands at, where the state holds one reading.
@@ -2693,6 +2711,10 @@ constexpr void fold_by_the_step(fold_type& fold, std::uint64_t was, char symbol,
   using held_type = std::remove_cv_t<held>;
   constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   constexpr std::uint64_t now = automaton.states[from].ranges[move].groups_open;
+  // A group this move begins again is one whose turn has ended, however the
+  // masks stand: a place taken over and over is open on both sides of it.
+  constexpr std::uint64_t again =
+      automaton.states[from].ranges[move].groups_reopened;
   // The groups of this place are the ones just past it: place 0 is the whole
   // and its groups follow it, which is how the readings are laid out too.
   constexpr auto holds = [](std::uint64_t mask, std::size_t which) {
@@ -2703,16 +2725,25 @@ constexpr void fold_by_the_step(fold_type& fold, std::uint64_t was, char symbol,
   [&]<std::size_t... step>(std::index_sequence<step...>) {
     ((void)[&] {
       constexpr std::size_t which = inside - 1 - step;
-      if constexpr (holds(was, which) && !holds(now, which)) {
-        close_one_group<held_type, which>(fold.here.state);
+      // What this move arrives inside is a constant; what the move before it
+      // arrived inside is a word the walk carries. A group closes where the
+      // second says yes and the first says no.
+      if constexpr (!holds(now, which) || holds(again, which)) {
+        if (holds(was, which) && fold.here.open[which]) {
+          close_one_group<held_type, which>(fold.here.state);
+          fold.here.open[which] = false;
+        }
       }
     }(), ...);
   }(std::make_index_sequence<inside>{});
   [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
-      if constexpr (!holds(was, which) && holds(now, which)) {
-        open_one_group<held_type, which>(fold.here.state);
-        fold.here.started = true;
+      if constexpr (holds(now, which)) {
+        if (!fold.here.open[which]) {
+          open_one_group<held_type, which>(fold.here.state);
+          fold.here.open[which] = true;
+          fold.here.started = true;
+        }
       }
     }(), ...);
   }(std::make_index_sequence<inside>{});
@@ -3184,10 +3215,16 @@ constexpr void advance_scanner(
          ...);
       },
       commands);
-  if constexpr (how::folds && how::the_place) {
+  if constexpr (how::folds && how::the_place &&
+                !every_move_says_the_groups<automaton>()) {
     // Everything that happened inside this place on this character, told in
     // order -- and told now, before the copy below, or a fold that ends where
     // its place ends would be copied one closing short.
+    //
+    // Only where the machine cannot say it. Where it can, the walk tells the
+    // fold once, from the move, and telling it again here would say every
+    // opening and every character twice: what stops that in this telling is
+    // comparing positions, and the other telling has no positions to compare.
     fold_the_readings<group, gathering_slot<type, format, group>,
                       std::remove_cv_t<held_type>, automaton>(
         state, registers, states, symbol, hands_the_character, text);
@@ -4091,6 +4128,14 @@ class field_gatherer {
   // its own character lies inside; the difference between the two is what
   // opened and what closed, and it costs one word to carry.
   std::uint64_t open_now_ = 0;
+  // The folds that answer for every reading at once, kept here rather than at
+  // a register. Where the machine says what each character lies inside, every
+  // reading would be told the same things, so there is one fold to tell and it
+  // can live in the walk -- which is what lets it stay in a register of the
+  // processor rather than in an array indexed by a number read from memory.
+  using plain_folds_type = decltype(make_slots<type, format>());
+  [[no_unique_address]] plain_folds_type plain_folds_ =
+      make_slots<type, format>();
 
  public:
 
@@ -4146,6 +4191,28 @@ class field_gatherer {
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
+    // A fold the walk kept for itself is put where the value is read from,
+    // which is the register the reading names. Once, at the end, rather than
+    // on every character: that is the whole point of keeping it here.
+    if constexpr (every_move_says_the_groups<automaton>()) {
+      [&]<std::size_t... group>(std::index_sequence<group...>) {
+        ([&] {
+          using how = gathering_of<type, format, group>;
+          if constexpr (how::folds && how::the_place) {
+            // Into every register rather than into the one the accepting
+            // reading names: the value is read through whichever register the
+            // reading that won points at, and this runs once at the end of a
+            // walk, where a handful of assignments cost nothing. Copied rather
+            // than moved, because a walk keeps every place it passes and this
+            // runs at each of them.
+            for (std::size_t at = 0; at < automaton.register_count; ++at) {
+              std::get<gathering_slot<type, format, group>>(states_[at]) =
+                  std::get<gathering_slot<type, format, group>>(plain_folds_);
+            }
+          }
+        }(), ...);
+      }(std::make_index_sequence<field_count>{});
+    }
     auto got = finish_value<type, type, 0, true>(
         by_the_registers<type, format>(packed.readings[packed.accepting_slot],
                                        states_, registers),
@@ -4253,10 +4320,9 @@ class field_gatherer {
       return;
     } else if constexpr (how::folds && how::the_place &&
                          step_says_the_groups<automaton, from, move>()) {
-      // The machine says what happened; nothing is read to find out.
-      constexpr std::uint32_t at =
-          only_fold_register<automaton, landed, group>;
-      auto& fold = std::get<gathering_slot<type, format, group>>(states_[at]);
+      // The machine says what happened; nothing is read to find out, and the
+      // fold is where the walk keeps it rather than where a register points.
+      auto& fold = std::get<gathering_slot<type, format, group>>(plain_folds_);
       fold.here.text = text_;
       fold_by_the_step<group, std::remove_cv_t<held_type>, automaton, from,
                        move>(fold, open_now_, letter, true);
