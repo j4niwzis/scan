@@ -413,6 +413,21 @@ concept takes_group_characters =
           letter);
     });
 
+// Whether a group would take a whole run in one call.
+//
+// A type that says so is better handed the run: one call, and inside it a
+// length rather than a loop. A type that only takes characters is no better
+// off for it, and finding where the run ends so that it can be walked again is
+// a pass over it the reading was not going to make.
+template <class type, std::size_t which, class state_type>
+concept takes_group_runs =
+    requires(state_type& state, std::string_view run) {
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(
+          state, scan::group_at<which>{}, run);
+    } || requires(state_type& state, std::string_view run) {
+      scan::scanner<std::remove_cv_t<type>>{}.push_group(state, which, run);
+    };
+
 // One character, handed to the group it belongs to, in whichever of the three
 // ways the type asked for: the name of the group, the group as a variant, or
 // its number. The choice is made here, where the number is a constant.
@@ -4635,6 +4650,56 @@ class field_gatherer {
     collect_elements<type, format, automaton, failure_for<type>>(
         state, registers, states_, taken.commands, taken.command_count,
         std::make_index_sequence<field_count>{}, text_, failed_);
+  }
+
+  // Whether anything open on this state's run would rather have it whole.
+  //
+  // A gathering that appends by the length of what it is given, or a group
+  // whose type takes a run in one call, is better handed the run: the walk
+  // finds where it ends and hands it over once. Where nothing would -- every
+  // open group is told a character at a time whatever happens -- finding the
+  // end first and walking the run again to say what is in it is one pass more
+  // than the reading needs, and for a run of two or three characters that pass
+  // is most of what the run costs.
+  template <std::size_t state>
+  [[nodiscard]] static consteval bool wants_a_run_whole() {
+    constexpr std::size_t staying = staying_move<automaton, state>();
+    if constexpr (staying == no_move) {
+      return true;
+    } else {
+      return [&]<std::size_t... group>(std::index_sequence<group...>) {
+        return (false || ... || takes_it_whole<state, staying, group>());
+      }(std::make_index_sequence<field_count>{});
+    }
+  }
+
+  template <std::size_t state, std::size_t move, std::size_t group>
+  [[nodiscard]] static consteval bool takes_it_whole() {
+    using held_type = leaf_kind_of_output<type, group>;
+    using how = gathering_of<type, format, group>;
+    constexpr const auto& taken = automaton.states[state].ranges[move];
+    if constexpr (scanned_as_range<held_type>) {
+      return true;
+    } else if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
+      return (taken.groups_open & (std::uint64_t{1} << group)) != 0;
+    } else if constexpr (how::folds && how::the_place && !how::place_repeats &&
+                         every_move_says_the_groups<automaton>()) {
+      using held = std::remove_cv_t<held_type>;
+      using state_type = decltype(scan::scanner<held>{}.begin_groups());
+      return [&]<std::size_t... which>(std::index_sequence<which...>) {
+        return (false || ... || [] {
+          constexpr std::uint64_t bit = std::uint64_t{1} << (group + 1 + which);
+          if constexpr ((taken.groups_open & bit) == 0) {
+            return false;
+          } else {
+            return takes_group_runs<held, which, state_type> ||
+                   takes_the_group_whole<held, which, state_type>;
+          }
+        }());
+      }(std::make_index_sequence<groups_a_leaf_opens<held>()>{});
+    } else {
+      return true;
+    }
   }
 
   // A run the walk stepped over in vectors: the fields that are open take all

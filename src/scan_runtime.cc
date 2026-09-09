@@ -1301,14 +1301,30 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   constexpr bool takes_a_piece = requires(gatherer& one, const char* from) {
     one.template took_run<state>(from, from, registers, spot);
   };
-  if constexpr (shape.in_words && by_pointer && (!gathers || takes_a_piece) &&
+  // Whether anything gathering would rather have the run whole. Where nothing
+  // would, the run is walked here and each character handed over as it is
+  // read: one pass, which is the loop a hand would have written.
+  constexpr bool whole_run = !gathers || requires(gatherer& one) {
+    requires one.template wants_a_run_whole<state>();
+  };
+  if constexpr (by_pointer && (!gathers || takes_a_piece) &&
+                (shape.in_words || !whole_run) &&
                 runs_in_place<automaton, state, shape.tags_read>()) {
+    constexpr auto run_class = staying_of<automaton, state, shape.tags_read>();
     const cursor_type from = here;
-    here = skip_class<staying_of<automaton, state, shape.tags_read>()>(here,
-                                                                      last);
-    if constexpr (gathers && takes_a_piece) {
-      into.template took_run<state>(from, here, registers, spot);
+    if constexpr (gathers && !whole_run) {
+      while (here != last &&
+             inside_of<run_class>(static_cast<unsigned char>(*here))) {
+        into.template took_run<state>(here, here + 1, registers, spot);
+        ++here;
+      }
       if constexpr (!by_place) spot += here - from;
+    } else {
+      here = skip_class<run_class>(here, last);
+      if constexpr (gathers && takes_a_piece) {
+        into.template took_run<state>(from, here, registers, spot);
+        if constexpr (!by_place) spot += here - from;
+      }
     }
     if constexpr (shape.longest && accepts_here) {
       best.at = here;
