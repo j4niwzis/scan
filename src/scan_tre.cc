@@ -412,6 +412,16 @@ struct tdfa_state {
   // positions out at the end -- needs to be told which registers make it up,
   // and this is where it is told. Indexed the way the accepting slot is.
   std::vector<std::vector<std::uint32_t>> readings;
+  // Which groups this state stands inside, where every way of reaching it
+  // agrees. A machine that is written out as code can then hand a character to
+  // the groups it fell in without asking anything at all: which groups those
+  // are is a fact about the state, and the state is a place in the code.
+  //
+  // Where the ways in disagree -- the same state reached with a group open on
+  // one path and closed on another -- there is no such fact, and whatever
+  // gathers has to go by the positions instead.
+  std::uint64_t groups_open = 0;
+  bool groups_known = false;
 };
 
 struct tdfa {
@@ -442,6 +452,63 @@ struct tdfa {
 // compilation nobody waits for, ended by the machine running out of room. A
 // number here turns that into a sentence saying which pattern did it.
 inline constexpr std::size_t most_states = 20000;
+
+// Which groups each state of the nondeterministic machine stands inside.
+//
+// Walked forward from the start: a tag transition opens or closes the group it
+// names, and everything else leaves the set as it was. A state reached twice
+// with two different sets is one where the question has no answer, and so is
+// everything downstream of it -- which is why the disagreement is carried
+// forward until nothing changes.
+struct groups_inside {
+  std::vector<std::uint64_t> mask;
+  std::vector<bool> known;
+};
+
+[[nodiscard]] constexpr groups_inside groups_inside_of(const tnfa& automaton) {
+  const std::size_t count = automaton.transitions.size();
+  groups_inside said{std::vector<std::uint64_t>(count, 0),
+                     std::vector<bool>(count, false)};
+  if (count == 0) return said;
+  std::vector<bool> seen(count, false);
+  seen[automaton.initial] = true;
+  said.known[automaton.initial] = true;
+  std::vector<state_id> walking{automaton.initial};
+  while (!walking.empty()) {
+    const state_id here = walking.back();
+    walking.pop_back();
+    for (const transition& step : automaton.transitions[here]) {
+      std::uint64_t next = said.mask[here];
+      bool next_known = said.known[here];
+      if (step.kind == transition_kind::tag) {
+        const std::size_t group = static_cast<std::size_t>(step.tag) / 2;
+        if (group >= 64) {
+          next_known = false;
+        } else if (step.tag % 2 == 0) {
+          next |= std::uint64_t{1} << group;
+        } else {
+          next &= ~(std::uint64_t{1} << group);
+        }
+      }
+      if (!seen[step.target]) {
+        seen[step.target] = true;
+        said.mask[step.target] = next;
+        said.known[step.target] = next_known;
+        walking.push_back(step.target);
+        continue;
+      }
+      // Reached again, and by a way that says something else: then there is no
+      // fact here, and there is none anywhere this leads either -- so it is
+      // walked once more to carry that forward.
+      if (said.known[step.target] &&
+          (!next_known || said.mask[step.target] != next)) {
+        said.known[step.target] = false;
+        walking.push_back(step.target);
+      }
+    }
+  }
+  return said;
+}
 
 [[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
                                           bool cut_at_match = true);
@@ -795,6 +862,7 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
 }
 
 constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
+  const groups_inside inside = groups_inside_of(automaton);
   // Determinisation as Algorithm 3 of "A closer look at TDFA".
   //
   // A register belongs to a configuration, not to a slot. When a transition
@@ -991,6 +1059,24 @@ constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
                      .accepting_slot = std::nullopt,
                      .final_commands = {},
                      .readings = std::move(readings)};
+    // What this state stands inside: the same for every reading it holds, or
+    // nothing at all. A deterministic state is a set of the machine's states,
+    // and two of them can disagree about which groups are open -- that is what
+    // an ambiguous expression is.
+    state.groups_known = !state.nfa_states.empty();
+    for (std::size_t which = 0; which < state.nfa_states.size(); ++which) {
+      const state_id one = state.nfa_states[which];
+      if (!inside.known[one]) {
+        state.groups_known = false;
+        break;
+      }
+      if (which == 0) {
+        state.groups_open = inside.mask[one];
+      } else if (inside.mask[one] != state.groups_open) {
+        state.groups_known = false;
+        break;
+      }
+    }
     for (std::size_t index = 0; index < entries.size(); ++index) {
       if (entries[index].walk.state == automaton.final &&
           !state.accepting_slot.has_value()) {

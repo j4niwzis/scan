@@ -2653,6 +2653,74 @@ template <class held, class state_type>
   }(std::make_index_sequence<groups_a_leaf_opens<held_type>()>{});
 }
 
+// Whether a step can say what happened to a fold's groups without looking at
+// anything.
+//
+// It can when both ends of the step know what they stand inside and each holds
+// a single reading. Then the groups the character fell in are the ones the step
+// arrived inside; what closed is what the step left and did not arrive in, and
+// what opened is the other way round. All of it is a fact about two states,
+// which is to say a fact about a place in the written-out code -- so the step
+// costs the user's own arithmetic and nothing else.
+template <auto& automaton, std::size_t from, std::size_t to>
+[[nodiscard]] consteval bool step_says_the_groups() {
+  return automaton.states[from].groups_known &&
+         automaton.states[to].groups_known &&
+         automaton.states[from].reading_count == 1 &&
+         automaton.states[to].reading_count == 1;
+}
+
+// The one register a fold stands at, where the state holds one reading.
+template <auto& automaton, std::size_t state, std::size_t place>
+inline constexpr std::uint32_t only_fold_register =
+    automaton.states[state].readings[0][place * 2];
+
+// One step of a fold, told by the shape of the machine rather than by the
+// positions it wrote.
+template <std::size_t place, class held, auto& automaton, std::size_t from,
+          std::size_t to, class fold_type>
+constexpr void fold_by_the_step(fold_type& fold, char symbol,
+                                bool hands_the_character) {
+  using held_type = std::remove_cv_t<held>;
+  constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
+  constexpr std::uint64_t was = automaton.states[from].groups_open;
+  constexpr std::uint64_t now = automaton.states[to].groups_open;
+  // The groups of this place are the ones just past it: place 0 is the whole
+  // and its groups follow it, which is how the readings are laid out too.
+  constexpr auto holds = [](std::uint64_t mask, std::size_t which) {
+    return (mask & (std::uint64_t{1} << (place + 1 + which))) != 0;
+  };
+  // Closed innermost outwards, then opened outermost inwards, then the
+  // character to whatever the step arrived inside.
+  [&]<std::size_t... step>(std::index_sequence<step...>) {
+    ((void)[&] {
+      constexpr std::size_t which = inside - 1 - step;
+      if constexpr (holds(was, which) && !holds(now, which)) {
+        close_one_group<held_type, which>(fold.here.state);
+      }
+    }(), ...);
+  }(std::make_index_sequence<inside>{});
+  [&]<std::size_t... which>(std::index_sequence<which...>) {
+    ((void)[&] {
+      if constexpr (!holds(was, which) && holds(now, which)) {
+        open_one_group<held_type, which>(fold.here.state);
+        fold.here.started = true;
+      }
+    }(), ...);
+  }(std::make_index_sequence<inside>{});
+  if (!hands_the_character) return;
+  [&]<std::size_t... which>(std::index_sequence<which...>) {
+    ((void)[&] {
+      if constexpr (holds(now, which)) {
+        if constexpr (takes_group_characters<held_type, which,
+                                             typename fold_type::state_type>) {
+          push_one_group<held_type, which>(fold.here.state, symbol);
+        }
+      }
+    }(), ...);
+  }(std::make_index_sequence<inside>{});
+}
+
 // The fold of every reading that stands at this state, told the same step once.
 //
 // A fold lives at the register holding the place's opening, which is the
@@ -4025,8 +4093,8 @@ class field_gatherer {
           letter, landed, position, registers, states_, taken.commands,
           taken.command_count, std::make_index_sequence<field_count>{}, text_);
     }
-    hand_over<landed>(letter, registers,
-                      std::make_index_sequence<field_count>{});
+    hand_over<state, landed>(letter, registers,
+                             std::make_index_sequence<field_count>{});
     collect_turns_that_ended<type, format, automaton, failure_for<type>>(
         landed, registers, states_, std::make_index_sequence<field_count>{},
         failed_);
@@ -4129,13 +4197,15 @@ class field_gatherer {
     }
   }
 
-  template <std::size_t landed, class registers_type, std::size_t... group>
+  template <std::size_t from, std::size_t landed, class registers_type,
+            std::size_t... group>
   constexpr void hand_over(char letter, const registers_type& registers,
                            std::index_sequence<group...>) {
-    (hand_group<landed, group>(letter, registers), ...);
+    (hand_group<from, landed, group>(letter, registers), ...);
   }
 
-  template <std::size_t landed, std::size_t group, class registers_type>
+  template <std::size_t from, std::size_t landed, std::size_t group,
+            class registers_type>
   constexpr void hand_group(char letter, const registers_type& registers) {
     using held_type = leaf_kind_of_output<type, group>;
     using how = gathering_of<type, format, group>;
@@ -4143,6 +4213,15 @@ class field_gatherer {
       return;
     } else if constexpr (how::folds && how::inside) {
       return;
+    } else if constexpr (how::folds && how::the_place &&
+                         step_says_the_groups<automaton, from, landed>()) {
+      // The machine says what happened; nothing is read to find out.
+      constexpr std::uint32_t at =
+          only_fold_register<automaton, landed, group>;
+      auto& fold = std::get<gathering_slot<type, format, group>>(states_[at]);
+      fold.here.text = text_;
+      fold_by_the_step<group, std::remove_cv_t<held_type>, automaton, from,
+                       landed>(fold, letter, true);
     } else if constexpr (how::folds && how::the_place) {
       fold_the_readings<group, gathering_slot<type, format, group>,
                         std::remove_cv_t<held_type>, automaton>(

@@ -647,6 +647,13 @@ struct packed_state {
   std::size_t reading_count = 0;
   std::array<std::array<std::uint32_t, tag_capacity>, reading_capacity>
       readings{};
+  // Which groups this state stands inside, where every way of reaching it
+  // agrees, and whether it does. A machine written out as code can hand a
+  // character to the groups it fell in without reading a register: which
+  // groups those are is a fact about the state, and a state is a place in the
+  // code.
+  std::uint64_t groups_open = 0;
+  bool groups_known = false;
 };
 
 
@@ -795,6 +802,8 @@ template <std::size_t state_count, std::size_t register_count,
             packed_state<command_count, final_command_count, range_count,
                          tag_count, reading_count>::not_accepting);
         target.reading_count = source.readings.size();
+        target.groups_open = source.groups_open;
+        target.groups_known = source.groups_known;
         for (std::size_t reading :
              std::views::iota(std::size_t{0}, source.readings.size())) {
           for (std::size_t tag :
