@@ -2763,6 +2763,17 @@ constexpr void fold_the_readings(
   }
 }
 
+// Whether the place a group stands for is taken over and over, which is what
+// an element of a list is and what nothing else is.
+template <class type, std::size_t group>
+[[nodiscard]] consteval bool a_place_that_repeats() {
+  if constexpr (group == 0) {
+    return false;
+  } else {
+    return scanned_as_range<leaf_kind_of_output<type, group - 1>>;
+  }
+}
+
 // How one group is gathered, made once and asked at every place that gathers.
 //
 // A leaf that is built from the groups its own pattern opens is not handed the
@@ -2774,9 +2785,10 @@ struct gathering_of {
   using held_type = leaf_kind_of_output<type, group>;
   static constexpr bool by_groups = gathers_by_its_groups<held_type>;
   // Whether this place is stood on over and over, which an element of a list
-  // is and nothing else is.
-  static constexpr bool place_repeats =
-      group > 0 && scanned_as_range<leaf_kind_of_output<type, group - 1>>;
+  // is and nothing else is. Asked through a function rather than written as an
+  // expression: `group > 0 && …<group - 1>` still names the type at group - 1,
+  // and at group zero that is an index of every bit set.
+  static constexpr bool place_repeats = a_place_that_repeats<type, group>();
   static constexpr bool folds = folds_by_turns<std::remove_cv_t<held_type>>;
   static constexpr bool the_place = by_groups && leaf_offset_of_output<type, group> == 0;
   static constexpr bool inside = by_groups && leaf_offset_of_output<type, group> != 0;
