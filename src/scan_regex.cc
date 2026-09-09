@@ -1615,9 +1615,10 @@ struct collected_match_closure
     // Which registers a group is held in are constants at the state the walk
     // stands in, so this is two loads and a comparison rather than a lookup of
     // the state, then of its readings, then of the registers.
-    template <std::size_t state, std::size_t landed, class registers_type>
-    constexpr void moved(std::size_t, char letter,
-                         const registers_type& registers, std::ptrdiff_t) {
+    template <std::size_t state, std::size_t landed, std::size_t move,
+              class registers_type>
+    constexpr void moved(char letter, const registers_type& registers,
+                         std::ptrdiff_t) {
       fold_all<landed>(letter, true, registers,
                        std::make_index_sequence<sizeof...(collectors)>{});
       hand_all<landed>(letter, registers,
