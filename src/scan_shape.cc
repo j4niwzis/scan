@@ -4702,6 +4702,122 @@ class field_gatherer {
     }
   }
 
+  // Whether exactly one place does the work of this state's run, and does it a
+  // character at a time.
+  template <std::size_t state, std::size_t group>
+  [[nodiscard]] static consteval bool this_place_reads_the_run() {
+    constexpr std::size_t staying = staying_move<automaton, state>();
+    if constexpr (staying == no_move) {
+      return false;
+    } else if constexpr (takes_it_whole<state, staying, group>()) {
+      return false;
+    } else {
+      using held_type = leaf_kind_of_output<type, group>;
+      using how = gathering_of<type, format, group>;
+      if constexpr (!(how::folds && how::the_place && !how::place_repeats &&
+                      every_move_says_the_groups<automaton>()) ||
+                    scanned_as_range<held_type>) {
+        return false;
+      } else {
+        constexpr const auto& taken = automaton.states[state].ranges[staying];
+        using held = std::remove_cv_t<held_type>;
+        using state_type = decltype(scan::scanner<held>{}.begin_groups());
+        return [&]<std::size_t... which>(std::index_sequence<which...>) {
+          return (false || ... || [] {
+            constexpr std::uint64_t bit = std::uint64_t{1} << (group + 1 + which);
+            return (taken.groups_open & bit) != 0 &&
+                   takes_group_characters<held, which, state_type>;
+          }());
+        }(std::make_index_sequence<groups_a_leaf_opens<held>()>{});
+      }
+    }
+  }
+
+  // And whether every other place has nothing to do with it.
+  template <std::size_t state, std::size_t group>
+  [[nodiscard]] static consteval bool this_place_is_idle() {
+    constexpr std::size_t staying = staying_move<automaton, state>();
+    if constexpr (staying == no_move) {
+      return false;
+    } else {
+      constexpr const auto& taken = automaton.states[state].ranges[staying];
+      using held_type = leaf_kind_of_output<type, group>;
+      constexpr std::size_t inside =
+          groups_a_leaf_opens<std::remove_cv_t<held_type>>();
+      constexpr std::uint64_t mine = [] {
+        std::uint64_t made = std::uint64_t{1} << group;
+        for (std::size_t which = 0; which < inside; ++which) {
+          made |= std::uint64_t{1} << (group + 1 + which);
+        }
+        return made;
+      }();
+      return (taken.groups_open & mine) == 0 &&
+             (taken.groups_reopened & mine) == 0;
+    }
+  }
+
+  // Which place that is, where there is exactly one.
+  template <std::size_t state>
+  [[nodiscard]] static consteval std::size_t the_place_that_reads_the_run() {
+    std::size_t found = no_move;
+    std::size_t count = 0;
+    [&]<std::size_t... group>(std::index_sequence<group...>) {
+      ([&] {
+        if constexpr (this_place_reads_the_run<state, group>()) {
+          found = group;
+          ++count;
+        } else if constexpr (!this_place_is_idle<state, group>()) {
+          ++count;
+          ++count;
+        }
+      }(), ...);
+    }(std::make_index_sequence<field_count>{});
+    return count == 1 ? found : no_move;
+  }
+
+  // The run this state keeps, read and handed over in one loop -- and the loop
+  // is here rather than in the walk.
+  //
+  // Where the walk owns the loop, what the type gathers into is an object the
+  // loop writes through, and a store to it is a store on every character: the
+  // optimiser cannot keep it in a register of the processor because it cannot
+  // see where the loop will stop. Here it is a local. Taken out once, kept in a
+  // register for the whole run, put back when the run ends -- which is what
+  // somebody writing this reading by hand would have done without thinking
+  // about it.
+  template <std::size_t state, staying_class klass>
+    requires(the_place_that_reads_the_run<state>() != no_move)
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* took_class(
+      const char* from, const char* limit) {
+    constexpr std::size_t group = the_place_that_reads_the_run<state>();
+    constexpr std::size_t staying = staying_move<automaton, state>();
+    constexpr std::uint64_t now =
+        automaton.states[state].ranges[staying].groups_open;
+    using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+    auto& fold =
+        std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
+    auto gathered = fold.here.state;
+    const char* cursor = from;
+    while (cursor != limit &&
+           inside_of<klass>(static_cast<unsigned char>(*cursor))) {
+      const char letter = *cursor;
+      [&]<std::size_t... which>(std::index_sequence<which...>) {
+        ((void)[&] {
+          constexpr std::uint64_t bit = std::uint64_t{1} << (group + 1 + which);
+          if constexpr ((now & bit) != 0) {
+            if constexpr (takes_group_characters<held, which,
+                                                 decltype(gathered)>) {
+              push_one_group<held, which>(gathered, letter);
+            }
+          }
+        }(), ...);
+      }(std::make_index_sequence<groups_a_leaf_opens<held>()>{});
+      ++cursor;
+    }
+    fold.here.state = gathered;
+    return cursor;
+  }
+
   // A run the walk stepped over in vectors: the fields that are open take all
   // of it, which is one pass over the piece rather than one call a character.
   template <std::size_t state, class registers_type>

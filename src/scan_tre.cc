@@ -971,8 +971,15 @@ constexpr tdfa compile_tdfa(const tnfa& whole, bool cut_at_match,
   // And determinised without the marks nobody will read. Positions are not
   // renumbered by either step, so what was said above still names the same
   // places.
-  const tnfa trimmed = without_empty_links(without_unread_tags(whole, keep));
-  const tnfa& automaton = trimmed;
+  //
+  // Left alone where there is nothing to take out. Folding the empty links a
+  // second time is not the same machine as folding them once -- an edge that
+  // was nobody's only way on before the first pass can be one after it -- so a
+  // machine with every mark kept is handed on exactly as it arrived.
+  const bool trimming = keep != ~std::uint64_t{0};
+  const tnfa trimmed =
+      trimming ? without_empty_links(without_unread_tags(whole, keep)) : tnfa{};
+  const tnfa& automaton = trimming ? trimmed : whole;
   // Determinisation as Algorithm 3 of "A closer look at TDFA".
   //
   // A register belongs to a configuration, not to a slot. When a transition

@@ -1274,10 +1274,23 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       place = spot;
     }
   };
+  // Whether the reading can be handed more of the subject part way through.
+  //
+  // Where it can, the end of what is readable moves, and it moves in the frame
+  // that asked for more -- every frame holds its own. A frame that came back to
+  // by a jump would go on with the end it was told about before, which is the
+  // end of a piece that has already been read, and stop there. So input that
+  // arrives in pieces is walked the other way, by writing the states out, and
+  // the loop below is for a subject that lies still.
+  constexpr bool asks_for_more = requires(cursor_type& one, sentinel_type end) {
+    into.refill(one, end);
+  };
   // This state, standing in the chain -- and the loop that lets a move come
   // back to it without the whole of it being written out a second time.
   constexpr std::uint64_t walked =
-      chain | (state < 64 ? std::uint64_t{1} << state : std::uint64_t{0});
+      asks_for_more
+          ? std::uint64_t{0}
+          : chain | (state < 64 ? std::uint64_t{1} << state : std::uint64_t{0});
   for (;;) {
   if constexpr (shape.longest && accepts_here) {
     best.matched = true;
@@ -1307,12 +1320,26 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   constexpr bool whole_run = !gathers || requires(gatherer& one) {
     requires one.template wants_a_run_whole<state>();
   };
+  // And whether it would rather read the run itself, which it can where one
+  // place does all the work of it.
+  constexpr auto class_of_the_run =
+      staying_of<automaton, state, shape.tags_read>();
+  constexpr bool reads_the_run_itself =
+      gathers && requires(gatherer& one, const char* from) {
+        {
+          one.template took_class<state, class_of_the_run>(from, from)
+        } -> std::same_as<const char*>;
+      };
   if constexpr (by_pointer && (!gathers || takes_a_piece) &&
                 (shape.in_words || !whole_run) &&
                 runs_in_place<automaton, state, shape.tags_read>()) {
     constexpr auto run_class = staying_of<automaton, state, shape.tags_read>();
     const cursor_type from = here;
-    if constexpr (gathers && !whole_run) {
+    if constexpr (gathers && !whole_run && reads_the_run_itself) {
+      // The loop belongs to whoever is gathering: see `took_class`.
+      here = into.template took_class<state, run_class>(here, last);
+      if constexpr (!by_place) spot += here - from;
+    } else if constexpr (gathers && !whole_run) {
       while (here != last &&
              inside_of<run_class>(static_cast<unsigned char>(*here))) {
         into.template took_run<state>(here, here + 1, registers, spot);
