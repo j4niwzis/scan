@@ -2543,7 +2543,8 @@ struct fold_turn {
     const char* from = began > text ? began - 1 : text;
     return std::string_view(from, static_cast<std::size_t>(ended - began));
   } else {
-    return stood_on(text, began, ended);
+    const char* from = began > 0 ? text + began - 1 : text;
+    return std::string_view(from, static_cast<std::size_t>(ended - began));
   }
 }
 
@@ -2558,6 +2559,19 @@ struct fold_turn {
   } else {
     return where < 0;
   }
+}
+
+// Whether a closing lies at or after an opening -- that is, whether the group
+// has closed since it opened.
+//
+// A position that stood nowhere is a null pointer where positions are
+// addresses, and asking whether a null pointer is at or past a real address is
+// a question a constant evaluation refuses to answer: the two point into
+// unrelated objects. So the order is asked only of two positions that both
+// stood somewhere, and a closing that never happened is simply not a closing.
+[[nodiscard]] constexpr bool closed_since(auto ended, auto began) {
+  if (stood_nowhere(ended)) return false;
+  return ended >= began;
 }
 
 // A fold, which is one turn being gathered and at most one turn on its way out.
@@ -2641,7 +2655,7 @@ constexpr void fold_one_step(
       if ((fold.open & (std::uint64_t{1} << which)) == 0) return;
       const auto began = fold.told_at[which];
       const auto ended = closing_of(which);
-      if (stood_nowhere(ended) || ended < began) return;
+      if (!closed_since(ended, began)) return;
       if (ended == fold.ended_at[which]) return;
       if constexpr (takes_the_group_whole<held_type, which,
                                           typename fold_type::state_type>) {
@@ -3504,7 +3518,9 @@ constexpr void advance_scanner(
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
       if (filled[open]) continue;
-      if (stood_nowhere(registers[open]) || registers[close] >= registers[open]) continue;
+      if (stood_nowhere(registers[open]) ||
+          closed_since(registers[close], registers[open]))
+        continue;
       filled[open] = true;
       gathering_of<type, format, group>::push(
           std::get<gathering_slot<type, format, group>>(states[open]), symbol);
@@ -3557,7 +3573,7 @@ struct gathered_by_the_registers {
     } else {
       const std::uint32_t open = reading[place * 2];
       const std::uint32_t close = reading[place * 2 + 1];
-      const bool still_reading = registers[close] < registers[open];
+      const bool still_reading = !closed_since(registers[close], registers[open]);
       return std::get<gathering_slot<type, format, place>>(
           states[still_reading ? open : close]);
     }
@@ -3597,7 +3613,7 @@ struct gathered_by_the_registers {
   [[nodiscard]] constexpr std::string_view span(const char* text) const {
     const auto began = registers[reading[place * 2]];
     const auto ended = registers[reading[place * 2 + 1]];
-    if (stood_nowhere(began) || ended < began) return {};
+    if (stood_nowhere(began) || !closed_since(ended, began)) return {};
     return stood_on(text, began, ended);
   }
 
@@ -4668,7 +4684,7 @@ class field_gatherer {
       for (std::size_t which = 0; which < at.count; ++which) {
         const std::uint32_t opening = at.at[which];
         if (stood_nowhere(registers[opening])) continue;
-        if (registers[closing] >= registers[opening]) continue;
+        if (closed_since(registers[closing], registers[opening])) continue;
         gathering_of<type, format, group>::push_run(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             from, to);
@@ -4731,7 +4747,7 @@ class field_gatherer {
       for (std::size_t which = 0; which < at.count; ++which) {
         const std::uint32_t opening = at.at[which];
         if (stood_nowhere(registers[opening])) continue;
-        if (registers[closing] >= registers[opening]) continue;
+        if (closed_since(registers[closing], registers[opening])) continue;
         gathering_of<type, format, group>::push(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             letter);
