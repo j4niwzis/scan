@@ -4870,7 +4870,9 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   return into.taken();
 }
 
-template <class type, fixed_string format, std::ranges::input_range range_type>
+template <class type, fixed_string format,
+          how_to_walk walk = how_to_walk::by_length,
+          std::ranges::input_range range_type>
 [[nodiscard]] constexpr std::expected<type, failure_for<type>> scan_stream(
     range_type&& input) {
   // The whole of the reading, so the walks below a match are kept.
@@ -4911,8 +4913,16 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
     const char* cursor = std::ranges::data(input);
     const char* const last = cursor + std::ranges::size(input);
     const char* position = cursor;
+    // Runs stepped over whole, unless the caller asked for a character at a
+    // time.
+    //
+    // Only the one walk the caller will use is written. The other paths write
+    // both and pick by the length of the subject, which they can afford
+    // because a walk to a terminator is a state and a comparison; a walk that
+    // gathers is a body a state, and two of them is twice the code for a
+    // question that a subject of any length answers the same way.
     constexpr walk_shape shape{
-        .in_words = true,
+        .in_words = walk != how_to_walk::one_at_a_time,
         .tags_read = groups_whose_place_is_read<type, format, automaton>(),
         .budget = bodies_worth_writing<automaton>()};
     walk_answer<const char*> best;

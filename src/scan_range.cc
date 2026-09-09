@@ -39,7 +39,7 @@ class borrowed_result {
     // them is made of are the turns, and the positions left behind hold the
     // last turn and nothing before it.
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
-      return detail::scan_stream<type, format>(input_);
+      return detail::scan_stream<type, format, walk>(input_);
     } else {
       // A group that took no part is an error, unless somewhere in this output
       // there is a variant, where exactly one branch takes part and the rest do
@@ -79,7 +79,7 @@ class borrowed_result {
   template <class type>
   [[nodiscard]] constexpr type read_or_throw() const {
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
-      return or_thrown(detail::scan_stream<type, format>(input_));
+      return or_thrown(detail::scan_stream<type, format, walk>(input_));
     } else {
       const auto fields = [&] {
         if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
