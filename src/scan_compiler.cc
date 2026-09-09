@@ -897,29 +897,34 @@ template <fixed_string pattern>
   return scan::tre::compile_tnfa(parser.parse_regex());
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut_at_match = true>
+template <fixed_string pattern, bool allocate = true, bool cut_at_match = true,
+          std::uint64_t keep = ~std::uint64_t{0}>
 [[nodiscard]] constexpr scan::tre::tdfa build_text_tdfa() {
   std::size_t captures = 0;
   tre_parser parser(pattern.view(), {}, captures, true);
   scan::tre::node expression = parser.parse_regex();
   return scan::tre::optimize_tdfa(
-      scan::tre::compile_tdfa(scan::tre::compile_tnfa(expression), cut_at_match),
+      scan::tre::compile_tdfa(scan::tre::compile_tnfa(expression),
+                              cut_at_match, keep),
       allocate);
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut = true>
+template <fixed_string pattern, bool allocate = true, bool cut = true,
+          std::uint64_t keep = ~std::uint64_t{0}>
 [[nodiscard]] consteval packed_shape compute_text_shape() {
-  const scan::tre::tdfa tdfa = build_text_tdfa<pattern, allocate, cut>();
+  const scan::tre::tdfa tdfa = build_text_tdfa<pattern, allocate, cut, keep>();
   return compute_shape(tdfa);
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut = true>
+template <fixed_string pattern, bool allocate = true, bool cut = true,
+          std::uint64_t keep = ~std::uint64_t{0}>
 [[nodiscard]] consteval auto pack_text_tdfa() {
-  constexpr packed_shape shape = compute_text_shape<pattern, allocate, cut>();
+  constexpr packed_shape shape =
+      compute_text_shape<pattern, allocate, cut, keep>();
   return pack_tdfa_value<shape.states, shape.registers, shape.initial_commands,
                          shape.maximum_commands, shape.maximum_final_commands,
                          shape.tags, shape.ranges, shape.readings>(
-      build_text_tdfa<pattern, allocate, cut>());
+      build_text_tdfa<pattern, allocate, cut, keep>());
 }
 
 // Built once, on first use. The determiniser is the same one the compiled form
@@ -930,9 +935,12 @@ template <fixed_string pattern, bool allocate = true>
   return built;
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut = true>
+// Told which groups the answer is made of, so that the marks of the rest are
+// never written and the readings that differ only in them are one reading.
+template <fixed_string pattern, bool allocate = true, bool cut = true,
+          std::uint64_t keep = ~std::uint64_t{0}>
 inline constexpr auto packed_text_automaton =
-    pack_text_tdfa<pattern, allocate, cut>();
+    pack_text_tdfa<pattern, allocate, cut, keep>();
 
 // Built once, on first use. The determiniser is the same one the compiled form
 // evaluates while compiling; asked at run time it answers in microseconds.

@@ -1938,8 +1938,13 @@ inline constexpr auto& packed_automaton =
 // The same, for the machine that gathers as it reads: its registers are not
 // allocated, because a gathering follows the register its tag is in and
 // allocation would put two tags in one place.
+//
+// This is the whole of it, with a mark for every tag the expression writes. It
+// is what the question "which of those marks will anybody read" is asked of --
+// and the machine that answer builds, which is the one everything walks, is
+// further down.
 template <class type, fixed_string format, bool cut = true>
-inline constexpr auto& streaming_automaton =
+inline constexpr auto& streaming_automaton_whole =
     packed_text_automaton<spread_text<type, format>, false, cut>;
 
 // The head of the input and the fields out of it, in one walk.
@@ -3060,6 +3065,65 @@ template <class type, fixed_string format, auto& automaton>
   }(std::make_index_sequence<groups_of_output<type>()>{});
   return made;
 }
+
+// The machine everything walks: the one above, with the marks nobody will
+// read left out.
+//
+// Which those are is a question about the type and not about the expression,
+// so it cannot be asked until both are known -- and asking it wants a machine
+// to ask of, which is why the whole one is built first. What it buys is not
+// only the stores: two readings of the input that differ in nothing but a mark
+// nobody reads are one reading here, so the machine carries fewer of them,
+// hands out fewer registers, and a run that wrote such a mark on every
+// character becomes a run that writes nothing -- which is a run the walk can
+// step over whole.
+// Which groups' tags the machine is worth writing at all.
+//
+// Wider than the marks anybody reads, and for one reason: a tag is also how
+// the machine knows a group began again. A place taken over and over is told
+// its turns by the moves, and the moves can only say so because the tags are
+// there to be written -- so a group whose edges somebody listens for keeps
+// them even where nothing will ever ask where it stood.
+//
+// Which groups a character lies inside is not a reason: that is read off the
+// whole machine before anything is taken out of it.
+// The groups inside one place whose edges its type listens for.
+//
+// Kept apart from the walk over places below so that the two lists of groups
+// -- the places and what is inside each of them -- are never expanded
+// together.
+template <class type, fixed_string format, std::size_t group>
+[[nodiscard]] consteval std::uint64_t edges_listened_for() {
+  using how = gathering_of<type, format, group>;
+  using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+  std::uint64_t made = 0;
+  if constexpr (how::folds && how::the_place) {
+    using state_type = decltype(scan::scanner<held>{}.begin_groups());
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ([&] {
+        if constexpr (takes_the_group_edges<held, which, state_type>()) {
+          made |= std::uint64_t{1} << (group + 1 + which);
+        }
+      }(), ...);
+    }(std::make_index_sequence<groups_a_leaf_opens<held>()>{});
+  }
+  return made;
+}
+
+template <class type, fixed_string format, auto& automaton>
+[[nodiscard]] consteval std::uint64_t groups_whose_tags_matter() {
+  std::uint64_t made = groups_whose_mark_is_read<type, format, automaton>();
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ((made |= edges_listened_for<type, format, group>()), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  return made;
+}
+
+template <class type, fixed_string format, bool cut = true>
+inline constexpr auto& streaming_automaton = packed_text_automaton<
+    spread_text<type, format>, false, cut,
+    groups_whose_tags_matter<type, format,
+                             streaming_automaton_whole<type, format, cut>>()>;
 
 // Which groups' positions anybody will read.
 //

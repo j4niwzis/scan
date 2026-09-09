@@ -476,6 +476,38 @@ struct groups_inside {
   std::vector<bool> known;
 };
 
+// The tags of groups nobody will ever ask about, taken out.
+//
+// A tag is a mark the machine writes so that something later can read it.
+// Where nothing will -- a group whose type takes the characters as they arrive
+// and asks neither where it stood nor when it opened -- the mark is written on
+// every character of a run and thrown away. And worse than thrown away: two
+// readings of the input that differ only in where such a mark was written are
+// two readings, so the machine carries both, gives them registers of their
+// own, and cannot see a run for a run.
+//
+// Taking them out is not a tidying of the walk but of the machine. The edges
+// become plain ones, the empty links below fold them away, and what is left is
+// the machine somebody would have drawn for the same expression if they had
+// been told which groups the answer is made of.
+//
+// Nothing about which strings match changes: an edge keeps its priority and
+// its place, and only the mark it carried is gone.
+[[nodiscard]] constexpr tnfa without_unread_tags(tnfa machine,
+                                                 std::uint64_t keep) {
+  for (auto& out : machine.transitions) {
+    for (auto& edge : out) {
+      if (edge.kind != transition_kind::tag) continue;
+      const std::size_t group = edge.tag / 2;
+      if (group >= 64) continue;
+      if (((keep >> group) & 1) != 0) continue;
+      edge.kind = transition_kind::epsilon;
+      edge.tag = 0;
+    }
+  }
+  return machine;
+}
+
 // The empty links taken out of the machine.
 //
 // Thompson's construction leaves a great many states whose only way on is an
@@ -570,6 +602,15 @@ struct groups_inside {
 
 [[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
                                           bool cut_at_match = true);
+// The same, told which groups the answer is made of.
+//
+// Which groups a character lies inside is read off the whole machine first,
+// because that is what the tags say; the marks of the groups nobody will ask
+// about are taken out afterwards, so the determiniser never sees them and
+// never splits a state over where one of them was written.
+[[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
+                                          bool cut_at_match,
+                                          std::uint64_t keep);
 // Applies TDFA register liveness, dead-store elimination, copy cleanup, and
 // local transition normalization.
 [[nodiscard]] constexpr tdfa optimize_tdfa(tdfa automaton,
@@ -920,7 +961,18 @@ constexpr match simulate(const tnfa& automaton, range_type&& input) {
 }
 
 constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
-  const groups_inside inside = groups_inside_of(automaton);
+  return compile_tdfa(automaton, cut_at_match, ~std::uint64_t{0});
+}
+
+constexpr tdfa compile_tdfa(const tnfa& whole, bool cut_at_match,
+                            std::uint64_t keep) {
+  // Asked of the whole machine, while every tag is still there to say it.
+  const groups_inside inside = groups_inside_of(whole);
+  // And determinised without the marks nobody will read. Positions are not
+  // renumbered by either step, so what was said above still names the same
+  // places.
+  const tnfa trimmed = without_empty_links(without_unread_tags(whole, keep));
+  const tnfa& automaton = trimmed;
   // Determinisation as Algorithm 3 of "A closer look at TDFA".
   //
   // A register belongs to a configuration, not to a slot. When a transition
