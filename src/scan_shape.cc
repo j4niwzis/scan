@@ -2474,7 +2474,10 @@ struct fold_turn {
   // every turn, so what says a turn has ended is that the position moved --
   // not that it stands anywhere in particular.
   std::array<std::ptrdiff_t, inside> ended_at{};
-  std::array<bool, inside> open{};
+  // Which groups are open, a bit each. A byte each was an array to index on
+  // every character, and which groups those are is known while this is
+  // compiled -- so the whole of it is one word and a mask.
+  std::uint64_t open = 0;
   // Whether this turn has been told anything at all. A place that has not been
   // stood on yet is not a turn that ended, and a list does not begin with one.
   bool started = false;
@@ -2572,7 +2575,7 @@ constexpr void fold_one_step(
   [&]<std::size_t... step>(std::index_sequence<step...>) {
     ((void)[&] {
       constexpr std::size_t which = inside - 1 - step;
-      if (!fold.open[which]) return;
+      if ((fold.open & (std::uint64_t{1} << which)) == 0) return;
       const std::ptrdiff_t began = fold.told_at[which];
       const std::ptrdiff_t ended = closing_of(which);
       if (ended < 0 || ended < began) return;
@@ -2590,7 +2593,7 @@ constexpr void fold_one_step(
               fold.state,
               std::string_view(fold.text + (began > 0 ? began - 1 : 0),
                                static_cast<std::size_t>(ended - began)));
-          fold.open[which] = false;
+          fold.open &= ~(std::uint64_t{1} << which);
           fold.ended_at[which] = ended;
           return;
         }
@@ -2602,13 +2605,13 @@ constexpr void fold_one_step(
           // said here and handed back where the value would have been, because
           // a walk has nobody to say it to.
           fold.wanted_a_subject = true;
-          fold.open[which] = false;
+          fold.open &= ~(std::uint64_t{1} << which);
           fold.ended_at[which] = ended;
           return;
         }
       }
       close_one_group<held_type, which>(fold.state);
-      fold.open[which] = false;
+      fold.open &= ~(std::uint64_t{1} << which);
       fold.ended_at[which] = ended;
     }(), ...);
   }(std::make_index_sequence<inside>{});
@@ -2619,7 +2622,7 @@ constexpr void fold_one_step(
       if (began < 0 || fold.told_at[which] == began) return;
       open_one_group<held_type, which>(fold.state);
       fold.told_at[which] = began;
-      fold.open[which] = true;
+      fold.open |= std::uint64_t{1} << which;
       fold.started = true;
     }(), ...);
   }(std::make_index_sequence<inside>{});
@@ -2631,7 +2634,7 @@ constexpr void fold_one_step(
                       !takes_the_group_whole<
                           held_type, which,
                           typename fold_type::state_type>) {
-          if (!fold.open[which]) return;
+          if ((fold.open & (std::uint64_t{1} << which)) == 0) return;
           push_one_group<held_type, which>(fold.state, symbol);
         } else if constexpr (takes_group_characters<
                                  held_type, which,
@@ -2639,7 +2642,7 @@ constexpr void fold_one_step(
           // It would take the group whole, and will where there is something
           // to point at. Where there is not, the characters are all there is.
           if (fold.text != nullptr) return;
-          if (!fold.open[which]) return;
+          if ((fold.open & (std::uint64_t{1} << which)) == 0) return;
           push_one_group<held_type, which>(fold.state, symbol);
         }
       }(), ...);
@@ -2678,6 +2681,20 @@ template <auto& automaton>
     }
   }
   return true;
+}
+
+// The move a state takes to stay where it is, where it has one. A run is
+// stepped over by taking that move again and again, so what it says about the
+// character is what the whole run is inside of.
+inline constexpr std::size_t no_move = std::numeric_limits<std::size_t>::max();
+
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval std::size_t staying_move() {
+  const auto& here = automaton.states[state];
+  for (std::size_t move = 0; move < here.range_count; ++move) {
+    if (here.ranges[move].target == state) return move;
+  }
+  return no_move;
 }
 
 // Whether a step can say what happened to a fold's groups without looking at
@@ -2729,9 +2746,9 @@ constexpr void fold_by_the_step(fold_type& fold, std::uint64_t was, char symbol,
       // arrived inside is a word the walk carries. A group closes where the
       // second says yes and the first says no.
       if constexpr (!holds(now, which) || holds(again, which)) {
-        if (holds(was, which) && fold.here.open[which]) {
+        if (holds(was, which) && ((fold.here.open >> which) & 1) != 0) {
           close_one_group<held_type, which>(fold.here.state);
-          fold.here.open[which] = false;
+          fold.here.open &= ~(std::uint64_t{1} << which);
         }
       }
     }(), ...);
@@ -2739,9 +2756,9 @@ constexpr void fold_by_the_step(fold_type& fold, std::uint64_t was, char symbol,
   [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
       if constexpr (holds(now, which)) {
-        if (!fold.here.open[which]) {
+        if ((fold.here.open & (std::uint64_t{1} << which)) == 0) {
           open_one_group<held_type, which>(fold.here.state);
-          fold.here.open[which] = true;
+          fold.here.open |= std::uint64_t{1} << which;
           fold.here.started = true;
         }
       }
@@ -2878,6 +2895,22 @@ struct gathering_of {
     }
   }
 };
+
+// Whether the gathering for a group can live in the walk rather than at a
+// register.
+//
+// The same question as for a fold, asked of a place that gathers characters:
+// where every move says what its character lies inside, whether this place is
+// open is a fact about the move, so nothing has to be read to find out and
+// nothing has to follow a reading. A place taken over and over is left out --
+// there the gathering is handed away turn by turn, and which turn it belongs
+// to is what the registers are keeping straight.
+template <class type, fixed_string format, auto& automaton, std::size_t group>
+[[nodiscard]] consteval bool gathers_in_the_walk() {
+  using how = gathering_of<type, format, group>;
+  return every_move_says_the_groups<automaton>() && !how::place_repeats;
+}
+
 
 // One gathering per value the pattern reads, not one per field of the output.
 //
@@ -3141,6 +3174,15 @@ constexpr void advance_scanner(
   using held_type = leaf_kind_of_output<type, group>;
   constexpr bool gathers_a_list = scanned_as_range<held_type>;
   using how = gathering_of<type, format, group>;
+  // A gathering the walk keeps for itself is not at a register, so none of
+  // what follows is about it: nothing to begin where a group opens, nothing to
+  // copy where a reading divides, nothing to hand from one register to
+  // another. That is most of what a move used to cost.
+  if constexpr (gathers_in_the_walk<type, format, automaton, group>() ||
+                (how::folds && how::the_place &&
+                 every_move_says_the_groups<automaton>())) {
+    return;
+  } else {
   // A group inside a folding place is not gathered at all: its place tells the
   // fold what happened to it, and does that for all of its groups in one go,
   // where the order can be got right.
@@ -3277,6 +3319,7 @@ constexpr void advance_scanner(
       gathering_of<type, format, group>::push(
           std::get<gathering_slot<type, format, group>>(states[open]), symbol);
     }
+  }
   }
 }
 
@@ -4198,7 +4241,8 @@ class field_gatherer {
       [&]<std::size_t... group>(std::index_sequence<group...>) {
         ([&] {
           using how = gathering_of<type, format, group>;
-          if constexpr (how::folds && how::the_place) {
+          if constexpr ((how::folds && how::the_place) ||
+                        gathers_in_the_walk<type, format, automaton, group>()) {
             // Into every register rather than into the one the accepting
             // reading names: the value is read through whichever register the
             // reading that won points at, and this runs once at the end of a
@@ -4285,6 +4329,20 @@ class field_gatherer {
               state, registers, states_, *letter, true, text_);
         }
       }
+    } else if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
+      // A run is where nothing is written, so what was open at its first
+      // character is open at its last: one question for the whole of it.
+      constexpr std::uint64_t staying =
+          staying_move<automaton, state>() == no_move
+              ? 0
+              : automaton.states[state]
+                    .ranges[staying_move<automaton, state>()]
+                    .groups_open;
+      if constexpr ((staying & (std::uint64_t{1} << group)) != 0) {
+        gathering_of<type, format, group>::push_run(
+            std::get<gathering_slot<type, format, group>>(plain_folds_), from,
+            to);
+      }
     } else {
       constexpr auto at = gathered_at<automaton, state, group>;
       constexpr std::uint32_t closing =
@@ -4330,6 +4388,21 @@ class field_gatherer {
       fold_the_readings<group, gathering_slot<type, format, group>,
                         std::remove_cv_t<held_type>, automaton>(
           landed, registers, states_, letter, true, text_);
+    } else if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
+      // Open where the move says so, and gathered where the walk keeps it.
+      constexpr std::uint64_t now =
+          automaton.states[from].ranges[move].groups_open;
+      constexpr std::uint64_t again =
+          automaton.states[from].ranges[move].groups_reopened;
+      if constexpr ((now & (std::uint64_t{1} << group)) != 0) {
+        static constexpr auto spread = spread_of<type, format>();
+        auto& made = std::get<gathering_slot<type, format, group>>(plain_folds_);
+        if constexpr ((again & (std::uint64_t{1} << group)) != 0) {
+          made = gathering_of<type, format, group>::begin(
+              spread.parameters[group].view());
+        }
+        gathering_of<type, format, group>::push(made, letter);
+      }
     } else {
       static constexpr auto spread = spread_of<type, format>();
       constexpr auto at = gathered_at<automaton, landed, group>;
