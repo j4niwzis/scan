@@ -382,7 +382,25 @@ template <staying_class klass>
 // of them that testing all of them together is still cheaper than reading one
 // character at a time. Ranges that lead elsewhere are not part of it -- they
 // end the run, which is what the caller then handles.
-template <auto& automaton, std::size_t state>
+// Whether a move writes a tag somebody will read.
+//
+// A move that writes only tags nobody reads writes nothing that matters, and a
+// run of such moves is a run the vectors can step over: what is stepped over
+// was going to be thrown away.
+template <auto& automaton, class range_type>
+[[nodiscard]] consteval bool writes_for_a_reader(const range_type& range,
+                                                 std::uint64_t tags_read) {
+  for (std::size_t at = 0; at < range.command_count; ++at) {
+    const std::size_t group =
+        automaton.register_tag[range.commands[at].destination] / 2;
+    if (group >= 64) return true;
+    if ((tags_read & (std::uint64_t{1} << group)) != 0) return true;
+  }
+  return false;
+}
+
+template <auto& automaton, std::size_t state,
+          std::uint64_t tags_read = ~std::uint64_t{0}>
 [[nodiscard]] consteval staying_class staying_of() {
   constexpr const auto& packed = automaton.states[state];
   staying_class answer{};
@@ -390,7 +408,7 @@ template <auto& automaton, std::size_t state>
   for (std::size_t index = 0; index < packed.range_count; ++index) {
     const auto& range = packed.ranges[index];
     if (range.target != state) continue;
-    if (range.command_count != 0) return staying_class{};
+    if (writes_for_a_reader<automaton>(range, tags_read)) return staying_class{};
     if (answer.count == answer.first.size()) return staying_class{};
     // Ranges arrive in symbol order, so one that begins where the last ended is
     // the same run written twice and is joined here rather than tested twice.
@@ -406,9 +424,10 @@ template <auto& automaton, std::size_t state>
   return answer;
 }
 
-template <auto& automaton, std::size_t state>
+template <auto& automaton, std::size_t state,
+          std::uint64_t tags_read = ~std::uint64_t{0}>
 [[nodiscard]] consteval bool runs_in_place() {
-  return staying_of<automaton, state>().count != 0;
+  return staying_of<automaton, state, tags_read>().count != 0;
 }
 
 // Whether two runs of a state go to the same place and write the same thing.
@@ -868,6 +887,14 @@ struct walk_shape {
   // Step over a run in vectors. Wants characters in a row and nobody
   // gathering: what is stepped over is not read.
   bool in_words = false;
+  // Which groups' positions anybody will read, a bit each.
+  //
+  // A run of characters is one the walk can step over in vectors only where
+  // nothing is written across it -- and a tag written on every character of a
+  // run is written for a reader that, more often than not, is not there: a
+  // fold hears what opened and what closed from the moves themselves. Told
+  // which tags are read, the walk can see such a run for what it is.
+  std::uint64_t tags_read = ~std::uint64_t{0};
   // The reading ends on a symbol no state takes rather than at a limit, which
   // is one comparison a character instead of two.
   bool by_terminator = false;
@@ -1110,9 +1137,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     one.template took_run<state>(from, from, registers, place);
   };
   if constexpr (shape.in_words && by_pointer && (!gathers || takes_a_piece) &&
-                runs_in_place<automaton, state>()) {
+                runs_in_place<automaton, state, shape.tags_read>()) {
     const cursor_type from = cursor;
-    cursor = skip_class<staying_of<automaton, state>()>(cursor, last);
+    cursor = skip_class<staying_of<automaton, state, shape.tags_read>()>(cursor,
+                                                                        last);
     if constexpr (gathers && takes_a_piece) {
       into.template took_run<state>(from, cursor, registers, place);
       if constexpr (!by_place) place += cursor - from;

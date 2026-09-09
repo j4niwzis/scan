@@ -2919,6 +2919,58 @@ struct gathering_of {
   }
 };
 
+// Whether any group of a type is handed over whole -- cut out of the subject
+// rather than told character by character. Such a group is read from the
+// positions however its edges were announced.
+template <class held, class state_type>
+[[nodiscard]] consteval bool any_group_taken_whole() {
+  return []<std::size_t... which>(std::index_sequence<which...>) {
+    return (false || ... || takes_the_group_whole<held, which, state_type>);
+  }(std::make_index_sequence<groups_a_leaf_opens<std::remove_cv_t<held>>()>{});
+}
+
+// Which groups' positions anybody will read.
+//
+// A place is always one: where it stood is how a field is cut out of the
+// subject, and whether it stood anywhere at all is how a group that took no
+// part is told from one that did. The groups inside a place are another
+// matter. Where the machine says what each character lies inside, a fold hears
+// what opened and what closed from the moves themselves and never asks where.
+// Nothing reads those positions then -- and writing them is not merely a store
+// on nearly every character: it makes every run a run that writes, which is a
+// run the vectors cannot step over.
+template <class type, fixed_string format, auto& automaton>
+[[nodiscard]] consteval std::uint64_t groups_whose_place_is_read() {
+  std::uint64_t made = 0;
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ([&] {
+      made |= std::uint64_t{1} << group;
+      using how = gathering_of<type, format, group>;
+      using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+      constexpr std::size_t inside = groups_a_leaf_opens<held>();
+      // Asked in steps, because only a fold has groups to be told about and
+      // only a fold has a state to be told into.
+      constexpr bool a_fold_of_its_own =
+          how::folds && how::the_place && !how::place_repeats &&
+          every_move_says_the_groups<automaton>();
+      constexpr bool told_by_the_moves = [] {
+        if constexpr (a_fold_of_its_own) {
+          using state_type = decltype(scan::scanner<held>{}.begin_groups());
+          return !any_group_taken_whole<held, state_type>();
+        } else {
+          return false;
+        }
+      }();
+      if constexpr (!told_by_the_moves) {
+        for (std::size_t which = 0; which < inside; ++which) {
+          made |= std::uint64_t{1} << (group + 1 + which);
+        }
+      }
+    }(), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  return made;
+}
+
 // Whether a fold in this shape can be gathered by the walk over characters in
 // a row.
 //
@@ -4736,8 +4788,10 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
     const char* cursor = std::ranges::data(input);
     const char* const last = cursor + std::ranges::size(input);
     std::ptrdiff_t position = 0;
-    constexpr walk_shape shape{.in_words = true,
-                               .budget = bodies_worth_writing<automaton>()};
+    constexpr walk_shape shape{
+        .in_words = true,
+        .tags_read = groups_whose_place_is_read<type, format, automaton>(),
+        .budget = bodies_worth_writing<automaton>()};
     walk_answer<const char*> best;
     if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
                           std::ptrdiff_t>(cursor, last, position, registers,
