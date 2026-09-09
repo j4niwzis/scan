@@ -2478,6 +2478,27 @@ using field_type = typename scan::fields<type>::template at<index>;
 // what it is built from are its groups, and they are gathered each at its own.
 struct no_gathering {};
 
+// Whether any group of a type is handed over whole. Said here because a turn
+// has to know it before the question below can be asked.
+template <class held, class state_type>
+[[nodiscard]] consteval bool any_group_taken_whole();
+
+// The address a mark stands on, or none where a mark is not an address.
+//
+// A subject that arrives a character at a time has counts for marks and
+// nothing to point into, so there is no address and no group can be handed
+// over whole. Asked through a function of its own so that the question is
+// answered once, where the mark's type is known, instead of in every place
+// that would rather not know.
+template <class mark>
+[[nodiscard]] constexpr const char* pointed_at(mark position) {
+  if constexpr (std::is_pointer_v<mark>) {
+    return position;
+  } else {
+    return nullptr;
+  }
+}
+
 // A fold, and what it has been told.
 //
 // The state is the type's own -- it says how it is made and what it holds. The
@@ -2513,6 +2534,18 @@ struct fold_turn {
   // Whether this turn has been told anything at all. A place that has not been
   // stood on yet is not a turn that ended, and a list does not begin with one.
   bool started = false;
+  // Where each group asked for whole began, as the address of its first
+  // character.
+  //
+  // Not a mark: a mark is written by the machine in the machine's own
+  // reckoning, held back to the step after the character that earned it, and
+  // read out again by whoever knows that. This is the character itself, and it
+  // is here because the step that opens a group is standing on it. Nothing at
+  // all where no group is asked for whole, which is nearly always.
+  static constexpr bool asked_whole =
+      any_group_taken_whole<held_type, state_type>();
+  [[no_unique_address]]
+  std::array<const char*, asked_whole ? inside : 0> began_at{};
   // Whether it asked for something this subject cannot give: its groups whole,
   // off a reading with nothing to point at.
   bool wanted_a_subject = false;
@@ -2826,8 +2859,10 @@ template <class held, std::size_t which, class state_type>
 template <std::size_t place, class held, auto& automaton, std::size_t from,
           std::size_t move, bool edges_can_move = true, class fold_type>
 constexpr void fold_by_the_step(fold_type& fold, char symbol,
-                                bool hands_the_character) {
+                                bool hands_the_character, auto position) {
   using held_type = std::remove_cv_t<held>;
+  // Where this step stands, where that is a place in a subject at all.
+  const char* const spot = pointed_at(position);
   constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   constexpr std::uint64_t now = automaton.states[from].ranges[move].groups_open;
   // A group this move begins again is one whose turn has ended, however the
@@ -2859,7 +2894,26 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
                         held_type, which, typename fold_type::state_type>() &&
                     (!holds(now, which) || holds(again, which))) {
         if (((fold.here.open >> which) & 1) != 0) {
-          close_one_group<held_type, which>(fold.here.state);
+          // What the group stood on, where there is a subject to point into
+          // and the type asked for it. The step that closes a group is
+          // standing on the character just past it, so what it stood on ends
+          // where this step begins.
+          if constexpr (takes_the_group_whole<
+                            held_type, which,
+                            typename fold_type::state_type>) {
+            const char* const began = fold.here.began_at[which];
+            if (began != nullptr && spot >= began) {
+              close_one_group<held_type, which>(
+                  fold.here.state,
+                  std::string_view(began,
+                                   static_cast<std::size_t>(spot - began)));
+            } else {
+              close_one_group<held_type, which>(fold.here.state);
+            }
+            fold.here.began_at[which] = nullptr;
+          } else {
+            close_one_group<held_type, which>(fold.here.state);
+          }
           fold.here.open &= ~(std::uint64_t{1} << which);
         }
       }
@@ -2872,6 +2926,11 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
                     holds(now, which)) {
         if ((fold.here.open & (std::uint64_t{1} << which)) == 0) {
           open_one_group<held_type, which>(fold.here.state);
+          if constexpr (takes_the_group_whole<
+                            held_type, which,
+                            typename fold_type::state_type>) {
+            fold.here.began_at[which] = spot;
+          }
           fold.here.open |= std::uint64_t{1} << which;
           fold.here.started = true;
         }
@@ -2885,7 +2944,18 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
       if constexpr (holds(now, which)) {
         if constexpr (takes_group_characters<held_type, which,
                                              typename fold_type::state_type>) {
-          push_one_group<held_type, which>(fold.here.state, symbol);
+          // A group that goes over whole is not also told its characters --
+          // that is the whole point of asking for it whole. Off a stream there
+          // is nothing to point at and the characters are all there is.
+          if constexpr (takes_the_group_whole<
+                            held_type, which,
+                            typename fold_type::state_type>) {
+            if (spot == nullptr) {
+              push_one_group<held_type, which>(fold.here.state, symbol);
+            }
+          } else {
+            push_one_group<held_type, which>(fold.here.state, symbol);
+          }
         }
       }
     }(), ...);
@@ -4585,7 +4655,7 @@ class field_gatherer {
           letter, landed, position, registers, states_, taken.commands,
           taken.command_count, std::make_index_sequence<field_count>{}, text_);
     }
-    hand_over<state, landed, move>(letter, registers,
+    hand_over<state, landed, move>(letter, registers, position,
                                    std::make_index_sequence<field_count>{});
     collect_turns_that_ended<type, format, automaton, failure_for<type>>(
         landed, registers, states_, std::make_index_sequence<field_count>{},
@@ -4739,9 +4809,16 @@ class field_gatherer {
                            (std::uint64_t{1} << (group + 1 + which))) != 0 &&
                           (begins_again &
                            (std::uint64_t{1} << (group + 1 + which))) == 0) {
+              // A group that goes over whole is not also told its
+              // characters, and a run is nothing but characters.
               if constexpr (takes_group_characters<
-                                held, which, typename std::remove_cvref_t<
-                                                 decltype(fold.here)>::state_type>) {
+                                held, which,
+                                typename std::remove_cvref_t<
+                                    decltype(fold.here)>::state_type> &&
+                            !takes_the_group_whole<
+                                held, which,
+                                typename std::remove_cvref_t<
+                                    decltype(fold.here)>::state_type>) {
                 push_one_group<held, which>(fold.here.state, run);
               }
             }
@@ -4802,13 +4879,14 @@ class field_gatherer {
   template <std::size_t from, std::size_t landed, std::size_t move,
             class registers_type, std::size_t... group>
   constexpr void hand_over(char letter, const registers_type& registers,
-                           std::index_sequence<group...>) {
-    (hand_group<from, landed, move, group>(letter, registers), ...);
+                           auto position, std::index_sequence<group...>) {
+    (hand_group<from, landed, move, group>(letter, registers, position), ...);
   }
 
   template <std::size_t from, std::size_t landed, std::size_t move,
             std::size_t group, class registers_type>
-  constexpr void hand_group(char letter, const registers_type& registers) {
+  constexpr void hand_group(char letter, const registers_type& registers,
+                            auto position) {
     using held_type = leaf_kind_of_output<type, group>;
     using how = gathering_of<type, format, group>;
     if constexpr (scanned_as_range<held_type>) {
@@ -4824,7 +4902,7 @@ class field_gatherer {
           automaton.states[from].ranges[move].target == from &&
           automaton.states[from].ranges[move].groups_reopened == 0;
       fold_by_the_step<group, std::remove_cv_t<held_type>, automaton, from,
-                       move, !stays_put>(fold, letter, true);
+                       move, !stays_put>(fold, letter, true, position);
     } else if constexpr (how::folds && how::the_place) {
       fold_the_readings<group, gathering_slot<type, format, group, mark_kind>,
                         std::remove_cv_t<held_type>, automaton>(
