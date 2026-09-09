@@ -2781,6 +2781,27 @@ template <auto& automaton, std::size_t state, std::size_t place>
 inline constexpr std::uint32_t only_fold_register =
     automaton.states[state].readings[0][place * 2];
 
+// Whether a type wants to hear where a group of its own begins and ends.
+//
+// A type that only takes the characters does not: it is told which group each
+// character fell in and that is the whole of what it asked for. Keeping track
+// of what is open for such a group is bookkeeping nobody reads -- and on a
+// group that begins again on every character, as `(X|Y)*` does, it is that
+// bookkeeping on every character.
+template <class held, std::size_t which, class state_type>
+[[nodiscard]] consteval bool takes_the_group_edges() {
+  using scanner_type = scan::scanner<std::remove_cv_t<held>>;
+  return requires(state_type& state) {
+    scanner_type{}.opened_group(state, scan::group_at<which>{});
+  } || requires(state_type& state) {
+    scanner_type{}.opened_group(state, which);
+  } || requires(state_type& state) {
+    scanner_type{}.closed_group(state, scan::group_at<which>{});
+  } || requires(state_type& state) {
+    scanner_type{}.closed_group(state, which);
+  } || takes_the_group_whole<std::remove_cv_t<held>, which, state_type>;
+}
+
 // One step of a fold, told by the shape of the machine rather than by the
 // positions it wrote.
 template <std::size_t place, class held, auto& automaton, std::size_t from,
@@ -2810,7 +2831,14 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
       // What this move arrives inside is a constant; what the move before it
       // arrived inside is a word the walk carries. A group closes where the
       // second says yes and the first says no.
-      if constexpr (!holds(now, which) || holds(again, which)) {
+      // And only where somebody is listening. A group whose type takes the
+      // characters and asks for nothing else has no edges to be told about,
+      // so what is open is bookkeeping nobody reads -- and on a group that
+      // begins again on every character it is that bookkeeping on every
+      // character.
+      if constexpr (takes_the_group_edges<
+                        held_type, which, typename fold_type::state_type>() &&
+                    (!holds(now, which) || holds(again, which))) {
         if (((fold.here.open >> which) & 1) != 0) {
           close_one_group<held_type, which>(fold.here.state);
           fold.here.open &= ~(std::uint64_t{1} << which);
@@ -2820,7 +2848,9 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
   }(std::make_index_sequence<inside>{});
   [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
-      if constexpr (holds(now, which)) {
+      if constexpr (takes_the_group_edges<
+                        held_type, which, typename fold_type::state_type>() &&
+                    holds(now, which)) {
         if ((fold.here.open & (std::uint64_t{1} << which)) == 0) {
           open_one_group<held_type, which>(fold.here.state);
           fold.here.open |= std::uint64_t{1} << which;
