@@ -287,6 +287,19 @@ template <class lane_type>
 }
 #endif
 
+// Whether one character belongs to the run a state keeps itself by.
+//
+// The same question the vectors ask of sixty-four at once, asked of one -- for
+// the head of a run, where there are not sixty-four to ask about yet.
+template <staying_class klass>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool inside_of(unsigned char letter) {
+  bool belongs = false;
+  for (std::size_t at = 0; at < klass.count; ++at) {
+    belongs = belongs || (letter >= klass.first[at] && letter <= klass.last[at]);
+  }
+  return belongs;
+}
+
 template <staying_class klass>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
     const char* cursor, const char* limit) {
@@ -298,6 +311,19 @@ template <staying_class klass>
   if constexpr (std::endian::native != std::endian::little) {
     return cursor;
   } else {
+    // A few characters first, one at a time.
+    //
+    // Most runs are short: a field of three letters, a heap of two
+    // underscores. Everything below is written to swallow sixty-four
+    // characters at a time and pays for it before it reads any -- a constant
+    // loaded, a length measured, a question asked about whether that many are
+    // even there -- and for a run of three the answer to that question is no,
+    // every time, after all of the paying. So the run is walked as a hand
+    // would walk it until there is enough of it left to be worth the vectors.
+    for (int step = 0; step < 8 && cursor != limit; ++step) {
+      if (!inside_of<klass>(static_cast<unsigned char>(*cursor))) return cursor;
+      ++cursor;
+    }
 #if SCAN_HAS_LANES
     // Sixty-four characters to a step and one question at the end of it.
     // Written as a vector of bytes and not as anything named after an
@@ -1050,7 +1076,15 @@ template <auto& automaton, walk_shape shape, std::size_t state,
                                    which + 1>(
           symbol, cursor, last, place, registers, into, best);
     } else {
-      if (makes_move<automaton, state, move>(symbol)) {
+      // Told which way to guess.
+      //
+      // A machine written out as code is a chain of these, and the processor
+      // guesses at every one of them. What it should guess is known here and
+      // not there: the moves of a state are tried in the order they are
+      // written, and the one written first is the one this state is most
+      // likely to take -- a state that reads a field takes the move that keeps
+      // it there for every character but the last.
+      if (makes_move<automaton, state, move>(symbol)) [[likely]] {
         into.template moving<state, move>(registers, place);
         execute_static_transition_commands<automaton, state, move>(registers,
                                                                    place);
