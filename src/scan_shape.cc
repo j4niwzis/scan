@@ -444,6 +444,29 @@ constexpr void push_one_group(state_type& state, char letter) {
   }
 }
 
+// The same, handed a run of characters rather than one.
+//
+// A walk that steps over a run in vectors has the whole of it at once, and a
+// type that says it can take a run is handed it that way: `count += run.size()`
+// instead of a call a character. A type that says nothing of the sort is handed
+// the characters one at a time, which is what it asked for.
+template <class type, std::size_t which, class state_type>
+constexpr void push_one_group(state_type& state, std::string_view run) {
+  using scanner_type = scan::scanner<std::remove_cv_t<type>>;
+  if constexpr (requires {
+                  scanner_type{}.push_group(state, scan::group_at<which>{},
+                                            run);
+                }) {
+    scanner_type{}.push_group(state, scan::group_at<which>{}, run);
+  } else if constexpr (requires {
+                         scanner_type{}.push_group(state, which, run);
+                       }) {
+    scanner_type{}.push_group(state, which, run);
+  } else {
+    for (const char letter : run) push_one_group<type, which>(state, letter);
+  }
+}
+
 // The two edges of a group, said the same three ways a push is said. A type
 // that only wants the characters says neither, and then nothing is said to it.
 template <class type, std::size_t which, class state_type>
@@ -2896,6 +2919,28 @@ struct gathering_of {
   }
 };
 
+// Whether a fold in this shape can be gathered by the walk over characters in
+// a row.
+//
+// It can where every move of the machine says what its character lies inside:
+// then the fold does not follow a reading, does not live at a register, and
+// nothing about it needs the positions -- so the walk that steps over runs in
+// vectors can gather it, which is the walk everything else is read by.
+//
+// A list still cannot. Its elements are handed over turn by turn, and which
+// turn a gathering belongs to is exactly what the registers are keeping
+// straight.
+template <class type, fixed_string format>
+[[nodiscard]] consteval bool a_fold_the_walk_can_keep() {
+  if constexpr (holds_a_range<type>()) {
+    return false;
+  } else if constexpr (!holds_a_fold<type>()) {
+    return false;
+  } else {
+    return every_move_says_the_groups<packed_automaton<type, format>>();
+  }
+}
+
 // Whether the gathering for a group can live in the walk rather than at a
 // register.
 //
@@ -2908,7 +2953,11 @@ struct gathering_of {
 template <class type, fixed_string format, auto& automaton, std::size_t group>
 [[nodiscard]] consteval bool gathers_in_the_walk() {
   using how = gathering_of<type, format, group>;
-  return every_move_says_the_groups<automaton>() && !how::place_repeats;
+  // A list is left out twice over: it grows turn by turn, and which turn a
+  // gathering belongs to is what the registers keep straight -- so it stays
+  // where they are, and so does anything standing at a place that repeats.
+  return every_move_says_the_groups<automaton>() && !how::place_repeats &&
+         !scanned_as_range<typename how::held_type>;
 }
 
 
@@ -3185,7 +3234,7 @@ constexpr void advance_scanner(
   // stream a character at a time keeps everything at its registers.
   if constexpr (kept_in_the_walk &&
                 (gathers_in_the_walk<type, format, automaton, group>() ||
-                 (how::folds && how::the_place &&
+                 (how::folds && how::the_place && !how::place_repeats &&
                   every_move_says_the_groups<automaton>()))) {
     return;
   } else {
@@ -3264,7 +3313,7 @@ constexpr void advance_scanner(
       },
       commands);
   if constexpr (how::folds && how::the_place &&
-                !every_move_says_the_groups<automaton>()) {
+                (how::place_repeats || !every_move_says_the_groups<automaton>())) {
     // Everything that happened inside this place on this character, told in
     // order -- and told now, before the copy below, or a fold that ends where
     // its place ends would be copied one closing short.
@@ -4250,17 +4299,34 @@ class field_gatherer {
       [&]<std::size_t... group>(std::index_sequence<group...>) {
         ([&] {
           using how = gathering_of<type, format, group>;
-          if constexpr ((how::folds && how::the_place) ||
+          if constexpr ((how::folds && how::the_place && !how::place_repeats) ||
                         gathers_in_the_walk<type, format, automaton, group>()) {
+            // Told where the walk stands before it is handed over.
+            //
+            // What is read out of it runs one more step, by the positions,
+            // because the end of the input is not a character and whatever is
+            // still open has to be closed. Everything else has already been
+            // said -- by the moves, as they were taken -- so the fold is set
+            // to the positions as they are: nothing has moved since, and that
+            // last step announces nothing over again.
+            auto kept = std::get<gathering_slot<type, format, group>>(plain_folds_);
+            if constexpr (requires { kept.here.told_at; }) {
+              using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+              constexpr std::size_t inside = groups_a_leaf_opens<held>();
+              const auto& reading = packed.readings[packed.accepting_slot];
+              for (std::size_t which = 0; which < inside; ++which) {
+                kept.here.told_at[which] =
+                    registers[reading[(group + 1 + which) * 2]];
+                kept.here.ended_at[which] =
+                    registers[reading[(group + 1 + which) * 2 + 1]];
+              }
+            }
             // Into every register rather than into the one the accepting
             // reading names: the value is read through whichever register the
             // reading that won points at, and this runs once at the end of a
-            // walk, where a handful of assignments cost nothing. Copied rather
-            // than moved, because a walk keeps every place it passes and this
-            // runs at each of them.
+            // walk, where a handful of assignments cost nothing.
             for (std::size_t at = 0; at < automaton.register_count; ++at) {
-              std::get<gathering_slot<type, format, group>>(states_[at]) =
-                  std::get<gathering_slot<type, format, group>>(plain_folds_);
+              std::get<gathering_slot<type, format, group>>(states_[at]) = kept;
             }
           }
         }(), ...);
@@ -4318,6 +4384,42 @@ class field_gatherer {
       return;
     } else if constexpr (how::folds && how::inside) {
       return;
+    } else if constexpr (how::folds && how::the_place && !how::place_repeats &&
+                         every_move_says_the_groups<automaton>()) {
+      // A run, handed to the groups it fell in, whole.
+      //
+      // Nothing is written across a run -- that is what makes it a run -- so
+      // what is open at its first character is open at its last, and the move
+      // that takes it says which groups those are. There is one question for
+      // the whole run and, for a type that takes a run, one call.
+      constexpr std::size_t staying = staying_move<automaton, state>();
+      if constexpr (staying != no_move) {
+        constexpr std::uint64_t inside_now =
+            automaton.states[state].ranges[staying].groups_open;
+        // A run that begins a group again on every character is a run of
+        // turns, and a turn is not something to hand over in bulk: what the
+        // type is told has to be what happened.
+        constexpr std::uint64_t begins_again =
+            automaton.states[state].ranges[staying].groups_reopened;
+        using held = std::remove_cv_t<held_type>;
+        constexpr std::size_t inside = groups_a_leaf_opens<held>();
+        auto& fold = std::get<gathering_slot<type, format, group>>(plain_folds_);
+        const std::string_view run(from, static_cast<std::size_t>(to - from));
+        [&]<std::size_t... which>(std::index_sequence<which...>) {
+          ((void)[&] {
+            if constexpr ((inside_now &
+                           (std::uint64_t{1} << (group + 1 + which))) != 0 &&
+                          (begins_again &
+                           (std::uint64_t{1} << (group + 1 + which))) == 0) {
+              if constexpr (takes_group_characters<
+                                held, which, typename std::remove_cvref_t<
+                                                 decltype(fold.here)>::state_type>) {
+                push_one_group<held, which>(fold.here.state, run);
+              }
+            }
+          }(), ...);
+        }(std::make_index_sequence<inside>{});
+      }
     } else if constexpr (how::folds && how::the_place) {
       // The characters of a run, each to the group it fell in. The positions
       // stand still across a run, so what opened and what closed is said once,
@@ -4385,7 +4487,7 @@ class field_gatherer {
       return;
     } else if constexpr (how::folds && how::inside) {
       return;
-    } else if constexpr (how::folds && how::the_place &&
+    } else if constexpr (how::folds && how::the_place && !how::place_repeats &&
                          step_says_the_groups<automaton, from, move>()) {
       // The machine says what happened; nothing is read to find out, and the
       // fold is where the walk keeps it rather than where a register points.
@@ -4546,23 +4648,46 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   field_gatherer<type, format, automaton,
                  std::ranges::contiguous_range<range_type>>
       into;
-  if constexpr (std::ranges::contiguous_range<range_type>) {
-    into.points_at(std::ranges::data(input));
-  }
-  auto cursor = std::ranges::begin(input);
-  std::ptrdiff_t position = 0;
   // Written out, the same as every other walk. A subject handed over a
   // character at a time is read by the machine written as code -- what it
   // cannot have is the vectors, because there is nothing in a row to read.
-  constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
-  walk_answer<decltype(cursor)> best;
-  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
-                        std::ptrdiff_t>(cursor, std::ranges::end(input),
-                                        position, registers, into, best)) {
-    return std::unexpected(scan::as_a_failure<failure_for<type>>(
-        no_match("input does not match scan expression")));
+  //
+  // Where there is, it can. The characters of a run keep the machine where it
+  // stands and write nothing, so the walk steps over the whole run at once and
+  // hands it to whoever is gathering as a run -- which is one call for a
+  // hundred characters where the type can take one. That wants addresses
+  // rather than iterators, which is what a range in a row has.
+  // A list is left out of it: its elements are handed over turn by turn and a
+  // run stepped over in one go is one turn as far as the walk can tell.
+  if constexpr (std::ranges::contiguous_range<range_type> &&
+                !holds_a_range<type>()) {
+    into.points_at(std::ranges::data(input));
+    const char* cursor = std::ranges::data(input);
+    const char* const last = cursor + std::ranges::size(input);
+    std::ptrdiff_t position = 0;
+    constexpr walk_shape shape{.in_words = true,
+                               .budget = bodies_worth_writing<automaton>()};
+    walk_answer<const char*> best;
+    if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+                          std::ptrdiff_t>(cursor, last, position, registers,
+                                          into, best)) {
+      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+          no_match("input does not match scan expression")));
+    }
+    return into.taken();
+  } else {
+    auto cursor = std::ranges::begin(input);
+    std::ptrdiff_t position = 0;
+    constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
+    walk_answer<decltype(cursor)> best;
+    if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+                          std::ptrdiff_t>(cursor, std::ranges::end(input),
+                                          position, registers, into, best)) {
+      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+          no_match("input does not match scan expression")));
+    }
+    return into.taken();
   }
-  return into.taken();
 }
 
 // The head of a range that is read once, and the character that ended it.
