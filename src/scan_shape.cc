@@ -2507,15 +2507,22 @@ struct fold_turn {
 // and the element is made from it when it has been. The turn that is beginning
 // gathers meanwhile. Which is the same holding back the tags do, done for the
 // gatherings.
-template <class held>
+// The turn on its way out is only kept where a place is taken over and over,
+// which is a place standing for an element of a list. Everywhere else a place
+// is stood on once, nothing is handed over in the middle of a walk, and room
+// for a second turn would double what every walk carries for nothing at all.
+struct no_turn {};
+
+template <class held, bool repeats = true>
 struct fold_of {
   using held_type = std::remove_cv_t<held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   using state_type = typename fold_turn<held>::state_type;
 
   fold_turn<held> here;
-  fold_turn<held> going;
-  bool has_going = false;
+  [[no_unique_address]] std::conditional_t<repeats, fold_turn<held>, no_turn>
+      going;
+  [[no_unique_address]] std::conditional_t<repeats, bool, no_turn> has_going{};
 };
 
 // One step of a fold: what happened to the groups inside a place, said to the
@@ -2766,6 +2773,10 @@ template <class type, fixed_string format, std::size_t group>
 struct gathering_of {
   using held_type = leaf_kind_of_output<type, group>;
   static constexpr bool by_groups = gathers_by_its_groups<held_type>;
+  // Whether this place is stood on over and over, which an element of a list
+  // is and nothing else is.
+  static constexpr bool place_repeats =
+      group > 0 && scanned_as_range<leaf_kind_of_output<type, group - 1>>;
   static constexpr bool folds = folds_by_turns<std::remove_cv_t<held_type>>;
   static constexpr bool the_place = by_groups && leaf_offset_of_output<type, group> == 0;
   static constexpr bool inside = by_groups && leaf_offset_of_output<type, group> != 0;
@@ -2774,7 +2785,7 @@ struct gathering_of {
     if constexpr (the_place && folds) {
       // The type's own state, and the walk's note of what it has been told.
       static_cast<void>(parameters);
-      return fold_of<std::remove_cv_t<held_type>>{};
+      return fold_of<std::remove_cv_t<held_type>, place_repeats>{};
     } else if constexpr (inside && folds) {
       // Nothing: the characters and the edges of this group go to the fold,
       // which is kept at the place the group is inside of.
@@ -3124,7 +3135,8 @@ constexpr void advance_scanner(
             } else if constexpr (gathers_a_list) {
               std::get<gathering_slot<type, format, group>>(
                   states[command.destination]) = held_type{};
-            } else if constexpr (how::folds && how::the_place) {
+            } else if constexpr (how::folds && how::the_place &&
+                                 how::place_repeats) {
               // A turn ending and the next one beginning. The one that is
               // ending has not been told what closed it -- that arrives on
               // this very step, a moment from now -- so it is moved aside
@@ -4166,7 +4178,9 @@ class field_gatherer {
       // The characters of a run, each to the group it fell in. The positions
       // stand still across a run, so what opened and what closed is said once,
       // and where the subject can be pointed at nothing is handed over at all.
-      using folded = fold_of<std::remove_cv_t<held_type>>;
+      using folded =
+          fold_of<std::remove_cv_t<held_type>,
+                  gathering_of<type, format, group>::place_repeats>;
       if constexpr (every_group_whole<held_type, typename folded::state_type>()) {
         if (from != to) {
           fold_the_readings<group, gathering_slot<type, format, group>,
