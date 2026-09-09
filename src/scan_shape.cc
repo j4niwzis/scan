@@ -3385,23 +3385,59 @@ constexpr void advance_scanner(
 // keeps them all together in one state of its own. The putting together of a
 // value is the same work either way, so it is written once and asks for what it
 // needs through one of these.
+// Nothing was kept by the walk: every gathering is at a register.
+struct nothing_kept_here {};
+inline constexpr nothing_kept_here nothing_was_kept{};
+
+// What a walk kept for itself, and which places those are.
+//
+// The mask is carried beside the gatherings because whoever reads the value
+// has the places in hand and not the machine: a place that follows a reading
+// is read from the register the reading names, and one the walk kept is read
+// from here.
+template <class slots_type, std::uint64_t places>
+struct kept_by_the_walk {
+  static constexpr std::uint64_t which_places = places;
+  const slots_type& slots;
+};
+
 template <class type, fixed_string format, class reading_type,
-          class states_type, std::size_t register_count>
+          class states_type, std::size_t register_count,
+          class kept_type = nothing_kept_here>
 struct gathered_by_the_registers {
   const reading_type& reading;
   const states_type& states;
   const std::array<std::ptrdiff_t, register_count>& registers;
+  // What the walk kept for itself, where it kept anything: a gathering that
+  // does not follow a reading is not at a register, and this is where it is.
+  const kept_type& kept;
 
   // A field still being read when the input ended is where it was being
   // gathered; one that ended earlier is the copy taken when it closed, which
   // the readings that went on adding to the opening cannot have changed.
   template <std::size_t place>
   [[nodiscard]] constexpr const auto& gathering() const {
-    const std::uint32_t open = reading[place * 2];
-    const std::uint32_t close = reading[place * 2 + 1];
-    const bool still_reading = registers[close] < registers[open];
-    return std::get<gathering_slot<type, format, place>>(
-        states[still_reading ? open : close]);
+    if constexpr (kept_here<place>()) {
+      return std::get<gathering_slot<type, format, place>>(kept.slots);
+    } else {
+      const std::uint32_t open = reading[place * 2];
+      const std::uint32_t close = reading[place * 2 + 1];
+      const bool still_reading = registers[close] < registers[open];
+      return std::get<gathering_slot<type, format, place>>(
+          states[still_reading ? open : close]);
+    }
+  }
+
+  // Whether this place's gathering is one the walk kept. Asked of the slot
+  // rather than of the machine, because this is read from where the value is
+  // made and the machine is not in hand there.
+  template <std::size_t place>
+  [[nodiscard]] static consteval bool kept_here() {
+    if constexpr (std::same_as<kept_type, nothing_kept_here>) {
+      return false;
+    } else {
+      return (kept_type::which_places & (std::uint64_t{1} << place)) != 0;
+    }
   }
 
   // A list is gathered and read at its opening throughout: its elements go on
@@ -3445,12 +3481,15 @@ struct gathered_by_the_registers {
 // Made rather than named: the reading, the states and the registers are all
 // deduced, and the type and the format are what say where a group is gathered.
 template <class type, fixed_string format, class reading_type,
-          class states_type, std::size_t register_count>
+          class states_type, std::size_t register_count,
+          class kept_type = nothing_kept_here>
 [[nodiscard]] constexpr auto by_the_registers(
     const reading_type& reading, const states_type& states,
-    const std::array<std::ptrdiff_t, register_count>& registers) {
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    const kept_type& kept = nothing_was_kept) {
   return gathered_by_the_registers<type, format, reading_type, states_type,
-                                   register_count>{reading, states, registers};
+                                   register_count, kept_type>{
+      reading, states, registers, kept};
 }
 
 
@@ -4217,11 +4256,38 @@ class field_gatherer {
       "be pointed at: give it begin_groups and push_group to be told its "
       "groups as they are read, or scan it from something contiguous");
   static constexpr std::size_t field_count = groups_of_output<type>();
+  // Whether anything at all is gathered at a register.
+  //
+  // Where nothing is -- every place kept by the walk, every group inside one
+  // of those told through it -- there is no reason to carry a gathering per
+  // register, and carrying one is not free: it is what the walk begins by
+  // clearing, and it is large enough that the optimiser will not put any of it
+  // in a register of the processor.
+  static constexpr bool nothing_at_a_register = [] {
+    return [&]<std::size_t... group>(std::index_sequence<group...>) {
+      return (true && ... && [] {
+        using how = gathering_of<type, format, group>;
+        if constexpr (how::folds && how::inside) return true;
+        if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
+          return true;
+        }
+        if constexpr (how::folds && how::the_place && !how::place_repeats &&
+                      every_move_says_the_groups<automaton>()) {
+          return true;
+        }
+        return false;
+      }());
+    }(std::make_index_sequence<groups_of_output<type>()>{});
+  }();
+
   using states_type =
-      std::array<register_state<type, format>, automaton.register_count>;
+      std::array<register_state<type, format>,
+                 nothing_at_a_register ? 0 : automaton.register_count>;
 
   constexpr field_gatherer() {
-    states_ = make_register_states<type, format, automaton>();
+    if constexpr (!nothing_at_a_register) {
+      states_ = make_register_states<type, format, automaton>();
+    }
   }
 
  private:
@@ -4261,8 +4327,9 @@ class field_gatherer {
 
   template <std::size_t state, std::size_t landed, std::size_t move,
             class registers_type>
-  constexpr void moved(char letter, const registers_type& registers,
-                       std::ptrdiff_t position) {
+  SCAN_FORCE_INLINE constexpr void moved(char letter,
+                                         const registers_type& registers,
+                                         std::ptrdiff_t position) {
     // A move that writes nothing leaves the gatherings where they are, and
     // most of the characters of a subject are read by one: inside a field
     // nothing is written, which is what holding the tags back bought. So the
@@ -4292,49 +4359,53 @@ class field_gatherer {
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
-    // A fold the walk kept for itself is put where the value is read from,
-    // which is the register the reading names. Once, at the end, rather than
-    // on every character: that is the whole point of keeping it here.
-    if constexpr (every_move_says_the_groups<automaton>()) {
+    // What the walk kept is told where the walk stands, and then read from
+    // where it is.
+    //
+    // Reading it runs one more step, by the positions, because the end of the
+    // input is not a character and whatever is still open has to be closed.
+    // Everything else was said by the moves as they were taken, so the fold is
+    // set to the positions as they stand: nothing has moved since, and that
+    // last step announces nothing twice.
+    auto kept = plain_folds_;
+    [&]<std::size_t... group>(std::index_sequence<group...>) {
+      ([&] {
+        using how = gathering_of<type, format, group>;
+        if constexpr (how::folds && how::the_place && !how::place_repeats &&
+                      every_move_says_the_groups<automaton>()) {
+          auto& one = std::get<gathering_slot<type, format, group>>(kept);
+          using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+          constexpr std::size_t inside = groups_a_leaf_opens<held>();
+          const auto& reading = packed.readings[packed.accepting_slot];
+          for (std::size_t which = 0; which < inside; ++which) {
+            one.here.told_at[which] =
+                registers[reading[(group + 1 + which) * 2]];
+            one.here.ended_at[which] =
+                registers[reading[(group + 1 + which) * 2 + 1]];
+          }
+        }
+      }(), ...);
+    }(std::make_index_sequence<field_count>{});
+    // Which places the walk kept: a fact about the shape and the machine,
+    // worked out once here and carried with the gatherings.
+    constexpr std::uint64_t mine = [] {
+      std::uint64_t made = 0;
       [&]<std::size_t... group>(std::index_sequence<group...>) {
         ([&] {
           using how = gathering_of<type, format, group>;
-          if constexpr ((how::folds && how::the_place && !how::place_repeats) ||
-                        gathers_in_the_walk<type, format, automaton, group>()) {
-            // Told where the walk stands before it is handed over.
-            //
-            // What is read out of it runs one more step, by the positions,
-            // because the end of the input is not a character and whatever is
-            // still open has to be closed. Everything else has already been
-            // said -- by the moves, as they were taken -- so the fold is set
-            // to the positions as they are: nothing has moved since, and that
-            // last step announces nothing over again.
-            auto kept = std::get<gathering_slot<type, format, group>>(plain_folds_);
-            if constexpr (requires { kept.here.told_at; }) {
-              using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
-              constexpr std::size_t inside = groups_a_leaf_opens<held>();
-              const auto& reading = packed.readings[packed.accepting_slot];
-              for (std::size_t which = 0; which < inside; ++which) {
-                kept.here.told_at[which] =
-                    registers[reading[(group + 1 + which) * 2]];
-                kept.here.ended_at[which] =
-                    registers[reading[(group + 1 + which) * 2 + 1]];
-              }
-            }
-            // Into every register rather than into the one the accepting
-            // reading names: the value is read through whichever register the
-            // reading that won points at, and this runs once at the end of a
-            // walk, where a handful of assignments cost nothing.
-            for (std::size_t at = 0; at < automaton.register_count; ++at) {
-              std::get<gathering_slot<type, format, group>>(states_[at]) = kept;
-            }
+          if constexpr (gathers_in_the_walk<type, format, automaton, group>() ||
+                        (how::folds && how::the_place && !how::place_repeats &&
+                         every_move_says_the_groups<automaton>())) {
+            made |= std::uint64_t{1} << group;
           }
         }(), ...);
       }(std::make_index_sequence<field_count>{});
-    }
+      return made;
+    }();
+    const kept_by_the_walk<decltype(kept), mine> mine_kept{kept};
     auto got = finish_value<type, type, 0, true>(
         by_the_registers<type, format>(packed.readings[packed.accepting_slot],
-                                       states_, registers),
+                                       states_, registers, mine_kept),
         text_);
     if (!got) {
       failed_ = std::move(got).error();
