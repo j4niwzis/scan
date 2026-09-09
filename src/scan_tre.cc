@@ -476,6 +476,53 @@ struct groups_inside {
   std::vector<bool> known;
 };
 
+// The empty links taken out of the machine.
+//
+// Thompson's construction leaves a great many states whose only way on is an
+// epsilon edge carrying nothing: the joins between a sequence and what it was
+// built from. They say nothing about the input and nothing about the tags, and
+// every one of them is a state the closure of a deterministic state has to
+// carry -- which is what a reading is, and what the walk pays for on every
+// character it gathers. Half the states of an ordinary expression are these.
+//
+// So whoever pointed at such a state points past it instead. Nothing else
+// changes: an edge that is anybody's only way on cannot be a choice, so no
+// priority is disturbed, and a state with a tag on it or with more than one way
+// out is left exactly where it is.
+[[nodiscard]] constexpr tnfa without_empty_links(tnfa machine) {
+  const std::size_t count = machine.transitions.size();
+  std::vector<state_id> onwards(count);
+  for (std::size_t at = 0; at < count; ++at) {
+    onwards[at] = static_cast<state_id>(at);
+  }
+  for (std::size_t at = 0; at < count; ++at) {
+    const auto& out = machine.transitions[at];
+    if (out.size() != 1) continue;
+    if (out[0].kind != transition_kind::epsilon) continue;
+    if (at == machine.final) continue;
+    onwards[at] = out[0].target;
+  }
+  // Chains of them, followed to the end -- and a ring of them followed no
+  // further than once around, because an expression that can match nothing at
+  // all can build one.
+  const auto past = [&](state_id from) {
+    state_id here = from;
+    for (std::size_t step = 0; step < count; ++step) {
+      const state_id next = onwards[here];
+      if (next == here) break;
+      here = next;
+    }
+    return here;
+  };
+  for (std::size_t at = 0; at < count; ++at) {
+    for (transition& edge : machine.transitions[at]) {
+      edge.target = past(edge.target);
+    }
+  }
+  machine.initial = past(machine.initial);
+  return machine;
+}
+
 [[nodiscard]] constexpr groups_inside groups_inside_of(const tnfa& automaton) {
   const std::size_t count = automaton.transitions.size();
   groups_inside said{std::vector<std::uint64_t>(count, 0),
@@ -790,7 +837,7 @@ struct path {
 
 
 constexpr tnfa compile_tnfa(const node& expression) {
-  return tnfa_builder{}.build(expression);
+  return without_empty_links(tnfa_builder{}.build(expression));
 }
 
 template <std::ranges::input_range range_type>
