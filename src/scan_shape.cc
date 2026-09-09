@@ -3018,6 +3018,49 @@ template <class held, class state_type>
   }(std::make_index_sequence<groups_a_leaf_opens<std::remove_cv_t<held>>()>{});
 }
 
+// Which groups' marks anybody will read.
+//
+// The same question as below, asked of the marks rather than of the places. A
+// group inside a fold that hears what happened from the moves has no place
+// anybody asks about -- but it is still a group, and below it says so, because
+// what says "this group took no part" is that it stood nowhere.
+//
+// Nothing says that of a group whose every edge is told. That is the whole
+// difference between the two, and it is worth the two names: what a walk
+// writes on every character is decided here, and what it may step over in one
+// go is decided below.
+template <class type, fixed_string format, auto& automaton>
+[[nodiscard]] consteval std::uint64_t groups_whose_mark_is_read() {
+  std::uint64_t made = 0;
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ([&] {
+      using how = gathering_of<type, format, group>;
+      using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+      constexpr std::size_t inside = groups_a_leaf_opens<held>();
+      constexpr bool a_fold_of_its_own =
+          how::folds && how::the_place && !how::place_repeats &&
+          every_move_says_the_groups<automaton>();
+      constexpr bool told_by_the_moves = [] {
+        if constexpr (a_fold_of_its_own) {
+          using state_type = decltype(scan::scanner<held>{}.begin_groups());
+          return !any_group_taken_whole<held, state_type>();
+        } else {
+          return false;
+        }
+      }();
+      if constexpr (!(how::folds && how::inside)) {
+        made |= std::uint64_t{1} << group;
+      }
+      if constexpr (!told_by_the_moves) {
+        for (std::size_t which = 0; which < inside; ++which) {
+          made |= std::uint64_t{1} << (group + 1 + which);
+        }
+      }
+    }(), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  return made;
+}
+
 // Which groups' positions anybody will read.
 //
 // A place is always one: where it stood is how a field is cut out of the
@@ -4924,6 +4967,7 @@ template <class type, fixed_string format,
     constexpr walk_shape shape{
         .in_words = walk != how_to_walk::one_at_a_time,
         .tags_read = groups_whose_place_is_read<type, format, automaton>(),
+        .tags_written = groups_whose_mark_is_read<type, format, automaton>(),
         .budget = bodies_worth_writing<automaton>()};
     walk_answer<const char*> best;
     if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,

@@ -982,6 +982,15 @@ struct walk_shape {
   // fold hears what opened and what closed from the moves themselves. Told
   // which tags are read, the walk can see such a run for what it is.
   std::uint64_t tags_read = ~std::uint64_t{0};
+  // Which marks are worth writing at all, a bit each.
+  //
+  // Two questions, not one. What is read decides whether a run can be stepped
+  // over: a run is one only where nothing is written across it. What is
+  // written decides what a single step costs, and there a group that hears
+  // every edge from the moves needs no mark at all -- so the walk stops
+  // storing one, which on a subject of short turns is most of what it was
+  // doing besides reading.
+  std::uint64_t tags_written = ~std::uint64_t{0};
   // The reading ends on a symbol no state takes rather than at a limit, which
   // is one comparison a character instead of two.
   bool by_terminator = false;
@@ -1174,7 +1183,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       if (makes_move<automaton, state, move>(symbol)) [[likely]] {
         into.template moving<state, move>(registers, place);
         execute_static_transition_commands<automaton, state, move,
-                                           shape.tags_read>(registers, place);
+                                           shape.tags_written>(registers,
+                                                               place);
         into.template moved<state, range.target, move>(
             static_cast<char>(symbol), registers, place);
         // What is left of the budget past this move. A step along a chain
@@ -1345,7 +1355,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       ++spot;
     }
     const std::size_t stayed =
-        taken_self_move<automaton, state, shape.tags_read, gatherer>(
+        taken_self_move<automaton, state, shape.tags_written, gatherer>(
             symbol, registers, spot, into);
     if (stayed != no_run) {
       if constexpr (shape.longest && accepts_here) {
