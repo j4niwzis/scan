@@ -2462,7 +2462,7 @@ struct no_gathering {};
 // forward, so a group whose opening has moved is a new turn and is announced;
 // one whose opening stands still is the same turn going on.
 template <class held>
-struct fold_of {
+struct fold_turn {
   using held_type = std::remove_cv_t<held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   using state_type = decltype(scan::scanner<held_type>{}.begin_groups());
@@ -2475,6 +2475,9 @@ struct fold_of {
   // not that it stands anywhere in particular.
   std::array<std::ptrdiff_t, inside> ended_at{};
   std::array<bool, inside> open{};
+  // Whether this turn has been told anything at all. A place that has not been
+  // stood on yet is not a turn that ended, and a list does not begin with one.
+  bool started = false;
   // Whether it asked for something this subject cannot give: its groups whole,
   // off a reading with nothing to point at.
   bool wanted_a_subject = false;
@@ -2484,10 +2487,35 @@ struct fold_of {
   // nothing, and the fold is told the characters instead.
   const char* text = nullptr;
 
-  constexpr fold_of() {
+  constexpr fold_turn() {
     told_at.fill(-1);
     ended_at.fill(-1);
   }
+};
+
+// A fold, which is one turn being gathered and at most one turn on its way out.
+//
+// A place that is taken over and over -- an element of a list -- is a turn at
+// a time, and the walk learns that a turn ended a step after it did: a tag is
+// written when the step after the character that wrote it is taken. So at the
+// moment the next turn begins, the one before it has not been told what closed
+// it, and a fold that was simply started afresh there lost the end of every
+// turn it gathered.
+//
+// It is not started afresh. The turn that is ending is moved aside and goes on
+// being told what closes it, for exactly as long as that takes -- one step --
+// and the element is made from it when it has been. The turn that is beginning
+// gathers meanwhile. Which is the same holding back the tags do, done for the
+// gatherings.
+template <class held>
+struct fold_of {
+  using held_type = std::remove_cv_t<held>;
+  static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
+  using state_type = typename fold_turn<held>::state_type;
+
+  fold_turn<held> here;
+  fold_turn<held> going;
+  bool has_going = false;
 };
 
 // One step of a fold: what happened to the groups inside a place, said to the
@@ -2514,8 +2542,14 @@ struct fold_of {
 // the same step run twice tells nothing twice, and the same step run at the end
 // of the input -- where there is no character to hand over -- finishes what the
 // characters left open.
-template <std::size_t place, class held, class reading_type, class fold_type,
-          std::size_t register_count>
+// Which parts of a step a turn is to be told.
+//
+// A turn on its way out hears only what closes it: what a move opens belongs
+// to the turn that has begun, and so does the character.
+enum class fold_phase { whole, closings_only };
+
+template <fold_phase phase = fold_phase::whole, std::size_t place, class held,
+          class reading_type, class fold_type, std::size_t register_count>
 constexpr void fold_one_step(
     fold_type& fold, const reading_type& reading,
     const std::array<std::ptrdiff_t, register_count>& registers, char symbol,
@@ -2571,6 +2605,7 @@ constexpr void fold_one_step(
       fold.ended_at[which] = ended;
     }(), ...);
   }(std::make_index_sequence<inside>{});
+  if constexpr (phase == fold_phase::closings_only) return;
   [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
       const std::ptrdiff_t began = opening_of(which);
@@ -2578,6 +2613,7 @@ constexpr void fold_one_step(
       open_one_group<held_type, which>(fold.state);
       fold.told_at[which] = began;
       fold.open[which] = true;
+      fold.started = true;
     }(), ...);
   }(std::make_index_sequence<inside>{});
   if (hands_the_character) {
@@ -2640,9 +2676,15 @@ constexpr void fold_the_readings(
     // Said every step rather than once, because a fold is made where its place
     // opens and carried where a reading divides, and neither of those knows
     // what the walk is reading.
-    folding.text = text;
-    fold_one_step<place, held>(folding, entered.readings[reading], registers,
-                               symbol, hands_the_character);
+    folding.here.text = text;
+    fold_one_step<fold_phase::whole, place, held>(
+        folding.here, entered.readings[reading], registers, symbol,
+        hands_the_character);
+    if (folding.has_going) {
+      folding.going.text = text;
+      fold_one_step<fold_phase::closings_only, place, held>(
+          folding.going, entered.readings[reading], registers, symbol, false);
+    }
   }
 }
 
@@ -3014,6 +3056,19 @@ constexpr void advance_scanner(
             } else if constexpr (gathers_a_list) {
               std::get<gathering_slot<type, format, group>>(
                   states[command.destination]) = held_type{};
+            } else if constexpr (how::folds && how::the_place) {
+              // A turn ending and the next one beginning. The one that is
+              // ending has not been told what closed it -- that arrives on
+              // this very step, a moment from now -- so it is moved aside
+              // rather than thrown away, and the element is made from it once
+              // it has heard the rest.
+              auto& fold = std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]);
+              if (fold.here.started) {
+                fold.going = std::move(fold.here);
+                fold.has_going = true;
+              }
+              fold.here = {};
             } else {
               std::get<gathering_slot<type, format, group>>(
                   states[command.destination]) =
@@ -3151,7 +3206,8 @@ struct gathered_by_the_registers {
   template <std::size_t place, class held>
   [[nodiscard]] constexpr auto fold_at() const {
     auto fold = gathering<place>();
-    fold_one_step<place, held>(fold, reading, registers, '\0', false);
+    fold_one_step<fold_phase::whole, place, held>(fold.here, reading, registers,
+                                                  '\0', false);
     return fold;
   }
 };
@@ -3245,6 +3301,11 @@ constexpr void collect_element(
     using list_type = leaf_kind_of_output<type, group - 1>;
     using element = std::remove_cvref_t<std::ranges::range_value_t<list_type>>;
     constexpr std::size_t list_group = group - 1;
+    if constexpr (gathering_of<type, format, group>::folds) {
+      // Made out of the turn that was moved aside, once that turn has been
+      // told what ended it. Nothing here can be: at this moment it has not.
+      return;
+    } else {
     // Does this step begin another turn? It does if it writes a fresh position
     // into a register that holds the place an element starts at.
     bool going_round = false;
@@ -3278,7 +3339,82 @@ constexpr void collect_element(
       append_to(std::get<gathering_slot<type, format, list_group>>(states[into]),
                 std::move(*one));
     }
+    }
   }
+}
+
+// The turn that was moved aside, made into an element now that the step which
+// ended it has been said.
+//
+// It is looked for at every register, not at the readings of one state: a
+// gathering travels with its register, and the move that ended the turn may
+// have put it anywhere. What says there is one is the fold itself.
+template <std::size_t group, class type, fixed_string format, auto& automaton,
+          class failure_type, class states_type, std::size_t register_count>
+constexpr void collect_turn_that_ended(
+    std::size_t state,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    states_type& states, std::optional<failure_type>& failed) {
+  if constexpr (group == 0) {
+    return;
+  } else if constexpr (!scanned_as_range<leaf_kind_of_output<type, group - 1>>) {
+    return;
+  } else if constexpr (!gathering_of<type, format, group>::folds) {
+    return;
+  } else {
+    using list_type = leaf_kind_of_output<type, group - 1>;
+    using element = std::remove_cvref_t<std::ranges::range_value_t<list_type>>;
+    using held = std::remove_cv_t<element>;
+    constexpr std::size_t list_group = group - 1;
+    const auto& packed = automaton.states[state];
+    std::array<bool, register_count> done{};
+    for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
+      const std::uint32_t open = packed.readings[reading][group * 2];
+      const std::uint32_t into = packed.readings[reading][list_group * 2];
+      if (done[open]) continue;
+      done[open] = true;
+      auto& fold = std::get<gathering_slot<type, format, group>>(states[open]);
+      if (!fold.has_going) continue;
+      fold.has_going = false;
+      if (fold.going.wanted_a_subject) {
+        if (!failed) {
+          failed = scan::as_a_failure<failure_type>(wrong_subject(
+              "a fold that only takes its groups whole needs a subject that "
+              "can be pointed at: give it push_group to read a stream"));
+        }
+        continue;
+      }
+      if constexpr (scan::says_what_went_wrong_folding<held>) {
+        auto got =
+            scan::scanner<held>{}.try_finish_groups(std::move(fold.going.state));
+        if (!got) {
+          if (!failed) {
+            failed = scan::as_a_failure<failure_type>(std::move(got).error());
+          }
+          continue;
+        }
+        append_to(
+            std::get<gathering_slot<type, format, list_group>>(states[into]),
+            std::move(*got));
+      } else {
+        append_to(
+            std::get<gathering_slot<type, format, list_group>>(states[into]),
+            scan::scanner<held>{}.finish_groups(std::move(fold.going.state)));
+      }
+    }
+  }
+}
+
+template <class type, fixed_string format, auto& automaton, class failure_type,
+          std::size_t register_count, class states_type, std::size_t... group>
+constexpr void collect_turns_that_ended(
+    std::size_t state,
+    const std::array<std::ptrdiff_t, register_count>& registers,
+    states_type& states, std::index_sequence<group...>,
+    std::optional<failure_type>& failed) {
+  (collect_turn_that_ended<group, type, format, automaton, failure_type>(
+       state, registers, states, failed),
+   ...);
 }
 
 template <class type, fixed_string format, auto& automaton, class failure_type,
@@ -3369,18 +3505,19 @@ template <class root, class type, std::size_t offset, bool as_output,
         "a shape whose places include a type that folds its own groups is read "
         "by the machine that gathers, not by a fold of its own");
     auto fold = source.template fold_at<offset, held>();
-    if (fold.wanted_a_subject) {
+    if (fold.here.wanted_a_subject) {
       return std::unexpected(scan::as_a_failure<failure_type>(wrong_subject(
           "a fold that only takes its groups whole needs a subject that can be "
           "pointed at: give it push_group to read a stream")));
     }
     if constexpr (scan::says_what_went_wrong_folding<held>) {
-      auto got = scan::scanner<held>{}.try_finish_groups(std::move(fold.state));
+      auto got =
+          scan::scanner<held>{}.try_finish_groups(std::move(fold.here.state));
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else {
-      return scan::scanner<held>{}.finish_groups(std::move(fold.state));
+      return scan::scanner<held>{}.finish_groups(std::move(fold.here.state));
     }
   } else if constexpr (a_value && gathers_by_its_groups<type>) {
     // A leaf built from its own groups once the match is over. They are groups
@@ -3890,6 +4027,9 @@ class field_gatherer {
     }
     hand_over<landed>(letter, registers,
                       std::make_index_sequence<field_count>{});
+    collect_turns_that_ended<type, format, automaton, failure_for<type>>(
+        landed, registers, states_, std::make_index_sequence<field_count>{},
+        failed_);
   }
 
   // Where the walk ended is a constant, so the reading that accepted is one

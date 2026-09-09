@@ -1,4 +1,5 @@
-// A group that is taken over and over, told turn by turn.
+// A group that is taken over and over, told turn by turn, and a list made of
+// those turns.
 //
 // The end of one turn and the start of the next arrive together: a tag is
 // written when the walk takes the step after the character that wrote it, so
@@ -25,6 +26,27 @@ struct turns {
 // `__X_XX`, and `__X_Y` as well.
 struct tally {
   unsigned long value = 0;
+};
+
+// One heap on its own, read by the groups of its own pattern -- so a list of
+// them is a place taken over and over, gathering as it goes.
+struct heap {
+  unsigned place = 0;
+  unsigned marks = 0;
+};
+
+// And a list of those that never allocates: room for as many heaps as a number
+// can have, and a count of how many were pushed. A list is whatever can be
+// grown, which is what makes this one a list.
+struct heaps {
+  std::array<heap, 20> items{};
+  std::size_t count = 0;
+
+  constexpr void push_back(heap one) {
+    if (count < items.size()) items[count++] = one;
+  }
+  [[nodiscard]] constexpr auto begin() const { return items.begin(); }
+  [[nodiscard]] constexpr auto end() const { return items.begin() + count; }
 };
 
 }  // namespace
@@ -94,6 +116,29 @@ struct scan::scanner<tally> {
   }
 };
 
+template <>
+struct scan::scanner<heap> {
+  static constexpr std::string_view pattern() { return R"((_+)(X|Y)*)"; }
+
+  struct state_type {
+    heap made;
+  };
+
+  static constexpr state_type begin_groups() { return {}; }
+  static constexpr void opened_group(state_type& state, std::size_t which) {
+    if (which == 0) state.made = {};
+  }
+  static constexpr void push_group(state_type& state, std::size_t which,
+                                   char letter) {
+    if (which == 0) {
+      ++state.made.place;
+    } else {
+      state.made.marks += letter == 'Y' ? 2u : 1u;
+    }
+  }
+  static constexpr heap finish_groups(state_type state) { return state.made; }
+};
+
 namespace {
 
 struct counted {
@@ -104,6 +149,21 @@ struct written {
   tally number;
   scan::held<8> name;
 };
+
+struct heaped {
+  heaps parts;
+  scan::held<8> name;
+};
+
+[[nodiscard]] unsigned long value_of(const heaps& parts) {
+  unsigned long total = 0;
+  for (const heap& one : parts) {
+    unsigned long weight = 1;
+    for (unsigned step = 1; step < one.place; ++step) weight *= 10;
+    total += weight * one.marks;
+  }
+  return total;
+}
 
 TEST(AGroupTakenOverAndOver, EveryTurnIsOpenedAndClosed) {
   for (int many = 1; many <= 6; ++many) {
@@ -135,6 +195,33 @@ TEST(AGroupTakenOverAndOver, HeapsAreWeighedAsTheyClose) {
   EXPECT_EQ(value("value=(__X_Y)a"), 12u);
   EXPECT_EQ(value("value=(___XX__Y_XXX)a"), 223u);
   EXPECT_EQ(value("value=(_XXXXXXXXX)a"), 9u);
+}
+
+TEST(AGroupTakenOverAndOver, EveryTurnIsAnElementOfTheList) {
+  const auto heaps_of = [](std::string_view text) {
+    const heaped got = scan::scan<R"(value=\({}*\){[a-z]*})">(text);
+    return got.parts;
+  };
+  {
+    const heaps one = heaps_of("value=(_X)a");
+    EXPECT_EQ(one.count, 1u);
+    EXPECT_EQ(value_of(one), 1u);
+  }
+  {
+    const heaps three = heaps_of("value=(_X_X_X)a");
+    EXPECT_EQ(three.count, 3u);
+    EXPECT_EQ(value_of(three), 3u);
+  }
+  {
+    const heaps mixed = heaps_of("value=(___XX__Y_XXX)a");
+    EXPECT_EQ(mixed.count, 3u);
+    EXPECT_EQ(value_of(mixed), 223u);
+  }
+  {
+    const heaps rising = heaps_of("value=(_XX__XXX___X)a");
+    EXPECT_EQ(rising.count, 3u);
+    EXPECT_EQ(value_of(rising), 132u);
+  }
 }
 
 }  // namespace
