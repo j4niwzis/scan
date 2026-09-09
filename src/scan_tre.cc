@@ -398,6 +398,17 @@ struct tdfa_transition {
   symbol_set symbols{};
   std::size_t target = 0;
   std::vector<register_command> commands;
+  // Which groups the character this move reads lies inside, where every
+  // position that could read it agrees.
+  //
+  // Asked of the move and not of the state: a state is a set of positions and
+  // its closure holds positions on both sides of a tag, which disagree about
+  // everything. Only some of those positions read the next character, and the
+  // ones that do are the ones the question is about -- so `(X|Y)*` inside a
+  // repeated group answers it even where sixteen readings of the input are
+  // alive at once, because all sixteen put this character in the same groups.
+  std::uint64_t groups_open = 0;
+  bool groups_known = false;
 };
 
 struct tdfa_state {
@@ -1226,10 +1237,41 @@ constexpr tdfa compile_tdfa(const tnfa& automaton, bool cut_at_match) {
       }
 
       const std::size_t target = add_state(std::move(entries), operations);
+      // What this move reads, and what it reads it inside of.
+      std::uint64_t reading_mask = 0;
+      bool reading_known = true;
+      bool any_reader = false;
+      for (std::size_t slot = 0; slot < source.size(); ++slot) {
+        bool reads = false;
+        for (const transition& edge :
+             automaton.transitions[source_states[slot]]) {
+          if (edge_matches(edge, symbol)) {
+            reads = true;
+            break;
+          }
+        }
+        if (!reads) continue;
+        const state_id one = source_states[slot];
+        if (!inside.known[one]) {
+          reading_known = false;
+          break;
+        }
+        if (!any_reader) {
+          any_reader = true;
+          reading_mask = inside.mask[one];
+        } else if (inside.mask[one] != reading_mask) {
+          reading_known = false;
+          break;
+        }
+      }
+      if (!any_reader) reading_known = false;
+
       result.states[current].transitions.push_back(
           tdfa_transition{.symbols = symbol_classes[class_index],
                           .target = target,
-                          .commands = std::move(operations)});
+                          .commands = std::move(operations),
+                          .groups_open = reading_mask,
+                          .groups_known = reading_known});
     }
   }
   result.register_count = next_register;

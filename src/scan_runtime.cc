@@ -573,6 +573,16 @@ template <auto& automaton, std::size_t state, class gatherer, class mark,
       into.template moving<state, move>(registers, here);
       execute_static_transition_commands<automaton, state, move>(registers,
                                                                  here);
+      // Handed over here rather than by whoever called: which move this is, is
+      // a constant only while this frame is written out, and what a character
+      // belongs to is a fact about the move.
+      if constexpr (requires {
+                      into.template moved<state, state, move>(
+                          static_cast<char>(symbol), registers, here);
+                    }) {
+        into.template moved<state, state, move>(static_cast<char>(symbol),
+                                                registers, here);
+      }
       return move;
     }
     return taken_self_move<automaton, state, gatherer, mark, register_count,
@@ -822,9 +832,9 @@ struct gathers_nothing {
   template <std::size_t state, std::size_t move, class registers_type,
             class mark>
   constexpr void moving(const registers_type&, mark) const {}
-  template <std::size_t state, std::size_t landed, class registers_type,
-            class mark>
-  constexpr void moved(std::size_t, char, const registers_type&, mark) const {}
+  template <std::size_t state, std::size_t landed, std::size_t move,
+            class registers_type, class mark>
+  constexpr void moved(char, const registers_type&, mark) const {}
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type&) const {}
 };
@@ -838,10 +848,9 @@ struct keeps_into {
   template <std::size_t state, std::size_t move, class registers_type,
             class mark>
   constexpr void moving(const registers_type&, mark) const {}
-  template <std::size_t state, std::size_t landed, class registers_type,
-            class mark>
-  constexpr void moved(std::size_t, char letter, const registers_type&,
-                       mark) const {
+  template <std::size_t state, std::size_t landed, std::size_t move,
+            class registers_type, class mark>
+  constexpr void moved(char letter, const registers_type&, mark) const {
     held.push_back(letter);
   }
   template <std::size_t state, class registers_type>
@@ -1018,8 +1027,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         into.template moving<state, move>(registers, place);
         execute_static_transition_commands<automaton, state, move>(registers,
                                                                    place);
-        into.template moved<state, range.target>(
-            move, static_cast<char>(symbol), registers, place);
+        into.template moved<state, range.target, move>(
+            static_cast<char>(symbol), registers, place);
         // What is left of the budget past this move. A step along a chain
         // costs one; a fork shares what is left between the branches it can
         // take, so everything written out from here is bounded by the budget
@@ -1177,10 +1186,6 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         taken_self_move<automaton, state, gatherer>(symbol, registers, spot,
                                                     into);
     if (stayed != no_run) {
-      if constexpr (gathers) {
-        into.template moved<state, state>(stayed, static_cast<char>(symbol),
-                                          registers, spot);
-      }
       if constexpr (shape.longest && accepts_here) {
         best.at = here;
         keep_the_end(best, last);
