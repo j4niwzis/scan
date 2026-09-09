@@ -3639,15 +3639,22 @@ constexpr void advance_scanner(
       },
       commands);
   if constexpr (how::folds && how::the_place &&
-                (how::place_repeats || !every_move_says_the_groups<automaton>())) {
+                (how::place_repeats || !kept_in_the_walk ||
+                 !every_move_says_the_groups<automaton>())) {
     // Everything that happened inside this place on this character, told in
     // order -- and told now, before the copy below, or a fold that ends where
     // its place ends would be copied one closing short.
     //
-    // Only where the machine cannot say it. Where it can, the walk tells the
-    // fold once, from the move, and telling it again here would say every
-    // opening and every character twice: what stops that in this telling is
-    // comparing positions, and the other telling has no positions to compare.
+    // Left out only where somebody else is doing the telling. The walk tells
+    // the fold from the move, once, where the machine can say what a character
+    // lies inside, and saying it again here would say every opening and every
+    // character twice.
+    //
+    // Whether the machine could say it is not on its own the question, and
+    // asking only that is what emptied a list read record after record: the
+    // reading that steps a character at a time has no move to be told from and
+    // never told the fold anything, while the machine, asked by itself,
+    // answered that somebody else would.
     fold_the_readings<group, gathering_slot<type, format, group>,
                       std::remove_cv_t<held_type>, automaton>(
         state, registers, states, symbol, hands_the_character, text);
@@ -4894,9 +4901,16 @@ class field_gatherer {
     } else if constexpr (how::folds && how::inside) {
       return;
     } else if constexpr (how::folds && how::the_place && !how::place_repeats &&
-                         step_says_the_groups<automaton, from, move>()) {
+                         every_move_says_the_groups<automaton>()) {
       // The machine says what happened; nothing is read to find out, and the
       // fold is where the walk keeps it rather than where a register points.
+      //
+      // Asked of every move and not of this one. Where the fold is written is
+      // a fact about the step, but where it is read out again is a fact about
+      // the whole machine -- so a machine with one move that cannot say what
+      // its character lies inside keeps the whole fold at its registers, and
+      // asking step by step here put half of it in the other place, where
+      // nobody looked for it.
       auto& fold = std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
       constexpr bool stays_put =
           automaton.states[from].ranges[move].target == from &&
