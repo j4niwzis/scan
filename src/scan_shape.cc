@@ -3702,7 +3702,7 @@ constexpr void push_shape_place(shape_type& state, char letter) {
   using stands_for = std::remove_cv_t<leaf_kind_of_output<held, group>>;
   if constexpr (inside != 0) {
     push_one_group<stands_for, inside - 1>(
-        std::get<place>(state.gatherings).state, letter);
+        std::get<place>(state.gatherings).here.state, letter);
   } else if constexpr (gathers_by_its_groups<stands_for> ||
                        scanned_as_range<stands_for>) {
     // Neither takes characters of its own: a list holds turns and the places
@@ -3726,7 +3726,7 @@ constexpr void open_shape_place(shape_type& state) {
   if constexpr (inside != 0) {
     using stands_for = std::remove_cv_t<leaf_kind_of_output<held, group>>;
     open_one_group<stands_for, inside - 1>(
-        std::get<place>(state.gatherings).state);
+        std::get<place>(state.gatherings).here.state);
   } else {
     state.took[place] = true;
   }
@@ -3745,7 +3745,7 @@ constexpr void close_shape_place(shape_type& state,
   using stands_for = std::remove_cv_t<leaf_kind_of_output<held, group>>;
   if constexpr (inside != 0) {
     close_one_group<stands_for, inside - 1>(
-        std::get<place>(state.gatherings).state);
+        std::get<place>(state.gatherings).here.state);
   } else if constexpr (scanned_as_range<stands_for>) {
     using element = std::remove_cvref_t<std::ranges::range_value_t<stands_for>>;
     if (!state.took[place + 1]) return;
