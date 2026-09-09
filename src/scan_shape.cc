@@ -3160,8 +3160,9 @@ template <class states_type, std::size_t command_count>
 }
 
 template <std::size_t group, class type, fixed_string format, auto& automaton,
-          bool hands_the_character = true, class states_type, class kept_type,
-          std::size_t register_count, std::size_t command_count>
+          bool hands_the_character = true, bool kept_in_the_walk = false,
+          class states_type, class kept_type, std::size_t register_count,
+          std::size_t command_count>
 constexpr void advance_scanner(
     char symbol, std::size_t state, std::ptrdiff_t position,
     const std::array<std::ptrdiff_t, register_count>& registers,
@@ -3178,9 +3179,14 @@ constexpr void advance_scanner(
   // what follows is about it: nothing to begin where a group opens, nothing to
   // copy where a reading divides, nothing to hand from one register to
   // another. That is most of what a move used to cost.
-  if constexpr (gathers_in_the_walk<type, format, automaton, group>() ||
-                (how::folds && how::the_place &&
-                 every_move_says_the_groups<automaton>())) {
+  //
+  // Asked of whoever is calling, because only one of them keeps gatherings
+  // that way: a walk over characters in a row does, and a reader taking a
+  // stream a character at a time keeps everything at its registers.
+  if constexpr (kept_in_the_walk &&
+                (gathers_in_the_walk<type, format, automaton, group>() ||
+                 (how::folds && how::the_place &&
+                  every_move_says_the_groups<automaton>()))) {
     return;
   } else {
   // A group inside a folding place is not gathered at all: its place tells the
@@ -3608,8 +3614,9 @@ constexpr void collect_elements(
 }
 
 template <class type, fixed_string format, auto& automaton,
-          bool hands_the_character = true, std::size_t register_count,
-          class states_type, std::size_t command_count, std::size_t... group>
+          bool hands_the_character = true, bool kept_in_the_walk = false,
+          std::size_t register_count, class states_type,
+          std::size_t command_count, std::size_t... group>
 constexpr void advance_scanners(
     char symbol, std::size_t state, std::ptrdiff_t position,
     const std::array<std::ptrdiff_t, register_count>& registers,
@@ -3632,12 +3639,14 @@ constexpr void advance_scanners(
   }
   if (copies) {
     const auto old_states = keep_gatherings(states, commands, count);
-    (advance_scanner<group, type, format, automaton, hands_the_character>(
+    (advance_scanner<group, type, format, automaton, hands_the_character,
+                     kept_in_the_walk>(
          symbol, state, position, registers, old_states, states, commands,
          count, text),
      ...);
   } else {
-    (advance_scanner<group, type, format, automaton, hands_the_character>(
+    (advance_scanner<group, type, format, automaton, hands_the_character,
+                     kept_in_the_walk>(
          symbol, state, position, registers, states, states, commands,
          count, text),
      ...);
@@ -4212,7 +4221,7 @@ class field_gatherer {
     // is left is handing the character to the fields that are open.
     if constexpr (state != landed || staying_writes<automaton, state>()) {
       constexpr const auto& taken = automaton.states[state].ranges[move];
-      advance_scanners<type, format, automaton, false>(
+      advance_scanners<type, format, automaton, false, true>(
           letter, landed, position, registers, states_, taken.commands,
           taken.command_count, std::make_index_sequence<field_count>{}, text_);
     }
