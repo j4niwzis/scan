@@ -3329,6 +3329,40 @@ template <class type, fixed_string format, auto& automaton, std::size_t group>
 }
 
 
+// Whether a list can be gathered by the walk rather than at the registers.
+//
+// A list is kept at a register because its turns are told apart by the
+// registers: the place an element starts at is written afresh every turn, and
+// which gathering that is, is what the register says. Where every move can say
+// what its character lies inside, none of that is needed -- the move says when
+// a turn begins, and the walk can keep the list and the turn being gathered
+// itself, the way it keeps a fold.
+//
+// Asked of the list and of its element together, because they are kept
+// together: the list is the slot the elements are appended to and the element
+// is the slot being gathered, and one of them living at a register would put
+// the other back there too.
+template <class type, fixed_string format, auto& automaton, std::size_t group>
+[[nodiscard]] consteval bool list_gathers_in_the_walk() {
+  if constexpr (!scanned_as_range<leaf_kind_of_output<type, group>>) {
+    return false;
+  } else if constexpr (group + 1 >= groups_of_output<type>()) {
+    return false;
+  } else {
+    constexpr std::size_t element = group + 1;
+    using inside = leaf_kind_of_output<type, element>;
+    if constexpr (scanned_as_range<inside>) {
+      return false;
+    } else if constexpr (gathering_of<type, format, element>::folds) {
+      return false;
+    } else {
+      return every_move_says_the_groups<automaton>() &&
+             alone_in_its_slot<type, format, group>() &&
+             alone_in_its_slot<type, format, element>();
+    }
+  }
+}
+
 // One gathering per value the pattern reads, not one per field of the output.
 //
 // They are the same thing only where every field is one place. A field that is
@@ -3632,6 +3666,10 @@ constexpr void advance_scanner(
   // stream a character at a time keeps everything at its registers.
   if constexpr (kept_in_the_walk &&
                 (gathers_in_the_walk<type, format, automaton, group>() ||
+                 list_gathers_in_the_walk<type, format, automaton, group>() ||
+                 (group > 0 &&
+                  list_gathers_in_the_walk<type, format, automaton,
+                                           group == 0 ? 0 : group - 1>()) ||
                  (how::folds && how::the_place && !how::place_repeats &&
                   every_move_says_the_groups<automaton>()))) {
     return;
@@ -3810,6 +3848,9 @@ template <class slots_type, std::uint64_t places>
 struct kept_by_the_walk {
   static constexpr std::uint64_t which_places = places;
   const slots_type& slots;
+  // Which of them had a turn being gathered when the reading stopped. A list
+  // the walk keeps has no register to say so.
+  std::uint64_t turns = 0;
 };
 
 template <class type, fixed_string format, class reading_type,
@@ -3860,13 +3901,27 @@ struct gathered_by_the_registers {
   // being added to the same list however the readings divide.
   template <std::size_t place>
   [[nodiscard]] constexpr const auto& list() const {
-    return std::get<gathering_slot<type, format, place>>(
-        states[reading[place * 2]]);
+    if constexpr (kept_here<place>()) {
+      return std::get<gathering_slot<type, format, place>>(kept.slots);
+    } else {
+      return std::get<gathering_slot<type, format, place>>(
+          states[reading[place * 2]]);
+    }
   }
 
   template <std::size_t place>
   [[nodiscard]] constexpr bool took_part() const {
-    return !stood_nowhere(registers[reading[place * 2]]);
+    // A turn the walk was gathering is said by the walk: there is no register
+    // holding where it began, because it was never at a register.
+    if constexpr (kept_here<place>()) {
+      if constexpr (std::same_as<kept_type, nothing_kept_here>) {
+        return false;
+      } else {
+        return (kept.turns & (std::uint64_t{1} << place)) != 0;
+      }
+    } else {
+      return !stood_nowhere(registers[reading[place * 2]]);
+    }
   }
 
   // What a place stood on, where the subject can be pointed at. Nothing where
@@ -4038,6 +4093,10 @@ constexpr void collect_element(
     if constexpr (gathering_of<type, format, group>::folds) {
       // Made out of the turn that was moved aside, once that turn has been
       // told what ended it. Nothing here can be: at this moment it has not.
+      return;
+    } else if constexpr (list_gathers_in_the_walk<type, format, automaton,
+                                                  list_group>()) {
+      // The walk is keeping this one and closes its turns from the moves.
       return;
     } else {
     // Does this step begin another turn? It does if it writes a fresh position
@@ -5026,6 +5085,12 @@ class field_gatherer {
         ([&] {
           using how = gathering_of<type, format, group>;
           if constexpr (gathers_in_the_walk<type, format, automaton, group>() ||
+                        list_gathers_in_the_walk<type, format, automaton,
+                                                 group>() ||
+                        (group > 0 &&
+                         list_gathers_in_the_walk<type, format, automaton,
+                                                  group == 0 ? 0
+                                                             : group - 1>()) ||
                         (how::folds && how::the_place && !how::place_repeats &&
                          every_move_says_the_groups<automaton>())) {
             made |= std::uint64_t{1} << group;
@@ -5034,7 +5099,7 @@ class field_gatherer {
       }(std::make_index_sequence<field_count>{});
       return made;
     }();
-    const kept_by_the_walk<decltype(kept), mine> mine_kept{kept};
+    const kept_by_the_walk<decltype(kept), mine> mine_kept{kept, turns_open_};
     auto got = finish_value<type, type, 0, true>(
         by_the_registers<type, format>(packed.readings[packed.accepting_slot],
                                        states_, registers, mine_kept),
@@ -5234,6 +5299,43 @@ class field_gatherer {
       fold_the_readings<group, gathering_slot<type, format, group, mark_kind>,
                         std::remove_cv_t<held_type>, automaton>(
           landed, registers, states_, letter, true, text_);
+    } else if constexpr (group > 0 &&
+                         list_gathers_in_the_walk<
+                             type, format, automaton,
+                             group == 0 ? 0 : group - 1>()) {
+      // A turn of a list, told by the move rather than by the registers.
+      //
+      // The move says when a turn begins, so the one before it ends there: it
+      // is finished and put in the list, and a fresh one is begun. Nothing is
+      // read out of a register and nothing is copied between them, which is
+      // what a turn boundary used to be made of.
+      constexpr std::size_t list_group = group == 0 ? 0 : group - 1;
+      constexpr std::uint64_t now =
+          automaton.states[from].ranges[move].groups_open;
+      constexpr std::uint64_t again =
+          automaton.states[from].ranges[move].groups_reopened;
+      constexpr std::uint64_t mine = std::uint64_t{1} << group;
+      static constexpr auto spread = spread_of<type, format>();
+      using element = std::remove_cvref_t<std::ranges::range_value_t<
+          std::remove_cv_t<leaf_kind_of_output<type, list_group>>>>;
+      if constexpr ((again & mine) != 0) {
+        auto& made =
+            std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
+        if ((turns_open_ & mine) != 0) {
+          auto& list = std::get<gathering_slot<type, format, list_group,
+                                               mark_kind>>(plain_folds_);
+          append_to(list, scanner_finish<element>(std::move(made)));
+        }
+        made = gathering_of<type, format, group>::begin(
+            spread.parameters[group].view());
+        turns_open_ |= mine;
+      }
+      if constexpr ((now & mine) != 0) {
+        gathering_of<type, format, group>::push(
+            std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_),
+            letter);
+        turns_open_ |= mine;
+      }
     } else if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
       // Open where the move says so, and gathered where the walk keeps it.
       constexpr std::uint64_t now =
@@ -5279,6 +5381,10 @@ class field_gatherer {
   // in the object, the hot part shares no cache line with the cold, and an
   // optimiser that will not promote a whole gatherer to registers can still
   // keep this much of it in one.
+  // Which walk-kept lists have a turn open. A turn is closed by the move that
+  // begins the next one, and the first turn of all has nothing before it to
+  // close -- so being open is remembered rather than guessed at.
+  std::uint64_t turns_open_ = 0;
   [[no_unique_address]] plain_folds_type plain_folds_ =
       make_slots<type, format, mark_kind>();
   states_type states_;
