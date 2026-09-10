@@ -1509,67 +1509,21 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 // the format layer walked with a budget of nothing, and paid a call a state.
 template <auto& automaton>
 [[nodiscard]] consteval std::size_t bodies_worth_writing() {
-  constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
-  // How many bodies are written out is what has to be bounded, and the length
-  // of the chain is only a stand-in for it: a state with one way out writes
-  // one body a step, a state that forks writes one per branch, and a budget
-  // counted in steps says nothing about the difference.
+  // A number, and no longer a measurement.
   //
-  // So the count is taken. Starting at whichever state is worst to start at,
-  // the moves are followed a step at a time, carrying how many bodies stand at
-  // each state, and the answer is the last depth whose total stays under the
-  // ceiling. A row of fields forks at every field and still writes a body a
-  // state; a pattern of diamonds stops early, which is what it should do.
-  // Counted in the comparisons the writing costs, not in the bodies it makes.
+  // This used to walk the machine from every state it could be entered at,
+  // counting how many bodies each depth of writing would produce, to find the
+  // depth whose total stayed under a ceiling. That was the whole of what kept
+  // the generated code from growing past what a compiler would hold -- and
+  // nothing is generated this way any more. The states are labels in one
+  // function now, and the walk this sizes is the one constant evaluation
+  // takes, where a body costs nothing because none is emitted.
   //
-  // A body is not a size: a state of a row of fields asks about two runs of
-  // symbols, and a state in the middle of an address asks about a dozen. Two
-  // hundred of the first is a function worth writing; two hundred of the
-  // second is a compiler out of memory. So what is counted is what each body
-  // is made of, and the ceiling is the same number for both.
-  constexpr std::size_t ceiling = 512;
-  std::size_t worst = state_count;
-  for (std::size_t from = 0; from < state_count; ++from) {
-    std::array<std::size_t, state_count> standing{};
-    standing[from] = 1;
-    std::size_t written = automaton.states[from].range_count;
-    std::size_t depth = 0;
-    while (depth < state_count) {
-      std::array<std::size_t, state_count> next{};
-      std::size_t added = 0;
-      for (std::size_t at = 0; at < state_count; ++at) {
-        if (standing[at] == 0) continue;
-        const auto& packed = automaton.states[at];
-        std::array<std::size_t, packed.ranges.size()> named{};
-        std::size_t count = 0;
-        for (std::size_t index = 0; index < packed.range_count; ++index) {
-          const std::size_t target = packed.ranges[index].target;
-          if (target == at) continue;
-          bool already = false;
-          for (std::size_t seen = 0; seen < count; ++seen) {
-            if (named[seen] == target) already = true;
-          }
-          if (already) continue;
-          named[count++] = target;
-          next[target] += standing[at];
-          added += standing[at] * automaton.states[target].range_count;
-        }
-      }
-      // Nowhere further to go from here: this start asks for nothing more,
-      // and so says nothing about how deep the writing may go.
-      if (added == 0) {
-        depth = state_count;
-        break;
-      }
-      if (written + added > ceiling) break;
-      written += added;
-      standing = next;
-      ++depth;
-    }
-    if (depth < worst) worst = depth;
-  }
-  return worst;
+  // What it still decides is how deep the instantiation goes before a call,
+  // which is a question about how long the compiler takes and not about the
+  // program. Eight is enough to keep a chain of literal characters in one
+  // instantiation and small enough that no machine makes many.
+  return 8;
 }
 
 // One function for the whole machine, and a label for every state.
