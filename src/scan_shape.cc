@@ -2622,6 +2622,23 @@ struct fold_turn {
 // a question a constant evaluation refuses to answer: the two point into
 // unrelated objects. So the order is asked only of two positions that both
 // stood somewhere, and a closing that never happened is simply not a closing.
+// A flag per register, in as many words as that takes. One word covers the
+// machines that have fewer than sixty-five registers, which is most of them;
+// a reading that keeps everything at its registers has far more, and a mask of
+// one word silently stopped saying anything about those above the sixty-fourth.
+template <std::size_t registers>
+struct one_per_register {
+  std::array<std::uint64_t, (registers + 63) / 64 == 0 ? 1
+                                                       : (registers + 63) / 64>
+      words{};
+  [[nodiscard]] constexpr bool test(std::size_t at) const {
+    return (words[at >> 6] & (std::uint64_t{1} << (at & 63))) != 0;
+  }
+  constexpr void set(std::size_t at) {
+    words[at >> 6] |= std::uint64_t{1} << (at & 63);
+  }
+};
+
 [[nodiscard]] constexpr bool closed_since(auto ended, auto began) {
   if (stood_nowhere(ended)) return false;
   return ended >= began;
@@ -3754,18 +3771,17 @@ constexpr void advance_scanner(
   // time is most of what reading it costs.
   if constexpr (!gathers_a_list && hands_the_character) {
     // Once each, however many readings share it: a register is one gathering.
-    std::uint64_t filled = 0;
+    one_per_register<automaton.register_count> filled;
     const auto& packed = automaton.states[state];
     for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
-      const std::uint64_t bit = open < 64 ? std::uint64_t{1} << open : 0;
-      if ((filled & bit) != 0) continue;
+      if (filled.test(open)) continue;
       if (stood_nowhere(registers[open]) ||
           closed_since_turn(registers[close], registers[open],
                             how::place_repeats))
         continue;
-      filled |= bit;
+      filled.set(open);
       gathering_of<type, format, group>::push(
           std::get<gathering_slot<type, format, group>>(states[open]), symbol);
     }
@@ -5165,15 +5181,14 @@ class field_gatherer {
     } else {
       // The same pairs, for a run handed over whole.
       constexpr auto& pairs = gathered_pairs<automaton, state, group>;
-      std::uint64_t given = 0;
+      one_per_register<automaton.register_count> given;
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
         const std::uint32_t closing = pairs.shut[which];
-        const std::uint64_t bit = opening < 64 ? std::uint64_t{1} << opening : 0;
-        if ((given & bit) != 0 || stood_nowhere(registers[opening])) continue;
+        if (given.test(opening) || stood_nowhere(registers[opening])) continue;
         if (closed_since_turn(registers[closing], registers[opening],
                               how::place_repeats)) continue;
-        given |= bit;
+        given.set(opening);
         gathering_of<type, format, group>::push_run(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             from, to);
@@ -5239,15 +5254,14 @@ class field_gatherer {
       // The pairs this state names, worked out while compiling; a register is
       // one gathering, so one of them going on is enough.
       constexpr auto& pairs = gathered_pairs<automaton, landed, group>;
-      std::uint64_t given = 0;
+      one_per_register<automaton.register_count> given;
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
         const std::uint32_t closing = pairs.shut[which];
-        const std::uint64_t bit = opening < 64 ? std::uint64_t{1} << opening : 0;
-        if ((given & bit) != 0 || stood_nowhere(registers[opening])) continue;
+        if (given.test(opening) || stood_nowhere(registers[opening])) continue;
         if (closed_since_turn(registers[closing], registers[opening],
                               how::place_repeats)) continue;
-        given |= bit;
+        given.set(opening);
         gathering_of<type, format, group>::push(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             letter);
