@@ -4427,8 +4427,14 @@ class stream_state {
       "there is nothing left to point at by the time it would be handed them "
       "-- give it begin_groups and push_group to be told its groups as they "
       "arrive");
+  // The whole machine, marks and all.
+  //
+  // Everything else walks the machine with the marks nobody reads taken out --
+  // it hears what happened to a place from the moves. This reading has no
+  // moves to hear it from: it steps the states one character at a time and
+  // asks the positions, so it needs every mark the expression writes.
   inline static constexpr const auto& automaton =
-      streaming_automaton<type, format, cut>;
+      streaming_automaton_whole<type, format, cut>;
   inline static constexpr std::size_t field_count = groups_of_output<type>();
   // One gathering per register, because a gathering follows the register it
   // belongs to and there is no arithmetic that says which registers go
@@ -5516,7 +5522,7 @@ inline constexpr std::size_t stream_hold = [] consteval {
     return std::size_t{0};
   } else {
     constexpr std::size_t window =
-        walk_past_a_match<streaming_automaton<type, format>>();
+        walk_past_a_match<streaming_automaton_whole<type, format>>();
     if constexpr (window == std::numeric_limits<std::size_t>::max()) {
       // Refused where it is used; sized so that saying so is what the caller
       // sees, rather than an array of every address there is.
