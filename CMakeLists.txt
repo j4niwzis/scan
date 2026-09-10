@@ -138,7 +138,14 @@ if(TARGET Boost::pfr)
     # and the module unit is compiled in this build, where this is read.
     message(STATUS
       "scan: telling Boost.PFR to import std, which its own build did not")
-    set_property(TARGET Boost::pfr APPEND
+    # Through the alias, where there is one: a build that took Boost.PFR
+    # some other way names it `Boost::pfr` and means a target called
+    # something else, and a property cannot be set on the name.
+    get_target_property(scan_pfr_target Boost::pfr ALIASED_TARGET)
+    if(NOT scan_pfr_target)
+      set(scan_pfr_target Boost::pfr)
+    endif()
+    set_property(TARGET ${scan_pfr_target} APPEND
                  PROPERTY INTERFACE_COMPILE_DEFINITIONS
                           BOOST_PFR_USE_STD_MODULE)
   endif()
