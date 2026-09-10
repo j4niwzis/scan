@@ -764,6 +764,91 @@ template <auto& automaton>
   return 16 * (runs != 0 ? runs : 1);
 }
 
+// Which states are written out once and reached by a call, and which are
+// written where they stand.
+//
+// A state written out where it is reached is written out again wherever else
+// it is reached from -- and with it everything that follows it, to the end of
+// whatever the budget allows. What decides is the shape of the machine and
+// not how far along a chain the writing has gone: a state with one way in
+// belongs to the chain that leads to it and is part of that body; a state
+// with two is a place both of them arrive at, and writing it where it is
+// reached writes it, and its whole tail, twice.
+//
+// So the heads are named. A state has to be one when more than one other
+// state moves to it, and when a move can come back to it -- a cycle written
+// out as a chain is a chain with no end. Everything else is written where it
+// stands, exactly once, because there is exactly one place it stands in. The
+// bodies of the whole machine are then the heads and nothing else, however
+// deep the chains between them run.
+//
+// Which is a different question from the budget below, and both are asked. A
+// head is about writing the same state twice; the budget is about writing one
+// chain that is longer than a compiler will hold.
+template <auto& automaton>
+[[nodiscard]] consteval auto states_reached_by_a_call() {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+  std::array<bool, state_count> head{};
+  // How many other states move here. Counted by state and not by move: a
+  // state that reaches another under two runs of symbols is one way in.
+  std::array<std::size_t, state_count> coming{};
+  for (std::size_t from = 0; from < state_count; ++from) {
+    const auto& packed = automaton.states[from];
+    for (std::size_t index = 0; index < packed.range_count; ++index) {
+      const std::size_t target = packed.ranges[index].target;
+      if (target == from) continue;
+      bool already = false;
+      for (std::size_t earlier = 0; earlier < index; ++earlier) {
+        if (packed.ranges[earlier].target == target) already = true;
+      }
+      if (!already) ++coming[target];
+    }
+  }
+  for (std::size_t at = 0; at < state_count; ++at) {
+    if (coming[at] > 1) head[at] = true;
+  }
+  // And a way back: an edge into a state from somewhere that state can reach
+  // closes a cycle, and where it closes is where the cycle is entered. Asked
+  // by reachability rather than by the order a walk happens to take, so the
+  // answer is a fact about the machine.
+  for (std::size_t at = 0; at < state_count; ++at) {
+    if (head[at]) continue;
+    std::array<bool, state_count> seen{};
+    std::array<std::size_t, state_count> queue{};
+    std::size_t tail = 0;
+    std::size_t front = 0;
+    seen[at] = true;
+    queue[tail++] = at;
+    while (front < tail) {
+      const std::size_t from = queue[front++];
+      const auto& packed = automaton.states[from];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (!seen[target]) {
+          seen[target] = true;
+          queue[tail++] = target;
+        }
+      }
+    }
+    for (std::size_t from = 0; from < state_count && !head[at]; ++from) {
+      if (from == at || !seen[from]) continue;
+      const auto& packed = automaton.states[from];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        if (packed.ranges[index].target == at) {
+          head[at] = true;
+          break;
+        }
+      }
+    }
+  }
+  return head;
+}
+
+// Asked once of a machine rather than once of every place that walks it.
+template <auto& automaton>
+inline constexpr auto reached_by_a_call = states_reached_by_a_call<automaton>();
+
 template <auto& automaton, std::size_t state>
 [[nodiscard]] consteval std::size_t forks_of() {
   constexpr const auto& packed = automaton.states[state];
@@ -1204,7 +1289,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         if constexpr (range.target < 64 &&
                       (chain & (std::uint64_t{1} << range.target)) != 0) {
           return {false, range.target};
-        } else if constexpr (budget != 0) {
+        } else if constexpr (!reached_by_a_call<automaton>[range.target] &&
+                             budget != 0) {
           // Written out here rather than called, and said so rather than left
           // to be guessed.
           //
