@@ -3283,6 +3283,10 @@ template <class type, fixed_string format>
 // nothing has to follow a reading. A place taken over and over is left out --
 // there the gathering is handed away turn by turn, and which turn it belongs
 // to is what the registers are keeping straight.
+template <class type, fixed_string format, std::size_t group,
+          class mark_type = std::ptrdiff_t>
+[[nodiscard]] consteval bool alone_in_its_slot();
+
 template <class type, fixed_string format, auto& automaton, std::size_t group>
 [[nodiscard]] consteval bool gathers_in_the_walk() {
   using how = gathering_of<type, format, group>;
@@ -3290,7 +3294,8 @@ template <class type, fixed_string format, auto& automaton, std::size_t group>
   // gathering belongs to is what the registers keep straight -- so it stays
   // where they are, and so does anything standing at a place that repeats.
   return every_move_says_the_groups<automaton>() && !how::place_repeats &&
-         !scanned_as_range<typename how::held_type>;
+         !scanned_as_range<typename how::held_type> &&
+         alone_in_its_slot<type, format, group>();
 }
 
 
@@ -3419,6 +3424,22 @@ inline constexpr std::size_t gathering_slot =
     where_kind<gathering_kinds_of<type, format, mark_type>,
                typename gathering_state<type, format, group,
                                         mark_type>::result>::at;
+
+template <class type, fixed_string format, std::size_t group,
+          class mark_type = std::ptrdiff_t>
+[[nodiscard]] consteval bool alone_in_its_slot() {
+  // Slots are handed out by kind, not by place: two places gathered the same
+  // way share one, because at a register they are still two -- the register is
+  // what tells them apart. A gathering the walk keeps has no register to be
+  // told apart by, so where two places share a slot the walk can keep neither:
+  // what one pushed the other would read.
+  constexpr std::size_t mine = gathering_slot<type, format, group, mark_type>;
+  return [&]<std::size_t... other>(std::index_sequence<other...>) {
+    return (true && ... &&
+            (other == group ||
+             gathering_slot<type, format, other, mark_type> != mine));
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+}
 
 // One gathering of every kind, each begun as the first group of that kind
 // would begin it. Where two groups of a kind ask for different parameters, the
@@ -4737,7 +4758,13 @@ class field_gatherer {
   template <std::size_t state, std::size_t group>
   [[nodiscard]] static consteval bool this_place_is_idle() {
     constexpr std::size_t staying = staying_move<automaton, state>();
-    if constexpr (staying == no_move) {
+    using how = gathering_of<type, format, group>;
+    if constexpr (how::folds && how::inside) {
+      // A group inside a fold is its place's business and never its own: it is
+      // open whenever the place is standing in it, and counting it as work of
+      // its own is counting the same work twice.
+      return true;
+    } else if constexpr (staying == no_move) {
       return false;
     } else {
       constexpr const auto& taken = automaton.states[state].ranges[staying];
