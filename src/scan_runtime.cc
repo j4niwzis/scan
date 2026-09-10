@@ -1797,6 +1797,12 @@ SCAN_FORCE_INLINE constexpr void take_move(
   }
 
 #define SCAN_RUNG_NAME(t) &&SCAN_CAT(scan_at_, t),
+// Where the walk starts is known while compiling, so it is reached by a jump
+// to a label and not through the table. A search runs a walk from every
+// position in the subject; going in through the table would be an indirect
+// branch nobody can predict, once for every character of it.
+#define SCAN_RUNG_ENTRY(t)                                                    \
+  if constexpr (entry == t) goto SCAN_CAT(scan_at_, t);
 #define SCAN_RUNG_BODY(t)                                                     \
   SCAN_CAT(scan_at_, t)                                                       \
       : if constexpr (t < states_in<automaton>) {                             \
@@ -1838,7 +1844,8 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
   std::conditional_t<keeps_its_own, mark, mark&> spot = place;
   sentinel_type last_here = last;
   unsigned char symbol = 0;
-  goto* rungs[entry];
+  SCAN_EVERY_RUNG(SCAN_RUNG_ENTRY)
+  goto scan_over;
   SCAN_EVERY_RUNG(SCAN_RUNG_BODY)
 scan_over:
   if constexpr (keeps_its_own) {
