@@ -5518,13 +5518,27 @@ template <class type, fixed_string format,
   // time there is nothing to point at and the count is what there is.
   constexpr bool in_a_row = std::ranges::contiguous_range<range_type>;
   using mark_kind = std::conditional_t<in_a_row, const char*, std::ptrdiff_t>;
-  std::array<mark_kind, automaton.register_count> registers{};
+  // Only the places that can still be unwritten when the machine accepts.
+  //
+  // Everything past the tags is a working register, never read before it is
+  // written, and a tag written on every path into every accepting state does
+  // not need telling either. What is left is usually a handful -- and what
+  // this replaces was the whole tape, cleared before the first character was
+  // read: a machine of eighty registers began every reading with a memset of
+  // six hundred bytes.
+  constexpr auto written_everywhere = tags_always_written<automaton>();
+  std::array<mark_kind, automaton.register_count> registers;
+  [&]<std::size_t... tag>(std::index_sequence<tag...>) {
+    ((written_everywhere[tag]
+          ? void()
+          : void(registers[tag] = in_a_row ? mark_kind{}
+                                           : mark_kind(scan::tre::negative_tag))),
+     ...);
+  }(std::make_index_sequence<automaton.tag_count>{});
   if constexpr (in_a_row) {
-    std::ranges::fill(registers, nullptr);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, static_cast<const char*>(nullptr));
   } else {
-    std::ranges::fill(registers, scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, std::ptrdiff_t{0});
   }
