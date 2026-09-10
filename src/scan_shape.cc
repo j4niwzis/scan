@@ -4798,6 +4798,19 @@ class field_gatherer {
         if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
           return true;
         }
+        // A list the walk gathers, and the turn of it being gathered, are both
+        // held by the walk: neither is at a register, and where nothing else
+        // is either there is no array of them to carry, to clear, or to take
+        // a copy of at every move.
+        if constexpr (list_gathers_in_the_walk<type, format, automaton,
+                                               group>()) {
+          return true;
+        }
+        if constexpr (group > 0 &&
+                      list_gathers_in_the_walk<type, format, automaton,
+                                               group == 0 ? 0 : group - 1>()) {
+          return true;
+        }
         if constexpr (how::folds && how::the_place && !how::place_repeats &&
                       every_move_says_the_groups<automaton>()) {
           return true;
