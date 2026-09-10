@@ -1769,6 +1769,13 @@ SCAN_FORCE_INLINE constexpr void take_move(
   goto scan_over;
 
 // The walk itself: one function, one body a state, and every move a jump.
+// Reached by a call, and there is no asking otherwise.
+//
+// A function whose labels have had their addresses taken is one no inliner
+// will write into its caller: the addresses would have to be duplicated, and
+// there is no meaning for that. So this walk is a call however it is marked --
+// which is the price of the labels, and it is paid where everything the walk
+// touches is handed to it by reference and therefore lives in memory.
 template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
