@@ -2,6 +2,24 @@ cmake_minimum_required(VERSION 4.2 FATAL_ERROR)
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# Said as a property of the build and not only of the targets, because the
+# dependencies read it. Boost.PFR's module unit asks `import std` of itself
+# when the build says both that `import std` works and which standard it works
+# for -- `CMAKE_CXX_MODULE_STD` and `CMAKE_CXX_STANDARD`. Left unsaid, the
+# second answer is empty, and the module falls back to including `<functional>`
+# and the rest of the standard library textually into its global module
+# fragment.
+#
+# Which would be nothing but a slower build, except that the standard library
+# then exists twice in one program: once in the module `std` everything here
+# imports, and once in that fragment. Clang miscompiles a lambda in an
+# out-of-line member template that is merged from two such copies -- it drops
+# the capture and reads an uninitialised local in its place
+# (llvm/llvm-project#221548), and `std::vector::emplace_back` in libc++ is
+# written exactly that way. A `push_back` in a program built the other way
+# writes through a pointer nobody set.
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # scan -- regular expressions and scanning, as C++23 modules.
 #
