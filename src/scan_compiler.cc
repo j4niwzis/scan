@@ -842,12 +842,22 @@ template <std::size_t state_count, std::size_t register_count,
               range.target = transition.target;
               range.groups_open = transition.groups_open;
               range.groups_known = transition.groups_known;
+              // Which groups this move begins again.
+              //
+              // An opening told where it is, and not an opening told where it
+              // used to be: a command that copies one register into another
+              // moves a mark house, it does not make a new turn. Counting a
+              // copy as a beginning made a field start over in the middle of
+              // itself -- the machine renames the register holding an opening
+              // whenever a reading divides, and every rename looked like a
+              // group beginning again.
               range.groups_reopened = 0;
               for (const scan::tre::register_command& command :
                    transition.commands) {
                 const std::uint32_t tag =
                     tdfa.register_tag[command.destination];
                 if (tag % 2 != 0) continue;
+                if (command.values.empty() || !command.values.back()) continue;
                 const std::size_t group = tag / 2;
                 if (group < 64) {
                   range.groups_reopened |= std::uint64_t{1} << group;

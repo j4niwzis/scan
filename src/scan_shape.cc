@@ -3555,6 +3555,12 @@ template <class states_type, std::size_t command_count>
     const std::array<packed_command, command_count>& commands,
     std::size_t count) {
   kept_gatherings<states_type, command_count> kept;
+  // Where nothing is gathered at a register there is no array to keep
+  // anything out of: the walk holds every gathering itself, and asking for
+  // `states[somewhere]` would be asking a row of no elements for one of them.
+  if constexpr (std::tuple_size_v<states_type> == 0) {
+    return kept;
+  }
   for (std::size_t index = 0; index < count; ++index) {
     if (commands[index].source == packed_command::no_source) continue;
     if (commands[index].value != -2) continue;
