@@ -1769,13 +1769,6 @@ SCAN_FORCE_INLINE constexpr void take_move(
   goto scan_over;
 
 // The walk itself: one function, one body a state, and every move a jump.
-// Reached by a call, and there is no asking otherwise.
-//
-// A function whose labels have had their addresses taken is one no inliner
-// will write into its caller: the addresses would have to be duplicated, and
-// there is no meaning for that. So this walk is a call however it is marked --
-// which is the price of the labels, and it is paid where everything the walk
-// touches is handed to it by reference and therefore lives in memory.
 template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
@@ -1806,67 +1799,6 @@ scan_over:
     place = spot;
   }
   return best.matched;
-}
-
-template <auto& automaton>
-[[nodiscard]] consteval auto tags_always_written();
-
-// The same walk, owning everything it works on.
-//
-// A function whose labels have had their addresses taken is one no inliner
-// will write into its caller, so whatever it is handed by reference stays in
-// memory for as long as the walk runs: the compiler has to assume a call can
-// look at anything it was given the address of. The gatherings a reading fills
-// in are the whole of what it does, and they were on the stack, written back
-// at every character.
-//
-// Handed nothing and told to make its own, none of it escapes: the gatherer,
-// the registers and the place the walk liked best are values of this function
-// and go wherever values go. What comes back is the reading, already made.
-template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
-          class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type>
-[[nodiscard]] auto run_threaded_owning(cursor_type cursor, sentinel_type last,
-                                       const char* text) {
-  static_assert(states_in<automaton> <= SCAN_LADDER,
-                "this machine has more states than the ladder has rungs: "
-                "build with -DSCAN_LADDER=4096");
-  static void* const rungs[] = {SCAN_EVERY_RUNG(SCAN_RUNG_NAME)};
-  std::array<mark, register_count> registers;
-  constexpr auto written_everywhere = tags_always_written<automaton>();
-  constexpr mark nowhere =
-      std::is_pointer_v<mark> ? mark{} : mark(scan::tre::negative_tag);
-  // A constant evaluation may not read what was never written, and it does not
-  // care what the clearing costs: there, everything is set.
-  if consteval {
-    for (mark& one : registers) one = nowhere;
-  } else {
-    [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-      ((written_everywhere[tag] ? void() : void(registers[tag] = nowhere)),
-       ...);
-    }(std::make_index_sequence<automaton.tag_count>{});
-  }
-  if constexpr (std::is_pointer_v<mark>) {
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, static_cast<const char*>(nullptr));
-  } else {
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, mark{});
-  }
-  gatherer into;
-  if constexpr (requires { into.points_at(text); }) {
-    if (text != nullptr) into.points_at(text);
-  }
-  answer_type best;
-  cursor_type here = cursor;
-  mark spot = std::is_pointer_v<mark> ? mark(cursor) : mark{};
-  sentinel_type last_here = last;
-  unsigned char symbol = 0;
-  SCAN_EVERY_RUNG(SCAN_RUNG_ENTRY)
-  goto scan_over;
-  SCAN_EVERY_RUNG(SCAN_RUNG_BODY)
-scan_over:
-  return into.taken();
 }
 
 // Walking characters in a row to a terminator, gathering nothing.

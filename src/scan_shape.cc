@@ -5518,54 +5518,56 @@ template <class type, fixed_string format,
   // time there is nothing to point at and the count is what there is.
   constexpr bool in_a_row = std::ranges::contiguous_range<range_type>;
   using mark_kind = std::conditional_t<in_a_row, const char*, std::ptrdiff_t>;
+  std::array<mark_kind, automaton.register_count> registers{};
+  if constexpr (in_a_row) {
+    std::ranges::fill(registers, nullptr);
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, static_cast<const char*>(nullptr));
+  } else {
+    std::ranges::fill(registers, scan::tre::negative_tag);
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, std::ptrdiff_t{0});
+  }
+  field_gatherer<type, format, automaton, in_a_row, mark_kind> into;
+  // Written out, the same as every other walk. A subject handed over a
+  // character at a time is read by the machine written as code -- what it
+  // cannot have is the vectors, because there is nothing in a row to read.
+  //
+  // Where there is, it can. The characters of a run keep the machine where it
+  // stands and write nothing, so the walk steps over the whole run at once and
+  // hands it to whoever is gathering as a run -- which is one call for a
+  // hundred characters where the type can take one. That wants addresses
+  // rather than iterators, which is what a range in a row has.
+  // A list is left out of it: its elements are handed over turn by turn and a
+  // run stepped over in one go is one turn as far as the walk can tell.
   if constexpr (std::ranges::contiguous_range<range_type> &&
                 !holds_a_range<type>()) {
+    into.points_at(std::ranges::data(input));
     const char* cursor = std::ranges::data(input);
     const char* const last = cursor + std::ranges::size(input);
+    const char* position = cursor;
     // Runs stepped over whole, unless the caller asked for a character at a
     // time.
+    //
+    // Only the one walk the caller will use is written. The other paths write
+    // both and pick by the length of the subject, which they can afford
+    // because a walk to a terminator is a state and a comparison; a walk that
+    // gathers is a body a state, and two of them is twice the code for a
+    // question that a subject of any length answers the same way.
     constexpr walk_shape shape{
         .in_words = walk != how_to_walk::one_at_a_time,
         .tags_read = groups_whose_place_is_read<type, format, automaton>(),
         .tags_written = groups_whose_mark_is_read<type, format, automaton>(),
         .budget = bodies_worth_writing<automaton>()};
-    // Nothing of the reading is made here: the walk makes its own and hands
-    // back what it read. Made here, all of it would be behind a reference the
-    // walk was given, and a walk written with labels is a walk no inliner will
-    // fold into this -- so every gathering would live on the stack.
-    return run_threaded_owning<automaton, shape, automaton.initial, mark_kind,
-                               const char*, const char*,
-                               automaton.register_count,
-                               field_gatherer<type, format, automaton, in_a_row,
-                                              mark_kind>,
-                               walk_answer<const char*>>(cursor, last, cursor);
+    walk_answer<const char*> best;
+    if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+                          const char*>(cursor, last, position, registers, into,
+                                       best)) {
+      return std::unexpected(scan::as_a_failure<failure_for<type>>(
+          no_match("input does not match scan expression")));
+    }
+    return into.taken();
   } else {
-    // Only the places that can still be unwritten when the machine accepts.
-    // Everything past the tags is a working register, never read before it is
-    // written, and a tag written on every path into every accepting state does
-    // not need telling either.
-    constexpr auto written_everywhere = tags_always_written<automaton>();
-    constexpr mark_kind nowhere =
-        in_a_row ? mark_kind{} : mark_kind(scan::tre::negative_tag);
-    std::array<mark_kind, automaton.register_count> registers;
-    // A constant evaluation may not read what was never written.
-    if consteval {
-      for (mark_kind& one : registers) one = nowhere;
-    } else {
-      [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-        ((written_everywhere[tag] ? void() : void(registers[tag] = nowhere)),
-         ...);
-      }(std::make_index_sequence<automaton.tag_count>{});
-    }
-    if constexpr (in_a_row) {
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, static_cast<const char*>(nullptr));
-    } else {
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, std::ptrdiff_t{0});
-    }
-    field_gatherer<type, format, automaton, in_a_row, mark_kind> into;
-    if constexpr (in_a_row) into.points_at(std::ranges::data(input));
     auto cursor = std::ranges::begin(input);
     mark_kind position = 0;
     constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
