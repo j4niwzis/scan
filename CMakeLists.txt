@@ -96,7 +96,27 @@ option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 # a perfectly good answer if a machine ever has one.
 set(CME_SYSTEM_boost_pfr OFF CACHE BOOL
     "Boost.PFR is built here, because it is wanted as a module")
-cme_options(boost-pfr "BUILD_TESTING OFF")
+# Said to the port and not only around it. Boost.PFR is built on its own, in
+# a configure of its own, and what reaches that one is what is named here --
+# everything else is the build this file is in, which the port never sees. It
+# is also what names the result: the options are part of the identity a built
+# port is stored under, so a build that says something different gets a
+# different port rather than the one already lying there.
+#
+# And what it has to be told is which standard this is and that `import std`
+# works, because those are what its module unit asks before deciding whether
+# to import the standard library or to include it. Left unanswered it
+# includes -- and then the library exists twice in one program, once in the
+# module `std` everything here imports and once in that global module
+# fragment. Clang drops the capture of a lambda in an out-of-line member
+# template merged from two such copies and reads an uninitialised local in
+# its place (llvm/llvm-project#221548); `std::vector::emplace_back` in libc++
+# is written that way, so a `push_back` writes through a pointer nobody set.
+cme_options(boost-pfr
+    "BUILD_TESTING OFF"
+    "CMAKE_CXX_STANDARD 23"
+    "CMAKE_CXX_MODULE_STD 1"
+    "CMAKE_EXPERIMENTAL_CXX_IMPORT_STD ${CMAKE_EXPERIMENTAL_CXX_IMPORT_STD}")
 find_package(boost_pfr REQUIRED COMPONENTS modules)
 
 add_library(scan)
