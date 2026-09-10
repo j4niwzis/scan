@@ -3754,17 +3754,18 @@ constexpr void advance_scanner(
   // time is most of what reading it costs.
   if constexpr (!gathers_a_list && hands_the_character) {
     // Once each, however many readings share it: a register is one gathering.
-    std::array<bool, automaton.register_count> filled{};
+    std::uint64_t filled = 0;
     const auto& packed = automaton.states[state];
     for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
-      if (filled[open]) continue;
+      const std::uint64_t bit = open < 64 ? std::uint64_t{1} << open : 0;
+      if ((filled & bit) != 0) continue;
       if (stood_nowhere(registers[open]) ||
           closed_since_turn(registers[close], registers[open],
                             how::place_repeats))
         continue;
-      filled[open] = true;
+      filled |= bit;
       gathering_of<type, format, group>::push(
           std::get<gathering_slot<type, format, group>>(states[open]), symbol);
     }
@@ -3943,12 +3944,64 @@ template <class root, class type, std::size_t offset, class failure_type,
 // at the end is the same thing either way.
 template <class list_type, class element_type>
 constexpr void append_to(list_type& list, element_type&& value) {
+  // `insert` only where it has to be. It is here at all because libc++ writes
+  // `vector::emplace_back` through a helper taking two capturing lambdas, and
+  // clang's constant evaluator refuses those -- so a list of anything could
+  // not be read while compiling. That is a reason to spell it this way while
+  // compiling and no reason at all to spell it this way while running, where
+  // `insert` costs the best part of a nanosecond an element more.
   if constexpr (requires { list.insert(list.end(), std::move(value)); }) {
-    list.insert(list.end(), std::move(value));
+    if consteval {
+      list.insert(list.end(), std::move(value));
+    } else {
+      if constexpr (requires { list.push_back(std::move(value)); }) {
+        list.push_back(std::move(value));
+      } else {
+        list.insert(list.end(), std::move(value));
+      }
+    }
   } else {
     list.push_back(std::move(value));
   }
 }
+
+// The registers a state names for a group, in pairs.
+//
+// A gathering lives at the register holding the group's opening, and whether
+// it is still being added to is said by the closing register of the same
+// reading. Both are facts about the state, so they are worked out once here
+// rather than walked at every character -- and asked in pairs, because a
+// reading exists precisely to disagree with the others about whether the
+// group has ended.
+template <std::size_t capacity>
+struct gathered_pairs_of {
+  std::array<std::uint32_t, capacity> open{};
+  std::array<std::uint32_t, capacity> shut{};
+  std::size_t count = 0;
+};
+
+template <auto& automaton, std::size_t state, std::size_t group>
+inline constexpr auto gathered_pairs = [] consteval {
+  constexpr std::size_t capacity =
+      automaton.states[state].readings.size() == 0
+          ? 1
+          : automaton.states[state].readings.size();
+  gathered_pairs_of<capacity> said;
+  const auto& packed = automaton.states[state];
+  for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
+    const std::uint32_t open = packed.readings[reading][group * 2];
+    const std::uint32_t shut = packed.readings[reading][group * 2 + 1];
+    bool already = false;
+    for (std::size_t at = 0; at < said.count; ++at) {
+      if (said.open[at] == open && said.shut[at] == shut) already = true;
+    }
+    if (already) continue;
+    said.open[said.count] = open;
+    said.shut[said.count] = shut;
+    ++said.count;
+  }
+  return said;
+}();
 
 template <std::size_t group, class type, fixed_string format, auto& automaton,
           class failure_type, class states_type, class registers_type,
@@ -5110,16 +5163,17 @@ class field_gatherer {
             to);
       }
     } else {
-      // The same pairing, for a run handed over whole.
-      constexpr const auto& reads = automaton.states[state];
-      std::array<bool, automaton.register_count> given{};
-      for (std::size_t reading = 0; reading < reads.reading_count; ++reading) {
-        const std::uint32_t opening = reads.readings[reading][group * 2];
-        const std::uint32_t closing = reads.readings[reading][group * 2 + 1];
-        if (given[opening] || stood_nowhere(registers[opening])) continue;
+      // The same pairs, for a run handed over whole.
+      constexpr auto& pairs = gathered_pairs<automaton, state, group>;
+      std::uint64_t given = 0;
+      for (std::size_t which = 0; which < pairs.count; ++which) {
+        const std::uint32_t opening = pairs.open[which];
+        const std::uint32_t closing = pairs.shut[which];
+        const std::uint64_t bit = opening < 64 ? std::uint64_t{1} << opening : 0;
+        if ((given & bit) != 0 || stood_nowhere(registers[opening])) continue;
         if (closed_since_turn(registers[closing], registers[opening],
                               how::place_repeats)) continue;
-        given[opening] = true;
+        given |= bit;
         gathering_of<type, format, group>::push_run(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             from, to);
@@ -5182,19 +5236,18 @@ class field_gatherer {
       }
     } else {
       static constexpr auto spread = spread_of<type, format>();
-      // Every reading, asked with its own pair of registers. The opening used
-      // to come from one reading and the closing from the first in the table,
-      // which compares two readings that exist precisely because they
-      // disagree.
-      constexpr const auto& reads = automaton.states[landed];
-      std::array<bool, automaton.register_count> given{};
-      for (std::size_t reading = 0; reading < reads.reading_count; ++reading) {
-        const std::uint32_t opening = reads.readings[reading][group * 2];
-        const std::uint32_t closing = reads.readings[reading][group * 2 + 1];
-        if (given[opening] || stood_nowhere(registers[opening])) continue;
+      // The pairs this state names, worked out while compiling; a register is
+      // one gathering, so one of them going on is enough.
+      constexpr auto& pairs = gathered_pairs<automaton, landed, group>;
+      std::uint64_t given = 0;
+      for (std::size_t which = 0; which < pairs.count; ++which) {
+        const std::uint32_t opening = pairs.open[which];
+        const std::uint32_t closing = pairs.shut[which];
+        const std::uint64_t bit = opening < 64 ? std::uint64_t{1} << opening : 0;
+        if ((given & bit) != 0 || stood_nowhere(registers[opening])) continue;
         if (closed_since_turn(registers[closing], registers[opening],
                               how::place_repeats)) continue;
-        given[opening] = true;
+        given |= bit;
         gathering_of<type, format, group>::push(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             letter);
