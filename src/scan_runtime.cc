@@ -1083,31 +1083,11 @@ SCAN_FORCE_INLINE constexpr void keep_the_place(
   }
 }
 
-// What a chain of states said, and where it stopped.
-//
-// A machine written out as code is a chain of frames, one to a state. Where a
-// move goes back to a state the chain is already standing in, writing that
-// state out again writes out the whole cycle again -- and a cycle written out
-// eleven deep is eleven copies of everything inside it, each with its own call
-// to whoever is gathering. A hand writing the same machine would have written
-// a loop.
-//
-// So a move back into the chain is not written: the frame says which state it
-// went back to, the frames between pass the word along, and the frame standing
-// in that state goes round again. The state is a constant at every step of
-// this, so the comparison that carries it costs one instruction and the jump
-// it turns into is the loop the hand would have written.
-struct walk_went {
-  bool said = false;
-  std::size_t back_to = no_run;
-  [[nodiscard]] constexpr explicit operator bool() const { return said; }
-};
-
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type, std::uint64_t chain = 0>
-[[nodiscard]] constexpr walk_went run_body(
+          class gatherer, class answer_type>
+[[nodiscard]] constexpr bool run_body(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
     std::array<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best);
@@ -1116,25 +1096,20 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 template <auto& automaton, walk_shape shape, std::size_t state, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
           class gatherer, class answer_type>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr walk_went run_from_state(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_state(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
     std::array<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
-  // A call is where a chain ends, so the chain begins again empty: nothing
-  // written out beyond here can go back into a frame this side of the call.
-  return {run_body<automaton, shape, state, shape.budget, 0, mark, cursor_type,
-                   sentinel_type, register_count, gatherer, answer_type, 0>(
-              cursor, last, place, registers, into, best)
-              .said,
-          no_run};
+  return run_body<automaton, shape, state, shape.budget, 0, mark, cursor_type,
+                  sentinel_type, register_count, gatherer, answer_type>(
+      cursor, last, place, registers, into, best);
 }
 
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type, std::uint64_t chain,
-          std::size_t which = 0>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr walk_went dispatch_continuation(
+          class gatherer, class answer_type, std::size_t which = 0>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr bool dispatch_continuation(
     unsigned char symbol, cursor_type& cursor, sentinel_type last, mark& place,
     std::array<mark, register_count>& registers, gatherer& into,
     answer_type& best) {
@@ -1157,10 +1132,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         }
         into.template ended<state>(registers);
         best.matched = true;
-        return {true, no_run};
+        return true;
       }
     }
-    return {best.matched, no_run};
+    return best.matched;
   } else {
     constexpr std::size_t move = moves.at[which];
     constexpr const auto& range = automaton.states[state].ranges[move];
@@ -1168,7 +1143,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       // Whether the symbol keeps the machine here is asked before this.
       return dispatch_continuation<automaton, shape, state, budget, certain,
                                    mark, cursor_type, sentinel_type,
-                                   register_count, gatherer, answer_type, chain,
+                                   register_count, gatherer, answer_type,
                                    which + 1>(
           symbol, cursor, last, place, registers, into, best);
     } else {
@@ -1200,11 +1175,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         // reached by a jump, with the registers in memory across it because a
         // call cannot keep them anywhere else. That is what a generated
         // scanner never does, and it cost half again the time of one.
-        // A move back into the chain, which is a loop and not a body.
-        if constexpr (range.target < 64 &&
-                      (chain & (std::uint64_t{1} << range.target)) != 0) {
-          return {false, range.target};
-        } else if constexpr (budget != 0) {
+        if constexpr (budget != 0) {
           // Written out here rather than called, and said so rather than left
           // to be guessed.
           //
@@ -1220,7 +1191,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           SCAN_FORCE_INLINE_CALL
           return run_body<automaton, shape, range.target, budget - 1, certain,
                           mark, cursor_type, sentinel_type, register_count,
-                          gatherer, answer_type, chain>(
+                          gatherer, answer_type>(
               cursor, last, place, registers, into, best);
         } else {
           return run_from_state<automaton, shape, range.target, mark>(
@@ -1229,7 +1200,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
       return dispatch_continuation<automaton, shape, state, budget, certain,
                                    mark, cursor_type, sentinel_type,
-                                   register_count, gatherer, answer_type, chain,
+                                   register_count, gatherer, answer_type,
                                    which + 1>(
           symbol, cursor, last, place, registers, into, best);
     }
@@ -1239,8 +1210,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type, std::uint64_t chain = 0>
-[[nodiscard]] constexpr walk_went run_body(
+          class gatherer, class answer_type>
+[[nodiscard]] constexpr bool run_body(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
     std::array<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
@@ -1275,23 +1246,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     }
   };
   // Whether the reading can be handed more of the subject part way through.
-  //
-  // Where it can, the end of what is readable moves, and it moves in the frame
-  // that asked for more -- every frame holds its own. A frame that came back to
-  // by a jump would go on with the end it was told about before, which is the
-  // end of a piece that has already been read, and stop there. So input that
-  // arrives in pieces is walked the other way, by writing the states out, and
-  // the loop below is for a subject that lies still.
   constexpr bool asks_for_more = requires(cursor_type& one, sentinel_type end) {
     into.refill(one, end);
   };
-  // This state, standing in the chain -- and the loop that lets a move come
-  // back to it without the whole of it being written out a second time.
-  constexpr std::uint64_t walked =
-      asks_for_more
-          ? std::uint64_t{0}
-          : chain | (state < 64 ? std::uint64_t{1} << state : std::uint64_t{0});
-  for (;;) {
+  static_cast<void>(asks_for_more);
   if constexpr (shape.longest && accepts_here) {
     best.matched = true;
     best.at = here;
@@ -1359,9 +1317,6 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       keep_the_place<automaton, state>(best, registers, here, spot, into);
     }
   }
-  // Whether the chain came back to this state, which is the one way out of
-  // the loop below that is not the end of the reading.
-  bool came_back = false;
   while (true) {
     // A character that is certainly there is read without asking whether it
     // is: the subject was measured against the shortest match before the first
@@ -1417,9 +1372,9 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, place);
           into.template ended<state>(registers);
-          return {true, no_run};
+          return true;
         } else {
-          return {best.matched, no_run};
+          return best.matched;
         }
       }
     }
@@ -1431,25 +1386,18 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     // chain that is most of what a reading does. What the chain is handed is
     // this walk's own cursor and mark, and the caller's are written once, when
     // the chain is done with them.
-    const walk_went said =
+    const bool said =
         dispatch_continuation<automaton, shape, state, budget,
                               counts_here ? certain - 1 : 0, mark, cursor_type,
                               sentinel_type, register_count, gatherer,
-                              answer_type, walked>(symbol, here, last, spot,
-                                                   registers, into, best);
-    // A move that went back to this state: the chain did not write this state
-    // out again, so it is this frame that goes round.
-    if (said.back_to == state) {
-      came_back = true;
-      break;
-    }
+                              answer_type>(symbol, here, last, spot, registers,
+                                           into, best);
     put_back();
     return said;
   }
-  if (came_back) continue;
   if constexpr (!accepts_here) {
     put_back();
-    return {best.matched, no_run};
+    return best.matched;
   } else {
     if constexpr (shape.longest) {
       best.matched = true;
@@ -1463,8 +1411,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
     }
     put_back();
     into.template ended<state>(registers);
-    return {true, no_run};
-  }
+    return true;
   }
 }
 
@@ -1488,9 +1435,8 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   // one, which is the whole machine in one body.
   if consteval {
     return run_body<automaton, shape, state, budget, certain, mark, cursor_type,
-                    sentinel_type, register_count, gatherer, answer_type, 0>(
-               cursor, last, place, registers, into, best)
-        .said;
+                    sentinel_type, register_count, gatherer, answer_type>(
+        cursor, last, place, registers, into, best);
   } else {
     return run_threaded<automaton, shape, state, mark, cursor_type,
                         sentinel_type, register_count, gatherer, answer_type>(
