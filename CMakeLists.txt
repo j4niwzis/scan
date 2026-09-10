@@ -119,6 +119,24 @@ cme_options(boost-pfr
     "CMAKE_EXPERIMENTAL_CXX_IMPORT_STD ${CMAKE_EXPERIMENTAL_CXX_IMPORT_STD}")
 find_package(boost_pfr REQUIRED COMPONENTS modules)
 
+# Said out loud, because getting this wrong is not a build error.
+#
+# Without it the module unit includes the standard library into its own global
+# module fragment, the library exists twice in one program, and clang drops the
+# capture of a lambda merged from the two copies. Nothing fails to compile; a
+# `std::vector` push_back writes through a pointer nobody set. So the answer is
+# printed where a build log will show it.
+if(TARGET Boost::pfr)
+  get_target_property(scan_pfr_definitions Boost::pfr
+                      INTERFACE_COMPILE_DEFINITIONS)
+  message(STATUS "scan: Boost.PFR was built with: ${scan_pfr_definitions}")
+  if(NOT scan_pfr_definitions MATCHES "BOOST_PFR_USE_STD_MODULE")
+    message(WARNING
+      "scan: Boost.PFR is not using `import std`, so the standard library is "
+      "in this program twice. See llvm/llvm-project#221548.")
+  endif()
+endif()
+
 add_library(scan)
 add_library(scan::scan ALIAS scan)
 target_sources(
