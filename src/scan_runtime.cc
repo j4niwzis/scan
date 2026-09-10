@@ -1836,9 +1836,16 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
   constexpr auto written_everywhere = tags_always_written<automaton>();
   constexpr mark nowhere =
       std::is_pointer_v<mark> ? mark{} : mark(scan::tre::negative_tag);
-  [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-    ((written_everywhere[tag] ? void() : void(registers[tag] = nowhere)), ...);
-  }(std::make_index_sequence<automaton.tag_count>{});
+  // A constant evaluation may not read what was never written, and it does not
+  // care what the clearing costs: there, everything is set.
+  if consteval {
+    for (mark& one : registers) one = nowhere;
+  } else {
+    [&]<std::size_t... tag>(std::index_sequence<tag...>) {
+      ((written_everywhere[tag] ? void() : void(registers[tag] = nowhere)),
+       ...);
+    }(std::make_index_sequence<automaton.tag_count>{});
+  }
   if constexpr (std::is_pointer_v<mark>) {
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, static_cast<const char*>(nullptr));

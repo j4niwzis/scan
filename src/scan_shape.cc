@@ -5545,15 +5545,18 @@ template <class type, fixed_string format,
     // written, and a tag written on every path into every accepting state does
     // not need telling either.
     constexpr auto written_everywhere = tags_always_written<automaton>();
+    constexpr mark_kind nowhere =
+        in_a_row ? mark_kind{} : mark_kind(scan::tre::negative_tag);
     std::array<mark_kind, automaton.register_count> registers;
-    [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-      ((written_everywhere[tag]
-            ? void()
-            : void(registers[tag] =
-                       in_a_row ? mark_kind{}
-                                : mark_kind(scan::tre::negative_tag))),
-       ...);
-    }(std::make_index_sequence<automaton.tag_count>{});
+    // A constant evaluation may not read what was never written.
+    if consteval {
+      for (mark_kind& one : registers) one = nowhere;
+    } else {
+      [&]<std::size_t... tag>(std::index_sequence<tag...>) {
+        ((written_everywhere[tag] ? void() : void(registers[tag] = nowhere)),
+         ...);
+      }(std::make_index_sequence<automaton.tag_count>{});
+    }
     if constexpr (in_a_row) {
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, static_cast<const char*>(nullptr));
