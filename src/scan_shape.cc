@@ -2627,6 +2627,19 @@ struct fold_turn {
   return ended >= began;
 }
 
+// The same, for a place that is taken over and over.
+//
+// A tag is written a step after the character that wrote it, so the end of one
+// turn is recorded at the position the next one begins at. Asked plainly,
+// every turn after the first looks closed the moment it opens, and nothing is
+// handed to it at all. An end standing exactly where the beginning stands
+// therefore belongs to the turn before.
+[[nodiscard]] constexpr bool closed_since_turn(auto ended, auto began,
+                                               bool repeats) {
+  if (stood_nowhere(ended)) return false;
+  return repeats ? ended > began : ended >= began;
+}
+
 // A fold, which is one turn being gathered and at most one turn on its way out.
 //
 // A place that is taken over and over -- an element of a list -- is a turn at
@@ -3581,7 +3594,7 @@ template <std::size_t group, class type, fixed_string format, auto& automaton,
           class states_type, class kept_type, class registers_type,
           std::size_t command_count>
 constexpr void advance_scanner(
-    char symbol, std::size_t state, auto position,
+    char symbol, std::size_t state, std::size_t left_state, auto position,
     const registers_type& registers,
     const kept_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
@@ -3630,6 +3643,36 @@ constexpr void advance_scanner(
   // to happen first, or the copy taken for the closing is of a register that
   // has not been given what it holds yet.
   std::size_t command_index = 0;
+  if constexpr (!gathers_a_list) {
+    // The groups that close on this step. What the field gathered is in the
+    // opening it was being added to, whichever register that has become.
+    command_index = 0;
+    std::apply(
+        [&](const auto&... command) {
+          ([&] {
+            if (command_index++ >= count) return;
+            if (automaton.register_tag[command.destination] != closing) return;
+            if (registers[command.destination] != position) return;
+            // What the turn gathered is at the opening the state being left
+            // named, not the one the state being entered names: this step is
+            // where the group is renamed, and the register the characters went
+            // to is the old one.
+            const auto& left = automaton.states[left_state];
+            for (std::size_t reading = 0; reading < left.reading_count;
+                 ++reading) {
+              const std::uint32_t was = left.readings[reading][opening];
+              if (stood_nowhere(registers[was])) continue;
+              std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]) =
+                  std::get<gathering_slot<type, format, group>>(states[was]);
+              break;
+            }
+          }(),
+           ...);
+        },
+        commands);
+  }
+  command_index = 0;
   std::apply(
       [&](const auto&... command) {
         ([&] {
@@ -3701,33 +3744,6 @@ constexpr void advance_scanner(
                       std::remove_cv_t<held_type>, automaton>(
         state, registers, states, symbol, hands_the_character, text);
   }
-  if constexpr (!gathers_a_list) {
-    // The groups that close on this step. What the field gathered is in the
-    // opening it was being added to, whichever register that has become.
-    command_index = 0;
-    std::apply(
-        [&](const auto&... command) {
-          ([&] {
-            if (command_index++ >= count) return;
-            if (automaton.register_tag[command.destination] != closing) return;
-            if (registers[command.destination] != position) return;
-            const auto& entered = automaton.states[state];
-            for (std::size_t reading = 0; reading < entered.reading_count;
-                 ++reading) {
-              if (entered.readings[reading][closing] != command.destination) {
-                continue;
-              }
-              std::get<gathering_slot<type, format, group>>(
-                  states[command.destination]) =
-                  std::get<gathering_slot<type, format, group>>(
-                      states[entered.readings[reading][opening]]);
-              break;
-            }
-          }(),
-           ...);
-        },
-        commands);
-  }
   // A list gathers elements, not characters. Written as an early return this
   // would discard nothing: what follows an `if constexpr` is not the branch it
   // did not take.
@@ -3745,7 +3761,8 @@ constexpr void advance_scanner(
       const std::uint32_t close = packed.readings[reading][closing];
       if (filled[open]) continue;
       if (stood_nowhere(registers[open]) ||
-          closed_since(registers[close], registers[open]))
+          closed_since_turn(registers[close], registers[open],
+                            how::place_repeats))
         continue;
       filled[open] = true;
       gathering_of<type, format, group>::push(
@@ -3799,7 +3816,12 @@ struct gathered_by_the_registers {
     } else {
       const std::uint32_t open = reading[place * 2];
       const std::uint32_t close = reading[place * 2 + 1];
-      const bool still_reading = !closed_since(registers[close], registers[open]);
+      // A place taken over and over is read where it is being gathered: the
+      // end standing where the beginning stands is the end of the turn before,
+      // and the copy taken then is a turn behind.
+      const bool still_reading = !closed_since_turn(
+          registers[close], registers[open],
+          gathering_of<type, format, place>::place_repeats);
       return std::get<gathering_slot<type, format, place>>(
           states[still_reading ? open : close]);
     }
@@ -4076,7 +4098,7 @@ template <class type, fixed_string format, auto& automaton,
           class registers_type, class states_type, std::size_t command_count,
           std::size_t... group>
 constexpr void advance_scanners(
-    char symbol, std::size_t state, auto position,
+    char symbol, std::size_t state, std::size_t left_state, auto position,
     const registers_type& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
@@ -4099,14 +4121,14 @@ constexpr void advance_scanners(
     const auto old_states = keep_gatherings(states, commands, count);
     (advance_scanner<group, type, format, automaton, hands_the_character,
                      kept_in_the_walk>(
-         symbol, state, position, registers, old_states, states, commands,
-         count, text),
+         symbol, state, left_state, position, registers, old_states, states,
+         commands, count, text),
      ...);
   } else {
     (advance_scanner<group, type, format, automaton, hands_the_character,
                      kept_in_the_walk>(
-         symbol, state, position, registers, states, states, commands,
-         count, text),
+         symbol, state, left_state, position, registers, states, states,
+         commands, count, text),
      ...);
   }
 }
@@ -4471,7 +4493,8 @@ class stream_state {
     execute_commands(transition->commands, transition->command_count, registers_,
                      ++position_);
     advance_scanners<type, format, automaton>(
-        symbol, transition->target, position_, registers_, scanner_states_,
+        symbol, transition->target, state_, position_, registers_,
+        scanner_states_,
         transition->commands, transition->command_count,
         std::make_index_sequence<field_count>{});
     state_ = transition->target;
@@ -4879,7 +4902,7 @@ class field_gatherer {
     if constexpr (state != landed || staying_writes<automaton, state>()) {
       constexpr const auto& taken = automaton.states[state].ranges[move];
       advance_scanners<type, format, automaton, false, true>(
-          letter, landed, position, registers, states_, taken.commands,
+          letter, landed, state, position, registers, states_, taken.commands,
           taken.command_count, std::make_index_sequence<field_count>{}, text_);
     }
     hand_over<state, landed, move>(letter, registers, position,
@@ -5087,15 +5110,16 @@ class field_gatherer {
             to);
       }
     } else {
-      constexpr auto at = gathered_at<automaton, state, group>;
-      constexpr std::uint32_t closing =
-          automaton.states[state].reading_count == 0
-              ? 0
-              : automaton.states[state].readings[0][group * 2 + 1];
-      for (std::size_t which = 0; which < at.count; ++which) {
-        const std::uint32_t opening = at.at[which];
-        if (stood_nowhere(registers[opening])) continue;
-        if (closed_since(registers[closing], registers[opening])) continue;
+      // The same pairing, for a run handed over whole.
+      constexpr const auto& reads = automaton.states[state];
+      std::array<bool, automaton.register_count> given{};
+      for (std::size_t reading = 0; reading < reads.reading_count; ++reading) {
+        const std::uint32_t opening = reads.readings[reading][group * 2];
+        const std::uint32_t closing = reads.readings[reading][group * 2 + 1];
+        if (given[opening] || stood_nowhere(registers[opening])) continue;
+        if (closed_since_turn(registers[closing], registers[opening],
+                              how::place_repeats)) continue;
+        given[opening] = true;
         gathering_of<type, format, group>::push_run(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             from, to);
@@ -5158,15 +5182,19 @@ class field_gatherer {
       }
     } else {
       static constexpr auto spread = spread_of<type, format>();
-      constexpr auto at = gathered_at<automaton, landed, group>;
-      constexpr std::uint32_t closing =
-          automaton.states[landed].reading_count == 0
-              ? 0
-              : automaton.states[landed].readings[0][group * 2 + 1];
-      for (std::size_t which = 0; which < at.count; ++which) {
-        const std::uint32_t opening = at.at[which];
-        if (stood_nowhere(registers[opening])) continue;
-        if (closed_since(registers[closing], registers[opening])) continue;
+      // Every reading, asked with its own pair of registers. The opening used
+      // to come from one reading and the closing from the first in the table,
+      // which compares two readings that exist precisely because they
+      // disagree.
+      constexpr const auto& reads = automaton.states[landed];
+      std::array<bool, automaton.register_count> given{};
+      for (std::size_t reading = 0; reading < reads.reading_count; ++reading) {
+        const std::uint32_t opening = reads.readings[reading][group * 2];
+        const std::uint32_t closing = reads.readings[reading][group * 2 + 1];
+        if (given[opening] || stood_nowhere(registers[opening])) continue;
+        if (closed_since_turn(registers[closing], registers[opening],
+                              how::place_repeats)) continue;
+        given[opening] = true;
         gathering_of<type, format, group>::push(
             std::get<gathering_slot<type, format, group, mark_kind>>(states_[opening]),
             letter);
