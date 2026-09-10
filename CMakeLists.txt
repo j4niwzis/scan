@@ -131,9 +131,16 @@ if(TARGET Boost::pfr)
                       INTERFACE_COMPILE_DEFINITIONS)
   message(STATUS "scan: Boost.PFR was built with: ${scan_pfr_definitions}")
   if(NOT scan_pfr_definitions MATCHES "BOOST_PFR_USE_STD_MODULE")
-    message(WARNING
-      "scan: Boost.PFR is not using `import std`, so the standard library is "
-      "in this program twice. See llvm/llvm-project#221548.")
+    # Said here as well, because the port decides it in a configure of its
+    # own and there is no arguing with a decision already made. This build
+    # imports the standard library as a module throughout -- it is what the
+    # library itself is written against -- so the answer is not in doubt,
+    # and the module unit is compiled in this build, where this is read.
+    message(STATUS
+      "scan: telling Boost.PFR to import std, which its own build did not")
+    set_property(TARGET Boost::pfr APPEND
+                 PROPERTY INTERFACE_COMPILE_DEFINITIONS
+                          BOOST_PFR_USE_STD_MODULE)
   endif()
 endif()
 
