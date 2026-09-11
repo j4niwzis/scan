@@ -16,20 +16,23 @@ namespace {
 
 using namespace std::string_view_literals;
 
-struct too_heavy : scan::scan_error {
-  using scan_error::scan_error;
+template <class base = scan::handed_back>
+struct too_heavy : scan::scan_error<base> {
+  using scan::scan_error<base>::scan_error;
 };
 
-struct not_a_weight : scan::scan_error {
-  using scan_error::scan_error;
+template <class base = scan::handed_back>
+struct not_a_weight : scan::scan_error<base> {
+  using scan::scan_error<base>::scan_error;
 };
 
 struct weight {
   int grams = 0;
 };
 
-struct thrown_at_you : scan::scan_error {
-  using scan_error::scan_error;
+template <class base = scan::handed_back>
+struct thrown_at_you : scan::scan_error<base> {
+  using scan::scan_error<base>::scan_error;
 };
 
 struct label {
@@ -44,14 +47,18 @@ struct scan::scanner<weight> {
 
   // The kinds are these two, said where they cannot fall out of step with the
   // code: in the type this hands back.
-  static std::expected<weight, std::variant<too_heavy, not_a_weight>> try_parse(
+  // Written against the two ways of reading, and handing a failure back
+  // either way: the template argument is a hint, and this one says the same
+  // thing whichever way it is asked.
+  template <class ending = scan::hands_a_failure_back>
+  static std::expected<weight, std::variant<too_heavy<>, not_a_weight<>>> parse(
       std::string_view text) {
     int made = 0;
     for (char letter : text) {
       made = made * 10 + (letter - '0');
-      if (made > 10000) return std::unexpected(too_heavy("over ten kilos"));
+      if (made > 10000) return std::unexpected(too_heavy<>("over ten kilos"));
     }
-    if (text.empty()) return std::unexpected(not_a_weight("nothing there"));
+    if (text.empty()) return std::unexpected(not_a_weight<>("nothing there"));
     return weight{made};
   }
 };
@@ -63,7 +70,7 @@ struct scan::scanner<label> {
   // This one throws instead. Nothing in the library catches, so it goes past
   // the reading to whoever called -- even a reading that was asked to try.
   static label parse(std::string_view text) {
-    if (text == "no") throw thrown_at_you("that label is not allowed");
+    if (text == "no") throw thrown_at_you<>("that label is not allowed");
     return label{std::string(text)};
   }
 };
@@ -84,7 +91,7 @@ TEST(AFailureOfYourOwn, TheValueWhereNothingWentWrong) {
 TEST(AFailureOfYourOwn, HandedBackAsTheKindItIs) {
   const auto got = scan::scan<"{} {}">("99999 flour"sv).try_of<package>();
   ASSERT_FALSE(got.has_value());
-  EXPECT_TRUE(std::holds_alternative<too_heavy>(got.error()));
+  EXPECT_TRUE(std::holds_alternative<too_heavy<>>(got.error()));
   EXPECT_EQ(std::string_view(scan::what(got.error())), "over ten kilos");
 }
 
@@ -94,19 +101,19 @@ TEST(AFailureOfYourOwn, AndOneThatThrowsGoesPastTheReading) {
   // what a scanner that hands its failure back comes out as.
   EXPECT_THROW(
       static_cast<void>(scan::scan<"{} {}">("450 no"sv).try_of<package>()),
-      thrown_at_you);
+      thrown_at_you<>);
 }
 
 TEST(AFailureOfYourOwn, TheLibrarysOwnKindsAreStillThere) {
   const auto got = scan::scan<"{} {}">("450;flour"sv).try_of<package>();
   ASSERT_FALSE(got.has_value());
-  EXPECT_TRUE(std::holds_alternative<scan::no_match>(got.error()));
+  EXPECT_TRUE(std::holds_alternative<scan::no_match<>>(got.error()));
 }
 
 TEST(AFailureOfYourOwn, AskedForRatherThanTriedForItThrows) {
   EXPECT_THROW(
       static_cast<void>(scan::scan<"{} {}">("99999 flour"sv).of<package>()),
-      too_heavy);
+      too_heavy<std::exception>);
 }
 
 }  // namespace

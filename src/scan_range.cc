@@ -313,7 +313,7 @@ class prefix_scan {
     if (!found.matched) {
       return std::unexpected(
           scan::as_a_failure<detail::failure_for<type>>(
-              no_match("input does not begin with the pattern")));
+              no_match<>("input does not begin with the pattern")));
     }
     auto made = detail::build_value<detail::failure_for<type>,
                                     detail::format_parameters<type, format>,
@@ -330,12 +330,13 @@ class prefix_scan {
         detail::taken_prefix_fields<type, format,
                                     detail::holds_a_variant<type>()>(input_);
     if (!found.matched) {
-      throw no_match("input does not begin with the pattern");
+      throw no_match<std::exception>(
+          "input does not begin with the pattern");
     }
     return taken<type>{
         detail::build_value<detail::failure_for<type>,
                             detail::format_parameters<type, format>, type, 0,
-                            false, detail::throws_a_failure>(found.groups),
+                            false, scan::throws_a_failure>(found.groups),
         input_.substr(found.head.size())};
   }
 

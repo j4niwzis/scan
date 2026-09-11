@@ -119,7 +119,7 @@ struct scan::scanner<hex_id> {
 
   static constexpr void push(state_type& state, char value) {
     if (state.size == state.buffer.size()) {
-      throw scan::scan_error("hexadecimal id is out of range");
+      throw scan::scan_error<>("hexadecimal id is out of range");
     }
     state.buffer[state.size++] = value;
   }
@@ -133,7 +133,7 @@ struct scan::scanner<hex_id> {
     const auto [end, error] = std::from_chars(
         text.data(), text.data() + text.size(), value, 16);
     if (error != std::errc{} || end != text.data() + text.size()) {
-      throw scan::scan_error("invalid hexadecimal id");
+      throw scan::scan_error<>("invalid hexadecimal id");
     }
     return {value};
   }
@@ -197,7 +197,7 @@ struct scan::scanner<roman_number> {
         default: return 0;
       }
     }(symbol);
-    if (current == 0) throw scan::scan_error("invalid Roman numeral");
+    if (current == 0) throw scan::scan_error<>("invalid Roman numeral");
     state.value += current;
     if (current > state.previous) state.value -= 2 * state.previous;
     state.previous = current;

@@ -22,7 +22,7 @@ TEST(ExpectedForm, AScanThatDidNot) {
   // Handed back, a failure still says which kind it was: the subject is not
   // what the pattern says, which is a different thing from a field that will
   // not read.
-  EXPECT_TRUE(std::holds_alternative<scan::no_match>(value.error()));
+  EXPECT_TRUE(std::holds_alternative<scan::no_match<>>(value.error()));
 }
 
 TEST(ExpectedForm, AFieldThatWillNotConvert) {
@@ -32,7 +32,7 @@ TEST(ExpectedForm, AFieldThatWillNotConvert) {
   const std::string text = "12,abc";
   const auto value = scan::scan<"{},{}">(text).try_of<pair>();
   EXPECT_FALSE(value.has_value());
-  EXPECT_TRUE(std::holds_alternative<scan::no_match>(value.error()));
+  EXPECT_TRUE(std::holds_alternative<scan::no_match<>>(value.error()));
 }
 
 TEST(ExpectedForm, AFieldThatMatchedAndStillWillNotConvert) {
@@ -46,7 +46,7 @@ TEST(ExpectedForm, AFieldThatMatchedAndStillWillNotConvert) {
   const std::string text = "12,300";
   const auto value = scan::scan<"{},{[0-9]+}">(text).try_of<wide>();
   EXPECT_FALSE(value.has_value());
-  EXPECT_TRUE(std::holds_alternative<scan::out_of_range>(value.error()));
+  EXPECT_TRUE(std::holds_alternative<scan::out_of_range<>>(value.error()));
 }
 
 TEST(ExpectedForm, AFieldThatDoesNotFit) {
@@ -55,7 +55,7 @@ TEST(ExpectedForm, AFieldThatDoesNotFit) {
   const std::string text = "12,99999999999999999999";
   const auto value = scan::scan<"{},{}">(text).try_of<pair>();
   EXPECT_FALSE(value.has_value());
-  EXPECT_TRUE(std::holds_alternative<scan::out_of_range>(value.error()));
+  EXPECT_TRUE(std::holds_alternative<scan::out_of_range<>>(value.error()));
 }
 
 }  // namespace

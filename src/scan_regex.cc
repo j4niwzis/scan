@@ -1126,13 +1126,14 @@ class as_collector {
     // whose body is what fails for a type that has no scanner, and a body
     // failing is not a question anyone can ask.
     if constexpr (scan::says_what_went_wrong<type>) {
-      // It hands its failure back rather than throwing it. A collector has to
-      // give a value, so what it handed back is thrown here -- and the reading
-      // that was asked to try rather than to say catches it and hands it back
-      // again, as the kind it is.
-      auto got = scan::scanner_try_parse<type>(text, parameters);
-      if (got) return std::move(*got);
-      scan::throw_what_went_wrong(std::move(got).error());
+      // A collector has to give a value, so this is the throwing way of
+      // reading and the scanner is told so. One written against it throws
+      // where it stands and never builds the expected that would only be
+      // unwrapped and thrown again here; one that hands a failure back anyway
+      // is answered the same as before.
+      return scan::as_thrown<type>(
+          scan::scanner_told_parse<type, scan::throws_a_failure>(text,
+                                                                 parameters));
     } else if constexpr (requires {
                     std::declval<scan::scanner<type>&>().parse(text,
                                                                parameters);

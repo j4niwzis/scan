@@ -231,22 +231,24 @@ struct scanner<char> {
     }
     state = {.value = value, .present = true};
   }
-  [[nodiscard]] static constexpr std::expected<char, bad_field> try_finish(
+  [[nodiscard]] static constexpr std::expected<char, bad_field<>> finish(
       state_type state) {
     if (state.twice) {
-      return std::unexpected(bad_field("char scanner received two symbols"));
+      return std::unexpected(bad_field<>("char scanner received two symbols"));
     }
-    if (!state.present) return std::unexpected(bad_field("empty char field"));
+    if (!state.present) return std::unexpected(bad_field<>("empty char field"));
     return state.value;
   }
-  [[nodiscard]] static constexpr std::expected<char, bad_field> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<char, bad_field<>> parse(
       std::string_view text) {
-    if (text.size() != 1) return std::unexpected(bad_field("invalid char field"));
+    if (text.size() != 1) return std::unexpected(bad_field<>("invalid char field"));
     return text.front();
   }
-  [[nodiscard]] static constexpr std::expected<char, bad_field> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<char, bad_field<>> parse(
       std::string_view text, std::string_view) {
-    return try_parse(text);
+    return parse(text);
   }
 };
 
@@ -367,19 +369,19 @@ struct scanner<type> {
         state.magnitude * base + static_cast<std::uint64_t>(worth);
   }
 
-  using went_wrong = std::variant<bad_field, out_of_range>;
+  using went_wrong = std::variant<bad_field<>, out_of_range<>>;
 
-  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_finish(
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> finish(
       state_type state) {
     if (state.refused) {
-      return std::unexpected(went_wrong(bad_field("invalid integer field")));
+      return std::unexpected(went_wrong(bad_field<>("invalid integer field")));
     }
     if (state.digits == 0 && !state.leading_zero) {
-      return std::unexpected(went_wrong(bad_field("empty integer field")));
+      return std::unexpected(went_wrong(bad_field<>("empty integer field")));
     }
     if (state.overflowed) {
       return std::unexpected(
-          went_wrong(out_of_range("integer field is out of range")));
+          went_wrong(out_of_range<>("integer field is out of range")));
     }
     // Which magnitudes this type can hold, on each side of nothing.
     constexpr std::uint64_t upward =
@@ -388,14 +390,14 @@ struct scanner<type> {
       if constexpr (std::unsigned_integral<type>) {
         if (state.magnitude != 0) {
           return std::unexpected(
-              went_wrong(out_of_range("negative value for unsigned integer")));
+              went_wrong(out_of_range<>("negative value for unsigned integer")));
         }
         return type{};
       } else {
         constexpr std::uint64_t downward = upward + 1;
         if (state.magnitude > downward) {
           return std::unexpected(
-              went_wrong(out_of_range("integer field is out of range")));
+              went_wrong(out_of_range<>("integer field is out of range")));
         }
         if (state.magnitude == downward) {
           return std::numeric_limits<type>::min();
@@ -405,17 +407,19 @@ struct scanner<type> {
     }
     if (state.magnitude > upward) {
       return std::unexpected(
-          went_wrong(out_of_range("integer field is out of range")));
+          went_wrong(out_of_range<>("integer field is out of range")));
     }
     return static_cast<type>(state.magnitude);
   }
 
-  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> parse(
       std::string_view text) {
     return parse_integer(text, 10, false);
   }
 
-  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> parse(
       std::string_view text, std::string_view parameters) {
     const auto spec = integer_spec(parameters);
     return parse_integer(text, spec.base, spec.automatic_base);
@@ -482,10 +486,10 @@ struct scanner<type> {
         text.data(), text.data() + text.size(), magnitude, selected_base);
     if (error == std::errc::result_out_of_range) {
       return std::unexpected(
-          went_wrong(out_of_range("integer field is out of range")));
+          went_wrong(out_of_range<>("integer field is out of range")));
     }
     if (error != std::errc{} || end != text.data() + text.size()) {
-      return std::unexpected(went_wrong(bad_field("invalid integer field")));
+      return std::unexpected(went_wrong(bad_field<>("invalid integer field")));
     }
     constexpr std::uint64_t upward =
         static_cast<std::uint64_t>(std::numeric_limits<type>::max());
@@ -493,14 +497,14 @@ struct scanner<type> {
       if constexpr (std::unsigned_integral<type>) {
         if (magnitude != 0) {
           return std::unexpected(
-              went_wrong(out_of_range("negative value for unsigned integer")));
+              went_wrong(out_of_range<>("negative value for unsigned integer")));
         }
         return type{};
       } else {
         constexpr std::uint64_t downward = upward + 1;
         if (magnitude > downward) {
           return std::unexpected(
-              went_wrong(out_of_range("integer field is out of range")));
+              went_wrong(out_of_range<>("integer field is out of range")));
         }
         if (magnitude == downward) return std::numeric_limits<type>::min();
         return static_cast<type>(-static_cast<std::int64_t>(magnitude));
@@ -508,7 +512,7 @@ struct scanner<type> {
     }
     if (magnitude > upward) {
       return std::unexpected(
-          went_wrong(out_of_range("integer field is out of range")));
+          went_wrong(out_of_range<>("integer field is out of range")));
     }
     return static_cast<type>(magnitude);
   }
@@ -558,24 +562,26 @@ struct scanner<type> {
     state.buffer[state.size++] = value;
   }
 
-  using went_wrong = std::variant<bad_field, out_of_range>;
+  using went_wrong = std::variant<bad_field<>, out_of_range<>>;
 
-  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_finish(
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> finish(
       state_type state) {
     if (state.overflow) {
       return std::unexpected(
-          went_wrong(out_of_range("floating-point field is too long")));
+          went_wrong(out_of_range<>("floating-point field is too long")));
     }
     return parse_floating(std::string_view(state.buffer.data(), state.size),
                           state.format);
   }
 
-  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> parse(
       std::string_view text) {
     return parse_floating(text, std::chars_format::general);
   }
 
-  [[nodiscard]] static constexpr std::expected<type, went_wrong> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<type, went_wrong> parse(
       std::string_view text, std::string_view parameters) {
     return parse_floating(text, floating_spec(parameters).format);
   }
@@ -616,11 +622,11 @@ struct scanner<type> {
         text.data(), text.data() + text.size(), value, format);
     if (error == std::errc::result_out_of_range) {
       return std::unexpected(
-          went_wrong(out_of_range("floating-point field is out of range")));
+          went_wrong(out_of_range<>("floating-point field is out of range")));
     }
     if (error != std::errc{} || end != text.data() + text.size()) {
       return std::unexpected(
-          went_wrong(bad_field("invalid floating-point field")));
+          went_wrong(bad_field<>("invalid floating-point field")));
     }
     return value;
   }
@@ -629,11 +635,12 @@ struct scanner<type> {
 template <>
 struct scanner<bool> {
   static constexpr std::string_view pattern = "(?:true|false|1|0)";
-  [[nodiscard]] static constexpr std::expected<bool, bad_field> try_parse(
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr std::expected<bool, bad_field<>> parse(
       std::string_view text) {
     if (text == "true" || text == "1") return true;
     if (text == "false" || text == "0") return false;
-    return std::unexpected(bad_field("invalid boolean field"));
+    return std::unexpected(bad_field<>("invalid boolean field"));
   }
 };
 
@@ -644,10 +651,11 @@ struct scanner<type> {
   [[nodiscard]] static constexpr std::string_view pattern() {
     return scanner_pattern<underlying_type>();
   }
-  [[nodiscard]] static constexpr auto try_parse(std::string_view text)
+  template <class ending = scan::hands_a_failure_back>
+  [[nodiscard]] static constexpr auto parse(std::string_view text)
       -> std::expected<type,
                        typename scanner<underlying_type>::went_wrong> {
-    auto got = scanner<underlying_type>::try_parse(text);
+    auto got = scanner<underlying_type>::parse(text);
     if (!got) return std::unexpected(std::move(got).error());
     return static_cast<type>(*got);
   }

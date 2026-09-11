@@ -153,7 +153,7 @@ concept reads_its_own_groups =
     requires(std::span<const std::string_view> given) {
       scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
     } || requires(std::span<const std::string_view> given) {
-      scan::scanner<std::remove_cv_t<type>>{}.try_from_groups(given);
+      scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
     };
 
 // A type that says outright that it reads its own groups.
@@ -921,7 +921,7 @@ inline constexpr bool needs_the_turns =
     folds_by_turns<held> && !requires(std::span<const std::string_view> given) {
       scan::scanner<std::remove_cv_t<held>>{}.from_groups(given);
     } && !requires(std::span<const std::string_view> given) {
-      scan::scanner<std::remove_cv_t<held>>{}.try_from_groups(given);
+      scan::scanner<std::remove_cv_t<held>>{}.from_groups(given);
     };
 
 // Reading a format against the type it is scanned into, and writing out the one
@@ -1391,15 +1391,14 @@ template <std::size_t extent>
 // `parse` throws whatever it throws, past all of this: nothing in this library
 // catches, so a scanner that wants its failure handed back says so by handing
 // it back.
-template <class type, class failure_type>
+template <class type, class failure_type,
+          class ending = scan::hands_a_failure_back>
 [[nodiscard]] constexpr std::expected<type, failure_type> parse_value(
     std::string_view text, std::string_view parameters) {
   using value_type = std::remove_cv_t<type>;
   if constexpr (scan::says_what_went_wrong<value_type>) {
-    auto got = scan::scanner_try_parse<value_type>(text, parameters);
-    if (got) return std::move(*got);
-    return std::unexpected(
-        scan::as_a_failure<failure_type>(std::move(got).error()));
+    return scan::as_handed_back<type, failure_type>(
+        scan::scanner_told_parse<value_type, ending>(text, parameters));
   } else {
     static_assert(requires { scanner_parse<value_type>(text); },
                   "scan::scanner<type> must provide parse(string_view) or "
@@ -1467,9 +1466,9 @@ template <class variant>
 struct kinds_of_variant;
 template <class... kinds>
 struct kinds_of_variant<std::variant<kinds...>> {
-  static_assert((std::derived_from<kinds, scan::scan_error> && ...),
+  static_assert((std::derived_from<kinds, scan::scan_error<>> && ...),
                 "every kind a scanner hands back has to be a "
-                "`scan::scan_error`: it ends up in the list of what a reading "
+                "`scan::scan_error<>`: it ends up in the list of what a reading "
                 "can fail with, and asking for a value rather than trying for "
                 "it throws it");
   using list = scan::kind_list<kinds...>;
@@ -1493,15 +1492,15 @@ struct joined_all<first, rest...> {
 // fall out of step with the code: the type it hands back.
 //
 // Four places to say it, one for each of the user's functions that makes a
-// value -- `try_parse`, `try_finish`, `try_from_groups`, `try_finish_groups` --
+// value -- `try_parse`, `finish`, `from_groups`, `finish_groups` --
 // and the kinds of all of them together are what a reading of this leaf can
 // fail with. A scanner that throws instead says nothing here and is caught
 // nowhere: it throws past the reading, to whoever asked for it.
 template <class kind>
 struct kinds_handed_back {
-  static_assert(std::derived_from<kind, scan::scan_error>,
+  static_assert(std::derived_from<kind, scan::scan_error<>>,
                 "what a `try_` function hands back has to be a "
-                "`scan::scan_error`, or a variant of them: it ends up in the "
+                "`scan::scan_error<>`, or a variant of them: it ends up in the "
                 "list of what a reading can fail with, and asking for a value "
                 "rather than trying for it throws it");
   using list = scan::kind_list<kind>;
@@ -1783,58 +1782,6 @@ struct no_parameters {
 // every step hands its failure back, and the caller gets it as the kind it is.
 //
 // One builder either way. The difference is these two words and the type a
-// step comes back as.
-struct hands_a_failure_back {
-  template <class type, class failure_type>
-  using result = std::expected<type, failure_type>;
-
-  template <class type, class failure_type, class error_type>
-  [[nodiscard]] static constexpr result<type, failure_type> went_wrong(
-      error_type&& said) {
-    return std::unexpected(
-        scan::as_a_failure<failure_type>(std::forward<error_type>(said)));
-  }
-
-  template <class step_type>
-  [[nodiscard]] static constexpr bool read(const step_type& step) {
-    return step.has_value();
-  }
-
-  template <class step_type>
-  [[nodiscard]] static constexpr decltype(auto) value(step_type&& step) {
-    return *std::forward<step_type>(step);
-  }
-
-  template <class step_type>
-  [[nodiscard]] static constexpr decltype(auto) failure(step_type&& step) {
-    return std::forward<step_type>(step).error();
-  }
-};
-
-struct throws_a_failure {
-  template <class type, class failure_type>
-  using result = type;
-
-  template <class type, class failure_type, class error_type>
-  [[noreturn]] static constexpr type went_wrong(error_type&& said) {
-    scan::throw_what_went_wrong(std::forward<error_type>(said));
-  }
-
-  template <class step_type>
-  [[nodiscard]] static constexpr bool read(const step_type&) {
-    return true;
-  }
-
-  template <class step_type>
-  [[nodiscard]] static constexpr decltype(auto) value(step_type&& step) {
-    return std::forward<step_type>(step);
-  }
-
-  template <class step_type>
-  [[nodiscard]] static constexpr scan::scan_error failure(step_type&&) {
-    return scan::scan_error("a reading that throws has nothing to hand back");
-  }
-};
 
 
 
@@ -2084,7 +2031,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       for (const std::string_view one : made) {
         if (one.data() == nullptr) {
           return ending::template went_wrong<groups_type, scan::failure>(
-              no_group("capture group did not participate in the match"));
+              no_group<>("capture group did not participate in the match"));
         }
       }
     }
@@ -2094,7 +2041,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
     const auto matched = scan::tre::simulate(build_text_tnfa<spread_text<type, format>>(), input);
     if (!matched.matched) {
       return ending::template went_wrong<groups_type, scan::failure>(
-          no_match("input does not match scan expression"));
+          no_match<>("input does not match scan expression"));
     }
     const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
       const auto& begins = matched.tags[capture_index * 2];
@@ -2120,7 +2067,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       if (!run_tagged_runtime(automaton, input.data(),
                               input.data() + input.size(), registers)) {
         return ending::template went_wrong<groups_type, scan::failure>(
-            no_match("input does not match scan expression"));
+            no_match<>("input does not match scan expression"));
       }
       const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
         const char* const begin = registers[capture_index * 2];
@@ -2229,7 +2176,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       }
       if (!matched) {
         return ending::template went_wrong<groups_type, scan::failure>(
-            no_match("input does not match scan expression"));
+            no_match<>("input does not match scan expression"));
       }
       // Two of the three tests this used to make were asking whether the machine
       // had done something it cannot do. A position is written as the cursor
@@ -2375,7 +2322,7 @@ build_value(std::span<const std::string_view> groups) {
       }(std::make_index_sequence<inside>{});
       const auto given = std::span<const std::string_view>(theirs);
       if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-        auto got = scan::scanner<held>{}.try_from_groups(given);
+        auto got = scan::scanner_told_from_groups<held, ending>(given);
         if (got) return std::move(*got);
         return ending::template went_wrong<type, failure_type>(
             std::move(got).error());
@@ -2394,7 +2341,8 @@ build_value(std::span<const std::string_view> groups) {
         }(), ...);
       }(std::make_index_sequence<inside>{});
       if constexpr (scan::says_what_went_wrong_folding<held>) {
-        auto got = scan::scanner<held>{}.try_finish_groups(std::move(state));
+        auto got =
+            scan::scanner_told_finish_groups<held, ending>(std::move(state));
         if (got) return std::move(*got);
         return ending::template went_wrong<type, failure_type>(
             std::move(got).error());
@@ -2431,7 +2379,7 @@ build_value(std::span<const std::string_view> groups) {
       (take.template operator()<branch>(), ...);
       if (!made) {
         return ending::template went_wrong<type, failure_type>(
-            no_match("no branch of the format took the input"));
+            no_match<>("no branch of the format took the input"));
       }
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
@@ -2721,7 +2669,7 @@ enum class fold_phase { whole, closings_only };
 
 template <fold_phase phase = fold_phase::whole, std::size_t place, class held,
           class reading_type, class fold_type, class registers_type>
-constexpr void fold_one_step(
+SCAN_FORCE_INLINE constexpr void fold_one_step(
     fold_type& fold, const reading_type& reading,
     const registers_type& registers, char symbol, bool hands_the_character) {
   using held_type = std::remove_cv_t<held>;
@@ -2732,7 +2680,7 @@ constexpr void fold_one_step(
   const auto closing_of = [&](std::size_t which) {
     return registers[reading[(place + 1 + which) * 2 + 1]];
   };
-  [&]<std::size_t... step>(std::index_sequence<step...>) {
+  [[clang::always_inline]] [&]<std::size_t... step>(std::index_sequence<step...>) {
     ((void)[&] {
       constexpr std::size_t which = inside - 1 - step;
       if ((fold.open & (std::uint64_t{1} << which)) == 0) return;
@@ -2775,7 +2723,7 @@ constexpr void fold_one_step(
     }(), ...);
   }(std::make_index_sequence<inside>{});
   if constexpr (phase == fold_phase::closings_only) return;
-  [&]<std::size_t... which>(std::index_sequence<which...>) {
+  [[clang::always_inline]] [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
       const auto began = opening_of(which);
       if (stood_nowhere(began) || fold.told_at[which] == began) return;
@@ -2786,7 +2734,7 @@ constexpr void fold_one_step(
     }(), ...);
   }(std::make_index_sequence<inside>{});
   if (hands_the_character) {
-    [&]<std::size_t... which>(std::index_sequence<which...>) {
+    [[clang::always_inline]] [&]<std::size_t... which>(std::index_sequence<which...>) {
       ((void)[&] {
         if constexpr (takes_group_characters<held_type, which,
                                              typename fold_type::state_type> &&
@@ -3940,7 +3888,7 @@ struct gathered_by_the_registers {
   // A fold at this place, with the last step run into the copy: the end of the
   // input is not a character, so what it left open is closed here.
   template <std::size_t place, class held>
-  [[nodiscard]] constexpr auto fold_at() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr auto fold_at() const {
     auto fold = gathering<place>();
     fold_one_step<fold_phase::whole, place, held>(fold.here, reading, registers,
                                                   '\0', false);
@@ -3965,7 +3913,7 @@ template <class type, fixed_string format, class reading_type,
 
 template <class root, class type, std::size_t offset, bool as_output = false,
           class failure_type = failure_for<root>, class source_type>
-[[nodiscard]] constexpr std::expected<type, failure_type> finish_value(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_value(
     const source_type& source, const char* text);
 
 // The parts of a product, and the arguments of a call, as named functions
@@ -3974,7 +3922,7 @@ template <class root, class type, std::size_t offset, bool as_output = false,
 // more than the constant evaluator will follow.
 template <class root, class type, std::size_t offset, class failure_type,
           class source_type, std::size_t... part>
-[[nodiscard]] constexpr std::expected<type, failure_type> finish_parts(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_parts(
     const source_type& source, const char* text,
     std::index_sequence<part...>) {
   auto parts =
@@ -3989,7 +3937,7 @@ template <class root, class type, std::size_t offset, class failure_type,
 
 template <class root, class type, std::size_t offset, class failure_type,
           class source_type, std::size_t... part>
-[[nodiscard]] constexpr std::expected<type, failure_type> finish_by_call(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_by_call(
     const source_type& source, const char* text,
     std::index_sequence<part...>) {
   auto parts =
@@ -4170,7 +4118,7 @@ constexpr void collect_turn_that_ended(
       fold.has_going = false;
       if (fold.going.wanted_a_subject) {
         if (!failed) {
-          failed = scan::as_a_failure<failure_type>(wrong_subject(
+          failed = scan::as_a_failure<failure_type>(wrong_subject<>(
               "a fold that only takes its groups whole needs a subject that "
               "can be pointed at: give it push_group to read a stream"));
         }
@@ -4178,7 +4126,7 @@ constexpr void collect_turn_that_ended(
       }
       if constexpr (scan::says_what_went_wrong_folding<held>) {
         auto got =
-            scan::scanner<held>{}.try_finish_groups(std::move(fold.going.state));
+            scan::scanner_told_finish_groups<held>(std::move(fold.going.state));
         if (!got) {
           if (!failed) {
             failed = scan::as_a_failure<failure_type>(std::move(got).error());
@@ -4279,7 +4227,7 @@ template <class type, class state_type, std::size_t... index>
 // its opening tag in the reading that accepted.
 template <class root, class type, std::size_t offset, bool as_output,
           class failure_type, class source_type>
-[[nodiscard]] constexpr std::expected<type, failure_type> finish_value(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_value(
     const source_type& source, const char* text) {
   // A shape that reads its own groups is a value where it stands in somebody
   // else's format and a product of places in its own. Where this is the whole
@@ -4298,18 +4246,18 @@ template <class root, class type, std::size_t offset, bool as_output,
         "by the machine that gathers, not by a fold of its own");
     auto fold = source.template fold_at<offset, held>();
     if (fold.here.wanted_a_subject) {
-      return std::unexpected(scan::as_a_failure<failure_type>(wrong_subject(
+      return std::unexpected(scan::as_a_failure<failure_type>(wrong_subject<>(
           "a fold that only takes its groups whole needs a subject that can be "
           "pointed at: give it push_group to read a stream")));
     }
     if constexpr (scan::says_what_went_wrong_folding<held>) {
       auto got =
-          scan::scanner<held>{}.try_finish_groups(std::move(fold.here.state));
+          scan::scanner_told_finish_groups<held>(std::move(fold.here.state));
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else {
-      return scan::scanner<held>{}.finish_groups(std::move(fold.here.state));
+      return scan::scanner_told_finish_groups<held>(std::move(fold.here.state));
     }
   } else if constexpr (a_value && gathers_by_its_groups<type>) {
     // A leaf built from its own groups once the match is over. They are groups
@@ -4336,7 +4284,7 @@ template <class root, class type, std::size_t offset, bool as_output,
     }(std::make_index_sequence<inside>{});
     const auto given = std::span<const std::string_view>(theirs);
     if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-      auto got = scan::scanner<held>{}.try_from_groups(given);
+      auto got = scan::scanner_told_from_groups<held>(given);
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
@@ -4354,7 +4302,8 @@ template <class root, class type, std::size_t offset, bool as_output,
         }(), ...);
       }(std::make_index_sequence<inside>{});
       if constexpr (scan::says_what_went_wrong_folding<held>) {
-        auto got = scan::scanner<held>{}.try_finish_groups(std::move(state));
+        auto got =
+            scan::scanner_told_finish_groups<held>(std::move(state));
         if (got) return std::move(*got);
         return std::unexpected(
             scan::as_a_failure<failure_type>(std::move(got).error()));
@@ -4365,7 +4314,7 @@ template <class root, class type, std::size_t offset, bool as_output,
   } else if constexpr (a_value) {
     const auto& gathered = source.template gathering<offset>();
     if constexpr (scan::says_what_went_wrong_finishing<type>) {
-      auto got = scan::scanner<std::remove_cv_t<type>>{}.try_finish(gathered);
+      auto got = scan::scanner_told_finish<std::remove_cv_t<type>>(gathered);
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
@@ -4411,7 +4360,7 @@ template <class root, class type, std::size_t offset, bool as_output,
       (take.template operator()<branch>(), ...);
       if (!made) {
         return std::unexpected(scan::as_a_failure<failure_type>(
-            no_match("no branch of the format took the input")));
+            no_match<>("no branch of the format took the input")));
       }
       return std::move(*made);
     }(std::make_index_sequence<branch_count<type>()>{});
@@ -4704,12 +4653,12 @@ class stream_state {
     if (failed_) return std::unexpected(std::move(*failed_));
     if (state_ == packed_range<0>::reject) {
       return std::unexpected(scan::as_a_failure<failure_type>(
-          no_match("input does not match scan expression")));
+          no_match<>("input does not match scan expression")));
     }
     const auto slot = automaton.states[state_].accepting_slot;
     if (slot == packed_state<0, 0, 0>::not_accepting) {
       return std::unexpected(scan::as_a_failure<failure_type>(
-          no_match("input does not match scan expression")));
+          no_match<>("input does not match scan expression")));
     }
     // The reading that accepted says which register holds each value. Nothing
     // is written here: the commands that end a match are not run by this
@@ -5143,7 +5092,7 @@ class field_gatherer {
     if (failed_) return std::unexpected(std::move(*failed_));
     if (!made_) {
       return std::unexpected(scan::as_a_failure<failure_for<type>>(
-          no_match("input does not match scan expression")));
+          no_match<>("input does not match scan expression")));
     }
     return std::move(*made_);
   }
@@ -5508,7 +5457,7 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
     return std::unexpected(scan::as_a_failure<failure_for<type>>(
-        no_match("input does not match scan expression")));
+        no_match<>("input does not match scan expression")));
   }
   return into.taken();
 }
@@ -5589,7 +5538,7 @@ template <class type, fixed_string format,
                           mark_kind>(cursor, std::ranges::end(input), position,
                                      registers, into, best)) {
       return std::unexpected(scan::as_a_failure<failure_for<type>>(
-          no_match("input does not match scan expression")));
+          no_match<>("input does not match scan expression")));
     }
     return into.taken();
   }
@@ -5813,7 +5762,7 @@ struct aggregate_scanner {
       std::span<const std::string_view> groups) {
     return detail::build_value<detail::failure_for<type>,
                                detail::format_parameters<type, format>, type, 0,
-                               true, detail::throws_a_failure>(groups);
+                               true, scan::throws_a_failure>(groups);
   }
 
   // Nothing here is a member the library reads and reacts to. What this class
@@ -5857,7 +5806,7 @@ struct aggregate_scanner {
   // to it.
   template <class self_type>
     requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
-  [[nodiscard]] constexpr auto try_from_groups(
+  [[nodiscard]] constexpr auto from_groups(
       this const self_type& self, std::span<const std::string_view> groups)
       -> std::expected<scanner_target_t<self_type>,
                        detail::shape_failure<scanner_target_t<self_type>>> {
@@ -5918,7 +5867,7 @@ struct aggregate_scanner {
 
   template <class self_type, class state_type>
     requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
-  [[nodiscard]] constexpr auto try_finish_groups(this const self_type& self,
+  [[nodiscard]] constexpr auto finish_groups(this const self_type& self,
                                                  state_type state) {
     using type = scanner_target_t<self_type>;
     static_cast<void>(self);
@@ -5960,7 +5909,7 @@ struct aggregate_scanner {
   // same machine everything else is, and that machine says what went wrong
   // instead of throwing it. Which means a shape used as a field of another
   // shape carries its kinds up into what that reading can fail with.
-  [[nodiscard]] constexpr auto try_finish(this const auto& self, auto state) {
+  [[nodiscard]] constexpr auto finish(this const auto& self, auto state) {
     static_cast<void>(self);
     return std::move(state).finish();
   }
@@ -5969,7 +5918,7 @@ struct aggregate_scanner {
                                          std::string_view input) {
     auto state = self.begin();
     for (char value : input) { self.push(state, value); }
-    return self.try_finish(std::move(state));
+    return self.finish(std::move(state));
   }
 };
 
