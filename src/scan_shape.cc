@@ -3119,13 +3119,7 @@ template <class type, fixed_string format, auto& automaton>
       if constexpr (!(how::folds && how::inside)) {
         made |= std::uint64_t{1} << group;
       }
-      // Asked of a place, and only of a place. The groups a leaf opens are
-      // counted from the leaf, so a group that is itself one of them counts
-      // its leaf's groups over again -- a window of the same width, slid along
-      // by one, and past the end of the leaf it belongs to it is marking other
-      // places entirely. Every group inside a fold marked every group after
-      // it, which is every group there is.
-      if constexpr (!how::inside && !told_by_the_moves) {
+      if constexpr (!told_by_the_moves) {
         for (std::size_t which = 0; which < inside; ++which) {
           made |= std::uint64_t{1} << (group + 1 + which);
         }
