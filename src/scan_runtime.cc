@@ -1801,6 +1801,91 @@ scan_over:
   return best.matched;
 }
 
+// The same walk, owning everything it works on.
+//
+// A function whose labels have had their addresses taken is one no inliner
+// will write into its caller, so whatever it is handed by reference stays in
+// memory for as long as the walk runs: a call may look at anything it was
+// given the address of. The gatherings a reading fills in are the whole of
+// what it does, and they were on the stack, written back at every character.
+//
+// Handed nothing and told to make its own, none of it escapes: the gatherer,
+// the registers and the place the walk liked best are values of this function
+// and go wherever values go. What comes back is the reading, already made --
+// and a reading that never accepted is a reading that was never made, which
+// the gatherer says for itself.
+template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
+          class cursor_type, class sentinel_type, std::size_t register_count,
+          class gatherer, class answer_type>
+[[nodiscard]] auto run_threaded_owning(cursor_type cursor, sentinel_type last,
+                                       const char* text) {
+  static_assert(states_in<automaton> <= SCAN_LADDER,
+                "this machine has more states than the ladder has rungs: "
+                "build with -DSCAN_LADDER=4096");
+  static void* const rungs[] = {SCAN_EVERY_RUNG(SCAN_RUNG_NAME)};
+  std::array<mark, register_count> registers{};
+  if constexpr (std::is_pointer_v<mark>) {
+    std::ranges::fill(registers, nullptr);
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, static_cast<const char*>(nullptr));
+  } else {
+    std::ranges::fill(registers, scan::tre::negative_tag);
+    execute_commands(automaton.initialize, automaton.initialize.size(),
+                     registers, mark{});
+  }
+  gatherer into;
+  into.points_at(text);
+  answer_type best;
+  cursor_type here = cursor;
+  mark spot = cursor;
+  sentinel_type last_here = last;
+  unsigned char symbol = 0;
+  SCAN_EVERY_RUNG(SCAN_RUNG_ENTRY)
+  goto scan_over;
+  SCAN_EVERY_RUNG(SCAN_RUNG_BODY)
+scan_over:
+  return into.taken();
+}
+
+// The owning walk, for whoever is not one of its own frames.
+//
+// A label is not a thing a constant evaluation has, so a pattern read while
+// compiling takes the written-out walk and is handed the state it works on in
+// the ordinary way -- there is no stack to keep it off. Only the walk that
+// runs owns what it reads into.
+template <auto& automaton, walk_shape shape, std::size_t entry,
+          std::size_t budget, std::size_t certain, class mark,
+          class cursor_type, class sentinel_type, std::size_t register_count,
+          class gatherer, class answer_type>
+[[nodiscard]] constexpr auto run_owning(cursor_type cursor, sentinel_type last,
+                                        const char* text) {
+  if consteval {
+    std::array<mark, register_count> registers{};
+    if constexpr (std::is_pointer_v<mark>) {
+      std::ranges::fill(registers, nullptr);
+      execute_commands(automaton.initialize, automaton.initialize.size(),
+                       registers, static_cast<const char*>(nullptr));
+    } else {
+      std::ranges::fill(registers, scan::tre::negative_tag);
+      execute_commands(automaton.initialize, automaton.initialize.size(),
+                       registers, mark{});
+    }
+    gatherer into;
+    into.points_at(text);
+    answer_type best;
+    cursor_type here = cursor;
+    mark spot = cursor;
+    (void)run_body<automaton, shape, entry, budget, certain, mark, cursor_type,
+                   sentinel_type, register_count, gatherer, answer_type>(
+        here, last, spot, registers, into, best);
+    return into.taken();
+  } else {
+    return run_threaded_owning<automaton, shape, entry, mark, cursor_type,
+                               sentinel_type, register_count, gatherer,
+                               answer_type>(cursor, last, text);
+  }
+}
+
 // Walking characters in a row to a terminator, gathering nothing.
 template <auto& automaton, unsigned char terminator, bool in_words,
           std::size_t state, std::size_t register_count>

@@ -5113,6 +5113,16 @@ class field_gatherer {
       return made;
     }();
     const kept_by_the_walk<decltype(kept), mine> mine_kept{kept, turns_open_};
+    // What this costs, so that the next reader does not have to find it
+    // again: the bundle handed over holds the walk's register file, and a
+    // register file whose address any call has seen is one no compiler will
+    // take apart. So the whole of it stays on the stack and is cleared before
+    // a character is read -- 632 bytes for this pattern.
+    //
+    // Folding this one call in does not help: it makes another to finish the
+    // parts, and that one is handed the same bundle. Nothing short of the
+    // whole chain being written out lets the registers go, and the whole chain
+    // is the reading written out again for every place it has.
     auto got = finish_value<type, type, 0, true>(
         by_the_registers<type, format>(packed.readings[packed.accepting_slot],
                                        states_, registers, mine_kept),
@@ -5518,17 +5528,6 @@ template <class type, fixed_string format,
   // time there is nothing to point at and the count is what there is.
   constexpr bool in_a_row = std::ranges::contiguous_range<range_type>;
   using mark_kind = std::conditional_t<in_a_row, const char*, std::ptrdiff_t>;
-  std::array<mark_kind, automaton.register_count> registers{};
-  if constexpr (in_a_row) {
-    std::ranges::fill(registers, nullptr);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, static_cast<const char*>(nullptr));
-  } else {
-    std::ranges::fill(registers, scan::tre::negative_tag);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, std::ptrdiff_t{0});
-  }
-  field_gatherer<type, format, automaton, in_a_row, mark_kind> into;
   // Written out, the same as every other walk. A subject handed over a
   // character at a time is read by the machine written as code -- what it
   // cannot have is the vectors, because there is nothing in a row to read.
@@ -5542,10 +5541,8 @@ template <class type, fixed_string format,
   // run stepped over in one go is one turn as far as the walk can tell.
   if constexpr (std::ranges::contiguous_range<range_type> &&
                 !holds_a_range<type>()) {
-    into.points_at(std::ranges::data(input));
     const char* cursor = std::ranges::data(input);
     const char* const last = cursor + std::ranges::size(input);
-    const char* position = cursor;
     // Runs stepped over whole, unless the caller asked for a character at a
     // time.
     //
@@ -5559,15 +5556,31 @@ template <class type, fixed_string format,
         .tags_read = groups_whose_place_is_read<type, format, automaton>(),
         .tags_written = groups_whose_mark_is_read<type, format, automaton>(),
         .budget = bodies_worth_writing<automaton>()};
-    walk_answer<const char*> best;
-    if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
-                          const char*>(cursor, last, position, registers, into,
-                                       best)) {
-      return std::unexpected(scan::as_a_failure<failure_for<type>>(
-          no_match("input does not match scan expression")));
-    }
-    return into.taken();
+    // Nothing the reading fills in is made here.
+    //
+    // A walk written as labels is a walk no inliner will fold into this one,
+    // so anything handed to it by reference is an address a call has seen and
+    // must stay in memory until the call returns -- which is every character
+    // of the subject. Told to make its own instead, the gatherer and the
+    // registers are values of the walk and go wherever values go.
+    return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
+                      const char*, const char*, const char*,
+                      automaton.register_count,
+                      field_gatherer<type, format, automaton, in_a_row,
+                                     mark_kind>,
+                      walk_answer<const char*>>(cursor, last, cursor);
   } else {
+    std::array<mark_kind, automaton.register_count> registers{};
+    if constexpr (in_a_row) {
+      std::ranges::fill(registers, nullptr);
+      execute_commands(automaton.initialize, automaton.initialize.size(),
+                       registers, static_cast<const char*>(nullptr));
+    } else {
+      std::ranges::fill(registers, scan::tre::negative_tag);
+      execute_commands(automaton.initialize, automaton.initialize.size(),
+                       registers, std::ptrdiff_t{0});
+    }
+    field_gatherer<type, format, automaton, in_a_row, mark_kind> into;
     auto cursor = std::ranges::begin(input);
     mark_kind position = 0;
     constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
