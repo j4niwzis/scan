@@ -1417,8 +1417,12 @@ template <fixed_string pattern, std::size_t group, class collector,
     [&]<std::size_t... at>(std::index_sequence<at...>) {
       ((theirs[at] = found.template get<group + 1 + at>().to_view()), ...);
     }(std::make_index_sequence<inside>{});
-    return scan::scanner<held_type>{}.from_groups(
-        std::span<const std::string_view>(theirs));
+    // A collector has to give a value: a type that hands its failure back is
+    // asked the same way as one that throws, and what it handed back is thrown
+    // here.
+    return scan::as_thrown<held_type>(
+        scan::scanner_told_from_groups<held_type, scan::throws_a_failure>(
+            std::span<const std::string_view>(theirs)));
   } else if constexpr (group_gathers_by_group<typename collector::value_type,
                                              pattern, group>()) {
     // The type is gathered by its own groups, and here they are already
@@ -1434,7 +1438,10 @@ template <fixed_string pattern, std::size_t group, class collector,
         }
       }(), ...);
     }(std::make_index_sequence<groups_a_leaf_opens<held_type_here>()>{});
-    return scan::scanner<held_type_here>{}.finish_groups(std::move(state));
+    return scan::as_thrown<held_type_here>(
+        scan::scanner_told_finish_groups<held_type_here,
+                                         scan::throws_a_failure>(
+            std::move(state)));
   } else if constexpr (group_spells_out<typename collector::value_type,
                                         pattern, group>()) {
     // The group is the type's own pattern, so the groups inside it are the
