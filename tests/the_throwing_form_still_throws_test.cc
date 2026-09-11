@@ -21,7 +21,7 @@ TEST(ExpectedForm, TheThrowingFormStillThrows) {
         const pair value = scan::scan<"{},{}">(text).of<pair>();
         (void)value;
       },
-      scan::scan_error<>);
+      scan::scan_error<std::exception>);
 }
 
 }  // namespace
