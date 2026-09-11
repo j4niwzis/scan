@@ -5513,11 +5513,28 @@ template <class type, fixed_string format,
     // of the subject. Told to make its own instead, the gatherer and the
     // registers are values of the walk and go wherever values go.
     return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
-                      const char*, const char*, const char*,
+                      const char*, true, const char*, const char*,
                       automaton.register_count,
                       field_gatherer<type, format, automaton, in_a_row,
                                      mark_kind>,
-                      walk_answer<const char*>>(cursor, last, cursor);
+                      walk_answer<const char*>>(cursor, last, cursor, cursor);
+  } else if constexpr (std::ranges::contiguous_range<range_type>) {
+    // A subject in a row whose reading holds a list.
+    //
+    // The runs cannot be stepped over whole here -- an element is a turn, and
+    // a run stepped over in one go is one turn as far as the walk can tell --
+    // but that is all a list costs. The walk still owns what it reads into,
+    // and the reading is not built out of addresses this frame handed over.
+    const char* cursor = std::ranges::data(input);
+    const char* const last = cursor + std::ranges::size(input);
+    constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
+    return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
+                      const char*, false, const char*, const char*,
+                      automaton.register_count,
+                      field_gatherer<type, format, automaton, in_a_row,
+                                     mark_kind>,
+                      walk_answer<const char*>>(cursor, last, nullptr,
+                                                mark_kind{});
   } else {
     std::array<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {

@@ -1815,10 +1815,10 @@ scan_over:
 // and a reading that never accepted is a reading that was never made, which
 // the gatherer says for itself.
 template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
-          class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type>
+          bool points_at_subject, class cursor_type, class sentinel_type,
+          std::size_t register_count, class gatherer, class answer_type>
 [[nodiscard]] auto run_threaded_owning(cursor_type cursor, sentinel_type last,
-                                       const char* text) {
+                                       const char* text, mark start) {
   static_assert(states_in<automaton> <= SCAN_LADDER,
                 "this machine has more states than the ladder has rungs: "
                 "build with -DSCAN_LADDER=4096");
@@ -1834,10 +1834,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
                      registers, mark{});
   }
   gatherer into;
-  into.points_at(text);
+  // Only where there is something to point at, and said while compiling: a
+  // reading that holds a list is handed nothing, and asking at every reading
+  // whether it was is a branch on the way in for a question the type answers.
+  if constexpr (points_at_subject) into.points_at(text);
   answer_type best;
   cursor_type here = cursor;
-  mark spot = cursor;
+  mark spot = start;
   sentinel_type last_here = last;
   unsigned char symbol = 0;
   SCAN_EVERY_RUNG(SCAN_RUNG_ENTRY)
@@ -1855,10 +1858,10 @@ scan_over:
 // runs owns what it reads into.
 template <auto& automaton, walk_shape shape, std::size_t entry,
           std::size_t budget, std::size_t certain, class mark,
-          class cursor_type, class sentinel_type, std::size_t register_count,
-          class gatherer, class answer_type>
+          bool points_at_subject, class cursor_type, class sentinel_type,
+          std::size_t register_count, class gatherer, class answer_type>
 [[nodiscard]] constexpr auto run_owning(cursor_type cursor, sentinel_type last,
-                                        const char* text) {
+                                        const char* text, mark start) {
   if consteval {
     std::array<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
@@ -1871,18 +1874,19 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
                        registers, mark{});
     }
     gatherer into;
-    into.points_at(text);
+    if constexpr (points_at_subject) into.points_at(text);
     answer_type best;
     cursor_type here = cursor;
-    mark spot = cursor;
+    mark spot = start;
     (void)run_body<automaton, shape, entry, budget, certain, mark, cursor_type,
                    sentinel_type, register_count, gatherer, answer_type>(
         here, last, spot, registers, into, best);
     return into.taken();
   } else {
-    return run_threaded_owning<automaton, shape, entry, mark, cursor_type,
-                               sentinel_type, register_count, gatherer,
-                               answer_type>(cursor, last, text);
+    return run_threaded_owning<automaton, shape, entry, mark,
+                               points_at_subject, cursor_type, sentinel_type,
+                               register_count, gatherer, answer_type>(
+        cursor, last, text, start);
   }
 }
 
