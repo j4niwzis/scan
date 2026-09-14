@@ -572,7 +572,26 @@ template <auto& automaton, std::size_t state>
     }
     if (!named) made.at[made.count++] = index;
   }
-  return made;
+  // The move that finishes the reading is asked about last.
+  //
+  // A move into a state that accepts is made once, whatever the subject's
+  // length; every other move is made as many times as the subject is long.
+  // Asked about first, that one move costs a comparison on every character of
+  // the subject to say no. Asked about last it costs one at the end.
+  //
+  // The order is free to choose because the runs that make different moves do
+  // not overlap: no character makes two of them, so no character can be
+  // claimed by whichever is asked about first.
+  distinct_moves_of<packed.ranges.size()> sorted;
+  for (std::size_t pass = 0; pass < 2; ++pass) {
+    for (std::size_t at = 0; at < made.count; ++at) {
+      const std::size_t target = packed.ranges[made.at[at]].target;
+      const bool ends = automaton.states[target].accepting_slot !=
+                        packed_state<0, 0, 0>::not_accepting;
+      if (ends == (pass == 1)) sorted.at[sorted.count++] = made.at[at];
+    }
+  }
+  return sorted;
 }
 
 // How many runs make the same move.
