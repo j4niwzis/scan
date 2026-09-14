@@ -760,7 +760,7 @@ class each_pieces_view {
                                   detail::pieces_hold<type, format>>;
 
   constexpr explicit each_pieces_view(pieces_type input)
-      : source_(gatherer_type{}, std::move(input)) {}
+      : source_(gatherer_type{collected_}, std::move(input)) {}
 
   each_pieces_view(each_pieces_view&&) = default;
   each_pieces_view& operator=(each_pieces_view&&) = default;
@@ -801,14 +801,21 @@ class each_pieces_view {
 
   constexpr void advance() {
     value_.reset();
-    // The gathering begins again; the reading does not.
-    static_cast<gatherer_type&>(source_) = gatherer_type{};
+    // The gathering begins again; the reading does not. Where the gathering
+    // slots lie is said again first, because a view that was carried here from
+    // somewhere else brought its gatherer with it, and that gatherer still
+    // holds where they lay in the view it came from.
+    static_cast<gatherer_type&>(source_).lives_in(collected_);
+    static_cast<gatherer_type&>(source_).begin_again();
     auto taken = detail::take_from_pieces<type, format>(source_, cursor_, last_,
                                                        place_);
     if (!taken.matched) return;
     value_ = std::move(taken.value);
   }
 
+  // Named before the walk that points at it, so it is standing by the time
+  // the walk is built.
+  typename gatherer_type::cold_type collected_{};
   source_type source_;
   const char* cursor_ = nullptr;
   const char* last_ = nullptr;

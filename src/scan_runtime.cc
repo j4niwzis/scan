@@ -1833,7 +1833,8 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, mark{});
   }
-  gatherer into;
+  typename gatherer::cold_type collected{};
+  gatherer into{collected};
   // Only where there is something to point at, and said while compiling: a
   // reading that holds a list is handed nothing, and asking at every reading
   // whether it was is a branch on the way in for a question the type answers.
@@ -1873,7 +1874,8 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, mark{});
     }
-    gatherer into;
+    typename gatherer::cold_type collected{};
+  gatherer into{collected};
     if constexpr (points_at_subject) into.points_at(text);
     answer_type best;
     cursor_type here = cursor;

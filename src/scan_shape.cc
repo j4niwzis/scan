@@ -2849,19 +2849,41 @@ template <class held, std::size_t which, class state_type>
 
 // One step of a fold, told by the shape of the machine rather than by the
 // positions it wrote.
-template <std::size_t place, class held, auto& automaton, std::size_t from,
-          std::size_t move, bool edges_can_move = true, class fold_type>
+// Что открыто на входе в состояние.
+//
+// Где каждый ход умеет сказать о своих группах, все входящие ходы согласны --
+// значит набор открытых групп есть величина времени компиляции, и слово,
+// которое несло его между символами, нужно было лишь чтобы прочитать уже
+// известное.
+template <auto& automaton, std::size_t state>
+[[nodiscard]] consteval std::uint64_t open_on_entry() {
+  for (std::size_t f = 0; f < automaton.states.size(); ++f)
+    for (std::size_t m = 0; m < automaton.states[f].range_count; ++m)
+      if (automaton.states[f].ranges[m].target == state)
+        return automaton.states[f].ranges[m].groups_open;
+  return 0;
+}
+
+// Ключ -- пара масок, а не ребро.
+//
+// Внутри от ребра нужны только они: что открыто и что начато заново. Рёбер в
+// машине много, а разных пар мало, и пока ключом стояло ребро, компилятор
+// порождал тело на каждое ребро там, где по существу их несколько -- а каждое
+// порождение он потом отдельно прогоняет через оптимизатор и отдельно решает
+// про встраивание, по несвёрнутому размеру.
+template <std::size_t place, class held, std::uint64_t now_mask,
+          std::uint64_t again_mask, std::uint64_t was_mask,
+          bool edges_can_move = true, class fold_type>
 constexpr void fold_by_the_step(fold_type& fold, char symbol,
                                 bool hands_the_character, auto position) {
   using held_type = std::remove_cv_t<held>;
   // Where this step stands, where that is a place in a subject at all.
   const char* const spot = pointed_at(position);
   constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
-  constexpr std::uint64_t now = automaton.states[from].ranges[move].groups_open;
+  constexpr std::uint64_t now = now_mask;
   // A group this move begins again is one whose turn has ended, however the
   // masks stand: a place taken over and over is open on both sides of it.
-  constexpr std::uint64_t again =
-      automaton.states[from].ranges[move].groups_reopened;
+  constexpr std::uint64_t again = again_mask;
   // The groups of this place are the ones just past it: place 0 is the whole
   // and its groups follow it, which is how the readings are laid out too.
   constexpr auto holds = [](std::uint64_t mask, std::size_t which) {
@@ -2886,7 +2908,7 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
       if constexpr (takes_the_group_edges<
                         held_type, which, typename fold_type::state_type>() &&
                     (!holds(now, which) || holds(again, which))) {
-        if (((fold.here.open >> which) & 1) != 0) {
+        if constexpr (holds(was_mask, which)) {
           // What the group stood on, where there is a subject to point into
           // and the type asked for it. The step that closes a group is
           // standing on the character just past it, so what it stood on ends
@@ -2907,7 +2929,7 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
           } else {
             close_one_group<held_type, which>(fold.here.state);
           }
-          fold.here.open &= ~(std::uint64_t{1} << which);
+          // Слово, которое несло это между символами, больше не читается.
         }
       }
     }(), ...);
@@ -2917,14 +2939,16 @@ constexpr void fold_by_the_step(fold_type& fold, char symbol,
       if constexpr (takes_the_group_edges<
                         held_type, which, typename fold_type::state_type>() &&
                     holds(now, which)) {
-        if ((fold.here.open & (std::uint64_t{1} << which)) == 0) {
+        // Открывается там, где не было открыто -- или было, но этот ход
+        // начал группу заново: проход закрытия выше уже погасил её, и слово,
+        // которое раньше несло это между двумя проходами, здесь не нужно.
+        if constexpr (!holds(was_mask, which) || holds(again_mask, which)) {
           open_one_group<held_type, which>(fold.here.state);
           if constexpr (takes_the_group_whole<
                             held_type, which,
                             typename fold_type::state_type>) {
             fold.here.began_at[which] = spot;
           }
-          fold.here.open |= std::uint64_t{1} << which;
           fold.here.started = true;
         }
       }
@@ -3452,6 +3476,41 @@ template <class type, fixed_string format, std::size_t group,
              gathering_slot<type, format, other, mark_type> != mine));
   }(std::make_index_sequence<groups_of_output<type>()>{});
 }
+
+// Слот, который принимает символы, держит внутри буфер с индексом времени
+// выполнения -- и такой буфер не даёт поднять в регистры ничего, что лежит с
+// ним в одном объекте. Поэтому слоты делятся надвое: те, что меняются на
+// каждом символе, остаются значением сборщика, а собирающие обход держит
+// своей переменной и даёт по ссылке.
+template <class kind>
+concept keeps_characters = requires(kind& one, char letter) {
+  one.push_back(letter);
+};
+
+template <class tuple_type, std::size_t... which>
+[[nodiscard]] constexpr auto pick_warm(std::index_sequence<which...>) {
+  return std::tuple_cat(
+      std::conditional_t<
+          keeps_characters<std::tuple_element_t<which, tuple_type>>,
+          std::tuple<>,
+          std::tuple<std::tuple_element_t<which, tuple_type>>>{}...);
+}
+
+template <class tuple_type, std::size_t... which>
+[[nodiscard]] constexpr auto pick_cold(std::index_sequence<which...>) {
+  return std::tuple_cat(
+      std::conditional_t<
+          keeps_characters<std::tuple_element_t<which, tuple_type>>,
+          std::tuple<std::tuple_element_t<which, tuple_type>>,
+          std::tuple<>>{}...);
+}
+
+template <class tuple_type>
+using warm_slots_of = decltype(pick_warm<tuple_type>(
+    std::make_index_sequence<std::tuple_size_v<tuple_type>>{}));
+template <class tuple_type>
+using cold_slots_of = decltype(pick_cold<tuple_type>(
+    std::make_index_sequence<std::tuple_size_v<tuple_type>>{}));
 
 // One gathering of every kind, each begun as the first group of that kind
 // would begin it. Where two groups of a kind ask for different parameters, the
@@ -4722,6 +4781,16 @@ template <class type, fixed_string format, auto& automaton,
           bool pointable = false, class mark_kind = std::ptrdiff_t>
 class field_gatherer {
  public:
+  using plain_folds_type = decltype(make_slots<type, format, mark_kind>());
+  // Where the gathering slots lie. They are not part of the gatherer: the
+  // walk carries the gatherer from character to character, and a slot that
+  // gathers characters would hold the whole of it down in memory.
+  using cold_type = cold_slots_of<plain_folds_type>;
+
+ private:
+  using warm_type = warm_slots_of<plain_folds_type>;
+
+ public:
   // A type built from its groups once the match is over is handed views of the
   // subject. Where the subject is gone as it is read there is nothing to give
   // it, and holding the characters until the end to give it something would be
@@ -4773,7 +4842,58 @@ class field_gatherer {
       std::array<register_state<type, format, mark_kind>,
                  nothing_at_a_register ? 0 : automaton.register_count>;
 
-  constexpr field_gatherer() {
+  // Слот по номеру: тёплый из своего кортежа, собирающий -- из того, которым
+  // владеет обход.
+  template <std::size_t which>
+  [[nodiscard]] constexpr auto& slot() {
+    using kind = std::tuple_element_t<which, plain_folds_type>;
+    if constexpr (keeps_characters<kind>) return std::get<kind>(*cold_);
+    else return std::get<kind>(warm_);
+  }
+  template <std::size_t which>
+  [[nodiscard]] constexpr const auto& slot() const {
+    using kind = std::tuple_element_t<which, plain_folds_type>;
+    if constexpr (keeps_characters<kind>) return std::get<kind>(*cold_);
+    else return std::get<kind>(warm_);
+  }
+  // Все слоты вместе -- для того одного места в конце, где нужен целый набор.
+  [[nodiscard]] constexpr plain_folds_type all_slots() const {
+    plain_folds_type made{};
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ((std::get<which>(made) = slot<which>()), ...);
+    }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
+    return made;
+  }
+
+  // The gathering slots lie outside, so there is no gatherer without them:
+  // there is no default constructor, and every place that makes one has to
+  // say where they lie. Making that the type's rule rather than a thing to
+  // remember is what keeps a gatherer from ever pointing at nothing.
+  constexpr explicit field_gatherer(cold_type& cold) : cold_(&cold) {
+    begin_again();
+  }
+
+  // Where the gathering slots lie, said again.
+  //
+  // The gatherer holds where they are, not the slots themselves, so a gatherer
+  // that has been carried to a new home has to be told the new one.
+  constexpr void lives_in(cold_type& cold) { cold_ = &cold; }
+
+  // Gathering from the beginning, leaving the slots where they lie.
+  //
+  // Between one match and the next the gathering starts over while the room
+  // the slots lie in stays put. Assigning a fresh gatherer over this one would
+  // start the gathering over too, but it would also carry over where that
+  // fresh one thinks its slots are, which is nowhere.
+  constexpr void begin_again() {
+    turns_open_ = 0;
+    made_.reset();
+    failed_.reset();
+    text_ = nullptr;
+    const auto all = make_slots<type, format, mark_kind>();
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ((slot<which>() = std::get<which>(all)), ...);
+    }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
     if constexpr (!nothing_at_a_register) {
       states_ = make_register_states<type, format, automaton, mark_kind>();
     }
@@ -4947,7 +5067,7 @@ class field_gatherer {
         automaton.states[state].ranges[staying].groups_open;
     using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
     auto& fold =
-        std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
+        slot<gathering_slot<type, format, group, mark_kind>>();
     auto gathered = fold.here.state;
     const char* cursor = from;
     while (cursor != limit &&
@@ -4989,14 +5109,17 @@ class field_gatherer {
     // nothing is written, which is what holding the tags back bought. So the
     // whole of what a move does to the gatherings is skipped for it, and what
     // is left is handing the character to the fields that are open.
+    constexpr const auto& taken = automaton.states[state].ranges[move];
     if constexpr (state != landed || staying_writes<automaton, state>()) {
-      constexpr const auto& taken = automaton.states[state].ranges[move];
       advance_scanners<type, format, automaton, false, true>(
           letter, landed, state, position, registers, states_, taken.commands,
           taken.command_count, std::make_index_sequence<field_count>{}, text_);
     }
-    hand_over<state, landed, move>(letter, registers, position,
-                                   std::make_index_sequence<field_count>{});
+    hand_over<taken.groups_open, taken.groups_reopened,
+              open_on_entry<automaton, state>(),
+              taken.target == state && taken.groups_reopened == 0, landed>(
+        letter, registers, position,
+        std::make_index_sequence<field_count>{});
     collect_turns_that_ended<type, format, automaton, failure_for<type>>(
         landed, registers, states_, std::make_index_sequence<field_count>{},
         failed_);
@@ -5020,7 +5143,7 @@ class field_gatherer {
     // Everything else was said by the moves as they were taken, so the fold is
     // set to the positions as they stand: nothing has moved since, and that
     // last step announces nothing twice.
-    auto kept = plain_folds_;
+    auto kept = all_slots();
     [&]<std::size_t... group>(std::index_sequence<group...>) {
       ([&] {
         using how = gathering_of<type, format, group>;
@@ -5114,7 +5237,7 @@ class field_gatherer {
       ([&] {
         using how = gathering_of<type, format, group>;
         if constexpr (how::folds && how::the_place) {
-          std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_).here.text =
+          slot<gathering_slot<type, format, group, mark_kind>>().here.text =
               text;
         }
       }(), ...);
@@ -5157,7 +5280,7 @@ class field_gatherer {
             automaton.states[state].ranges[staying].groups_reopened;
         using held = std::remove_cv_t<held_type>;
         constexpr std::size_t inside = groups_a_leaf_opens<held>();
-        auto& fold = std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
+        auto& fold = slot<gathering_slot<type, format, group, mark_kind>>();
         const std::string_view run(from, static_cast<std::size_t>(to - from));
         [&]<std::size_t... which>(std::index_sequence<which...>) {
           ((void)[&] {
@@ -5212,7 +5335,7 @@ class field_gatherer {
                     .groups_open;
       if constexpr ((staying & (std::uint64_t{1} << group)) != 0) {
         gathering_of<type, format, group>::push_run(
-            std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_), from,
+            slot<gathering_slot<type, format, group, mark_kind>>(), from,
             to);
       }
     } else {
@@ -5233,14 +5356,18 @@ class field_gatherer {
     }
   }
 
-  template <std::size_t from, std::size_t landed, std::size_t move,
-            class registers_type, std::size_t... group>
+  template <std::uint64_t now_mask, std::uint64_t again_mask,
+            std::uint64_t was_mask, bool stays_put_flag, std::size_t landed,
+            std::size_t... group, class registers_type>
   constexpr void hand_over(char letter, const registers_type& registers,
                            auto position, std::index_sequence<group...>) {
-    (hand_group<from, landed, move, group>(letter, registers, position), ...);
+    (hand_group<now_mask, again_mask, was_mask, stays_put_flag, landed,
+                group>(letter, registers, position),
+     ...);
   }
 
-  template <std::size_t from, std::size_t landed, std::size_t move,
+  template <std::uint64_t now_mask, std::uint64_t again_mask,
+            std::uint64_t was_mask, bool stays_put_flag, std::size_t landed,
             std::size_t group, class registers_type>
   constexpr void hand_group(char letter, const registers_type& registers,
                             auto position) {
@@ -5261,12 +5388,11 @@ class field_gatherer {
       // its character lies inside keeps the whole fold at its registers, and
       // asking step by step here put half of it in the other place, where
       // nobody looked for it.
-      auto& fold = std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
-      constexpr bool stays_put =
-          automaton.states[from].ranges[move].target == from &&
-          automaton.states[from].ranges[move].groups_reopened == 0;
-      fold_by_the_step<group, std::remove_cv_t<held_type>, automaton, from,
-                       move, !stays_put>(fold, letter, true, position);
+      auto& fold = slot<gathering_slot<type, format, group, mark_kind>>();
+      constexpr bool stays_put = stays_put_flag;
+      fold_by_the_step<group, std::remove_cv_t<held_type>, now_mask,
+                       again_mask, was_mask, !stays_put>(fold, letter, true,
+                                                         position);
     } else if constexpr (how::folds && how::the_place) {
       fold_the_readings<group, gathering_slot<type, format, group, mark_kind>,
                         std::remove_cv_t<held_type>, automaton>(
@@ -5283,19 +5409,18 @@ class field_gatherer {
       // what a turn boundary used to be made of.
       constexpr std::size_t list_group = group == 0 ? 0 : group - 1;
       constexpr std::uint64_t now =
-          automaton.states[from].ranges[move].groups_open;
+          now_mask;
       constexpr std::uint64_t again =
-          automaton.states[from].ranges[move].groups_reopened;
+          again_mask;
       constexpr std::uint64_t mine = std::uint64_t{1} << group;
       static constexpr auto spread = spread_of<type, format>();
       using element = std::remove_cvref_t<std::ranges::range_value_t<
           std::remove_cv_t<leaf_kind_of_output<type, list_group>>>>;
       if constexpr ((again & mine) != 0) {
         auto& made =
-            std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
+            slot<gathering_slot<type, format, group, mark_kind>>();
         if ((turns_open_ & mine) != 0) {
-          auto& list = std::get<gathering_slot<type, format, list_group,
-                                               mark_kind>>(plain_folds_);
+          auto& list = slot<gathering_slot<type, format, list_group, mark_kind>>();
           append_to(list, scanner_finish<element>(std::move(made)));
         }
         made = gathering_of<type, format, group>::begin(
@@ -5304,19 +5429,19 @@ class field_gatherer {
       }
       if constexpr ((now & mine) != 0) {
         gathering_of<type, format, group>::push(
-            std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_),
+            slot<gathering_slot<type, format, group, mark_kind>>(),
             letter);
         turns_open_ |= mine;
       }
     } else if constexpr (gathers_in_the_walk<type, format, automaton, group>()) {
       // Open where the move says so, and gathered where the walk keeps it.
       constexpr std::uint64_t now =
-          automaton.states[from].ranges[move].groups_open;
+          now_mask;
       constexpr std::uint64_t again =
-          automaton.states[from].ranges[move].groups_reopened;
+          again_mask;
       if constexpr ((now & (std::uint64_t{1} << group)) != 0) {
         static constexpr auto spread = spread_of<type, format>();
-        auto& made = std::get<gathering_slot<type, format, group, mark_kind>>(plain_folds_);
+        auto& made = slot<gathering_slot<type, format, group, mark_kind>>();
         if constexpr ((again & (std::uint64_t{1} << group)) != 0) {
           made = gathering_of<type, format, group>::begin(
               spread.parameters[group].view());
@@ -5344,7 +5469,6 @@ class field_gatherer {
   }
 
 
-  using plain_folds_type = decltype(make_slots<type, format, mark_kind>());
   // Kept first, and by itself.
   //
   // What the walk touches on every character is here; everything else it holds
@@ -5357,8 +5481,8 @@ class field_gatherer {
   // begins the next one, and the first turn of all has nothing before it to
   // close -- so being open is remembered rather than guessed at.
   std::uint64_t turns_open_ = 0;
-  [[no_unique_address]] plain_folds_type plain_folds_ =
-      make_slots<type, format, mark_kind>();
+  [[no_unique_address]] warm_type warm_{};
+  cold_type* cold_ = nullptr;
   states_type states_;
   std::optional<type> made_;
   std::optional<failure_for<type>> failed_;
@@ -5443,9 +5567,10 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                    std::ptrdiff_t{0});
   auto view = std::views::all(std::forward<pieces_type>(pieces));
+  typename field_gatherer<type, format, automaton>::cold_type collected{};
   gathers_from_pieces<field_gatherer<type, format, automaton>, decltype(view),
                       pieces_hold<type, format>>
-      into(field_gatherer<type, format, automaton>{}, std::move(view));
+      into(field_gatherer<type, format, automaton>{collected}, std::move(view));
   // Nothing in hand to begin with, so the first thing the walk does is ask.
   const char* cursor = nullptr;
   const char* last = nullptr;
@@ -5546,7 +5671,9 @@ template <class type, fixed_string format,
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, std::ptrdiff_t{0});
     }
-    field_gatherer<type, format, automaton, in_a_row, mark_kind> into;
+    typename field_gatherer<type, format, automaton, in_a_row,
+                            mark_kind>::cold_type collected{};
+    field_gatherer<type, format, automaton, in_a_row, mark_kind> into{collected};
     auto cursor = std::ranges::begin(input);
     mark_kind position = 0;
     constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
