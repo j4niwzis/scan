@@ -128,22 +128,29 @@ struct held {
     }
     storage[length++] = value;
   }
-  // A run put in with one copy rather than a character at a time.
+  // A run put in as a run rather than a character at a time.
   //
-  // Written as a copy and not as a loop: a loop of a length nobody knows is
-  // unrolled a few characters at a time and left as that, while this is
-  // characters that lie in a row going into room that lies in a row, which is
-  // one move however long the run is.
+  // Which way that is worth doing is a question about the room and not about
+  // the run. Room large enough for the copy to be worth a call gets one: a
+  // loop of a length nobody knows is unrolled four characters at a time and
+  // left as that, and for two hundred characters that is fifty times around.
+  // Room smaller than the call is put in where it stands -- a call to copy
+  // eight bytes costs more than the eight moves it saves, and the room says
+  // in advance that eight is all there can be.
+  static constexpr bool worth_a_call = capacity > 64;
+
   constexpr void append(std::string_view run) {
     const std::size_t room = capacity - length;
-    if (run.size() > room) {
-      overflowed = true;
-      std::copy_n(run.data(), room, storage.data() + length);
-      length = capacity;
-      return;
+    const std::size_t taken = run.size() > room ? room : run.size();
+    if (run.size() > room) overflowed = true;
+    if (worth_a_call && !std::is_constant_evaluated()) {
+      __builtin_memcpy(storage.data() + length, run.data(), taken);
+    } else {
+      for (std::size_t at = 0; at < taken; ++at) {
+        storage[length + at] = run[at];
+      }
     }
-    std::copy_n(run.data(), run.size(), storage.data() + length);
-    length += run.size();
+    length += taken;
   }
 };
 
