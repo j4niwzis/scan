@@ -693,10 +693,16 @@ if(SCAN_BUILD_BENCHMARKS)
   # And against the one in the standard library, which is what a C++ program
   # reaches for when it wants numbers out of a string.
   scan_add_benchmark(sscanf NO_RE2C)
+  # The walk itself, against the same machine written out and against the same
+  # reading written by hand. Not re2c: what is wanted here is this library's
+  # own automaton written out, state for state, and re2c would generate its
+  # own.
+  scan_add_benchmark(fold NO_RE2C)
 
   add_custom_target(benchmarks DEPENDS
     word_benchmark timestamp_benchmark csv_benchmark address_benchmark
-    captures_benchmark read_once_benchmark shape_benchmark sscanf_benchmark)
+    captures_benchmark read_once_benchmark shape_benchmark sscanf_benchmark
+    fold_benchmark)
 
 endif()
 
