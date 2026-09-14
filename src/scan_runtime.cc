@@ -358,7 +358,7 @@ template <staying_class klass>
   return belongs;
 }
 
-template <staying_class klass>
+template <staying_class klass, bool in_words = true>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
     const char* cursor, const char* limit) {
   // Everything below reads several characters as one number and then asks which
@@ -366,6 +366,20 @@ template <staying_class klass>
   // least significant byte. Elsewhere the caller reads them one at a time,
   // which is what it would have done anyway.
   if (std::is_constant_evaluated()) return cursor;
+  // The same run, walked as a hand would walk it.
+  //
+  // Stepping over a run in words and handing it over whole are two separate
+  // things, and a reading asked for one character at a time gives up only the
+  // first of them: the characters still lie in a row, so whoever gathers them
+  // still takes the run as a piece. Where the run is short -- and it is what
+  // a reading asks to be read this way for -- the words were never worth their
+  // setting up anyway.
+  if constexpr (!in_words) {
+    while (cursor != limit &&
+           inside_of<klass>(static_cast<unsigned char>(*cursor)))
+      ++cursor;
+    return cursor;
+  }
   if constexpr (std::endian::native != std::endian::little) {
     return cursor;
   } else {
@@ -1278,6 +1292,10 @@ template <auto& automaton, walk_shape shape, std::size_t state,
   constexpr bool whole_run = !gathers || requires(gatherer& one) {
     requires one.template wants_a_run_whole<state>();
   };
+  // And whether anything is open to be handed it at all.
+  constexpr bool anything_takes = gathers && requires(gatherer& one) {
+    requires one.template anything_takes_the_run<state>();
+  };
   // And whether it would rather read the run itself, which it can where one
   // place does all the work of it.
   constexpr auto class_of_the_run =
@@ -1289,7 +1307,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         } -> std::same_as<const char*>;
       };
   if constexpr (by_pointer && (!gathers || takes_a_piece) &&
-                (shape.in_words || !whole_run) &&
+                (shape.in_words || !whole_run || anything_takes) &&
                 runs_in_place<automaton, state, shape.tags_read>()) {
     constexpr auto run_class = staying_of<automaton, state, shape.tags_read>();
     const cursor_type from = here;
@@ -1305,7 +1323,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       }
       if constexpr (!by_place) spot += here - from;
     } else {
-      here = skip_class<run_class>(here, last);
+      here = skip_class<run_class, shape.in_words>(here, last);
       if constexpr (gathers && takes_a_piece) {
         into.template took_run<state>(from, here, registers, spot);
         if constexpr (!by_place) spot += here - from;
@@ -1592,6 +1610,10 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
   constexpr bool whole_run = !gathers || requires(gatherer& one) {
     requires one.template wants_a_run_whole<state>();
   };
+  // And whether anything is open to be handed it at all.
+  constexpr bool anything_takes = gathers && requires(gatherer& one) {
+    requires one.template anything_takes_the_run<state>();
+  };
   constexpr auto class_of_the_run =
       staying_of<automaton, state, shape.tags_read>();
   constexpr bool reads_the_run_itself =
@@ -1601,7 +1623,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
         } -> std::same_as<const char*>;
       };
   if constexpr (by_pointer && (!gathers || takes_a_piece) &&
-                (shape.in_words || !whole_run) &&
+                (shape.in_words || !whole_run || anything_takes) &&
                 runs_in_place<automaton, state, shape.tags_read>()) {
     const cursor_type from = here;
     if constexpr (gathers && !whole_run && reads_the_run_itself) {
@@ -1615,7 +1637,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
       }
       if constexpr (!by_place) spot += here - from;
     } else {
-      here = skip_class<class_of_the_run>(here, last);
+      here = skip_class<class_of_the_run, shape.in_words>(here, last);
       if constexpr (gathers && takes_a_piece) {
         into.template took_run<state>(from, here, registers, spot);
         if constexpr (!by_place) spot += here - from;

@@ -4927,6 +4927,41 @@ class field_gatherer {
   // end first and walking the run again to say what is in it is one pass more
   // than the reading needs, and for a run of two or three characters that pass
   // is most of what the run costs.
+  // Whether anything at all is open to be handed this state's run.
+  //
+  // A state can keep a run with nothing gathering inside it: a head walked
+  // over, a field whose characters nobody reads. Handing that run over is a
+  // call that does nothing, and finding where it ends first is a pass over
+  // characters the walk was going to pass over anyway. In words that pass is
+  // thirty-two characters to a step and pays for itself; read one character at
+  // a time it is the same walk done twice.
+  template <std::size_t state>
+  [[nodiscard]] static consteval bool anything_takes_the_run() {
+    constexpr std::size_t staying = staying_move<automaton, state>();
+    if constexpr (staying == no_move) {
+      return false;
+    } else {
+      return [&]<std::size_t... group>(std::index_sequence<group...>) {
+        return (false || ... || in_one_call<state, staying, group>());
+      }(std::make_index_sequence<field_count>{});
+    }
+  }
+
+  // Whether this place, open here, takes a run in one call rather than a
+  // character at a time. Room written into with one append does; a fold told
+  // what each character was does not, and handing it a run only moves the
+  // walking of that run from one place to another.
+  template <std::size_t state, std::size_t move, std::size_t group>
+  [[nodiscard]] static consteval bool in_one_call() {
+    constexpr const auto& taken = automaton.states[state].ranges[move];
+    if constexpr ((taken.groups_open & (std::uint64_t{1} << group)) == 0) {
+      return false;
+    } else {
+      using held_type = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+      return scanned_as_range<held_type> || keeps_characters<held_type>;
+    }
+  }
+
   template <std::size_t state>
   [[nodiscard]] static consteval bool wants_a_run_whole() {
     constexpr std::size_t staying = staying_move<automaton, state>();
