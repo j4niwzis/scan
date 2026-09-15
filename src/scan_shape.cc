@@ -2111,130 +2111,124 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       // kept: one of them may be the only walk that reaches the end, and the
       // answer is the first still accepting when it does.
       constexpr const auto& automaton = packed_automaton<type, format, false>;
-      std::array<const char*, automaton.register_count> registers{};
-      // Only the slots that can still be unwritten when the machine accepts are
-      // given the value that says a field took no part. Everything past the tags
-      // is a working register, never read before it is written -- there is no
-      // initialisation left at all -- and a tag written on every path does not
-      // need telling either. For a pattern whose fields all take part, which is
-      // most of them, there is nothing here to do.
-      constexpr auto written_everywhere = tags_always_written<automaton>();
-      [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-        ((written_everywhere[tag]
-              ? void()
-              : void(registers[tag] = nullptr)),
-         ...);
-      }(std::make_index_sequence<automaton.tag_count>{});
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, input.data());
-      // The generated form, not an interpreter.
+      // What is made of the marks, said here and done inside the walk.
       //
-      // This walked the automaton one character at a time: a search through the
-      // ranges of the current state, then a loop over that transition's
-      // commands, both through pointers, and a state index carried in a
-      // variable. The same automaton unrolled into comparisons against
-      // constants is what the captureless path has always used, and it is the
-      // difference between reading a table and running code.
-      const char* cursor = input.data();
-      bool matched = false;
-      // Which terminator, if any.
-      //
-      // Asked for outright it is whatever the caller named, and it must be one
-      // the pattern rejects in every state, which is required here. Not asked
-      // for, it is still taken when the type of the input promises a null
-      // character past its last -- a `std::string` always does -- and when the
-      // pattern happens to reject that character. Where it does not, the loop
-      // that tests the end of the input runs, and the caller never has to know
-      // the question was asked.
-      //
-      // Not `sentinel != 0`, which is what this used to ask. Zero is the
-      // terminator of every `std::string`, and so the one worth asking for; it
-      // is also what a defaulted template parameter of a character type is,
-      // which meant that asking for it politely was the same as not asking. The
-      // absence is its own value now.
+      // The walk cannot be folded into this function -- its states are labels,
+      // and a label is not a thing an inliner moves -- so a mark file this
+      // function owns is one whose address that walk has seen, and one no
+      // compiler will take apart: it stays on the stack, written at every
+      // boundary and read again here. Handed this instead, the walk owns the
+      // marks and keeps them wherever values go, and what comes back is the
+      // answer.
       constexpr unsigned char terminator =
           sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
       constexpr bool by_terminator =
           sentinel >= 0 ||
           (terminated && is_safe_tagged_sentinel<automaton, terminator>());
-      if constexpr (by_terminator) {
-        static_assert(is_safe_tagged_sentinel<automaton, terminator>(),
-                      "the terminator must be rejected in every state");
-        // Two machines, and the subject picks one. A field of five characters
-        // is read faster one at a time than by a loop that first asks whether
-        // a whole word will fit; a field of two hundred is read four times
-        // faster in words. Asking once, here, costs one comparison for the
-        // match -- asking inside would cost one for every state it passes
-        // through.
-        //
-        // Where the caller said which walk they want, nothing is asked: the
-        // length is not looked at, and only the walk they named is written.
-        constexpr std::size_t worth_a_word =
-            worth_reading_in_words<automaton>();
-        constexpr bool asks = walk == how_to_walk::by_length;
-        if (asks ? input.size() < worth_a_word
-                 : walk == how_to_walk::one_at_a_time) {
-          [[clang::always_inline]] matched =
-              run_to_terminator<automaton, terminator, false,
-                                automaton.initial>(
-                  cursor, cursor + input.size(), registers);
-    } else {
-          [[clang::always_inline]] matched =
-              run_to_terminator<automaton, terminator, true,
-                                automaton.initial>(
-                  cursor, cursor + input.size(), registers);
+      // Where the walk read a copy, the marks point into the copy, and the
+      // distance back to the subject is the same for all of them.
+      std::ptrdiff_t carried = 0;
+      const auto build = [&](const auto& registers, bool matched) {
+        if (!matched) {
+          return ending::template went_wrong<groups_type, scan::failure>(
+              no_match<>("input does not match scan expression"));
         }
-    } else {
-        const char* const end = cursor + input.size();
-        constexpr std::size_t worth_a_word =
-            worth_reading_in_words<automaton>();
-        constexpr bool asks = walk == how_to_walk::by_length;
-        if (asks ? input.size() < worth_a_word
-                 : walk == how_to_walk::one_at_a_time) {
-          [[clang::always_inline]] matched =
-              run_from_here<automaton, false, automaton.initial>(
-                  cursor, end, registers);
-    } else {
-          [[clang::always_inline]] matched =
-              run_from_here<automaton, true, automaton.initial>(
-                  cursor, end, registers);
-        }
-      }
-      if (!matched) {
-        return ending::template went_wrong<groups_type, scan::failure>(
-            no_match<>("input does not match scan expression"));
-      }
-      // Two of the three tests this used to make were asking whether the machine
-      // had done something it cannot do. A position is written as the cursor
-      // stands somewhere inside the subject, so it is never past the end; the
-      // opening slot of a group is written before its closing one, so the length
-      // is never negative. Only the third question is real, and only for a group
-      // that some path can reach the end without entering -- which the automaton
-      // is asked about while it is being compiled.
       constexpr auto always_written = tags_always_written<automaton>();
-      const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
-        const auto begin = registers[capture_index * 2];
-        const auto end = registers[capture_index * 2 + 1];
-        if constexpr (!(always_written[capture_index * 2] &&
-                        always_written[capture_index * 2 + 1])) {
-          // A group that took no part points nowhere, which no group that did
-          // take part does. Whether that is a failure is decided once, at the
-          // end, and not here.
-          if (begin == nullptr) return std::string_view{};
+        const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
+          const auto begin = registers[capture_index * 2];
+          const auto end = registers[capture_index * 2 + 1];
+          if constexpr (!(always_written[capture_index * 2] &&
+                          always_written[capture_index * 2 + 1])) {
+            // A group that took no part points nowhere, which no group that did
+            // take part does. Whether that is a failure is decided once, at the
+            // end, and not here.
+            if (begin == nullptr) return std::string_view{};
+          }
+          // Only a walk that could have read a copy carries anything; the
+          // rest are told so here rather than made to add nothing.
+          if constexpr (by_terminator) {
+            return std::string_view(begin,
+                                    static_cast<std::size_t>(end - begin));
+          } else {
+            return std::string_view(begin + carried,
+                                    static_cast<std::size_t>(end - begin));
+          }
+        };
+        // Where the automaton writes every tag on every path, no group can have
+        // taken no part, and the walk over them at the end is a walk over a
+        // question already answered.
+        constexpr bool any_can_be_absent =
+            !(true && ... && (always_written[index * 2] &&
+                              always_written[index * 2 + 1]));
+        if constexpr (!any_can_be_absent) {
+          return std::array{capture.template operator()<index>()...};
+        } else {
+          return answer(std::array{capture.template operator()<index>()...});
         }
-        return std::string_view(begin, static_cast<std::size_t>(end - begin));
       };
-      // Where the automaton writes every tag on every path, no group can have
-      // taken no part, and the walk over them at the end is a walk over a
-      // question already answered.
-      constexpr bool any_can_be_absent =
-          !(true && ... && (always_written[index * 2] &&
-                            always_written[index * 2 + 1]));
-      if constexpr (!any_can_be_absent) {
-        return std::array{capture.template operator()<index>()...};
-      } else {
-        return answer(std::array{capture.template operator()<index>()...});
+      static_assert(!by_terminator ||
+                        is_safe_tagged_sentinel<automaton, terminator>(),
+                    "the terminator must be rejected in every state");
+      // One walk, said four ways and called once.
+      //
+      // Whether there is a terminator is a fact about the caller and the
+      // pattern, and whether the subject is worth reading in words is a fact
+      // about its length -- so there are four shapes and one call. Said as
+      // four call sites, each would be a place where the marks could be owned
+      // by somebody else again, which is what this was before.
+      constexpr auto shape_for = [](bool in_words) {
+        walk_shape made{.in_words = in_words,
+                        .budget = bodies_worth_writing<automaton>()};
+        if constexpr (by_terminator) {
+          made.by_terminator = true;
+          made.terminator = terminator;
+        }
+        return made;
+      };
+      const char* const from = input.data();
+      const char* const upto = from + input.size();
+      const auto go = [&]<walk_shape shape>(const char* begin,
+                                           const char* end) {
+        return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
+                          const char*, false, const char*, const char*,
+                          automaton.register_count, gathers_nothing,
+                          walk_answer<const char*>, decltype(build)>(
+            begin, end, begin, begin, build);
+      };
+      // A subject short enough to copy is a subject we can give a terminator
+      // to.
+      //
+      // Without one every character read has to be guarded, and the guard is a
+      // comparison and a branch on each of them -- measured, that is the whole
+      // difference between the two forms and nothing else. Copied into room of
+      // our own with a nul written after it, the same characters are read by
+      // the walk that needs no guard, because the terminator is rejected in
+      // every state and stops the walk itself. What comes back points into the
+      // copy, so the marks are carried back by the distance between them.
+      constexpr unsigned char room_terminator = 0;
+      if constexpr (!by_terminator &&
+                    is_safe_tagged_sentinel<automaton, room_terminator>()) {
+        constexpr std::size_t worth_copying = 64;
+        if (input.size() < worth_copying) {
+          char room[worth_copying];
+          __builtin_memcpy(room, from, input.size());
+          room[input.size()] = static_cast<char>(room_terminator);
+          const std::ptrdiff_t back = from - static_cast<const char*>(room);
+          carried = from - static_cast<const char*>(room);
+          constexpr walk_shape made{.in_words = false,
+                                    .by_terminator = true,
+                                    .terminator = room_terminator,
+                                    .budget = bodies_worth_writing<automaton>()};
+          return go.template operator()<made>(room, room + input.size());
+        }
       }
+      constexpr std::size_t worth_a_word = worth_reading_in_words<automaton>();
+      constexpr bool asks = walk == how_to_walk::by_length;
+      if (asks ? input.size() < worth_a_word
+               : walk == how_to_walk::one_at_a_time) {
+        return go.template operator()<shape_for(false)>(from, upto);
+      }
+      return go.template operator()<shape_for(true)>(from, upto);
     }
   }
 }
