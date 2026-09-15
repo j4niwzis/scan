@@ -1054,12 +1054,6 @@ with no calls, which is what re2c generates for the same pattern, instruction
 for instruction**. The difference in the ordinary form is three instructions:
 the length checks re2c does not have, because it is given a pointer and a
 terminator rather than a range.
-
-The timings below were taken before the walk was written out with a label for
-every state, so they are the table walk's numbers and not this one's. They are
-left here because the shape of the comparison has not changed and the
-methodology under them is the point; the decimals are owed a fresh pass.
-
 Every benchmark asks its question of four engines -- `scan::scan`, CTRE, RE2
 and re2c -- on the same subjects. What each of them is given differs, and the
 differences are the point:
@@ -1086,36 +1080,44 @@ The subjects are `alpha,bravo,charlie,delta,echo` -- thirty characters -- and,
 for the long rows, the same five fields of two hundred letters each, which is
 a thousand and four.
 
+The first row of every table is the floor: the same loop over the same
+subjects with nothing scanned in it. It is there because on thirty characters
+it is a third of what the fastest row costs, and a comparison that leaves it
+in is comparing the harness.
+
 Five fields taken out of thirty characters, thirty-two records to a pass, the
-median of seven passes:
+median of seven passes, and what is left when the floor comes off:
 
-| | a pass |
-| --- | --- |
-| `scan::scan<f>` | 733 ns |
-| `scan::scan<f>.sentinel()` | 511 ns |
-| CTRE | 551 ns |
-| re2c | 552 ns |
-| RE2 | 20638 ns |
+| | a pass | less the floor |
+| --- | --- | --- |
+| the floor, nothing scanned | 192 ns | -- |
+| CTRE | 519 ns | 327 ns |
+| re2c | 531 ns | 339 ns |
+| `scan::scan<f>.sentinel()` | 614 ns | 422 ns |
+| `scan::scan<f>` | 748 ns | 556 ns |
+| RE2 | 21042 ns | 20850 ns |
 
-Which walk reads the subject is the difference between the first two: told
-where the subject ends, the loop tests it at every character; told a character
-that ends it -- which is what re2c is given, and what a `std::string` already
-has -- it does not. Given the same thing as the generated scanner, the reading
-is the generated scanner's speed.
+Which is the honest place to say that on records this short the reading is
+behind both -- a quarter behind the generated scanner and a third behind the
+backtracking matcher. Thirty characters is five fields of five letters, and a
+field of five letters is a run too short to step over: what is left is the
+per-field work, and there the two that do nothing clever do well.
 
 The same five fields out of a thousand characters, one record to a pass, where
-what is measured is the loop rather than everything around it:
+the fields are two hundred letters each and the run is worth stepping over:
 
-| | a pass |
-| --- | --- |
-| `scan::scan<f>.sentinel()` | 65 ns |
-| re2c | 342 ns |
-| CTRE | 470 ns |
-| RE2 | 9865 ns |
+| | a pass | against the reading |
+| --- | --- | --- |
+| `scan::scan<f>.sentinel()` | 87 ns | -- |
+| re2c | 414 ns | 4.7x |
+| CTRE | 485 ns | 5.6x |
+| RE2 | 10935 ns | 125x |
 
 A field of two hundred characters is stepped over sixty-four at a time, and
 the others read it one character at a time, which is the whole of that
-difference.
+difference. Between the two tables is the crossover, and it is the length of a
+field and not the length of the subject: the reading wins where there is a run
+to step over and loses where there is not.
 
 Recognition rather than extraction, which is the other half of what an engine
 is asked: `benchmarks/address_benchmark.cc` matches an address --
@@ -1125,38 +1127,46 @@ subjects to a pass:
 
 | | a pass |
 | --- | --- |
-| `scan::match<p>` | 1249 ns |
-| `scan::match<p>.sentinel()` | 752 ns |
-| re2c | 753 ns |
-| RE2 | 2683 ns |
-| CTRE | 9639 ns |
+| `scan::match<p>.sentinel()` | 642 ns |
+| `scan::match<p>` | 672 ns |
+| re2c | 685 ns |
+| RE2 | 2989 ns |
+| CTRE | 9379 ns |
 
-The same story as the row of fields, and further along it: given what the
-generated scanner is given, the reading is the generated scanner to the
-nanosecond -- 752 against 753 -- and given a range instead it pays for the
-length test at every character. CTRE is what a backtracking matcher costs on a
-pattern with alternatives inside repetitions: it tries them.
+Both forms of the reading are now at the generated scanner, and the five per
+cent between them is what a range costs over a pointer and a terminator -- it
+used to be two thirds, and the walk being written out state by state is what
+took it away. CTRE is what a backtracking matcher costs on a pattern with
+alternatives inside repetitions: it tries them.
+
+And what RE2 pays for being asked to keep the groups, in its own numbers:
+recognising the address is 2.9 nanoseconds a character, taking five fields out
+of a record is 21.7. Seven times, for the same engine on the same machine, and
+the reason is that its deterministic automaton cannot hand back submatches --
+asked for them it walks again, one thread a reading, each carrying its own
+slots.
 
 And the same records with the fields copied into strings rather than pointed
 at, which is what a subject that cannot be pointed at afterwards needs:
 
 | | a pass |
 | --- | --- |
-| making the strings, nothing scanned | 4021 ns |
-| `scan::scan<f>` into strings | 5243 ns |
+| making the strings, nothing scanned | 3991 ns |
+| `scan::scan<f>` into strings | 5330 ns |
 
-Against `sscanf`, on the same work -- the same characters in, the same
-integers out:
+Against `sscanf`, on the same work -- the same characters in, the same values
+out, thirty-two records to a pass:
 
 | | `sscanf` | here |
 | --- | --- | --- |
-| two numbers | 109 ns | 20 ns |
-| a timestamp of six | 207 ns | 64 ns |
-| five words into buffers | 299 ns | 75 ns |
-| five words into views | 299 ns | 39 ns |
+| two numbers | 3352 ns | 449 ns |
+| a timestamp of six | 6596 ns | 1509 ns |
+| five words into views | 9257 ns | 863 ns |
+| five words into room said in advance | 9257 ns | 3551 ns |
+| five words into strings | 9257 ns | 5857 ns |
 
-The third row is the honest pair: both copy each field into room said in
-advance. The fourth is a thing `sscanf` cannot do at all. What the numbers do
+The fourth row is the honest pair: both copy each field into room said in
+advance. The third is a thing `sscanf` cannot do at all. What the numbers do
 not show is where its time goes: the format is a string it parses again on
 every call.
 
