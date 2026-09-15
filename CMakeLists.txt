@@ -667,7 +667,7 @@ if(SCAN_BUILD_BENCHMARKS)
 
   add_library(ctre_module)
   target_sources(ctre_module PUBLIC FILE_SET CXX_MODULES FILES
-    "${ctre_SOURCE_DIR}/ctre.cppm")
+    "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/ctre.cppm")
   # By the name the port says it produces, and not by the bare one.
   #
   # ctre's own CMake makes a target called `ctre` and an alias beside it, so
