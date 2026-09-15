@@ -553,9 +553,15 @@ if(SCAN_BUILD_BENCHMARKS)
   # like anything else, and the option reaches it. Measured, it moves RE2 by
   # about one per cent, which is said here rather than left to be found.
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    include(CheckCXXCompilerFlag)
-    check_cxx_compiler_flag("-mllvm -jump-threading-across-loop-headers=true"
-                            SCAN_THREADS_ACROSS_LOOP_HEADERS)
+    # Asked of the linker, because the linker is who is given it. Put to the
+    # compiler the question is answered by the wrong program: `clang` takes
+    # `-mllvm` and the link then passes it on as `-Xlinker -mllvm`, which GNU
+    # ld reads as an emulation mode named llvm and stops there. lld takes it
+    # and hands it to the code generation, which is what it was asked for.
+    include(CheckLinkerFlag)
+    check_linker_flag(CXX
+                      "LINKER:-mllvm,-jump-threading-across-loop-headers=true"
+                      SCAN_THREADS_ACROSS_LOOP_HEADERS)
   endif()
 
   # The ports below are not module libraries, and some of them say C++11.
