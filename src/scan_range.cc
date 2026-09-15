@@ -590,15 +590,16 @@ class prefix_stream_scan {
   prefix_stream_scan(const prefix_stream_scan&) = delete;
   prefix_stream_scan& operator=(const prefix_stream_scan&) = delete;
 
+  // The answer says how much room it needs for what it hands back, which is a
+  // question about the pattern and the reading both, so it is deduced rather
+  // than named here.
   template <class type>
-  [[nodiscard]] constexpr std::expected<detail::taken_ahead<type>,
-                                        detail::failure_for<type>>
-  try_take() {
+  [[nodiscard]] constexpr auto try_take() {
     return detail::scan_stream_prefix<type, format>(input_);
   }
 
   template <class type>
-  [[nodiscard]] constexpr detail::taken_ahead<type> take() {
+  [[nodiscard]] constexpr auto take() {
     return or_thrown(try_take<type>());
   }
 
