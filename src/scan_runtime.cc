@@ -417,9 +417,19 @@ template <staying_class klass, bool in_words = true>
     // even there -- and for a run of three the answer to that question is no,
     // every time, after all of the paying. So the run is walked as a hand
     // would walk it until there is enough of it left to be worth the vectors.
-    for (int step = 0; step < 8 && cursor != limit; ++step) {
-      if (!inside_of<klass>(static_cast<unsigned char>(*cursor))) return cursor;
-      ++cursor;
+    // Eight read one at a time before any wider step is set up, because a run
+    // of five characters is read faster than a vector is filled for it. A run
+    // with sixty-four characters still in front of it is not that run: the
+    // peel is what a short run needs and what a long one pays for, eight
+    // characters at every boundary it crosses. So it is asked for by length,
+    // the same question the walk itself is chosen by.
+    if (limit - cursor < 64) {
+      for (int step = 0; step < 8 && cursor != limit; ++step) {
+        if (!inside_of<klass>(static_cast<unsigned char>(*cursor))) {
+          return cursor;
+        }
+        ++cursor;
+      }
     }
 #if SCAN_HAS_LANES
     // Sixty-four characters to a step and one question at the end of it.
