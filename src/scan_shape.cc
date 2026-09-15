@@ -5921,7 +5921,7 @@ template <class type, fixed_string format, class iterator_type,
           class sentinel_type, std::size_t hold>
 [[nodiscard]] constexpr std::expected<taken_ahead<type>, failure_for<type>>
 scan_stream_prefix(iterator_type& first, sentinel_type last,
-                   stream_carry<hold>& carry) {
+                   stream_carry<hold>& carry, bool read_on = true) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
   constexpr std::size_t window = walk_past_a_match<automaton>();
   constexpr bool can_go_back = std::forward_iterator<iterator_type>;
@@ -5949,14 +5949,27 @@ scan_stream_prefix(iterator_type& first, sentinel_type last,
   std::array<char, held_here> since{};
   std::size_t since_count = 0;
   if (state.accepting()) note = state;
+  // A character that has been taken but not stepped over yet.
+  //
+  // Stepping over one reads the next: an iterator of a subject that arrives as
+  // it is read does its reading in `++`. So the step is put off until another
+  // character is actually wanted, and a match that settles where it stands
+  // never causes the one after it to be read at all. What is read is what the
+  // machine asked for, and nothing beyond it.
+  bool taken_here = false;
+  const auto step_over_it = [&] {
+    if (!taken_here) return;
+    ++first;
+    taken_here = false;
+  };
   while (true) {
     char symbol = 0;
     if (!carry.empty()) {
       symbol = carry.front();
-    } else if (first != last) {
-      symbol = static_cast<char>(*first);
     } else {
-      break;
+      step_over_it();
+      if (first == last) break;
+      symbol = static_cast<char>(*first);
     }
     if (!state.offer(symbol)) {
       // Looked at and not taken: it stays where it is, and is said here so
@@ -5967,7 +5980,7 @@ scan_stream_prefix(iterator_type& first, sentinel_type last,
     if (!carry.empty()) {
       carry.pop();
     } else {
-      ++first;
+      taken_here = true;
     }
     if constexpr (!can_go_back && window != 0) since[since_count++] = symbol;
     if (state.accepting()) {
@@ -5986,6 +5999,9 @@ scan_stream_prefix(iterator_type& first, sentinel_type last,
     if (!got) return std::unexpected(std::move(got).error());
     return taken_ahead<type>{std::move(*got), ended_it};
   };
+  // Whoever reads on from here needs the reading to stand after what was
+  // taken; whoever does not would only make it read one more character.
+  if (read_on) step_over_it();
   if (state.accepting()) return handed_back(std::move(state).finish(), stopped);
   if (note) {
     // Past the match and dead. The answer is the place that was kept, and what
@@ -6040,7 +6056,7 @@ template <class type, fixed_string format, std::ranges::input_range range_type>
   constexpr std::size_t hold = stream_hold<type, format, decltype(first)>;
   stream_carry<hold> carry;
   auto got = scan_stream_prefix<type, format>(first, std::ranges::end(input),
-                                              carry);
+                                              carry, false);
   using answer = taken_ahead<type, hold>;
   if (!got) {
     return std::expected<answer, failure_for<type>>(
