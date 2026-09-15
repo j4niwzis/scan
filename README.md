@@ -1047,13 +1047,6 @@ library and cares what it costs wants that option; it is LLVM's own and may be
 spelled differently in another one, so the build asks whether it is there
 rather than assuming it.
 
-For a fixed-length pattern with a terminator and no length to check
-(`scan::match<p>.sentinel().scalar()`), the code generated for
-`[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}` is **71 instructions
-with no calls, which is what re2c generates for the same pattern, instruction
-for instruction**. The difference in the ordinary form is three instructions:
-the length checks re2c does not have, because it is given a pointer and a
-terminator rather than a range.
 Every benchmark asks its question of four engines -- `scan::scan`, CTRE, RE2
 and re2c -- on the same subjects. What each of them is given differs, and the
 differences are the point:
@@ -1080,27 +1073,29 @@ The subjects are `alpha,bravo,charlie,delta,echo` -- thirty characters -- and,
 for the long rows, the same five fields of two hundred letters each, which is
 a thousand and four.
 
-The first row of every table is the floor: the same loop over the same
-subjects with nothing scanned in it. It is there because on thirty characters
-it is a third of what the fastest row costs, and a comparison that leaves it
-in is comparing the harness.
+One row of the first table is the floor: the same loop over the same subjects
+with nothing scanned in it. It is there to be known and not to be subtracted --
+that loop runs inside every row below it and hides under the work each one
+does, so a row less the floor is not what that engine costs. It is said because
+on thirty characters it is a third of the fastest row, and a reader comparing
+two rows that close should know it is there.
 
 Five fields taken out of thirty characters, thirty-two records to a pass, the
 median of seven passes, and what is left when the floor comes off:
 
-| | a pass | less the floor |
-| --- | --- | --- |
-| the floor, nothing scanned | 192 ns | -- |
-| CTRE | 519 ns | 327 ns |
-| re2c | 531 ns | 339 ns |
-| `scan::scan<f>.sentinel()` | 614 ns | 422 ns |
-| `scan::scan<f>` | 748 ns | 556 ns |
-| RE2 | 21042 ns | 20850 ns |
+| | a pass |
+| --- | --- |
+| the floor, nothing scanned | 192 ns |
+| CTRE | 519 ns |
+| re2c | 531 ns |
+| `scan::scan<f>.sentinel()` | 614 ns |
+| `scan::scan<f>` | 748 ns |
+| RE2 | 21042 ns |
 
 Which is the honest place to say that on records this short the reading is
-behind both -- a quarter behind the generated scanner and a third behind the
-backtracking matcher. Thirty characters is five fields of five letters, and a
-field of five letters is a run too short to step over: what is left is the
+behind both: sixteen per cent behind the generated scanner and eighteen behind
+the backtracking matcher. Thirty characters is five fields of five letters, and
+a field of five letters is a run too short to step over -- what is left is the
 per-field work, and there the two that do nothing clever do well.
 
 The same five fields out of a thousand characters, one record to a pass, where
