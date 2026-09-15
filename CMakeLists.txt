@@ -558,6 +558,9 @@ if(SCAN_BUILD_BENCHMARKS)
                             SCAN_THREADS_ACROSS_LOOP_HEADERS)
   endif()
 
+  # The ports below are not module libraries, and some say C++11; the `std`
+  # module is ours to ask for, not theirs to be given.
+  set(CMAKE_CXX_MODULE_STD 0)
   # The harness, the two engines and the generator. Ports written here because
   # they are used here, and each is a name and where it comes from.
   cme_declare_port(NAME benchmark PROVIDES benchmark
@@ -634,19 +637,8 @@ if(SCAN_BUILD_BENCHMARKS)
   # the program runs and brings abseil with it, which is a weight -- but the
   # benchmarks already build a whole scanner generator, and a comparison that
   # leaves out the engine most programs would reach for is not one.
-  set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-  set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
-  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-  CPMAddPackage(
-    NAME abseil
-    GITHUB_REPOSITORY abseil/abseil-cpp
-    GIT_TAG 20250127.0
-  )
-  CPMAddPackage(
-    NAME re2_source
-    GITHUB_REPOSITORY google/re2
-    GIT_TAG 2024-07-02
-  )
+  # RE2 and abseil are ports above; fetching them again fetches them twice.
+  set(CMAKE_CXX_MODULE_STD 1)
   add_library(bench_re2)
   target_sources(bench_re2 PUBLIC FILE_SET CXX_MODULES FILES
     benchmarks/re2_engine.cppm)
