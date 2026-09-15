@@ -13,14 +13,21 @@
 import std;
 import bench.harness;
 import bench.inputs;
+#if SCAN_BENCH_THEIRS
 import bench.re2;
 import ctre;
+#endif
+#if SCAN_BENCH_OURS
 import scan;
+#endif
 
+#if SCAN_BENCH_THEIRS
 bool re2c_address(const char* cursor);
+#endif
 
 namespace {
 
+#if SCAN_BENCH_OURS
 void scan_address(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
@@ -33,7 +40,9 @@ void scan_address(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::address.size());
 }
+#endif
 
+#if SCAN_BENCH_OURS
 void scan_address_sentinel(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
@@ -46,7 +55,9 @@ void scan_address_sentinel(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::address.size());
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void ctre_address(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
@@ -59,7 +70,9 @@ void ctre_address(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::address.size());
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void re2c_address_benchmark(harness::State& state) {
   const auto& texts = bench::copies_of(bench::address, 32);
   for (auto _ : state) {
@@ -72,11 +85,13 @@ void re2c_address_benchmark(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::address.size());
 }
+#endif
 
 
 // The same question of an engine that reads its pattern while the program
 // runs. What it compiles is not in the measurement; what its walk does with a
 // pattern it did not know about is.
+#if SCAN_BENCH_THEIRS
 void re2_address(harness::State& state) {
   const bench::re2_engine engine("[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+(?:\\.[a-zA-Z0-9!#$%&'*+/=?^_`|~\\-]+)*@(?:[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?\\.)+[a-zA-Z0-9](?:[a-zA-Z0-9\\-]*[a-zA-Z0-9])?");
   const auto& texts = bench::copies_of(bench::address, 32);
@@ -90,13 +105,18 @@ void re2_address(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::address.size());
 }
+#endif
 
 const int registered = [] {
+#if SCAN_BENCH_OURS
   harness::RegisterBenchmark("scan_address", scan_address);
   harness::RegisterBenchmark("scan_address_sentinel", scan_address_sentinel);
+#endif
+#if SCAN_BENCH_THEIRS
   harness::RegisterBenchmark("ctre_address", ctre_address);
   harness::RegisterBenchmark("re2_address", re2_address);
   harness::RegisterBenchmark("re2c_address", re2c_address_benchmark);
+#endif
   return 0;
 }();
 

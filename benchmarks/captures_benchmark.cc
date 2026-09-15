@@ -7,11 +7,17 @@
 import std;
 import bench.harness;
 import bench.inputs;
+#if SCAN_BENCH_THEIRS
 import bench.re2;
 import ctre;
+#endif
+#if SCAN_BENCH_OURS
 import scan;
+#endif
 
+#if SCAN_BENCH_THEIRS
 bool re2c_captures(const char* cursor, const char** positions);
+#endif
 
 namespace {
 
@@ -43,6 +49,7 @@ struct field_strings {
 // the same two barriers, no scanning between them. Every row below carries
 // this, so it is the floor none of them can go under, and the difference
 // between a row and this one is the engine.
+#if SCAN_BENCH_OURS
 void harness_floor(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -56,11 +63,13 @@ void harness_floor(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
 // The same floor for the row that returns strings: the five fields are already
 // known, and all this does is make strings of them. None is longer than seven
 // characters, so none of them should reach for the allocator at all, and this
 // row says what they cost when nothing is scanned.
+#if SCAN_BENCH_OURS
 void harness_floor_strings(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -78,7 +87,9 @@ void harness_floor_strings(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
+#if SCAN_BENCH_OURS
 void scan_captures_views(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -93,10 +104,12 @@ void scan_captures_views(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
 // The same fields, from input that carries a terminator the pattern never
 // matches -- which a `std::string` always does. The loop then tests only the
 // character, not the character and the end of the input.
+#if SCAN_BENCH_OURS
 void scan_captures_views_sentinel(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -112,7 +125,9 @@ void scan_captures_views_sentinel(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
+#if SCAN_BENCH_OURS
 void scan_captures_strings(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -127,6 +142,7 @@ void scan_captures_strings(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
 // The fields, and not ten offsets into the subject.
 //
@@ -137,6 +153,7 @@ void scan_captures_strings(harness::State& state) {
 // on it: matching the same pattern without taking anything out costs this
 // library the same six nanoseconds it costs re2c to match and place its tags.
 // So both sides now build the same thing.
+#if SCAN_BENCH_THEIRS
 [[nodiscard]] inline field_views views_from(const char* const* positions) {
   const auto field = [&](std::size_t index) {
     return std::string_view(
@@ -146,12 +163,14 @@ void scan_captures_strings(harness::State& state) {
   };
   return field_views{field(0), field(1), field(2), field(3), field(4)};
 }
+#endif
 
 // The same thousand characters with the fields copied out rather than pointed
 // at. Five copies of two hundred characters is work no engine can be compared
 // on -- it is an allocator and a memcpy -- but it is what a caller who cannot
 // point at the subject afterwards pays, and the row above says what the same
 // copies cost with nothing scanned.
+#if SCAN_BENCH_OURS
 void scan_captures_strings_long(harness::State& state) {
   const std::string& text = bench::long_csv();
   for (auto _ : state) {
@@ -164,9 +183,11 @@ void scan_captures_strings_long(harness::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
+#endif
 
 // What those copies cost on their own: the five fields are already known, and
 // all this does is make strings of them.
+#if SCAN_BENCH_OURS
 void harness_floor_strings_long(harness::State& state) {
   const std::string& text = bench::long_csv();
   for (auto _ : state) {
@@ -181,11 +202,13 @@ void harness_floor_strings_long(harness::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
+#endif
 
 // The same work on a subject a thousand bytes long, for both engines. What a
 // row like this reports is a cost per byte, which is what the loop decides;
 // everything around the match is the same handful of nanoseconds it was, and is
 // now a fortieth of the total rather than half of it.
+#if SCAN_BENCH_OURS
 void scan_captures_long(harness::State& state) {
   const std::string& text = bench::long_csv();
   for (auto _ : state) {
@@ -198,7 +221,9 @@ void scan_captures_long(harness::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void re2c_captures_long(harness::State& state) {
   const std::string& text = bench::long_csv();
   for (auto _ : state) {
@@ -212,7 +237,9 @@ void re2c_captures_long(harness::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void ctre_captures(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -227,12 +254,14 @@ void ctre_captures(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
 // The same thousand characters, out of the two engines that are given a range.
 //
 // The long row is where a loop is measured rather than everything around it,
 // and where the walks differ most: a field of two hundred characters is either
 // stepped over or read one character at a time.
+#if SCAN_BENCH_THEIRS
 void ctre_captures_long(harness::State& state) {
   const std::string& text = bench::long_csv();
   for (auto _ : state) {
@@ -244,7 +273,9 @@ void ctre_captures_long(harness::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void re2c_captures_benchmark(harness::State& state) {
   const auto& texts = bench::copies_of(bench::csv, 32);
   for (auto _ : state) {
@@ -261,6 +292,7 @@ void re2c_captures_benchmark(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
 // Seven runs of each row, reported as median and spread.
 //
@@ -274,6 +306,7 @@ void re2c_captures_benchmark(harness::State& state) {
 // program runs. It hands back views into the subject, as this library and CTRE
 // do, so the row is the same work: what differs is where the pattern was
 // turned into a machine.
+#if SCAN_BENCH_THEIRS
 void re2_captures(harness::State& state) {
   const bench::re2_engine engine("([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)");
   const auto& texts = bench::copies_of(bench::csv, 32);
@@ -291,7 +324,9 @@ void re2_captures(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::csv.size());
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void re2_captures_long(harness::State& state) {
   const bench::re2_engine engine("([a-z]+),([a-z]+),([a-z]+),([a-z]+),([a-z]+)");
   const std::string& text = bench::long_csv();
@@ -306,6 +341,7 @@ void re2_captures_long(harness::State& state) {
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
+#endif
 
 const int registered = [] {
   const auto row = [](const char* name, void (*body)(harness::State&)) {
@@ -313,6 +349,7 @@ const int registered = [] {
         ->Repetitions(7)
         ->ReportAggregatesOnly(true);
   };
+#if SCAN_BENCH_OURS
   row("harness_floor", harness_floor);
   row("harness_floor_strings", harness_floor_strings);
   row("scan_captures_views", scan_captures_views);
@@ -321,12 +358,15 @@ const int registered = [] {
   row("scan_captures_long", scan_captures_long);
   row("harness_floor_strings_long", harness_floor_strings_long);
   row("scan_captures_strings_long", scan_captures_strings_long);
+#endif
+#if SCAN_BENCH_THEIRS
   row("re2c_captures_long", re2c_captures_long);
   row("ctre_captures_long", ctre_captures_long);
   row("re2_captures_long", re2_captures_long);
   row("ctre_captures", ctre_captures);
   row("re2_captures", re2_captures);
   row("re2c_captures", re2c_captures_benchmark);
+#endif
   return 0;
 }();
 

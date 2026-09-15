@@ -5,16 +5,23 @@
 // constant evaluator the library is built with.
 import std;
 import bench.harness;
+#if SCAN_BENCH_THEIRS
 import bench.re2;
 import ctre;
+#endif
+#if SCAN_BENCH_OURS
 import scan;
+#endif
 
 import bench.inputs;
 
+#if SCAN_BENCH_THEIRS
 bool re2c_word(const char* cursor);
+#endif
 
 namespace {
 
+#if SCAN_BENCH_OURS
 void scan_word(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
@@ -26,7 +33,9 @@ void scan_word(harness::State& state) {
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
+#endif
 
+#if SCAN_BENCH_OURS
 void scan_word_sentinel(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
@@ -38,7 +47,9 @@ void scan_word_sentinel(harness::State& state) {
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void ctre_word(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
@@ -50,7 +61,9 @@ void ctre_word(harness::State& state) {
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
+#endif
 
+#if SCAN_BENCH_THEIRS
 void re2c_word_benchmark(harness::State& state) {
   const std::string& text =
       bench::long_word(static_cast<std::size_t>(state.range(0)));
@@ -62,6 +75,7 @@ void re2c_word_benchmark(harness::State& state) {
   state.SetBytesProcessed(state.iterations() *
                           static_cast<std::size_t>(state.range(0)));
 }
+#endif
 
 // The same loop over inputs of very different length: a cost paid once per
 // call shows at sixty-four bytes and disappears at sixty-four kilobytes, while
@@ -74,6 +88,7 @@ harness::Benchmark* with_lengths(harness::Benchmark* registration) {
 // The same question of an engine that reads its pattern while the program
 // runs. What it compiles is not in the measurement; what its walk does with a
 // pattern it did not know about is.
+#if SCAN_BENCH_THEIRS
 void re2_word(harness::State& state) {
   const bench::re2_engine engine("[a-z]+");
   const auto& texts = bench::copies_of(bench::word, 32);
@@ -87,15 +102,20 @@ void re2_word(harness::State& state) {
   state.SetBytesProcessed(state.iterations() * texts.size() *
                           bench::word.size());
 }
+#endif
 
 const int registered = [] {
+#if SCAN_BENCH_OURS
   with_lengths(harness::RegisterBenchmark("scan_word", scan_word));
   with_lengths(
       harness::RegisterBenchmark("scan_word_sentinel", scan_word_sentinel));
+#endif
+#if SCAN_BENCH_THEIRS
   with_lengths(harness::RegisterBenchmark("ctre_word", ctre_word));
   with_lengths(harness::RegisterBenchmark("re2_word", re2_word));
   with_lengths(
       harness::RegisterBenchmark("re2c_word", re2c_word_benchmark));
+#endif
   return 0;
 }();
 
