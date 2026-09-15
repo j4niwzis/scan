@@ -553,11 +553,23 @@ if(SCAN_BUILD_BENCHMARKS)
   # like anything else, and the option reaches it. Measured, it moves RE2 by
   # about one per cent, which is said here rather than left to be found.
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    include(CheckCXXCompilerFlag)
-    check_cxx_compiler_flag("-mllvm -jump-threading-across-loop-headers=true"
-                            SCAN_THREADS_ACROSS_LOOP_HEADERS)
+    # Asked of the linker, because the linker is who is given it. Put to the
+    # compiler the question is answered by the wrong program: `clang` takes
+    # `-mllvm` and the link then passes it on as `-Xlinker -mllvm`, which GNU
+    # ld reads as an emulation mode named llvm and stops there. lld takes it
+    # and hands it to the code generation, which is what it was asked for.
+    include(CheckLinkerFlag)
+    check_linker_flag(CXX
+                      "LINKER:-mllvm,-jump-threading-across-loop-headers=true"
+                      SCAN_THREADS_ACROSS_LOOP_HEADERS)
   endif()
 
+  # The ports below are not module libraries, and some of them say C++11.
+  # `CMAKE_CXX_MODULE_STD` is on for this project, and on means every target
+  # gets the `std` module -- including theirs, where CMake then refuses:
+  # "has C++ sources that use modules, but does not include cxx_std_20". So it
+  # is off while they are configured and on again for what is ours.
+  set(CMAKE_CXX_MODULE_STD 0)
   # The harness, the two engines and the generator. Ports written here because
   # they are used here, and each is a name and where it comes from.
   cme_declare_port(NAME benchmark PROVIDES benchmark
@@ -634,19 +646,15 @@ if(SCAN_BUILD_BENCHMARKS)
   # the program runs and brings abseil with it, which is a weight -- but the
   # benchmarks already build a whole scanner generator, and a comparison that
   # leaves out the engine most programs would reach for is not one.
-  set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-  set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
-  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-  CPMAddPackage(
-    NAME abseil
-    GITHUB_REPOSITORY abseil/abseil-cpp
-    GIT_TAG 20250127.0
-  )
-  CPMAddPackage(
-    NAME re2_source
-    GITHUB_REPOSITORY google/re2
-    GIT_TAG 2024-07-02
-  )
+  # RE2 and abseil are ports above, answered by find_package like everything
+  # else. Fetching them again here fetches them twice, and where the port is
+  # answered from source the second copy cannot make its targets: `add_library
+  # cannot create target "atomic_hook"`, and the same for every one of
+  # abseil's, and for re2 itself. It stayed quiet in two places -- a build
+  # directory that already had them, and a machine with RE2 installed, where
+  # the port answers from there and builds nothing -- and nowhere else. The
+  # benchmarks have never configured from clean.
+  set(CMAKE_CXX_MODULE_STD 1)
   add_library(bench_re2)
   target_sources(bench_re2 PUBLIC FILE_SET CXX_MODULES FILES
     benchmarks/re2_engine.cppm)
