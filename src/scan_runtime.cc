@@ -2349,9 +2349,21 @@ SCAN_FORCE_INLINE constexpr void take_move(
 #define SCAN_RUNG_BODY(t)                                                     \
   SCAN_CAT(scan_at_, t)                                                       \
       : if constexpr (t < states_in<automaton>) {                             \
+    /* Whether the step took a character is a question the comparisons below \
+       already answer, where the walk was told a terminator.                 \
+                                                                            \
+       That terminator is a character every state rejects -- the caller says \
+       so and an assert checks it -- so it makes no move out of any state and \
+       arrives where a state with nothing to take arrives anyway. The step    \
+       has already finished the match by then; what is skipped is only the    \
+       asking, which is a branch on every state a record passes through. Ten  \
+       of them on a row of five fields, and the generated scanner pays none.  \
+                                                                            \
+       Not where the walk is looking for the longest head: there the arrival  \
+       finishes the match a second time, and once is what it is written for. */\
     if (step_in_state<automaton, shape, t>(here, last_here, spot, registers,   \
                                           into, best, symbol) ==            \
-        step_said::took) {                                                    \
+        step_said::took || (shape.by_terminator && !shape.longest)) {                        \
       SCAN_WAY_OUT(t, 0)                                                      \
       SCAN_WAY_OUT(t, 1)                                                      \
       SCAN_WAY_OUT(t, 2)                                                      \
