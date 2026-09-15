@@ -346,6 +346,28 @@ template <class lane_type>
   return together != 0;
 #endif
 }
+
+// Which of them fell out of the class, and not only whether one did.
+//
+// The eight-character step below already answers this from the word it has --
+// the first byte set is the first character outside, and counting zeros finds
+// it. The wider steps threw that answer away: a `break` sent them down through
+// every narrower step to read the same characters again, and then one at a
+// time, to learn what the mask already said. Asked on the way out, where it is
+// asked once per run and not once per character, it costs what counting zeros
+// costs.
+template <class lane_type>
+[[nodiscard]] SCAN_FORCE_INLINE std::size_t first_of(lane_type mask) {
+  std::uint64_t words[sizeof(lane_type) / 8];
+  __builtin_memcpy(words, &mask, sizeof(mask));
+  for (std::size_t at = 0; at < sizeof(lane_type) / 8; ++at) {
+    if (words[at] != 0) {
+      return at * 8 +
+             (static_cast<std::size_t>(std::countr_zero(words[at])) >> 3);
+    }
+  }
+  return sizeof(lane_type);
+}
 #endif
 
 // Whether one character belongs to the run a state keeps itself by.
@@ -416,7 +438,10 @@ template <staying_class klass, bool in_words = true>
         decltype(head < head) head_out{}, tail_out{};
         outside_of<klass>(head, head_out);
         outside_of<klass>(tail, tail_out);
-        if (any_of(head_out | tail_out)) break;
+        if (any_of(head_out | tail_out)) {
+          const std::size_t at = first_of(head_out);
+          return cursor + (at < 32 ? at : 32 + first_of(tail_out));
+        }
         cursor += 64;
       }
       while (limit - cursor >= 32) {
@@ -424,7 +449,7 @@ template <staying_class klass, bool in_words = true>
         __builtin_memcpy(&letters, cursor, 32);
         decltype(letters < letters) outside{};
         outside_of<klass>(letters, outside);
-        if (any_of(outside)) break;
+        if (any_of(outside)) return cursor + first_of(outside);
         cursor += 32;
       }
     }
@@ -435,7 +460,7 @@ template <staying_class klass, bool in_words = true>
         __builtin_memcpy(&letters, cursor, 16);
         decltype(letters < letters) outside{};
         outside_of<klass>(letters, outside);
-        if (any_of(outside)) break;
+        if (any_of(outside)) return cursor + first_of(outside);
         cursor += 16;
       }
     }
