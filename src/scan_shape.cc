@@ -908,6 +908,25 @@ template <class held>
 inline constexpr bool folds_by_turns =
     gathers_by_its_groups<held> && folds_its_groups<held>;
 
+// A leaf whose scanner only reads a piece handed to it whole: it says how to
+// read one and says nothing about being told a character at a time.
+//
+// Nothing is gathered for such a leaf as the walk goes. The marks say where
+// its piece stood and the subject is still there to be pointed at, so it is
+// read where the value is put together -- which is why it is refused where the
+// subject is not kept, exactly as a leaf built from its own groups is. The
+// question is asked of the scanner and not of the type, so a scanner of
+// somebody's own that reads a view of the subject is read the same way.
+template <class held>
+inline constexpr bool reads_a_whole_piece_only =
+    !gathers_by_its_groups<held> &&
+    scan::can_be_told_to_parse<std::remove_cv_t<held>,
+                               scan::throws_a_failure> &&
+    !requires { scan::scanner<std::remove_cv_t<held>>{}.begin(); } &&
+    !requires {
+      scan::scanner<std::remove_cv_t<held>>{}.begin(std::string_view{});
+    };
+
 // A type that can only be told its groups as they happen: it folds them and
 // cannot be handed them afterwards.
 //
@@ -1666,9 +1685,13 @@ template <class type>
     // gathers a character at a time, which is the ordinary way a leaf is read
     // off a stream -- it is handed its groups only where they can be pointed
     // at, and read as a value everywhere else.
-    return gathers_by_its_groups<std::remove_cv_t<type>> &&
-           !folds_by_turns<std::remove_cv_t<type>> &&
-           !scan::gathers_as_it_reads<std::remove_cv_t<type>>;
+    // A leaf that only reads a piece handed to it whole is the same case: it
+    // is handed a view of the subject and there is nothing else it can be
+    // handed, so a walk with nothing to point at cannot read it either.
+    return (gathers_by_its_groups<std::remove_cv_t<type>> &&
+            !folds_by_turns<std::remove_cv_t<type>> &&
+            !scan::gathers_as_it_reads<std::remove_cv_t<type>>) ||
+           reads_a_whole_piece_only<std::remove_cv_t<type>>;
   } else if constexpr (scanned_as_variant<type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
       return (false || ... || holds_a_flat_reader<branch_at<type, which>>());
@@ -1701,7 +1724,10 @@ template <class type, fixed_string format>
       // can be handed the ones that are its. What cannot be told this way is a
       // type that wants its groups when the match is over: a fold has no views
       // of the subject to give it.
-      return !gathers_by_its_groups<stands_for> || folds_by_turns<stands_for>;
+      // Nor can a place that only reads a piece handed to it whole: it takes
+      // no characters at all, and a fold has no piece to hand it.
+      return (!gathers_by_its_groups<stands_for> || folds_by_turns<stands_for>) &&
+             !reads_a_whole_piece_only<stands_for>;
     }());
   }(std::make_index_sequence<groups_of_output<std::remove_cv_t<type>>()>{});
 }
@@ -3046,6 +3072,14 @@ struct gathering_of {
   static constexpr bool folds = folds_by_turns<std::remove_cv_t<held_type>>;
   static constexpr bool the_place = by_groups && leaf_offset_of_output<type, group> == 0;
   static constexpr bool inside = by_groups && leaf_offset_of_output<type, group> != 0;
+  // Whether this leaf is only a piece of the subject: its scanner says how to
+  // read a piece handed to it whole, and says nothing about being told one
+  // character at a time. The marks say where the piece stood and the subject
+  // is still there to be pointed at, so there is nothing to gather as the walk
+  // goes -- it is read where the value is put together. Such a leaf is refused
+  // where the subject is not kept, the same as one read from its groups.
+  static constexpr bool only_a_piece =
+      reads_a_whole_piece_only<std::remove_cv_t<held_type>>;
 
   [[nodiscard]] static constexpr auto begin(std::string_view parameters) {
     if constexpr (the_place && folds) {
@@ -3058,7 +3092,7 @@ struct gathering_of {
       // which is kept at the place the group is inside of.
       static_cast<void>(parameters);
       return no_gathering{};
-    } else if constexpr (the_place || inside) {
+    } else if constexpr (the_place || inside || only_a_piece) {
       // A leaf read from its groups after the match gathers nothing at all:
       // the positions say where each of its groups stood, and the subject is
       // still there to be pointed at -- which is why such a leaf is refused
@@ -3074,7 +3108,7 @@ struct gathering_of {
 
   template <class state_type>
   static constexpr void push(state_type& state, char letter) {
-    if constexpr (the_place || inside) {
+    if constexpr (the_place || inside || only_a_piece) {
       // A fold is handed its characters by the group they fell in, which the
       // place does for all of its groups at once and in order; a leaf read
       // after the match is handed nothing at all.
@@ -3090,7 +3124,7 @@ struct gathering_of {
   template <class state_type>
   static constexpr void push_run(state_type& state, const char* from,
                                  const char* to) {
-    if constexpr (the_place || inside) {
+    if constexpr (the_place || inside || only_a_piece) {
       static_cast<void>(state);
       static_cast<void>(from);
       static_cast<void>(to);
@@ -3870,6 +3904,9 @@ struct gathered_by_the_registers {
   // What the walk kept for itself, where it kept anything: a gathering that
   // does not follow a reading is not at a register, and this is where it is.
   const kept_type& kept;
+  // Where the match ended. A group still open there has no closing mark, and
+  // the piece it stood on ends here.
+  typename std::remove_cvref_t<registers_type>::value_type upto{};
 
   // A field still being read when the input ended is where it was being
   // gathered; one that ended earlier is the copy taken when it closed, which
@@ -3944,6 +3981,41 @@ struct gathered_by_the_registers {
     return stood_on(text, began, ended);
   }
 
+  // The piece a place stood on, where the subject can be pointed at.
+  //
+  // Not the same as `span` above, and the difference is not a taste. A place's
+  // own marks are written as the walk stands on the character, so the piece is
+  // what lies between them; the marks of the groups inside a leaf are written
+  // a step later, which is the step `span` takes off. Told apart here because a
+  // place is read from its marks only where its value is a piece of the
+  // subject, and reading one by the other's rule is off by a character.
+  //
+  // A place still open where the match ended has no closing mark at all -- the
+  // reading points it at a register nothing filled -- so the piece ends where
+  // the match did.
+  template <std::size_t place>
+  [[nodiscard]] constexpr std::string_view piece(const char* text) const {
+    using mark_type = typename std::remove_cvref_t<registers_type>::value_type;
+    static_assert(std::is_pointer_v<mark_type>,
+                  "a place whose value is a piece of the subject is read by a "
+                  "walk that holds the subject, which marks it by address");
+    const auto began = registers[reading[place * 2]];
+    if (stood_nowhere(began)) return {};
+    const auto ended = registers[reading[place * 2 + 1]];
+    const auto stopped = closed_since(ended, began) ? ended : upto;
+    if (stood_nowhere(stopped) || stopped < began) return {};
+    static_cast<void>(text);
+    return std::string_view(began, static_cast<std::size_t>(stopped - began));
+  }
+
+  // What was written after the colon at this place, where anything was. Asked
+  // of the source because the format is known here and not where the value is
+  // put together.
+  template <std::size_t place>
+  [[nodiscard]] static constexpr std::string_view parameters_at() {
+    return format_parameters<type, format>::at(place);
+  }
+
   // A fold at this place, with the last step run into the copy: the end of the
   // input is not a character, so what it left open is closed here.
   template <std::size_t place, class held>
@@ -3963,10 +4035,11 @@ template <class type, fixed_string format, class reading_type,
 [[nodiscard]] constexpr auto by_the_registers(
     const reading_type& reading, const states_type& states,
     const registers_type& registers,
-    const kept_type& kept = nothing_was_kept) {
+    const kept_type& kept = nothing_was_kept,
+    typename std::remove_cvref_t<registers_type>::value_type upto = {}) {
   return gathered_by_the_registers<type, format, reading_type, states_type,
                                    registers_type, kept_type>{
-      reading, states, registers, kept};
+      reading, states, registers, kept, upto};
 }
 
 
@@ -4369,6 +4442,31 @@ template <class root, class type, std::size_t offset, bool as_output,
       } else {
         return scan::scanner<held>{}.finish_groups(std::move(state));
       }
+    }
+  } else if constexpr (a_value &&
+                       reads_a_whole_piece_only<std::remove_cv_t<type>>) {
+    // A leaf that only reads a piece handed to it whole. Nothing was gathered
+    // for it: the marks say where its piece stood, and it is handed a view of
+    // the subject, so nothing was copied to get here either. That there is a
+    // subject to point at is settled where the walk is made, the same as for a
+    // leaf built from its own groups.
+    using held = std::remove_cv_t<type>;
+    static_assert(
+        requires { source.template piece<offset>(text); },
+        "a place whose type only reads a piece handed to it whole is read by "
+        "the machine that keeps the subject, not by one that is fed");
+    const std::string_view piece = source.template piece<offset>(text);
+    constexpr std::string_view parameters =
+        source_type::template parameters_at<offset>();
+    if constexpr (scan::says_what_went_wrong<held>) {
+      auto got =
+          scan::scanner_told_parse<held, scan::hands_a_failure_back>(
+              piece, parameters);
+      if (got) return std::move(*got);
+      return std::unexpected(
+          scan::as_a_failure<failure_type>(std::move(got).error()));
+    } else {
+      return scan::scanner_parse<held>(piece, parameters);
     }
   } else if constexpr (a_value) {
     const auto& gathered = source.template gathering<offset>();
@@ -5168,7 +5266,7 @@ class field_gatherer {
   // failure: a place passed early where a field was not read yet is not this
   // reading's answer, and holding on to that would lose every match after it.
   template <std::size_t state, class registers_type>
-  constexpr void ended(const registers_type& registers) {
+  constexpr void ended(const registers_type& registers, mark_kind upto) {
     constexpr const auto& packed = automaton.states[state];
     // What the walk kept is told where the walk stands, and then read from
     // where it is.
@@ -5232,7 +5330,7 @@ class field_gatherer {
     // is the reading written out again for every place it has.
     auto got = finish_value<type, type, 0, true>(
         by_the_registers<type, format>(packed.readings[packed.accepting_slot],
-                                       states_, registers, mine_kept),
+                                       states_, registers, mine_kept, upto),
         text_);
     if (!got) {
       failed_ = std::move(got).error();
