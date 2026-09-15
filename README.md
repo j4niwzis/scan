@@ -1026,6 +1026,25 @@ Measured against `re2c`, which generates a scanner from a pattern in a
 separate build step, and against `sscanf`. Take the numbers as shapes rather
 than as decimals; the methodology matters more.
 
+The benchmarks are built with `-mllvm -jump-threading-across-loop-headers=true`,
+and that is not a detail. The walk is written out with a label for every state,
+and every state is its own loop over the characters that keep it -- so the jump
+from one state to the next is a jump out of one loop header and into another.
+LLVM will not thread those unless it is asked, and unasked the labels cost more
+than the table walk they replaced. On the address pattern, in instructions
+retired per match:
+
+| | through the table | as labels |
+| --- | --- | --- |
+| without the pass | 441 | 512 |
+| with the pass | 453 | **432** |
+
+The same shape in branch misses -- five for the table, eleven for the labels
+without the pass, five again with it. Whoever builds this library and cares
+what it costs wants that option; it is LLVM's own and may be spelled
+differently in another one, so the build asks whether it is there rather than
+assuming it.
+
 For a fixed-length pattern with a terminator and no length to check
 (`scan::match<p>.sentinel().scalar()`), the code generated for
 `[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}` is **71 instructions
