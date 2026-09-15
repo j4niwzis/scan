@@ -299,11 +299,11 @@ endif()
 # which is where they are used. A name and where it is from is the whole of a
 # port for a library that says the rest about itself.
 if(SCAN_BUILD_FUZZER)
-  cme_declare_port(NAME abseil PROVIDES absl
+  cme_declare_port(NAME absl PROVIDES absl
     GITHUB_REPOSITORY abseil/abseil-cpp
     GIT_TAG 20250127.0
     LICENSE Apache-2.0)
-  cme_options(abseil "ABSL_ENABLE_INSTALL ON" "ABSL_PROPAGATE_CXX_STD ON")
+  cme_options(absl "ABSL_ENABLE_INSTALL ON" "ABSL_PROPAGATE_CXX_STD ON")
   cme_declare_port(NAME re2 PROVIDES re2
     GITHUB_REPOSITORY google/re2
     GIT_TAG 2024-07-02
@@ -558,11 +558,11 @@ if(SCAN_BUILD_BENCHMARKS)
   find_package(ctre REQUIRED)
 
   if(NOT SCAN_BUILD_FUZZER)
-    cme_declare_port(NAME abseil PROVIDES absl
+    cme_declare_port(NAME absl PROVIDES absl
       GITHUB_REPOSITORY abseil/abseil-cpp
       GIT_TAG 20250127.0
       LICENSE Apache-2.0)
-    cme_options(abseil "ABSL_ENABLE_INSTALL ON" "ABSL_PROPAGATE_CXX_STD ON")
+    cme_options(absl "ABSL_ENABLE_INSTALL ON" "ABSL_PROPAGATE_CXX_STD ON")
     cme_declare_port(NAME re2 PROVIDES re2
       GITHUB_REPOSITORY google/re2
       GIT_TAG 2024-07-02
