@@ -5847,10 +5847,26 @@ template <class type, fixed_string format,
 // values are gathered by the scanners of the fields themselves, and the one
 // character the machine could not take is handed back with them, because it has
 // been read and cannot be put back where it came from.
-template <class type>
+template <class type, std::size_t hold = 0>
 struct taken_ahead {
   type value;
+  // The character that ended the match: offered, looked at, and left where it
+  // stood. One is enough, because only one is ever looked at.
   std::optional<char> stopped;
+  // The characters read after the match on the chance of a longer one, where
+  // the walk went past it and then died. Those were taken out of the reading
+  // and have to come back somewhere: a reading that goes on holds them for the
+  // next match, and a single head hands them here. Room for as many as the
+  // machine can read past a match, which is a number it is asked for while
+  // this is compiled.
+  std::array<char, hold == 0 ? 1 : hold> given{};
+  std::size_t count = 0;
+
+  // What was given back, as text. A view of what this holds, so it lives as
+  // long as this does.
+  [[nodiscard]] constexpr std::string_view given_back() const {
+    return std::string_view(given.data(), count);
+  }
 };
 
 // What a reading holds between one match and the next.
@@ -5979,7 +5995,11 @@ scan_stream_prefix(iterator_type& first, sentinel_type last,
     } else {
       carry.put_in_front(since.data(), since_count);
     }
-    return handed_back(std::move(*note).finish(), std::optional<char>{});
+    // And the one that ended it, where one was looked at: going past a match
+    // and dying does not make the character that stopped the walk any less
+    // read. Thrown away here, it was the one thing the caller could not get
+    // back by any other means.
+    return handed_back(std::move(*note).finish(), stopped);
   }
   // Nothing matched; `finish` says so in the way the caller expects.
   return handed_back(std::move(state).finish(), stopped);
@@ -6010,12 +6030,28 @@ template <class type, fixed_string format, class iterator_type>
 using stream_carry_for = stream_carry<stream_hold<type, format, iterator_type>>;
 
 template <class type, fixed_string format, std::ranges::input_range range_type>
-[[nodiscard]] constexpr std::expected<taken_ahead<type>, failure_for<type>>
-scan_stream_prefix(range_type&& input) {
+[[nodiscard]] constexpr auto scan_stream_prefix(range_type&& input) {
   auto first = std::ranges::begin(input);
-  stream_carry<stream_hold<type, format, decltype(first)>> carry;
-  return scan_stream_prefix<type, format>(first, std::ranges::end(input),
-                                          carry);
+  // One head and no reading after it, so what the walk read past the match has
+  // nowhere to go: the carry below goes out of scope with this call. A reading
+  // that goes on -- one record after another -- holds it between matches and
+  // reads them again. A single head has no next reading, so they are handed to
+  // the caller instead, and nothing is eaten.
+  constexpr std::size_t hold = stream_hold<type, format, decltype(first)>;
+  stream_carry<hold> carry;
+  auto got = scan_stream_prefix<type, format>(first, std::ranges::end(input),
+                                              carry);
+  using answer = taken_ahead<type, hold>;
+  if (!got) {
+    return std::expected<answer, failure_for<type>>(
+        std::unexpected(std::move(got).error()));
+  }
+  answer made{std::move(got->value), got->stopped, {}, 0};
+  while (!carry.empty()) {
+    made.given[made.count++] = carry.front();
+    carry.pop();
+  }
+  return std::expected<answer, failure_for<type>>(std::move(made));
 }
 
 
