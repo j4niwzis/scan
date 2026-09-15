@@ -206,6 +206,9 @@ struct staying_class {
 // machine can shuffle bytes; below it the runs are compared, which needs no
 // tables and no loads.
 inline constexpr std::size_t runs_worth_comparing_in_lanes = 3;
+#ifndef SCAN_TABLE_ABOVE
+#define SCAN_TABLE_ABOVE runs_worth_comparing_in_lanes
+#endif
 
 #if defined(__clang__) || defined(__GNUC__)
 #define SCAN_HAS_LANES 1
@@ -343,6 +346,28 @@ template <class lane_type>
   return together != 0;
 #endif
 }
+
+// Which of them fell out of the class, and not only whether one did.
+//
+// The eight-character step below already answers this from the word it has --
+// the first byte set is the first character outside, and counting zeros finds
+// it. The wider steps threw that answer away: a `break` sent them down through
+// every narrower step to read the same characters again, and then one at a
+// time, to learn what the mask already said. Asked on the way out, where it is
+// asked once per run and not once per character, it costs what counting zeros
+// costs.
+template <class lane_type>
+[[nodiscard]] SCAN_FORCE_INLINE std::size_t first_of(lane_type mask) {
+  std::uint64_t words[sizeof(lane_type) / 8];
+  __builtin_memcpy(words, &mask, sizeof(mask));
+  for (std::size_t at = 0; at < sizeof(lane_type) / 8; ++at) {
+    if (words[at] != 0) {
+      return at * 8 +
+             (static_cast<std::size_t>(std::countr_zero(words[at])) >> 3);
+    }
+  }
+  return sizeof(lane_type);
+}
 #endif
 
 // Whether one character belongs to the run a state keeps itself by.
@@ -413,7 +438,10 @@ template <staying_class klass, bool in_words = true>
         decltype(head < head) head_out{}, tail_out{};
         outside_of<klass>(head, head_out);
         outside_of<klass>(tail, tail_out);
-        if (any_of(head_out | tail_out)) break;
+        if (any_of(head_out | tail_out)) {
+          const std::size_t at = first_of(head_out);
+          return cursor + (at < 32 ? at : 32 + first_of(tail_out));
+        }
         cursor += 64;
       }
       while (limit - cursor >= 32) {
@@ -421,7 +449,7 @@ template <staying_class klass, bool in_words = true>
         __builtin_memcpy(&letters, cursor, 32);
         decltype(letters < letters) outside{};
         outside_of<klass>(letters, outside);
-        if (any_of(outside)) break;
+        if (any_of(outside)) return cursor + first_of(outside);
         cursor += 32;
       }
     }
@@ -432,7 +460,7 @@ template <staying_class klass, bool in_words = true>
         __builtin_memcpy(&letters, cursor, 16);
         decltype(letters < letters) outside{};
         outside_of<klass>(letters, outside);
-        if (any_of(outside)) break;
+        if (any_of(outside)) return cursor + first_of(outside);
         cursor += 16;
       }
     }
@@ -643,7 +671,7 @@ template <auto& automaton, std::size_t state, std::size_t move>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool makes_move(
     unsigned char symbol) {
   if constexpr (runs_making<automaton, state, move>() >
-                runs_worth_comparing_in_lanes) {
+                SCAN_TABLE_ABOVE) {
     return move_table<automaton, state, move>[symbol] != 0;
   } else {
     return makes_move_by_runs<automaton, state, move>(symbol);
@@ -976,6 +1004,12 @@ struct gathers_nothing {
   constexpr void moved(char, const registers_type&, mark) const {}
   template <std::size_t state, class registers_type>
   constexpr void ended(const registers_type&) const {}
+  // Nothing kept anywhere, said in the shape the owning walk asks for: it
+  // makes the gatherer itself, and one that keeps nothing still has to be
+  // makeable.
+  struct cold_type {};
+  constexpr gathers_nothing() = default;
+  constexpr explicit gathers_nothing(cold_type&) {}
 };
 
 // A gatherer that keeps every character it is handed, which is what a match
@@ -1771,6 +1805,542 @@ SCAN_FORCE_INLINE constexpr void take_move(
       static_cast<char>(symbol), registers, spot);
 }
 
+// The rung before and the rung after, as tokens.
+//
+// A move's target is a constant while this is compiled, and a jump to a
+// constant should be a jump and not a load: an indirect branch through the
+// table of rungs is one the predictor has to learn, and on a record of five
+// short fields there is nothing to learn it from -- measured, thirteen of them
+// a record and five missed, against none at all for the same machine written
+// out by a generator.
+//
+// What stops it being written directly is that the label is named by a token
+// and the target is a number. So the tokens are listed here once. Only the
+// neighbours are: a machine spread into a row of fields moves to the next
+// state, to the one after it, or back to the one before -- which is every move
+// this had to make indirect, and the rest stay on the table.
+#if SCAN_LADDER == 256
+#define SCAN_AFTER_0x00 0x01
+#define SCAN_AFTER_0x01 0x02
+#define SCAN_AFTER_0x02 0x03
+#define SCAN_AFTER_0x03 0x04
+#define SCAN_AFTER_0x04 0x05
+#define SCAN_AFTER_0x05 0x06
+#define SCAN_AFTER_0x06 0x07
+#define SCAN_AFTER_0x07 0x08
+#define SCAN_AFTER_0x08 0x09
+#define SCAN_AFTER_0x09 0x0a
+#define SCAN_AFTER_0x0a 0x0b
+#define SCAN_AFTER_0x0b 0x0c
+#define SCAN_AFTER_0x0c 0x0d
+#define SCAN_AFTER_0x0d 0x0e
+#define SCAN_AFTER_0x0e 0x0f
+#define SCAN_AFTER_0x0f 0x10
+#define SCAN_AFTER_0x10 0x11
+#define SCAN_AFTER_0x11 0x12
+#define SCAN_AFTER_0x12 0x13
+#define SCAN_AFTER_0x13 0x14
+#define SCAN_AFTER_0x14 0x15
+#define SCAN_AFTER_0x15 0x16
+#define SCAN_AFTER_0x16 0x17
+#define SCAN_AFTER_0x17 0x18
+#define SCAN_AFTER_0x18 0x19
+#define SCAN_AFTER_0x19 0x1a
+#define SCAN_AFTER_0x1a 0x1b
+#define SCAN_AFTER_0x1b 0x1c
+#define SCAN_AFTER_0x1c 0x1d
+#define SCAN_AFTER_0x1d 0x1e
+#define SCAN_AFTER_0x1e 0x1f
+#define SCAN_AFTER_0x1f 0x20
+#define SCAN_AFTER_0x20 0x21
+#define SCAN_AFTER_0x21 0x22
+#define SCAN_AFTER_0x22 0x23
+#define SCAN_AFTER_0x23 0x24
+#define SCAN_AFTER_0x24 0x25
+#define SCAN_AFTER_0x25 0x26
+#define SCAN_AFTER_0x26 0x27
+#define SCAN_AFTER_0x27 0x28
+#define SCAN_AFTER_0x28 0x29
+#define SCAN_AFTER_0x29 0x2a
+#define SCAN_AFTER_0x2a 0x2b
+#define SCAN_AFTER_0x2b 0x2c
+#define SCAN_AFTER_0x2c 0x2d
+#define SCAN_AFTER_0x2d 0x2e
+#define SCAN_AFTER_0x2e 0x2f
+#define SCAN_AFTER_0x2f 0x30
+#define SCAN_AFTER_0x30 0x31
+#define SCAN_AFTER_0x31 0x32
+#define SCAN_AFTER_0x32 0x33
+#define SCAN_AFTER_0x33 0x34
+#define SCAN_AFTER_0x34 0x35
+#define SCAN_AFTER_0x35 0x36
+#define SCAN_AFTER_0x36 0x37
+#define SCAN_AFTER_0x37 0x38
+#define SCAN_AFTER_0x38 0x39
+#define SCAN_AFTER_0x39 0x3a
+#define SCAN_AFTER_0x3a 0x3b
+#define SCAN_AFTER_0x3b 0x3c
+#define SCAN_AFTER_0x3c 0x3d
+#define SCAN_AFTER_0x3d 0x3e
+#define SCAN_AFTER_0x3e 0x3f
+#define SCAN_AFTER_0x3f 0x40
+#define SCAN_AFTER_0x40 0x41
+#define SCAN_AFTER_0x41 0x42
+#define SCAN_AFTER_0x42 0x43
+#define SCAN_AFTER_0x43 0x44
+#define SCAN_AFTER_0x44 0x45
+#define SCAN_AFTER_0x45 0x46
+#define SCAN_AFTER_0x46 0x47
+#define SCAN_AFTER_0x47 0x48
+#define SCAN_AFTER_0x48 0x49
+#define SCAN_AFTER_0x49 0x4a
+#define SCAN_AFTER_0x4a 0x4b
+#define SCAN_AFTER_0x4b 0x4c
+#define SCAN_AFTER_0x4c 0x4d
+#define SCAN_AFTER_0x4d 0x4e
+#define SCAN_AFTER_0x4e 0x4f
+#define SCAN_AFTER_0x4f 0x50
+#define SCAN_AFTER_0x50 0x51
+#define SCAN_AFTER_0x51 0x52
+#define SCAN_AFTER_0x52 0x53
+#define SCAN_AFTER_0x53 0x54
+#define SCAN_AFTER_0x54 0x55
+#define SCAN_AFTER_0x55 0x56
+#define SCAN_AFTER_0x56 0x57
+#define SCAN_AFTER_0x57 0x58
+#define SCAN_AFTER_0x58 0x59
+#define SCAN_AFTER_0x59 0x5a
+#define SCAN_AFTER_0x5a 0x5b
+#define SCAN_AFTER_0x5b 0x5c
+#define SCAN_AFTER_0x5c 0x5d
+#define SCAN_AFTER_0x5d 0x5e
+#define SCAN_AFTER_0x5e 0x5f
+#define SCAN_AFTER_0x5f 0x60
+#define SCAN_AFTER_0x60 0x61
+#define SCAN_AFTER_0x61 0x62
+#define SCAN_AFTER_0x62 0x63
+#define SCAN_AFTER_0x63 0x64
+#define SCAN_AFTER_0x64 0x65
+#define SCAN_AFTER_0x65 0x66
+#define SCAN_AFTER_0x66 0x67
+#define SCAN_AFTER_0x67 0x68
+#define SCAN_AFTER_0x68 0x69
+#define SCAN_AFTER_0x69 0x6a
+#define SCAN_AFTER_0x6a 0x6b
+#define SCAN_AFTER_0x6b 0x6c
+#define SCAN_AFTER_0x6c 0x6d
+#define SCAN_AFTER_0x6d 0x6e
+#define SCAN_AFTER_0x6e 0x6f
+#define SCAN_AFTER_0x6f 0x70
+#define SCAN_AFTER_0x70 0x71
+#define SCAN_AFTER_0x71 0x72
+#define SCAN_AFTER_0x72 0x73
+#define SCAN_AFTER_0x73 0x74
+#define SCAN_AFTER_0x74 0x75
+#define SCAN_AFTER_0x75 0x76
+#define SCAN_AFTER_0x76 0x77
+#define SCAN_AFTER_0x77 0x78
+#define SCAN_AFTER_0x78 0x79
+#define SCAN_AFTER_0x79 0x7a
+#define SCAN_AFTER_0x7a 0x7b
+#define SCAN_AFTER_0x7b 0x7c
+#define SCAN_AFTER_0x7c 0x7d
+#define SCAN_AFTER_0x7d 0x7e
+#define SCAN_AFTER_0x7e 0x7f
+#define SCAN_AFTER_0x7f 0x80
+#define SCAN_AFTER_0x80 0x81
+#define SCAN_AFTER_0x81 0x82
+#define SCAN_AFTER_0x82 0x83
+#define SCAN_AFTER_0x83 0x84
+#define SCAN_AFTER_0x84 0x85
+#define SCAN_AFTER_0x85 0x86
+#define SCAN_AFTER_0x86 0x87
+#define SCAN_AFTER_0x87 0x88
+#define SCAN_AFTER_0x88 0x89
+#define SCAN_AFTER_0x89 0x8a
+#define SCAN_AFTER_0x8a 0x8b
+#define SCAN_AFTER_0x8b 0x8c
+#define SCAN_AFTER_0x8c 0x8d
+#define SCAN_AFTER_0x8d 0x8e
+#define SCAN_AFTER_0x8e 0x8f
+#define SCAN_AFTER_0x8f 0x90
+#define SCAN_AFTER_0x90 0x91
+#define SCAN_AFTER_0x91 0x92
+#define SCAN_AFTER_0x92 0x93
+#define SCAN_AFTER_0x93 0x94
+#define SCAN_AFTER_0x94 0x95
+#define SCAN_AFTER_0x95 0x96
+#define SCAN_AFTER_0x96 0x97
+#define SCAN_AFTER_0x97 0x98
+#define SCAN_AFTER_0x98 0x99
+#define SCAN_AFTER_0x99 0x9a
+#define SCAN_AFTER_0x9a 0x9b
+#define SCAN_AFTER_0x9b 0x9c
+#define SCAN_AFTER_0x9c 0x9d
+#define SCAN_AFTER_0x9d 0x9e
+#define SCAN_AFTER_0x9e 0x9f
+#define SCAN_AFTER_0x9f 0xa0
+#define SCAN_AFTER_0xa0 0xa1
+#define SCAN_AFTER_0xa1 0xa2
+#define SCAN_AFTER_0xa2 0xa3
+#define SCAN_AFTER_0xa3 0xa4
+#define SCAN_AFTER_0xa4 0xa5
+#define SCAN_AFTER_0xa5 0xa6
+#define SCAN_AFTER_0xa6 0xa7
+#define SCAN_AFTER_0xa7 0xa8
+#define SCAN_AFTER_0xa8 0xa9
+#define SCAN_AFTER_0xa9 0xaa
+#define SCAN_AFTER_0xaa 0xab
+#define SCAN_AFTER_0xab 0xac
+#define SCAN_AFTER_0xac 0xad
+#define SCAN_AFTER_0xad 0xae
+#define SCAN_AFTER_0xae 0xaf
+#define SCAN_AFTER_0xaf 0xb0
+#define SCAN_AFTER_0xb0 0xb1
+#define SCAN_AFTER_0xb1 0xb2
+#define SCAN_AFTER_0xb2 0xb3
+#define SCAN_AFTER_0xb3 0xb4
+#define SCAN_AFTER_0xb4 0xb5
+#define SCAN_AFTER_0xb5 0xb6
+#define SCAN_AFTER_0xb6 0xb7
+#define SCAN_AFTER_0xb7 0xb8
+#define SCAN_AFTER_0xb8 0xb9
+#define SCAN_AFTER_0xb9 0xba
+#define SCAN_AFTER_0xba 0xbb
+#define SCAN_AFTER_0xbb 0xbc
+#define SCAN_AFTER_0xbc 0xbd
+#define SCAN_AFTER_0xbd 0xbe
+#define SCAN_AFTER_0xbe 0xbf
+#define SCAN_AFTER_0xbf 0xc0
+#define SCAN_AFTER_0xc0 0xc1
+#define SCAN_AFTER_0xc1 0xc2
+#define SCAN_AFTER_0xc2 0xc3
+#define SCAN_AFTER_0xc3 0xc4
+#define SCAN_AFTER_0xc4 0xc5
+#define SCAN_AFTER_0xc5 0xc6
+#define SCAN_AFTER_0xc6 0xc7
+#define SCAN_AFTER_0xc7 0xc8
+#define SCAN_AFTER_0xc8 0xc9
+#define SCAN_AFTER_0xc9 0xca
+#define SCAN_AFTER_0xca 0xcb
+#define SCAN_AFTER_0xcb 0xcc
+#define SCAN_AFTER_0xcc 0xcd
+#define SCAN_AFTER_0xcd 0xce
+#define SCAN_AFTER_0xce 0xcf
+#define SCAN_AFTER_0xcf 0xd0
+#define SCAN_AFTER_0xd0 0xd1
+#define SCAN_AFTER_0xd1 0xd2
+#define SCAN_AFTER_0xd2 0xd3
+#define SCAN_AFTER_0xd3 0xd4
+#define SCAN_AFTER_0xd4 0xd5
+#define SCAN_AFTER_0xd5 0xd6
+#define SCAN_AFTER_0xd6 0xd7
+#define SCAN_AFTER_0xd7 0xd8
+#define SCAN_AFTER_0xd8 0xd9
+#define SCAN_AFTER_0xd9 0xda
+#define SCAN_AFTER_0xda 0xdb
+#define SCAN_AFTER_0xdb 0xdc
+#define SCAN_AFTER_0xdc 0xdd
+#define SCAN_AFTER_0xdd 0xde
+#define SCAN_AFTER_0xde 0xdf
+#define SCAN_AFTER_0xdf 0xe0
+#define SCAN_AFTER_0xe0 0xe1
+#define SCAN_AFTER_0xe1 0xe2
+#define SCAN_AFTER_0xe2 0xe3
+#define SCAN_AFTER_0xe3 0xe4
+#define SCAN_AFTER_0xe4 0xe5
+#define SCAN_AFTER_0xe5 0xe6
+#define SCAN_AFTER_0xe6 0xe7
+#define SCAN_AFTER_0xe7 0xe8
+#define SCAN_AFTER_0xe8 0xe9
+#define SCAN_AFTER_0xe9 0xea
+#define SCAN_AFTER_0xea 0xeb
+#define SCAN_AFTER_0xeb 0xec
+#define SCAN_AFTER_0xec 0xed
+#define SCAN_AFTER_0xed 0xee
+#define SCAN_AFTER_0xee 0xef
+#define SCAN_AFTER_0xef 0xf0
+#define SCAN_AFTER_0xf0 0xf1
+#define SCAN_AFTER_0xf1 0xf2
+#define SCAN_AFTER_0xf2 0xf3
+#define SCAN_AFTER_0xf3 0xf4
+#define SCAN_AFTER_0xf4 0xf5
+#define SCAN_AFTER_0xf5 0xf6
+#define SCAN_AFTER_0xf6 0xf7
+#define SCAN_AFTER_0xf7 0xf8
+#define SCAN_AFTER_0xf8 0xf9
+#define SCAN_AFTER_0xf9 0xfa
+#define SCAN_AFTER_0xfa 0xfb
+#define SCAN_AFTER_0xfb 0xfc
+#define SCAN_AFTER_0xfc 0xfd
+#define SCAN_AFTER_0xfd 0xfe
+#define SCAN_AFTER_0xfe 0xff
+#define SCAN_BEFORE_0x01 0x00
+#define SCAN_BEFORE_0x02 0x01
+#define SCAN_BEFORE_0x03 0x02
+#define SCAN_BEFORE_0x04 0x03
+#define SCAN_BEFORE_0x05 0x04
+#define SCAN_BEFORE_0x06 0x05
+#define SCAN_BEFORE_0x07 0x06
+#define SCAN_BEFORE_0x08 0x07
+#define SCAN_BEFORE_0x09 0x08
+#define SCAN_BEFORE_0x0a 0x09
+#define SCAN_BEFORE_0x0b 0x0a
+#define SCAN_BEFORE_0x0c 0x0b
+#define SCAN_BEFORE_0x0d 0x0c
+#define SCAN_BEFORE_0x0e 0x0d
+#define SCAN_BEFORE_0x0f 0x0e
+#define SCAN_BEFORE_0x10 0x0f
+#define SCAN_BEFORE_0x11 0x10
+#define SCAN_BEFORE_0x12 0x11
+#define SCAN_BEFORE_0x13 0x12
+#define SCAN_BEFORE_0x14 0x13
+#define SCAN_BEFORE_0x15 0x14
+#define SCAN_BEFORE_0x16 0x15
+#define SCAN_BEFORE_0x17 0x16
+#define SCAN_BEFORE_0x18 0x17
+#define SCAN_BEFORE_0x19 0x18
+#define SCAN_BEFORE_0x1a 0x19
+#define SCAN_BEFORE_0x1b 0x1a
+#define SCAN_BEFORE_0x1c 0x1b
+#define SCAN_BEFORE_0x1d 0x1c
+#define SCAN_BEFORE_0x1e 0x1d
+#define SCAN_BEFORE_0x1f 0x1e
+#define SCAN_BEFORE_0x20 0x1f
+#define SCAN_BEFORE_0x21 0x20
+#define SCAN_BEFORE_0x22 0x21
+#define SCAN_BEFORE_0x23 0x22
+#define SCAN_BEFORE_0x24 0x23
+#define SCAN_BEFORE_0x25 0x24
+#define SCAN_BEFORE_0x26 0x25
+#define SCAN_BEFORE_0x27 0x26
+#define SCAN_BEFORE_0x28 0x27
+#define SCAN_BEFORE_0x29 0x28
+#define SCAN_BEFORE_0x2a 0x29
+#define SCAN_BEFORE_0x2b 0x2a
+#define SCAN_BEFORE_0x2c 0x2b
+#define SCAN_BEFORE_0x2d 0x2c
+#define SCAN_BEFORE_0x2e 0x2d
+#define SCAN_BEFORE_0x2f 0x2e
+#define SCAN_BEFORE_0x30 0x2f
+#define SCAN_BEFORE_0x31 0x30
+#define SCAN_BEFORE_0x32 0x31
+#define SCAN_BEFORE_0x33 0x32
+#define SCAN_BEFORE_0x34 0x33
+#define SCAN_BEFORE_0x35 0x34
+#define SCAN_BEFORE_0x36 0x35
+#define SCAN_BEFORE_0x37 0x36
+#define SCAN_BEFORE_0x38 0x37
+#define SCAN_BEFORE_0x39 0x38
+#define SCAN_BEFORE_0x3a 0x39
+#define SCAN_BEFORE_0x3b 0x3a
+#define SCAN_BEFORE_0x3c 0x3b
+#define SCAN_BEFORE_0x3d 0x3c
+#define SCAN_BEFORE_0x3e 0x3d
+#define SCAN_BEFORE_0x3f 0x3e
+#define SCAN_BEFORE_0x40 0x3f
+#define SCAN_BEFORE_0x41 0x40
+#define SCAN_BEFORE_0x42 0x41
+#define SCAN_BEFORE_0x43 0x42
+#define SCAN_BEFORE_0x44 0x43
+#define SCAN_BEFORE_0x45 0x44
+#define SCAN_BEFORE_0x46 0x45
+#define SCAN_BEFORE_0x47 0x46
+#define SCAN_BEFORE_0x48 0x47
+#define SCAN_BEFORE_0x49 0x48
+#define SCAN_BEFORE_0x4a 0x49
+#define SCAN_BEFORE_0x4b 0x4a
+#define SCAN_BEFORE_0x4c 0x4b
+#define SCAN_BEFORE_0x4d 0x4c
+#define SCAN_BEFORE_0x4e 0x4d
+#define SCAN_BEFORE_0x4f 0x4e
+#define SCAN_BEFORE_0x50 0x4f
+#define SCAN_BEFORE_0x51 0x50
+#define SCAN_BEFORE_0x52 0x51
+#define SCAN_BEFORE_0x53 0x52
+#define SCAN_BEFORE_0x54 0x53
+#define SCAN_BEFORE_0x55 0x54
+#define SCAN_BEFORE_0x56 0x55
+#define SCAN_BEFORE_0x57 0x56
+#define SCAN_BEFORE_0x58 0x57
+#define SCAN_BEFORE_0x59 0x58
+#define SCAN_BEFORE_0x5a 0x59
+#define SCAN_BEFORE_0x5b 0x5a
+#define SCAN_BEFORE_0x5c 0x5b
+#define SCAN_BEFORE_0x5d 0x5c
+#define SCAN_BEFORE_0x5e 0x5d
+#define SCAN_BEFORE_0x5f 0x5e
+#define SCAN_BEFORE_0x60 0x5f
+#define SCAN_BEFORE_0x61 0x60
+#define SCAN_BEFORE_0x62 0x61
+#define SCAN_BEFORE_0x63 0x62
+#define SCAN_BEFORE_0x64 0x63
+#define SCAN_BEFORE_0x65 0x64
+#define SCAN_BEFORE_0x66 0x65
+#define SCAN_BEFORE_0x67 0x66
+#define SCAN_BEFORE_0x68 0x67
+#define SCAN_BEFORE_0x69 0x68
+#define SCAN_BEFORE_0x6a 0x69
+#define SCAN_BEFORE_0x6b 0x6a
+#define SCAN_BEFORE_0x6c 0x6b
+#define SCAN_BEFORE_0x6d 0x6c
+#define SCAN_BEFORE_0x6e 0x6d
+#define SCAN_BEFORE_0x6f 0x6e
+#define SCAN_BEFORE_0x70 0x6f
+#define SCAN_BEFORE_0x71 0x70
+#define SCAN_BEFORE_0x72 0x71
+#define SCAN_BEFORE_0x73 0x72
+#define SCAN_BEFORE_0x74 0x73
+#define SCAN_BEFORE_0x75 0x74
+#define SCAN_BEFORE_0x76 0x75
+#define SCAN_BEFORE_0x77 0x76
+#define SCAN_BEFORE_0x78 0x77
+#define SCAN_BEFORE_0x79 0x78
+#define SCAN_BEFORE_0x7a 0x79
+#define SCAN_BEFORE_0x7b 0x7a
+#define SCAN_BEFORE_0x7c 0x7b
+#define SCAN_BEFORE_0x7d 0x7c
+#define SCAN_BEFORE_0x7e 0x7d
+#define SCAN_BEFORE_0x7f 0x7e
+#define SCAN_BEFORE_0x80 0x7f
+#define SCAN_BEFORE_0x81 0x80
+#define SCAN_BEFORE_0x82 0x81
+#define SCAN_BEFORE_0x83 0x82
+#define SCAN_BEFORE_0x84 0x83
+#define SCAN_BEFORE_0x85 0x84
+#define SCAN_BEFORE_0x86 0x85
+#define SCAN_BEFORE_0x87 0x86
+#define SCAN_BEFORE_0x88 0x87
+#define SCAN_BEFORE_0x89 0x88
+#define SCAN_BEFORE_0x8a 0x89
+#define SCAN_BEFORE_0x8b 0x8a
+#define SCAN_BEFORE_0x8c 0x8b
+#define SCAN_BEFORE_0x8d 0x8c
+#define SCAN_BEFORE_0x8e 0x8d
+#define SCAN_BEFORE_0x8f 0x8e
+#define SCAN_BEFORE_0x90 0x8f
+#define SCAN_BEFORE_0x91 0x90
+#define SCAN_BEFORE_0x92 0x91
+#define SCAN_BEFORE_0x93 0x92
+#define SCAN_BEFORE_0x94 0x93
+#define SCAN_BEFORE_0x95 0x94
+#define SCAN_BEFORE_0x96 0x95
+#define SCAN_BEFORE_0x97 0x96
+#define SCAN_BEFORE_0x98 0x97
+#define SCAN_BEFORE_0x99 0x98
+#define SCAN_BEFORE_0x9a 0x99
+#define SCAN_BEFORE_0x9b 0x9a
+#define SCAN_BEFORE_0x9c 0x9b
+#define SCAN_BEFORE_0x9d 0x9c
+#define SCAN_BEFORE_0x9e 0x9d
+#define SCAN_BEFORE_0x9f 0x9e
+#define SCAN_BEFORE_0xa0 0x9f
+#define SCAN_BEFORE_0xa1 0xa0
+#define SCAN_BEFORE_0xa2 0xa1
+#define SCAN_BEFORE_0xa3 0xa2
+#define SCAN_BEFORE_0xa4 0xa3
+#define SCAN_BEFORE_0xa5 0xa4
+#define SCAN_BEFORE_0xa6 0xa5
+#define SCAN_BEFORE_0xa7 0xa6
+#define SCAN_BEFORE_0xa8 0xa7
+#define SCAN_BEFORE_0xa9 0xa8
+#define SCAN_BEFORE_0xaa 0xa9
+#define SCAN_BEFORE_0xab 0xaa
+#define SCAN_BEFORE_0xac 0xab
+#define SCAN_BEFORE_0xad 0xac
+#define SCAN_BEFORE_0xae 0xad
+#define SCAN_BEFORE_0xaf 0xae
+#define SCAN_BEFORE_0xb0 0xaf
+#define SCAN_BEFORE_0xb1 0xb0
+#define SCAN_BEFORE_0xb2 0xb1
+#define SCAN_BEFORE_0xb3 0xb2
+#define SCAN_BEFORE_0xb4 0xb3
+#define SCAN_BEFORE_0xb5 0xb4
+#define SCAN_BEFORE_0xb6 0xb5
+#define SCAN_BEFORE_0xb7 0xb6
+#define SCAN_BEFORE_0xb8 0xb7
+#define SCAN_BEFORE_0xb9 0xb8
+#define SCAN_BEFORE_0xba 0xb9
+#define SCAN_BEFORE_0xbb 0xba
+#define SCAN_BEFORE_0xbc 0xbb
+#define SCAN_BEFORE_0xbd 0xbc
+#define SCAN_BEFORE_0xbe 0xbd
+#define SCAN_BEFORE_0xbf 0xbe
+#define SCAN_BEFORE_0xc0 0xbf
+#define SCAN_BEFORE_0xc1 0xc0
+#define SCAN_BEFORE_0xc2 0xc1
+#define SCAN_BEFORE_0xc3 0xc2
+#define SCAN_BEFORE_0xc4 0xc3
+#define SCAN_BEFORE_0xc5 0xc4
+#define SCAN_BEFORE_0xc6 0xc5
+#define SCAN_BEFORE_0xc7 0xc6
+#define SCAN_BEFORE_0xc8 0xc7
+#define SCAN_BEFORE_0xc9 0xc8
+#define SCAN_BEFORE_0xca 0xc9
+#define SCAN_BEFORE_0xcb 0xca
+#define SCAN_BEFORE_0xcc 0xcb
+#define SCAN_BEFORE_0xcd 0xcc
+#define SCAN_BEFORE_0xce 0xcd
+#define SCAN_BEFORE_0xcf 0xce
+#define SCAN_BEFORE_0xd0 0xcf
+#define SCAN_BEFORE_0xd1 0xd0
+#define SCAN_BEFORE_0xd2 0xd1
+#define SCAN_BEFORE_0xd3 0xd2
+#define SCAN_BEFORE_0xd4 0xd3
+#define SCAN_BEFORE_0xd5 0xd4
+#define SCAN_BEFORE_0xd6 0xd5
+#define SCAN_BEFORE_0xd7 0xd6
+#define SCAN_BEFORE_0xd8 0xd7
+#define SCAN_BEFORE_0xd9 0xd8
+#define SCAN_BEFORE_0xda 0xd9
+#define SCAN_BEFORE_0xdb 0xda
+#define SCAN_BEFORE_0xdc 0xdb
+#define SCAN_BEFORE_0xdd 0xdc
+#define SCAN_BEFORE_0xde 0xdd
+#define SCAN_BEFORE_0xdf 0xde
+#define SCAN_BEFORE_0xe0 0xdf
+#define SCAN_BEFORE_0xe1 0xe0
+#define SCAN_BEFORE_0xe2 0xe1
+#define SCAN_BEFORE_0xe3 0xe2
+#define SCAN_BEFORE_0xe4 0xe3
+#define SCAN_BEFORE_0xe5 0xe4
+#define SCAN_BEFORE_0xe6 0xe5
+#define SCAN_BEFORE_0xe7 0xe6
+#define SCAN_BEFORE_0xe8 0xe7
+#define SCAN_BEFORE_0xe9 0xe8
+#define SCAN_BEFORE_0xea 0xe9
+#define SCAN_BEFORE_0xeb 0xea
+#define SCAN_BEFORE_0xec 0xeb
+#define SCAN_BEFORE_0xed 0xec
+#define SCAN_BEFORE_0xee 0xed
+#define SCAN_BEFORE_0xef 0xee
+#define SCAN_BEFORE_0xf0 0xef
+#define SCAN_BEFORE_0xf1 0xf0
+#define SCAN_BEFORE_0xf2 0xf1
+#define SCAN_BEFORE_0xf3 0xf2
+#define SCAN_BEFORE_0xf4 0xf3
+#define SCAN_BEFORE_0xf5 0xf4
+#define SCAN_BEFORE_0xf6 0xf5
+#define SCAN_BEFORE_0xf7 0xf6
+#define SCAN_BEFORE_0xf8 0xf7
+#define SCAN_BEFORE_0xf9 0xf8
+#define SCAN_BEFORE_0xfa 0xf9
+#define SCAN_BEFORE_0xfb 0xfa
+#define SCAN_BEFORE_0xfc 0xfb
+#define SCAN_BEFORE_0xfd 0xfc
+#define SCAN_BEFORE_0xfe 0xfd
+#define SCAN_BEFORE_0xff 0xfe
+// The ends point at themselves: the guard above never lets the jump happen,
+// and a label named by a token that did not expand is a label that does not
+// exist -- which a discarded branch is still parsed for.
+#define SCAN_AFTER_0xff 0xff
+#define SCAN_BEFORE_0x00 0x00
+#define SCAN_AFTER(t) SCAN_CAT(SCAN_AFTER_, t)
+#define SCAN_BEFORE(t) SCAN_CAT(SCAN_BEFORE_, t)
+#define SCAN_HAS_NEIGHBOURS 1
+#else
+#define SCAN_HAS_NEIGHBOURS 0
+#endif
 // One way out of one state. A move that keeps the machine where it is has
 // already been taken above, so it is not asked about again here.
 #define SCAN_WAY_OUT(t, w)                                                    \
@@ -1779,7 +2349,18 @@ SCAN_FORCE_INLINE constexpr void take_move(
     if (makes_move<automaton, t, move_at<automaton, t, w>()>(symbol))         \
         [[likely]] {                                                          \
       take_move<automaton, shape, t, w>(symbol, registers, spot, into);       \
-      goto* rungs[target_at<automaton, t, w>()];                              \
+      if constexpr (SCAN_HAS_NEIGHBOURS &&                                   \
+                    target_at<automaton, t, w>() == t + 1) {                  \
+        goto SCAN_CAT(scan_at_, SCAN_AFTER(t));                               \
+      } else if constexpr (SCAN_HAS_NEIGHBOURS && t + 2 < SCAN_LADDER &&      \
+                           target_at<automaton, t, w>() == t + 2) {           \
+        goto SCAN_CAT(scan_at_, SCAN_AFTER(SCAN_AFTER(t)));                   \
+      } else if constexpr (SCAN_HAS_NEIGHBOURS && t > 0 &&                    \
+                           target_at<automaton, t, w>() + 1 == t) {           \
+        goto SCAN_CAT(scan_at_, SCAN_BEFORE(t));                              \
+      } else {                                                                \
+        goto* rungs[target_at<automaton, t, w>()];                            \
+      }                                                                       \
     }                                                                         \
   }
 
@@ -1793,9 +2374,21 @@ SCAN_FORCE_INLINE constexpr void take_move(
 #define SCAN_RUNG_BODY(t)                                                     \
   SCAN_CAT(scan_at_, t)                                                       \
       : if constexpr (t < states_in<automaton>) {                             \
+    /* Whether the step took a character is a question the comparisons below \
+       already answer, where the walk was told a terminator.                 \
+                                                                            \
+       That terminator is a character every state rejects -- the caller says \
+       so and an assert checks it -- so it makes no move out of any state and \
+       arrives where a state with nothing to take arrives anyway. The step    \
+       has already finished the match by then; what is skipped is only the    \
+       asking, which is a branch on every state a record passes through. Ten  \
+       of them on a row of five fields, and the generated scanner pays none.  \
+                                                                            \
+       Not where the walk is looking for the longest head: there the arrival  \
+       finishes the match a second time, and once is what it is written for. */\
     if (step_in_state<automaton, shape, t>(here, last_here, spot, registers,   \
                                           into, best, symbol) ==            \
-        step_said::took) {                                                    \
+        step_said::took || (shape.by_terminator && !shape.longest)) {                        \
       SCAN_WAY_OUT(t, 0)                                                      \
       SCAN_WAY_OUT(t, 1)                                                      \
       SCAN_WAY_OUT(t, 2)                                                      \
@@ -1855,11 +2448,23 @@ scan_over:
 // and go wherever values go. What comes back is the reading, already made --
 // and a reading that never accepted is a reading that was never made, which
 // the gatherer says for itself.
+// What the owning walk hands back, where the gatherer is not the one to ask.
+//
+// A reading that gathers says what it made for itself. A reading that gathers
+// nothing has the marks and nothing else, and what is made of them is the
+// caller's business -- so the caller says it, and it is said inside this
+// frame. That is the whole point: the marks are values of this function, and a
+// caller that read them from outside is a caller whose address they had to
+// have.
+struct taken_from_gatherer {};
+
 template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
           bool points_at_subject, class cursor_type, class sentinel_type,
-          std::size_t register_count, class gatherer, class answer_type>
+          std::size_t register_count, class gatherer, class answer_type,
+          class make_type = taken_from_gatherer>
 [[nodiscard]] auto run_threaded_owning(cursor_type cursor, sentinel_type last,
-                                       const char* text, mark start) {
+                                       const char* text, mark start,
+                                       make_type make = {}) {
   static_assert(states_in<automaton> <= SCAN_LADDER,
                 "this machine has more states than the ladder has rungs: "
                 "build with -DSCAN_LADDER=4096");
@@ -1889,7 +2494,11 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
   goto scan_over;
   SCAN_EVERY_RUNG(SCAN_RUNG_BODY)
 scan_over:
-  return into.taken();
+  if constexpr (std::same_as<make_type, taken_from_gatherer>) {
+    return into.taken();
+  } else {
+    return make(registers, best.matched);
+  }
 }
 
 // The owning walk, for whoever is not one of its own frames.
@@ -1901,9 +2510,11 @@ scan_over:
 template <auto& automaton, walk_shape shape, std::size_t entry,
           std::size_t budget, std::size_t certain, class mark,
           bool points_at_subject, class cursor_type, class sentinel_type,
-          std::size_t register_count, class gatherer, class answer_type>
+          std::size_t register_count, class gatherer, class answer_type,
+          class make_type = taken_from_gatherer>
 [[nodiscard]] constexpr auto run_owning(cursor_type cursor, sentinel_type last,
-                                        const char* text, mark start) {
+                                        const char* text, mark start,
+                                        make_type make = {}) {
   if consteval {
     std::array<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
@@ -1924,12 +2535,16 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
     (void)run_body<automaton, shape, entry, budget, certain, mark, cursor_type,
                    sentinel_type, register_count, gatherer, answer_type>(
         here, last, spot, registers, into, best);
-    return into.taken();
+    if constexpr (std::same_as<make_type, taken_from_gatherer>) {
+      return into.taken();
+    } else {
+      return make(registers, best.matched);
+    }
   } else {
     return run_threaded_owning<automaton, shape, entry, mark,
                                points_at_subject, cursor_type, sentinel_type,
-                               register_count, gatherer, answer_type>(
-        cursor, last, text, start);
+                               register_count, gatherer, answer_type,
+                               make_type>(cursor, last, text, start, make);
   }
 }
 
