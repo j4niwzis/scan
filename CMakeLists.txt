@@ -552,10 +552,16 @@ if(SCAN_BUILD_BENCHMARKS)
     if(SCAN_THREADS_ACROSS_LOOP_HEADERS)
       add_compile_options(-mllvm -jump-threading-across-loop-headers=true)
       # Under LTO the code is generated while linking, so the option has to
-      # reach the backend there as well -- given only to the compiler it is
-      # given to a step that emits no code, and changes nothing.
-      add_link_options($<$<CONFIG:Release>:-mllvm>
-                       $<$<CONFIG:Release>:-jump-threading-across-loop-headers=true>)
+      # reach the backend there -- given only to the compiler it is given to a
+      # step that emits no code and changes nothing.
+      #
+      # And it has to be handed to the linker rather than spelled the way it is
+      # spelled when compiling. `-mllvm` on a link line is an option the driver
+      # claims nobody used: it says so, and drops it. Through the linker it
+      # arrives -- an unknown one there is an error from lld and not a warning
+      # from clang, which is how this was found out and how it stays found out.
+      add_link_options(
+        "$<$<CONFIG:Release>:LINKER:-mllvm,-jump-threading-across-loop-headers=true>")
     endif()
   endif()
 
