@@ -437,9 +437,47 @@ template <class type>
   }
 }
 
+// Whether a scanner takes its characters by handing back a fresh state rather
+// than by changing the one it was given.
+//
+// A scanner says how it takes a character once, in one of two shapes:
+//
+//   state push(state, char);   // the state it hands back is the answer
+//   void  push(state&, char);  // the state it was given is changed
+//
+// The first is written as a function of what it was given -- nothing outside
+// the state is touched and nothing is left behind -- which is what lets the
+// walk keep the state it had before the call and go back to it. The second is
+// what a state too big to hand about wants, and is what the library's own
+// scanners have always been.
+//
+// Asked of the shape and not of the name: taking by value accepts an lvalue as
+// happily as anything else, so a scanner that only changes what it is given
+// would answer yes to "can I call this with a state" either way. What tells
+// them apart is what comes back -- a state, or nothing.
+template <class type, class state_type>
+concept hands_the_state_back = requires(state_type held, char value) {
+  { scanner<type>{}.push(std::move(held), value) } -> std::same_as<state_type>;
+};
+
+template <class type, class state_type>
+concept changes_the_state_it_was_given =
+    requires(state_type& held, char value) {
+      { scanner<type>{}.push(held, value) } -> std::same_as<void>;
+    };
+
 template <class type, class state_type>
 constexpr void scanner_push(state_type& state, char value) {
-  scanner<type>{}.push(state, value);
+  static_assert(!(hands_the_state_back<type, state_type> &&
+                  changes_the_state_it_was_given<type, state_type>),
+                "a scanner says how it takes a character once: either "
+                "`state push(state, char)` or `void push(state&, char)`, "
+                "and not both");
+  if constexpr (hands_the_state_back<type, state_type>) {
+    state = scanner<type>{}.push(std::move(state), value);
+  } else {
+    scanner<type>{}.push(state, value);
+  }
 }
 
 // A run of characters that all belong to the same value.
@@ -454,14 +492,24 @@ constexpr void scanner_push(state_type& state, char value) {
 template <class type, class state_type>
 constexpr void scanner_push_run(state_type& state, const char* from,
                                 const char* to) {
-  if constexpr (requires {
-                  scanner<type>{}.push(state, std::string_view{});
+  if constexpr (requires(state_type held) {
+                  {
+                    scanner<type>{}.push(std::move(held), std::string_view{})
+                  } -> std::same_as<state_type>;
                 }) {
+    state = scanner<type>{}.push(
+        std::move(state),
+        std::string_view(from, static_cast<std::size_t>(to - from)));
+  } else if constexpr (requires {
+                         {
+                           scanner<type>{}.push(state, std::string_view{})
+                         } -> std::same_as<void>;
+                       }) {
     scanner<type>{}.push(
         state, std::string_view(from, static_cast<std::size_t>(to - from)));
   } else {
     for (const char* letter = from; letter != to; ++letter) {
-      scanner<type>{}.push(state, *letter);
+      scanner_push<type>(state, *letter);
     }
   }
 }

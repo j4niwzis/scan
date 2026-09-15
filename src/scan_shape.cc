@@ -3984,35 +3984,24 @@ struct gathered_by_the_registers {
   template <std::size_t place>
   [[nodiscard]] constexpr std::string_view span(const char* text) const {
     const auto began = registers[reading[place * 2]];
-    const auto ended = registers[reading[place * 2 + 1]];
-    if (stood_nowhere(began) || !closed_since(ended, began)) return {};
-    return stood_on(text, began, ended);
-  }
-
-  // The piece a place stood on, where the subject can be pointed at.
-  //
-  // Not the same as `span` above, and the difference is not a taste. A place's
-  // own marks are written as the walk stands on the character, so the piece is
-  // what lies between them; the marks of the groups inside a leaf are written
-  // a step later, which is the step `span` takes off. Told apart here because a
-  // place is read from its marks only where its value is a piece of the
-  // subject, and reading one by the other's rule is off by a character.
-  template <std::size_t place>
-  [[nodiscard]] constexpr std::string_view piece(const char* text) const {
-    using mark_type = typename std::remove_cvref_t<registers_type>::value_type;
-    static_assert(std::is_pointer_v<mark_type>,
-                  "a place whose value is a piece of the subject is read by a "
-                  "walk that holds the subject, which marks it by address");
-    const auto began = registers[reading[place * 2]];
     if (stood_nowhere(began)) return {};
     const auto walked = registers[reading[place * 2 + 1]];
-    // Closed as the walk passed, or closed by the ending because the match
-    // ended while it was still open.
+    // Closed as the walk passed, or closed by the commands that end a match
+    // because the match ended while it was still open. The second is not in
+    // the reading at all -- the ending writes registers of its own -- and read
+    // through the reading such a group looked like one that never closed.
     const auto ended =
         closed_since(walked, began) ? walked : registers[ending[place * 2 + 1]];
     if (!closed_since(ended, began)) return {};
-    static_cast<void>(text);
-    return std::string_view(began, static_cast<std::size_t>(ended - began));
+    if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(began)>>) {
+      // What a group stood on is what lies between its marks. Nothing is taken
+      // off: a mark is written as the walk stands on the character, and the
+      // step that used to be taken off here was a character of every group.
+      static_cast<void>(text);
+      return std::string_view(began, static_cast<std::size_t>(ended - began));
+    } else {
+      return stood_on(text, began, ended);
+    }
   }
 
   // What was written after the colon at this place, where anything was. Asked
@@ -4472,10 +4461,10 @@ template <class root, class type, std::size_t offset, bool as_output,
     // leaf built from its own groups.
     using held = std::remove_cv_t<type>;
     static_assert(
-        requires { source.template piece<offset>(text); },
+        requires { source.template span<offset>(text); },
         "a place whose type only reads a piece handed to it whole is read by "
         "the machine that keeps the subject, not by one that is fed");
-    const std::string_view piece = source.template piece<offset>(text);
+    const std::string_view piece = source.template span<offset>(text);
     constexpr std::string_view parameters =
         source_type::template parameters_at<offset>();
     if constexpr (scan::says_what_went_wrong<held>) {
