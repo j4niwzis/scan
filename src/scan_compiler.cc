@@ -437,6 +437,10 @@ class tre_parser {
           signature[state].push_back(held);
         }
       }
+      // And where each tag ends, for the same reason.
+      for (const std::uint32_t held : automaton.states[state].ending_reading) {
+        signature[state].push_back(held);
+      }
       for (std::size_t index = 0; index < class_width; ++index) {
         const std::size_t symbol = representatives[index];
         const std::size_t transition = owner[state][symbol];
@@ -510,6 +514,7 @@ class tre_parser {
     // a time asks this to know which group is open, and two states that agree
     // about everything else can disagree about that.
     destination.readings = source.readings;
+    destination.ending_reading = source.ending_reading;
     for (const scan::tre::tdfa_transition& transition : source.transitions) {
       destination.transitions.push_back(
           scan::tre::tdfa_transition{.symbols = transition.symbols,
@@ -660,6 +665,9 @@ struct packed_state {
   std::size_t reading_count = 0;
   std::array<std::array<std::uint32_t, tag_capacity>, reading_capacity>
       readings{};
+  // Where each tag stands once the ending has run, which is not the number the
+  // tag began as: the registers are renamed after the ending is written.
+  std::array<std::uint32_t, tag_capacity> ending_reading{};
 };
 
 
@@ -814,6 +822,10 @@ template <std::size_t state_count, std::size_t register_count,
                std::views::iota(std::size_t{0}, source.readings[reading].size())) {
             target.readings[reading][tag] = source.readings[reading][tag];
           }
+        }
+        for (std::size_t tag :
+             std::views::iota(std::size_t{0}, source.ending_reading.size())) {
+          target.ending_reading[tag] = source.ending_reading[tag];
         }
         target.final_command_count = source.final_commands.size();
         std::ranges::transform(source.final_commands,

@@ -423,6 +423,16 @@ struct tdfa_state {
   // positions out at the end -- needs to be told which registers make it up,
   // and this is where it is told. Indexed the way the accepting slot is.
   std::vector<std::vector<std::uint32_t>> readings;
+  // Where each tag stands once the commands that end a match have run.
+  //
+  // Those commands are the machine's output: each copies a tag out of whatever
+  // register the reading was holding it in and into the register numbered for
+  // the tag. But the registers are renamed afterwards, and renamed again on
+  // every pass, so the number a tag ends in is not the number it began as.
+  // Kept here and renamed with everything else, so that whoever reads a tag
+  // after the ending is told the number it actually ends in rather than
+  // guessing one.
+  std::vector<std::uint32_t> ending_reading;
   // Which groups this state stands inside, where every way of reaching it
   // agrees. A machine that is written out as code can then hand a character to
   // the groups it fell in without asking anything at all: which groups those
@@ -1171,11 +1181,17 @@ constexpr tdfa compile_tdfa(const tnfa& whole, bool cut_at_match,
     std::vector<std::vector<std::uint32_t>> readings;
     readings.reserve(entries.size());
     for (const configuration& entry : entries) readings.push_back(entry.regs);
+    // Its own number for every tag, until the renaming says otherwise.
+    std::vector<std::uint32_t> ending_reading(tags);
+    for (std::size_t tag = 0; tag < tags; ++tag) {
+      ending_reading[tag] = static_cast<std::uint32_t>(tag);
+    }
     tdfa_state state{.nfa_states = std::move(key),
                      .transitions = {},
                      .accepting_slot = std::nullopt,
                      .final_commands = {},
-                     .readings = std::move(readings)};
+                     .readings = std::move(readings),
+                     .ending_reading = std::move(ending_reading)};
     // What this state stands inside: the same for every reading it holds, or
     // nothing at all. A deterministic state is a set of the machine's states,
     // and two of them can disagree about which groups are open -- that is what
@@ -1617,6 +1633,7 @@ constexpr tdfa optimize_tdfa(tdfa automaton, bool allocate_registers) {
       for (std::vector<std::uint32_t>& reading : state.readings) {
         for (std::uint32_t& reg : reading) reg = renaming[reg];
       }
+      for (std::uint32_t& reg : state.ending_reading) reg = renaming[reg];
     }
   };
 
