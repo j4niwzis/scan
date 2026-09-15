@@ -2120,6 +2120,11 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       // boundary and read again here. Handed this instead, the walk owns the
       // marks and keeps them wherever values go, and what comes back is the
       // answer.
+      constexpr unsigned char terminator =
+          sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
+      constexpr bool by_terminator =
+          sentinel >= 0 ||
+          (terminated && is_safe_tagged_sentinel<automaton, terminator>());
       // Where the walk read a copy, the marks point into the copy, and the
       // distance back to the subject is the same for all of them.
       std::ptrdiff_t carried = 0;
@@ -2139,8 +2144,15 @@ template <class type, fixed_string format, int sentinel, bool terminated,
             // end, and not here.
             if (begin == nullptr) return std::string_view{};
           }
-          return std::string_view(begin + carried,
-                                  static_cast<std::size_t>(end - begin));
+          // Only a walk that could have read a copy carries anything; the
+          // rest are told so here rather than made to add nothing.
+          if constexpr (by_terminator) {
+            return std::string_view(begin,
+                                    static_cast<std::size_t>(end - begin));
+          } else {
+            return std::string_view(begin + carried,
+                                    static_cast<std::size_t>(end - begin));
+          }
         };
         // Where the automaton writes every tag on every path, no group can have
         // taken no part, and the walk over them at the end is a walk over a
@@ -2154,11 +2166,6 @@ template <class type, fixed_string format, int sentinel, bool terminated,
           return answer(std::array{capture.template operator()<index>()...});
         }
       };
-      constexpr unsigned char terminator =
-          sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
-      constexpr bool by_terminator =
-          sentinel >= 0 ||
-          (terminated && is_safe_tagged_sentinel<automaton, terminator>());
       static_assert(!by_terminator ||
                         is_safe_tagged_sentinel<automaton, terminator>(),
                     "the terminator must be rejected in every state");

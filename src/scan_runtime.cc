@@ -212,6 +212,18 @@ inline constexpr std::size_t runs_worth_comparing_in_lanes = 3;
 
 #if defined(__clang__) || defined(__GNUC__)
 #define SCAN_HAS_LANES 1
+
+// A lane is as wide as the machine has registers for, not as wide as the
+// widest machine has. Where there are no thirty-two-byte registers the
+// compiler makes one out of two sixteen-byte ones: every operation twice,
+// every constant held twice, and eight registers of sixteen gone to constants
+// alone. The step is two lanes either way; what changes is whether a lane is
+// a register or a pair of them.
+#if defined(__AVX2__) || defined(__AVX512F__)
+#define SCAN_LANE 32
+#else
+#define SCAN_LANE 16
+#endif
 template <class lane_type>
 [[nodiscard]] constexpr lane_type spread_over(unsigned char value) {
   lane_type made{};
@@ -317,7 +329,19 @@ SCAN_FORCE_INLINE void outside_of(lane_type letters,
     constexpr lane_type low = spread_over<lane_type>(klass.first[index]);
     constexpr lane_type span = spread_over<lane_type>(
         static_cast<unsigned char>(klass.last[index] - klass.first[index]));
+    // Asked as a subtraction that saturates rather than as a comparison. A
+    // byte is within the run exactly when taking the width of it away leaves
+    // nothing, and the two questions have the same answer -- but a comparison
+    // wants the value kept beside its result, which is a register copy in the
+    // middle of the loop, and a subtraction may have the value, because
+    // nobody reads it afterwards.
+#if __has_builtin(__builtin_elementwise_sub_sat)
+    const auto here = __builtin_elementwise_sub_sat(
+                          static_cast<lane_type>(letters - low), span) ==
+                      spread_over<lane_type>(0);
+#else
     const auto here = (letters - low) <= span;
+#endif
     if (first) {
       into = here;
     } else {
@@ -356,6 +380,42 @@ template <class lane_type>
 // time, to learn what the mask already said. Asked on the way out, where it is
 // asked once per run and not once per character, it costs what counting zeros
 // costs.
+// The lanes that fell out, one bit to each character.
+//
+// A mask kept as a vector has to stay in a register until somebody reads it,
+// and four of them staying alive is four register copies in a loop that would
+// otherwise need none. Folded to bits as soon as it is made, each mask dies
+// where it was born, and the four together are a word whose lowest set bit is
+// the first character outside -- which is the same question the vector was
+// asked, answered in a form that costs nothing to keep.
+template <class lane_type>
+[[nodiscard]] SCAN_FORCE_INLINE std::uint64_t bits_of(lane_type mask) {
+  using signed_lane [[gnu::vector_size(sizeof(lane_type))]] = char;
+#if defined(__AVX2__) && __has_builtin(__builtin_ia32_pmovmskb256)
+  if constexpr (sizeof(lane_type) == 32) {
+    return static_cast<std::uint32_t>(
+        __builtin_ia32_pmovmskb256(static_cast<signed_lane>(mask)));
+  }
+#endif
+#if defined(__SSE2__) && __has_builtin(__builtin_ia32_pmovmskb128)
+  if constexpr (sizeof(lane_type) == 16) {
+    return static_cast<std::uint16_t>(
+        __builtin_ia32_pmovmskb128(static_cast<signed_lane>(mask)));
+  }
+#endif
+  std::uint64_t bits = 0;
+  std::uint64_t words[sizeof(lane_type) / 8];
+  __builtin_memcpy(words, &mask, sizeof(mask));
+  for (std::size_t at = 0; at < sizeof(lane_type) / 8; ++at) {
+    for (std::size_t byte = 0; byte < 8; ++byte) {
+      if (((words[at] >> (byte * 8)) & 0xff) != 0) {
+        bits |= std::uint64_t{1} << (at * 8 + byte);
+      }
+    }
+  }
+  return bits;
+}
+
 template <class lane_type>
 [[nodiscard]] SCAN_FORCE_INLINE std::size_t first_of(lane_type mask) {
   std::uint64_t words[sizeof(lane_type) / 8];
@@ -440,27 +500,57 @@ template <staying_class klass, bool in_words = true>
     // comparison does -- the question is a branch, and that is a branch too
     // often.
     {
-      using lane [[gnu::vector_size(32)]] = unsigned char;
+      using lane [[gnu::vector_size(SCAN_LANE)]] = unsigned char;
+      // Sixty-four characters to a step whatever a lane holds, because the
+      // step is where the asking happens and the asking is what costs. Two
+      // lanes where the machine has thirty-two-byte registers, four where it
+      // has sixteen -- the same characters read either way, and one question
+      // at the end of them either way, rather than one for every lane.
+      constexpr std::size_t lanes_to_a_step = 64 / SCAN_LANE;
+      // A hundred and twenty-eight where there are that many left, because the
+      // asking at the end of a step costs the same whether the step was long
+      // or short, and a field of two hundred is two of these and one of the
+      // next rather than four of the next.
+      while (limit - cursor >= 128) {
+        lane letters[2 * lanes_to_a_step];
+        __builtin_memcpy(letters, cursor, 128);
+        std::uint64_t fell[2] = {0, 0};
+        for (std::size_t which = 0; which < 2 * lanes_to_a_step; ++which) {
+          decltype(letters[0] < letters[0]) outside;
+          outside_of<klass>(letters[which], outside);
+          fell[which / lanes_to_a_step] |=
+              bits_of(outside) << ((which % lanes_to_a_step) * SCAN_LANE);
+        }
+        if ((fell[0] | fell[1]) != 0) {
+          const std::size_t at =
+              fell[0] != 0
+                  ? static_cast<std::size_t>(std::countr_zero(fell[0]))
+                  : 64 + static_cast<std::size_t>(std::countr_zero(fell[1]));
+          return cursor + at;
+        }
+        cursor += 128;
+      }
       while (limit - cursor >= 64) {
-        lane head{}, tail{};
-        __builtin_memcpy(&head, cursor, 32);
-        __builtin_memcpy(&tail, cursor + 32, 32);
-        decltype(head < head) head_out{}, tail_out{};
-        outside_of<klass>(head, head_out);
-        outside_of<klass>(tail, tail_out);
-        if (any_of(head_out | tail_out)) {
-          const std::size_t at = first_of(head_out);
-          return cursor + (at < 32 ? at : 32 + first_of(tail_out));
+        lane letters[lanes_to_a_step];
+        __builtin_memcpy(letters, cursor, 64);
+        std::uint64_t fell = 0;
+        for (std::size_t which = 0; which < lanes_to_a_step; ++which) {
+          decltype(letters[0] < letters[0]) outside;
+          outside_of<klass>(letters[which], outside);
+          fell |= bits_of(outside) << (which * SCAN_LANE);
+        }
+        if (fell != 0) {
+          return cursor + static_cast<std::size_t>(std::countr_zero(fell));
         }
         cursor += 64;
       }
-      while (limit - cursor >= 32) {
+      while (limit - cursor >= SCAN_LANE) {
         lane letters{};
-        __builtin_memcpy(&letters, cursor, 32);
+        __builtin_memcpy(&letters, cursor, SCAN_LANE);
         decltype(letters < letters) outside{};
         outside_of<klass>(letters, outside);
         if (any_of(outside)) return cursor + first_of(outside);
-        cursor += 32;
+        cursor += SCAN_LANE;
       }
     }
     {
