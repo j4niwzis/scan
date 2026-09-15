@@ -558,6 +558,12 @@ if(SCAN_BUILD_BENCHMARKS)
                             SCAN_THREADS_ACROSS_LOOP_HEADERS)
   endif()
 
+  # The ports below are not module libraries, and some of them say C++11.
+  # `CMAKE_CXX_MODULE_STD` is on for this project, and on means every target
+  # gets the `std` module -- including theirs, where CMake then refuses:
+  # "has C++ sources that use modules, but does not include cxx_std_20". So it
+  # is off while they are configured and on again for what is ours.
+  set(CMAKE_CXX_MODULE_STD 0)
   # The harness, the two engines and the generator. Ports written here because
   # they are used here, and each is a name and where it comes from.
   cme_declare_port(NAME benchmark PROVIDES benchmark
@@ -642,6 +648,7 @@ if(SCAN_BUILD_BENCHMARKS)
   # directory that already had them, and a machine with RE2 installed, where
   # the port answers from there and builds nothing -- and nowhere else. The
   # benchmarks have never configured from clean.
+  set(CMAKE_CXX_MODULE_STD 1)
   add_library(bench_re2)
   target_sources(bench_re2 PUBLIC FILE_SET CXX_MODULES FILES
     benchmarks/re2_engine.cppm)
