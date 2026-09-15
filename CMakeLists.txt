@@ -634,19 +634,14 @@ if(SCAN_BUILD_BENCHMARKS)
   # the program runs and brings abseil with it, which is a weight -- but the
   # benchmarks already build a whole scanner generator, and a comparison that
   # leaves out the engine most programs would reach for is not one.
-  set(RE2_BUILD_TESTING OFF CACHE BOOL "" FORCE)
-  set(ABSL_ENABLE_INSTALL ON CACHE BOOL "" FORCE)
-  set(ABSL_PROPAGATE_CXX_STD ON CACHE BOOL "" FORCE)
-  CPMAddPackage(
-    NAME abseil
-    GITHUB_REPOSITORY abseil/abseil-cpp
-    GIT_TAG 20250127.0
-  )
-  CPMAddPackage(
-    NAME re2_source
-    GITHUB_REPOSITORY google/re2
-    GIT_TAG 2024-07-02
-  )
+  # RE2 and abseil are ports above, answered by find_package like everything
+  # else. Fetching them again here fetches them twice, and where the port is
+  # answered from source the second copy cannot make its targets: `add_library
+  # cannot create target "atomic_hook"`, and the same for every one of
+  # abseil's, and for re2 itself. It stayed quiet in two places -- a build
+  # directory that already had them, and a machine with RE2 installed, where
+  # the port answers from there and builds nothing -- and nowhere else. The
+  # benchmarks have never configured from clean.
   add_library(bench_re2)
   target_sources(bench_re2 PUBLIC FILE_SET CXX_MODULES FILES
     benchmarks/re2_engine.cppm)
