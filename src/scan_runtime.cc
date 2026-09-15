@@ -186,42 +186,6 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
       }(std::make_index_sequence<packed_state.final_command_count>{});
 }
 
-// Where the match ended, said the way this walk says it.
-//
-// The same difference the marks are written with: an address where the
-// characters lie in a row, and a step past the character where positions are
-// counted. Said here rather than at each accept, so that whoever is gathering
-// is told the end the same way the marks were written -- a group still open
-// where the match ends has no closing mark, and this is what says where it
-// ended.
-template <class mark, class position_type>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr mark where_it_ended(
-    const position_type& at) {
-  if constexpr (std::is_pointer_v<mark>) {
-    return at;
-  } else {
-    return at - 1;
-  }
-}
-
-// Whichever of the two this walk counts by. Written as a call because the
-// choice is a constant and the two are not the same kind of thing: one is an
-// address into the subject and the other is how far along the walk is.
-// Both are taken by reference and neither is copied: where the subject
-// arrives a character at a time, the walk's cursor is an iterator that cannot
-// be copied at all, and a by-value parameter would copy it at the call however
-// the choice below goes.
-template <bool by_place, class mark, class here_type, class spot_type>
-[[nodiscard]] SCAN_FORCE_INLINE constexpr mark either_end(
-    const here_type& here, const spot_type& spot) {
-  if constexpr (by_place) {
-    return here;
-  } else {
-    return spot;
-  }
-}
-
-
 // What keeps a state: runs of characters, and nothing else.
 //
 // One run covers a field of letters. Three cover the body of a quoted string,
@@ -1011,7 +975,7 @@ struct gathers_nothing {
             class registers_type, class mark>
   constexpr void moved(char, const registers_type&, mark) const {}
   template <std::size_t state, class registers_type>
-  constexpr void ended(const registers_type&, auto) const {}
+  constexpr void ended(const registers_type&) const {}
 };
 
 // A gatherer that keeps every character it is handed, which is what a match
@@ -1029,7 +993,7 @@ struct keeps_into {
     held.push_back(letter);
   }
   template <std::size_t state, class registers_type>
-  constexpr void ended(const registers_type&, auto) const {}
+  constexpr void ended(const registers_type&) const {}
 };
 
 // How a walk reads, and what it answers.
@@ -1137,23 +1101,18 @@ SCAN_FORCE_INLINE constexpr void keep_the_place(
   if constexpr (requires { best.kept = registers; }) {
     best.kept = registers;
     // Where the machine stands, said the way this walk says it: an address
-    // where the characters lie in a row, and how far along otherwise. Kept,
-    // because a group still open where the match ends has no closing mark and
-    // ends here: this is what says where.
-    mark upto{};
+    // where the characters lie in a row, and how far along otherwise.
     if constexpr (std::is_pointer_v<mark>) {
       execute_static_final_commands<automaton, state>(
           best.kept, static_cast<mark>(cursor));
-      upto = static_cast<mark>(cursor);
     } else {
       execute_static_final_commands<automaton, state>(best.kept, place);
-      upto = place;
     }
     // And where somebody is gathering, the value is put together here, out of
     // the gatherings as they stand now. Nothing has to be copied and nothing
     // has to be undone: what the walk pushes into the gatherings after this
     // cannot reach a value already made, and a later match makes it again.
-    into.template ended<state>(best.kept, upto);
+    into.template ended<state>(best.kept);
   }
 }
 
@@ -1204,7 +1163,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         } else {
           execute_static_final_commands<automaton, state>(registers, place - 1);
         }
-        into.template ended<state>(registers, where_it_ended<mark>(place));
+        into.template ended<state>(registers);
         best.matched = true;
         return true;
       }
@@ -1449,7 +1408,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
         put_back();
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, place);
-          into.template ended<state>(registers, place);
+          into.template ended<state>(registers);
           return true;
         } else {
           return best.matched;
@@ -1488,7 +1447,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
       execute_static_final_commands<automaton, state>(registers, spot);
     }
     put_back();
-    into.template ended<state>(registers, either_end<by_place, mark>(here, spot));
+    into.template ended<state>(registers);
     return true;
   }
 }
@@ -1722,7 +1681,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
               } else {
                 execute_static_final_commands<automaton, state>(registers, spot);
               }
-              into.template ended<state>(registers, either_end<by_place, mark>(here, spot));
+              into.template ended<state>(registers);
             }
             return step_said::stopped;
           }
@@ -1738,7 +1697,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
             } else {
               execute_static_final_commands<automaton, state>(registers, spot);
             }
-            into.template ended<state>(registers, either_end<by_place, mark>(here, spot));
+            into.template ended<state>(registers);
           }
           return step_said::stopped;
         }
@@ -1764,7 +1723,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
       if (symbol == shape.terminator) {
         if constexpr (accepts_here) {
           execute_static_final_commands<automaton, state>(registers, spot);
-          into.template ended<state>(registers, spot);
+          into.template ended<state>(registers);
           best.matched = true;
         }
         return step_said::stopped;
@@ -1791,7 +1750,7 @@ SCAN_FORCE_INLINE constexpr void end_with_no_move(
       } else {
         execute_static_final_commands<automaton, state>(registers, spot - 1);
       }
-      into.template ended<state>(registers, where_it_ended<mark>(spot));
+      into.template ended<state>(registers);
       best.matched = true;
     }
   }
