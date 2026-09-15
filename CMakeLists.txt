@@ -532,6 +532,33 @@ if(SCAN_BUILD_BENCHMARKS)
     add_link_options($<$<CONFIG:Release>:-flto>)
   endif()
 
+  # And with the pass that makes a walk written out as labels worth writing out.
+  #
+  # Every state is its own loop over the characters that keep it, so the jump
+  # from one state to the next is a jump out of one loop header and into
+  # another. Threading those is off by default in LLVM, and without it the
+  # labels cost more than the table they replaced: on the address pattern,
+  # measured in instructions retired per match, 512 against 441 for the walk
+  # that went through the table, and the simulated branch predictor misses
+  # eleven times where the table misses five. With it, 432 -- fewer than
+  # either, and back to five misses.
+  #
+  # An `-mllvm` option is LLVM's own and may be gone in the next one, so it is
+  # asked for rather than assumed.
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-mllvm -jump-threading-across-loop-headers=true"
+                            SCAN_THREADS_ACROSS_LOOP_HEADERS)
+    if(SCAN_THREADS_ACROSS_LOOP_HEADERS)
+      add_compile_options(-mllvm -jump-threading-across-loop-headers=true)
+      # Under LTO the code is generated while linking, so the option has to
+      # reach the backend there as well -- given only to the compiler it is
+      # given to a step that emits no code, and changes nothing.
+      add_link_options($<$<CONFIG:Release>:-mllvm>
+                       $<$<CONFIG:Release>:-jump-threading-across-loop-headers=true>)
+    endif()
+  endif()
+
   # The harness, the two engines and the generator. Ports written here because
   # they are used here, and each is a name and where it comes from.
   cme_declare_port(NAME benchmark PROVIDES benchmark
