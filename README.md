@@ -1040,10 +1040,12 @@ retired per match:
 | with the pass | 453 | **432** |
 
 The same shape in branch misses -- five for the table, eleven for the labels
-without the pass, five again with it. Whoever builds this library and cares
-what it costs wants that option; it is LLVM's own and may be spelled
-differently in another one, so the build asks whether it is there rather than
-assuming it.
+without the pass, five again with it. Counted rather than timed: those are
+instructions retired and branches simulated, on one pattern, which is what can
+be said about a machine without a quiet one to time it on. Whoever builds this
+library and cares what it costs wants that option; it is LLVM's own and may be
+spelled differently in another one, so the build asks whether it is there
+rather than assuming it.
 
 For a fixed-length pattern with a terminator and no length to check
 (`scan::match<p>.sentinel().scalar()`), the code generated for
@@ -1052,6 +1054,11 @@ with no calls, which is what re2c generates for the same pattern, instruction
 for instruction**. The difference in the ordinary form is three instructions:
 the length checks re2c does not have, because it is given a pointer and a
 terminator rather than a range.
+
+The timings below were taken before the walk was written out with a label for
+every state, so they are the table walk's numbers and not this one's. They are
+left here because the shape of the comparison has not changed and the
+methodology under them is the point; the decimals are owed a fresh pass.
 
 Every benchmark asks its question of four engines -- `scan::scan`, CTRE, RE2
 and re2c -- on the same subjects. What each of them is given differs, and the
