@@ -1026,26 +1026,15 @@ Measured against `re2c`, which generates a scanner from a pattern in a
 separate build step, and against `sscanf`. Take the numbers as shapes rather
 than as decimals; the methodology matters more.
 
-The benchmarks are built with `-mllvm -jump-threading-across-loop-headers=true`,
-and that is not a detail. The walk is written out with a label for every state,
-and every state is its own loop over the characters that keep it -- so the jump
-from one state to the next is a jump out of one loop header and into another.
-LLVM will not thread those unless it is asked, and unasked the labels cost more
-than the table walk they replaced. On the address pattern, in instructions
-retired per match:
-
-| | through the table | as labels |
-| --- | --- | --- |
-| without the pass | 441 | 512 |
-| with the pass | 453 | **432** |
-
-The same shape in branch misses -- five for the table, eleven for the labels
-without the pass, five again with it. Counted rather than timed: those are
-instructions retired and branches simulated, on one pattern, which is what can
-be said about a machine without a quiet one to time it on. Whoever builds this
-library and cares what it costs wants that option; it is LLVM's own and may be
-spelled differently in another one, so the build asks whether it is there
-rather than assuming it.
+The benchmarks are built the way each engine would be built by whoever wrote
+it, and with nothing chosen for one of them. `-mllvm
+-jump-threading-across-loop-headers=true` was tried and taken out: under LTO
+there is one code generation for the whole program, so an option given to it is
+given to every engine at once. It is worth two to four per cent here, nineteen
+to the scanner re2c generates, and it costs CTRE twenty-two -- enough to
+reverse which of the two is in front on the short records, mostly by making the
+other one worse. Whoever builds this library rather than comparing it may still
+want it; a comparison cannot.
 
 Every benchmark asks its question of four engines -- `scan::scan`, CTRE, RE2
 and re2c -- on the same subjects. What each of them is given differs, and the
