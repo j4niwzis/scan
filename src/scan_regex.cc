@@ -1637,7 +1637,7 @@ struct collected_match_closure
     // positions as they stand and no character to hand over, which is the same
     // step the characters run through.
     template <std::size_t state, class registers_type>
-    constexpr void ended(const registers_type& registers, auto) {
+    constexpr void ended(const registers_type& registers) {
       fold_all<state>(char{}, false, registers,
                       std::make_index_sequence<sizeof...(collectors)>{});
     }

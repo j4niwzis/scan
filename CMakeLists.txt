@@ -430,6 +430,7 @@ set(scan_tests
   a_head_of_what_is_read_once_test
   a_head_of_what_is_walked_test
   a_head_off_a_stream_and_what_stopped_it_test
+  a_piece_beside_a_fold_test
   a_scan_that_did_not_test
   a_scan_that_is_asked_for_test
   a_shape_inside_a_record_test

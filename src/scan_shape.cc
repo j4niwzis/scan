@@ -3904,9 +3904,6 @@ struct gathered_by_the_registers {
   // What the walk kept for itself, where it kept anything: a gathering that
   // does not follow a reading is not at a register, and this is where it is.
   const kept_type& kept;
-  // Where the match ended. A group still open there has no closing mark, and
-  // the piece it stood on ends here.
-  typename std::remove_cvref_t<registers_type>::value_type upto{};
 
   // A field still being read when the input ended is where it was being
   // gathered; one that ended earlier is the copy taken when it closed, which
@@ -3989,10 +3986,6 @@ struct gathered_by_the_registers {
   // a step later, which is the step `span` takes off. Told apart here because a
   // place is read from its marks only where its value is a piece of the
   // subject, and reading one by the other's rule is off by a character.
-  //
-  // A place still open where the match ended has no closing mark at all -- the
-  // reading points it at a register nothing filled -- so the piece ends where
-  // the match did.
   template <std::size_t place>
   [[nodiscard]] constexpr std::string_view piece(const char* text) const {
     using mark_type = typename std::remove_cvref_t<registers_type>::value_type;
@@ -4002,10 +3995,9 @@ struct gathered_by_the_registers {
     const auto began = registers[reading[place * 2]];
     if (stood_nowhere(began)) return {};
     const auto ended = registers[reading[place * 2 + 1]];
-    const auto stopped = closed_since(ended, began) ? ended : upto;
-    if (stood_nowhere(stopped) || stopped < began) return {};
+    if (!closed_since(ended, began)) return {};
     static_cast<void>(text);
-    return std::string_view(began, static_cast<std::size_t>(stopped - began));
+    return std::string_view(began, static_cast<std::size_t>(ended - began));
   }
 
   // What was written after the colon at this place, where anything was. Asked
@@ -4035,11 +4027,10 @@ template <class type, fixed_string format, class reading_type,
 [[nodiscard]] constexpr auto by_the_registers(
     const reading_type& reading, const states_type& states,
     const registers_type& registers,
-    const kept_type& kept = nothing_was_kept,
-    typename std::remove_cvref_t<registers_type>::value_type upto = {}) {
+    const kept_type& kept = nothing_was_kept) {
   return gathered_by_the_registers<type, format, reading_type, states_type,
                                    registers_type, kept_type>{
-      reading, states, registers, kept, upto};
+      reading, states, registers, kept};
 }
 
 
@@ -5266,7 +5257,7 @@ class field_gatherer {
   // failure: a place passed early where a field was not read yet is not this
   // reading's answer, and holding on to that would lose every match after it.
   template <std::size_t state, class registers_type>
-  constexpr void ended(const registers_type& registers, mark_kind upto) {
+  constexpr void ended(const registers_type& registers) {
     constexpr const auto& packed = automaton.states[state];
     // What the walk kept is told where the walk stands, and then read from
     // where it is.
@@ -5328,9 +5319,28 @@ class field_gatherer {
     // parts, and that one is handed the same bundle. Nothing short of the
     // whole chain being written out lets the registers go, and the whole chain
     // is the reading written out again for every place it has.
+    // Every tag stands in the register that is its own, because the commands
+    // that end a match have just been run.
+    //
+    // The tags are the machine's output: the ending copies each one out of
+    // whatever register the reading was holding it in and into the register
+    // numbered for the tag, and the determiniser keeps those copies alive for
+    // exactly that reason -- a group still open where the match ends is closed
+    // by one of them, at the position the match ended. So a reading is how a
+    // tag is found while the walk is still going, which is what a machine that
+    // is fed reads, having no ending to run. Once the ending has run, a tag is
+    // found by its own number, and looking for it where the reading held it is
+    // looking in a register nothing filled.
+    constexpr auto by_their_own_numbers = [] {
+      std::remove_cvref_t<decltype(packed.readings[0])> made{};
+      for (std::size_t tag = 0; tag < made.size(); ++tag) {
+        made[tag] = static_cast<std::remove_cvref_t<decltype(made[0])>>(tag);
+      }
+      return made;
+    }();
     auto got = finish_value<type, type, 0, true>(
-        by_the_registers<type, format>(packed.readings[packed.accepting_slot],
-                                       states_, registers, mine_kept, upto),
+        by_the_registers<type, format>(by_their_own_numbers, states_,
+                                       registers, mine_kept),
         text_);
     if (!got) {
       failed_ = std::move(got).error();
