@@ -668,7 +668,15 @@ if(SCAN_BUILD_BENCHMARKS)
   add_library(ctre_module)
   target_sources(ctre_module PUBLIC FILE_SET CXX_MODULES FILES
     "${ctre_SOURCE_DIR}/ctre.cppm")
-  target_link_libraries(ctre_module PUBLIC ctre)
+  # By the name the port says it produces, and not by the bare one.
+  #
+  # ctre's own CMake makes a target called `ctre` and an alias beside it, so
+  # linking the bare name works for as long as ctre is built here as a
+  # subproject. Answered any other way -- from the machine, from a prefix, from
+  # anywhere that leaves only what was installed -- there is no target of that
+  # name, CMake reads it as a library to look for, and the link fails on
+  # -lctre: a library that is a header has no archive to find.
+  target_link_libraries(ctre_module PUBLIC ctre::ctre)
   target_compile_features(ctre_module PUBLIC cxx_std_23)
 
   # One pattern per benchmark, one benchmark per executable: compiling a
