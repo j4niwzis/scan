@@ -135,15 +135,19 @@ jobs:
           chmod +x demodulizer
           mkdir -p include
           for one in src/*.cc; do
-            map=$(find build -name "$(basename "$one").o.modmap" | head -1)
-            if [ -z "$map" ]; then
-              echo "no module map for $one; what there is:"
+            map="build/CMakeFiles/scan.dir/$one.o.modmap"
+            if [ ! -f "$map" ]; then
+              echo "no module map at $map; what there is:"
               find build -name '*.modmap' | head -20
               exit 1
             fi
+            # The map is written for the build directory, so its paths are
+            # relative to it, and each is in quotes -- which a shell that
+            # splits the line on spaces keeps rather than removes, turning the
+            # module's name into `"scan.scanners` and losing it.
+            flags=$(sed -n 's|^-fmodule-file="\([^=]*\)=\(.*\)"$|-fmodule-file=\1='"$PWD"'/build/\2|p' "$map")
             ./demodulizer --into=include --spell 'boost.pfr=<boost/pfr.hpp>' \
-              "$one" -- clang++ -std=c++23 -stdlib=libc++ -x c++-module \
-              $(grep -h '^-fmodule-file=' "$map" | tr '\n' ' ')
+              "$one" -- clang++ -std=c++23 -stdlib=libc++ -x c++-module $flags
           done
           ls -l include
 
