@@ -2,7 +2,7 @@
 // and the same reading written by hand.
 //
 // All three read one subject, do the same arithmetic on the same turns, and
-// gather the same tail into the same room. What differs is only how
+// hand back the same tail as a view of it. What differs is only how
 // the machine is got through -- a walk for the library, labels and direct
 // jumps for the machine written out, loops and a pointer for the hand-written
 // one -- so the distance between the columns is the price of the walk and
@@ -19,11 +19,11 @@
 // them, so there is no question of the two columns counting differently.
 //
 // Every column's answer is consumed -- the number and the tail both. Consume
-// only the number and the tail stops being gathered in whichever column the
+// only the number and the tail stops being looked for in whichever column the
 // optimiser can see through, which is the library's, and the comparison turns
 // into one between doing the work and not doing it.
 //
-// The turns are short on purpose -- `_A`, `__B` -- because a word-at-a-time
+// The heaps are short on purpose -- `_X`, `__XX` -- because a word-at-a-time
 // step does not pay for itself on them: a run of one to four characters is
 // shorter than what a vector steps over at once. So the scalar walk is named
 // as well, and both are here.
@@ -33,18 +33,24 @@ import scan;
 
 namespace {
 
-// What the hooks count: each turn puts its digit in its own decimal place, so
-// a turn gone missing changes the number and not only its length.
+// What the hooks add up: a number written as weighed heaps. A heap of
+// underscores says which decimal place it is, and the marks after it say how
+// many -- `X` one, `Y` two -- so twelve is `__X_XX`, and `__X_Y` as well.
+//
+// A heap gone missing changes the number and not only its length, and so does
+// a single mark: the marks of a heap are added up as they arrive, which is
+// what a fold does that a match does not.
 struct tally {
   unsigned long value = 0;
 };
 
-// The subject: `value=(`, then turns of `_A` and `__B` in turn, then `)` and a
-// tail of letters.
-std::string turns_of(std::size_t count) {
+// The subject: `value=(`, then heaps of `_X` and `__XX` in turn, then `)` and
+// a tail of letters. One is worth one and the other twenty, so a heap read
+// wrongly shows in the number rather than hiding in it.
+std::string heaps_of(std::size_t count) {
   std::string made = "value=(";
-  for (std::size_t turn = 0; turn < count; ++turn)
-    made += (turn % 2) ? "__B" : "_A";
+  for (std::size_t heap = 0; heap < count; ++heap)
+    made += (heap % 2) ? "__XX" : "_X";
   made += ")abcdefgh";
   return made;
 }
@@ -52,7 +58,7 @@ std::string turns_of(std::size_t count) {
 const std::string& subject_of(std::size_t count) {
   static std::map<std::size_t, std::string> kept;
   auto found = kept.find(count);
-  if (found == kept.end()) found = kept.emplace(count, turns_of(count)).first;
+  if (found == kept.end()) found = kept.emplace(count, heaps_of(count)).first;
   return found->second;
 }
 
@@ -61,33 +67,38 @@ const std::string& subject_of(std::size_t count) {
 template <>
 struct scan::scanner<tally> {
   [[nodiscard]] static constexpr std::string_view pattern() {
-    return R"(\(((_+)((A)|(B)))*\))";
+    return R"(\(((_+)(X|Y)*)*\))";
   }
   struct state_type {
     unsigned long total = 0;
     unsigned place = 0;
-    unsigned digit = 0;
+    unsigned marks = 0;
   };
   [[nodiscard]] static constexpr state_type begin_groups() { return {}; }
   static constexpr void opened_group(state_type& one, scan::group_at<0>) {
     one.place = 0;
-    one.digit = 0;
+    one.marks = 0;
   }
   static constexpr void closed_group(state_type& one, scan::group_at<0>) {
     unsigned long weight = 1;
     for (unsigned step = 1; step < one.place; ++step) weight *= 10;
-    one.total += weight * one.digit;
+    one.total += weight * one.marks;
   }
+  // The underscores of this heap, one call each.
   static constexpr void push_group(state_type& one, scan::group_at<1>, char) {
     ++one.place;
   }
-  static constexpr void push_group(state_type& one, scan::group_at<3>, char) {
-    one.digit = 1;
+  // And its marks, added up as they come. Both of these groups are handed
+  // every character they match, which is the work being priced.
+  static constexpr void push_group(state_type& one, scan::group_at<2>,
+                                   char letter) {
+    one.marks += letter == 'Y' ? 2u : 1u;
   }
-  static constexpr void push_group(state_type& one, scan::group_at<4>, char) {
-    one.digit = 2;
-  }
-  static constexpr void push_group(state_type&, std::size_t, char) {}
+  // And nothing for the heap as a whole. A fold that says nothing about a
+  // group is not handed that group's characters at all, which is what the two
+  // columns beside this one do; an empty catch-all taking the number would say
+  // the opposite, and this column would be fed every character of every heap
+  // twice over to throw one of them away.
   [[nodiscard]] static constexpr tally finish_groups(state_type one) {
     return {one.total};
   }
@@ -95,23 +106,25 @@ struct scan::scanner<tally> {
 
 namespace {
 
-// A number folded out of its groups, and a tail gathered into room said in
-// advance.
+// A number folded out of its groups, and a tail said as a view of the subject.
 //
-// The tail is gathered rather than pointed at on purpose: gathering is the
-// work being priced here, and a column that only wrote down where the tail
-// began would be measured against two columns that wrote it out.
+// Pointed at rather than copied, in all three columns alike. Copying it is the
+// same work in every column, so it is not what the distance between them is
+// made of -- it only adds the same amount to each and makes the walk, which is
+// what is being priced, a smaller part of what is measured. A subject that is
+// there in one piece is read by taking a view of it, which is what a program
+// reading one wants anyway.
 struct reading {
   tally number;
-  scan::held<8> tail;
+  std::string_view tail;
 };
 
 // What the other two columns hand back, which is what the library hands back
-// written out flat. The tail is gathered into the same room, by the same
-// calls, so the three columns differ in their walk and in nothing else.
+// written out flat. The tail is the same view of the same subject, so the
+// three columns differ in their walk and in nothing else.
 struct answer {
   unsigned long value = 0;
-  scan::held<8> tail{};
+  std::string_view tail{};
   bool matched = false;
 };
 
@@ -128,7 +141,8 @@ using tstate = hooks::state_type;
 // runs to the end.
 answer fold_written_out(const char* p, const char* e) {
   tstate ts{};
-  scan::held<8> tail{};
+  const char* tail_from = nullptr;
+  const char* tail_to = nullptr;
   bool matched = false;
   unsigned long best = 0;
   goto s0;
@@ -215,8 +229,10 @@ s8:
   if (p == e) goto done;
   switch (static_cast<unsigned char>(*p)) {
   case 97 ... 122: {
-    tail.push_back(*p);
-    ++p; goto s10;
+    tail_from = p;
+    ++p;
+    tail_to = p;
+    goto s10;
   }
   default: goto done;
   }
@@ -224,17 +240,18 @@ s8:
 s9:
   if (p == e) goto done;
   switch (static_cast<unsigned char>(*p)) {
-  case 65: {
-    hooks::push_group(ts, scan::group_at<3>{}, *p);
-    ++p; goto s11;
-  }
-  case 66: {
-    hooks::push_group(ts, scan::group_at<4>{}, *p);
-    ++p; goto s12;
-  }
   case 95: {
     hooks::push_group(ts, scan::group_at<1>{}, *p);
-    ++p; goto s13;
+    ++p; goto s9;
+  }
+  case 88:
+  case 89: {
+    hooks::push_group(ts, scan::group_at<2>{}, *p);
+    ++p; goto s11;
+  }
+  case 41: {
+    hooks::closed_group(ts, scan::group_at<0>{});
+    ++p; goto s8;
   }
   default: goto done;
   }
@@ -244,8 +261,9 @@ s10:
   if (p == e) goto done;
   switch (static_cast<unsigned char>(*p)) {
   case 97 ... 122: {
-    tail.push_back(*p);
-    ++p; goto s10;
+    ++p;
+    tail_to = p;
+    goto s10;
   }
   default: goto done;
   }
@@ -253,57 +271,31 @@ s10:
 s11:
   if (p == e) goto done;
   switch (static_cast<unsigned char>(*p)) {
-  case 41: {
-    hooks::closed_group(ts, scan::group_at<0>{});
-    ++p; goto s8;
-  }
-  case 95: {
-    hooks::closed_group(ts, scan::group_at<0>{});
-    hooks::opened_group(ts, scan::group_at<0>{});
-    hooks::push_group(ts, scan::group_at<1>{}, *p);
-    ++p; goto s9;
-  }
-  default: goto done;
-  }
-
-s12:
-  if (p == e) goto done;
-  switch (static_cast<unsigned char>(*p)) {
-  case 41: {
-    hooks::closed_group(ts, scan::group_at<0>{});
-    ++p; goto s8;
-  }
-  case 95: {
-    hooks::closed_group(ts, scan::group_at<0>{});
-    hooks::opened_group(ts, scan::group_at<0>{});
-    hooks::push_group(ts, scan::group_at<1>{}, *p);
-    ++p; goto s9;
-  }
-  default: goto done;
-  }
-
-s13:
-  if (p == e) goto done;
-  switch (static_cast<unsigned char>(*p)) {
-  case 65: {
-    hooks::push_group(ts, scan::group_at<3>{}, *p);
+  case 88:
+  case 89: {
+    hooks::push_group(ts, scan::group_at<2>{}, *p);
     ++p; goto s11;
   }
-  case 66: {
-    hooks::push_group(ts, scan::group_at<4>{}, *p);
-    ++p; goto s12;
-  }
   case 95: {
+    hooks::closed_group(ts, scan::group_at<0>{});
+    hooks::opened_group(ts, scan::group_at<0>{});
     hooks::push_group(ts, scan::group_at<1>{}, *p);
-    ++p; goto s13;
+    ++p; goto s9;
+  }
+  case 41: {
+    hooks::closed_group(ts, scan::group_at<0>{});
+    ++p; goto s8;
   }
   default: goto done;
   }
+
 done:
   answer out{};
   out.matched = matched;
   out.value = matched ? best : 0;
-  if (matched) out.tail = tail;
+  if (matched && tail_from)
+    out.tail = std::string_view(tail_from,
+                                static_cast<std::size_t>(tail_to - tail_from));
   return out;
 }
 
@@ -320,8 +312,9 @@ answer fold_by_hand(const char* p, const char* e) {
   if (std::string_view(p, head.size()) != head) return out;
   p += head.size();
 
-  // A turn is one or more marks and then a letter. The marks say which place
-  // the letter's digit falls in, so `_A` is one and `__B` is twenty.
+  // A heap is one or more underscores and then the marks that belong to it.
+  // The underscores say which decimal place the marks fall in, so `_X` is one
+  // and `__XX` is twenty.
   unsigned long total = 0;
   while (p != e && *p == '_') {
     unsigned place = 0;
@@ -329,27 +322,22 @@ answer fold_by_hand(const char* p, const char* e) {
       ++place;
       ++p;
     }
-    unsigned digit = 0;
-    if (p != e && *p == 'A') {
-      digit = 1;
-    } else if (p != e && *p == 'B') {
-      digit = 2;
-    } else {
-      return out;
+    unsigned marks = 0;
+    while (p != e && (*p == 'X' || *p == 'Y')) {
+      marks += *p == 'Y' ? 2u : 1u;
+      ++p;
     }
-    ++p;
     unsigned long weight = 1;
     for (unsigned step = 1; step < place; ++step) weight *= 10;
-    total += weight * digit;
+    total += weight * marks;
   }
   if (p == e || *p != ')') return out;
   ++p;
 
-  scan::held<8> gathered{};
-  while (p != e && *p >= 'a' && *p <= 'z') {
-    gathered.push_back(*p);
-    ++p;
-  }
+  const char* gathered_from = p;
+  while (p != e && *p >= 'a' && *p <= 'z') ++p;
+  const std::string_view gathered(gathered_from,
+                                  static_cast<std::size_t>(p - gathered_from));
 
   // The whole subject or nothing, which is what the library's reading asks
   // for.
@@ -369,7 +357,7 @@ void scan_fold(harness::State& state) {
     const reading got =
         scan::scan<"value={}{[a-z]*}">.scalar()(view).of<reading>();
     harness::DoNotOptimize(got.number.value);
-    harness::DoNotOptimize(got.tail.view());
+    harness::DoNotOptimize(got.tail);
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
@@ -381,7 +369,7 @@ void scan_fold_vectors(harness::State& state) {
     harness::DoNotOptimize(view);
     const reading got = scan::scan<"value={}{[a-z]*}">(view).of<reading>();
     harness::DoNotOptimize(got.number.value);
-    harness::DoNotOptimize(got.tail.view());
+    harness::DoNotOptimize(got.tail);
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
@@ -393,7 +381,7 @@ void written_out(harness::State& state) {
     harness::DoNotOptimize(from);
     const answer got = fold_written_out(from, from + text.size());
     harness::DoNotOptimize(got.value);
-    harness::DoNotOptimize(got.tail.view());
+    harness::DoNotOptimize(got.tail);
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
@@ -405,7 +393,7 @@ void by_hand(harness::State& state) {
     harness::DoNotOptimize(from);
     const answer got = fold_by_hand(from, from + text.size());
     harness::DoNotOptimize(got.value);
-    harness::DoNotOptimize(got.tail.view());
+    harness::DoNotOptimize(got.tail);
   }
   state.SetBytesProcessed(state.iterations() * text.size());
 }
@@ -426,14 +414,14 @@ void they_agree() {
         written.matched && by_the_hand.matched &&
         walked.number.value == stepped.number.value &&
         walked.number.value == written.value &&
-        walked.number.value == by_the_hand.value && walked.tail.view() == stepped.tail.view() &&
-        walked.tail.view() == written.tail.view() && walked.tail.view() == by_the_hand.tail.view();
+        walked.number.value == by_the_hand.value && walked.tail == stepped.tail &&
+        walked.tail == written.tail && walked.tail == by_the_hand.tail;
     if (!agreed) {
-      std::println("the columns do not agree at {} turns: {} {} {} {}, "
+      std::println("the columns do not agree at {} heaps: {} {} {} {}, "
                    "tails \"{}\" \"{}\" \"{}\" \"{}\"",
                    count, walked.number.value, stepped.number.value,
-                   written.value, by_the_hand.value, walked.tail.view(), stepped.tail.view(),
-                   written.tail.view(), by_the_hand.tail.view());
+                   written.value, by_the_hand.value, walked.tail, stepped.tail,
+                   written.tail, by_the_hand.tail);
       std::abort();
     }
   }
