@@ -3967,7 +3967,7 @@ struct gathered_by_the_registers {
   // gathered; one that ended earlier is the copy taken when it closed, which
   // the readings that went on adding to the opening cannot have changed.
   template <std::size_t place>
-  [[nodiscard]] constexpr const auto& gathering() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr const auto& gathering() const {
     if constexpr (kept_here<place>()) {
       return std::get<gathering_slot<type, format, place>>(kept.slots);
     } else {
@@ -3999,7 +3999,7 @@ struct gathered_by_the_registers {
   // A list is gathered and read at its opening throughout: its elements go on
   // being added to the same list however the readings divide.
   template <std::size_t place>
-  [[nodiscard]] constexpr const auto& list() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr const auto& list() const {
     if constexpr (kept_here<place>()) {
       return std::get<gathering_slot<type, format, place>>(kept.slots);
     } else {
@@ -4009,7 +4009,7 @@ struct gathered_by_the_registers {
   }
 
   template <std::size_t place>
-  [[nodiscard]] constexpr bool took_part() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr bool took_part() const {
     // A turn the walk was gathering is said by the walk: there is no register
     // holding where it began, because it was never at a register.
     if constexpr (kept_here<place>()) {
@@ -4029,7 +4029,7 @@ struct gathered_by_the_registers {
   // A position here is how many characters have been read and not the index of
   // one, so what a place stood on begins one before where its opening says.
   template <std::size_t place>
-  [[nodiscard]] constexpr std::string_view span(const char* text) const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view span(const char* text) const {
     const auto began = slot_read(registers, reading[place * 2]);
     if (stood_nowhere(began)) return {};
     const auto walked = slot_read(registers, reading[place * 2 + 1]);
