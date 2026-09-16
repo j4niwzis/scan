@@ -3450,8 +3450,9 @@ inline constexpr std::size_t gathering_slot =
                typename gathering_state<type, format, group,
                                         mark_type>::result>::at;
 
-template <class type, fixed_string format, std::size_t group,
-          class mark_type = std::ptrdiff_t>
+// The default is said once, where the name is first declared above; saying it
+// again here is ill-formed and only a module unit lets it pass.
+template <class type, fixed_string format, std::size_t group, class mark_type>
 [[nodiscard]] consteval bool alone_in_its_slot() {
   // Slots are handed out by kind, not by place: two places gathered the same
   // way share one, because at a register they are still two -- the register is
