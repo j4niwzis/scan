@@ -1326,7 +1326,7 @@ ctest --test-dir build
 | `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
 | `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
 | `SCAN_FIELDS_BY_BINDING_PACK` | the fields of an aggregate from a structured binding pack rather than from Boost.PFR |
-| `SCAN_AS_HEADERS` | the generated headers rather than the module interface units |
+| `SCAN_MODULES` | build and install the module interface units, beside the headers; on by default |
 
 ### Without modules
 

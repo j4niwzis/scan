@@ -222,7 +222,7 @@ jobs:
             -DCMAKE_C_COMPILER=/usr/local/bin/clang \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
             -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DSCAN_AS_HEADERS=ON -DSCAN_BUILD_TESTS=OFF \
+            -DSCAN_MODULES=OFF -DSCAN_BUILD_TESTS=OFF \
             -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON \
             -DCMAKE_INSTALL_PREFIX="$PWD/prefix-hdr"
           cmake --build build-hdr

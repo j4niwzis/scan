@@ -93,8 +93,19 @@ option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 # an aggregate apart with a binding pack -- whichever
 # `SCAN_FIELDS_BY_BINDING_PACK` says here. A consumer on C++26 whose project
 # is not modules wants the second, and nothing about that is unusual.
-option(SCAN_AS_HEADERS
-       "Use the generated headers rather than the module interface units" OFF)
+option(SCAN_MODULES
+       "Build and install the module interface units, beside the headers" ON)
+
+# The tests and the benchmarks are programs that import this library, so
+# neither is a thing a build without the modules can make. Said here, where
+# the answer is known, rather than failing later with something about a module
+# that is not there.
+if(NOT SCAN_MODULES AND (SCAN_BUILD_TESTS OR SCAN_BUILD_BENCHMARKS))
+  message(FATAL_ERROR
+    "scan: SCAN_MODULES is off, and the tests and the benchmarks import this "
+    "library -- there is nothing for them to import. Turn those off, or "
+    "leave SCAN_MODULES on.")
+endif()
 
 # ---- What this reads a shape with ----
 #
@@ -111,7 +122,7 @@ option(SCAN_FIELDS_BY_BINDING_PACK
        "Take an aggregate apart with a structured binding pack (C++26) rather than with Boost.PFR"
        OFF)
 
-if(NOT SCAN_FIELDS_BY_BINDING_PACK AND SCAN_AS_HEADERS)
+if(NOT SCAN_FIELDS_BY_BINDING_PACK AND NOT SCAN_MODULES)
   # The ordinary Boost.PFR: a header build reads its headers, which is what
   # every machine that has Boost already has. Nothing to build here, and
   # nothing to say about modules.
@@ -194,10 +205,10 @@ endif()
 # them defines.
 set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-if(SCAN_AS_HEADERS)
+if(NOT SCAN_MODULES)
   if(NOT EXISTS "${scan_headers_dir}/scan.hpp")
     message(FATAL_ERROR
-      "scan: SCAN_AS_HEADERS is on and there is nothing at "
+      "scan: SCAN_MODULES is off and there is nothing at "
       "${scan_headers_dir}. They are generated from the module interface "
       "units by the run that builds this, and committed -- so a checkout has "
       "them. One that has not is a tree from before that was so, or one "
@@ -235,7 +246,7 @@ endif()
 # What this target is called where it is installed. A copy can carry both
 # shapes, so neither of them may take the name a consumer asks for: the
 # package config makes `scan::scan` out of whichever was asked.
-if(SCAN_AS_HEADERS)
+if(NOT SCAN_MODULES)
   set_target_properties(scan PROPERTIES EXPORT_NAME headers)
 else()
   set_target_properties(scan PROPERTIES EXPORT_NAME modules)
@@ -244,7 +255,7 @@ endif()
 # And the headers beside the modules, where a build made both. One copy that
 # answers to either is what lets a project that cannot take modules use a
 # library already installed, instead of building its own.
-if(NOT SCAN_AS_HEADERS AND EXISTS "${scan_headers_dir}/scan.hpp")
+if(SCAN_MODULES AND EXISTS "${scan_headers_dir}/scan.hpp")
   include(GNUInstallDirs)
   add_library(scan_headers INTERFACE)
   set_target_properties(scan_headers PROPERTIES EXPORT_NAME headers)
@@ -271,7 +282,7 @@ if(SCAN_FIELDS_BY_BINDING_PACK)
 else()
   target_link_libraries(scan ${scan_reaches} $<BUILD_INTERFACE:Boost::pfr>)
 endif()
-if(NOT SCAN_AS_HEADERS)
+if(SCAN_MODULES)
   target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 target_compile_options(scan ${scan_reaches}
@@ -340,7 +351,7 @@ endif()
 # again.
 if(SCAN_FIELDS_BY_BINDING_PACK)
   set(scan_port_depends "")
-elseif(SCAN_AS_HEADERS)
+elseif(NOT SCAN_MODULES)
   # The ordinary one. A header build reads Boost.PFR's headers, which is what
   # a machine that has Boost already carries -- there is nothing here that has
   # to be a module.
@@ -386,7 +397,7 @@ if(COMMAND cme_port_feature)
   # all three.
   cme_port_feature(scan headers AT_USE
     SUMMARY "the generated headers rather than the module interface units"
-    OPTIONS "SCAN_AS_HEADERS ON")
+    OPTIONS "SCAN_MODULES OFF")
 
   cme_port_feature(scan binding-pack AT_USE
     SUMMARY "an aggregate's fields from a structured binding pack (C++26), which needs no Boost.PFR"
@@ -396,11 +407,11 @@ if(COMMAND cme_port_feature)
   # only as the options.
   #
   # A feature sets an option, and an option can also be set on its own -- so a
-  # copy built with `-DSCAN_AS_HEADERS=ON` and nothing else would install a
+  # copy built with `-DSCAN_MODULES=OFF` and nothing else would install a
   # port recording no features, and look to the next project like an ordinary
   # copy. What is installed beside a library is a record of what that copy is,
   # and it has to say this.
-  if(SCAN_AS_HEADERS)
+  if(NOT SCAN_MODULES)
     cme_features(scan headers)
   endif()
   if(SCAN_FIELDS_BY_BINDING_PACK)
@@ -937,7 +948,7 @@ endif()
 option(SCAN_INSTALL "Install scan and its CMake package" ${PROJECT_IS_TOP_LEVEL})
 if(SCAN_INSTALL)
   include(GNUInstallDirs)
-  if(SCAN_AS_HEADERS)
+  if(NOT SCAN_MODULES)
     # Nothing is compiled and nothing is archived: what is installed is the
     # headers and a target that points at them.
     install(TARGETS scan EXPORT scanTargets)
