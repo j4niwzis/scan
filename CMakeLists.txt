@@ -1,5 +1,17 @@
 cmake_minimum_required(VERSION 4.2 FATAL_ERROR)
 
+# What was asked of this, where a provider has already said it.
+#
+# A project that cannot take modules asks for them as headers, and the switch
+# that decides that has to be answered before the next line -- which turns
+# `import std` on for everything in this build, including that project's own
+# targets. A provider puts the request here before adding this file; a build
+# saying it with -D says the same thing under the same name, and either way it
+# is read before anything is decided.
+if(NOT DEFINED SCAN_MODULES AND "headers" IN_LIST CME_FEATURES_scan)
+  set(SCAN_MODULES OFF)
+endif()
+
 # Only where the modules are being built.
 #
 # `import std` is what the interface units are written against, and saying so
