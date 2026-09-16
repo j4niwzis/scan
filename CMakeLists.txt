@@ -1056,17 +1056,6 @@ if(SCAN_INSTALL)
       CXX_MODULES_DIRECTORY modules
       DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
   endif()
-  # Whatever the exported target names has to be found again by whoever
-  # includes this, in the same words -- and whoever includes this may have no
-  # provider at all, which is the case this file is written for: a consumer
-  # with nothing but a prefix.
-  # And Boost.PFR put back on the target, since the exported one carries it
-  # only in the build interface. A consumer of this compiles the module
-  # interface units that are installed beside it, and those say
-  # `import boost.pfr`.
-  # Asked for only where nothing has answered for it already: a consumer with
-  # a provider has the port added by the provider, and adding it again is two
-  # copies of the same target.
   # What a consumer gets is chosen here, out of what this copy has.
   #
   # Neither shape may be called `scan::scan` where it is installed: a copy can
@@ -1078,18 +1067,6 @@ if(SCAN_INSTALL)
   # A copy that has not got what was asked reports itself not found, with the
   # reason, which is what lets a provider go and build one that has.
   set(scan_config "include(CMakeFindDependencyMacro)\n")
-  if(NOT SCAN_FIELDS_BY_BINDING_PACK)
-    # Whatever the exported target names has to be found again by whoever
-    # includes this, in the same words -- and whoever includes this may have
-    # no provider at all, which is the case this file is written for: a
-    # consumer with nothing but a prefix. Asked for only where nothing has
-    # answered for it already, since adding it twice is two copies of one
-    # target.
-    string(APPEND scan_config
-      "if(NOT TARGET Boost::pfr)\n"
-      "  find_dependency(boost_pfr)\n"
-      "endif()\n")
-  endif()
   string(APPEND scan_config
     "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n"
     "set(_scan_taken_as modules)\n"
@@ -1102,16 +1079,68 @@ if(SCAN_INSTALL)
     "  set(scan_FOUND FALSE)\n"
     "  return()\n"
     "endif()\n"
+    "foreach(_scan_asked IN LISTS scan_FIND_COMPONENTS)\n"
+    "  set(scan_\${_scan_asked}_FOUND TRUE)\n"
+    "endforeach()\n")
+  if(NOT SCAN_FIELDS_BY_BINDING_PACK)
+    # The modules, and only them. Their interface units are installed beside
+    # this and are compiled in the consumer's own build, and they say
+    # `import boost.pfr`: there has to be a target of that name for the import
+    # to resolve to, so whatever the exported one names is found again here, in
+    # the same words -- and whoever reads this may have no provider at all,
+    # which is the case this file is written for. Asked for only where nothing
+    # has answered already, since adding it twice is two copies of one target.
+    string(APPEND scan_config
+      "if(_scan_taken_as STREQUAL \"modules\")\n"
+      "  if(NOT TARGET Boost::pfr)\n"
+      "    find_dependency(boost_pfr)\n"
+      "  endif()\n"
+      "  set_property(TARGET scan::modules APPEND PROPERTY\n"
+      "               INTERFACE_LINK_LIBRARIES Boost::pfr)\n"
+      "endif()\n")
+  endif()
+  # The headers are text, and which of the two ways of taking an aggregate
+  # apart they read is decided by what the build reading them defines -- not by
+  # how this copy was built. So it is the consumer's to choose, and the choice
+  # is made the way everything else here is asked for: `COMPONENTS
+  # binding-pack` says the structured binding pack, which is C++26 and needs no
+  # library, and saying nothing says Boost.PFR.
+  #
+  # And Boost.PFR for a header is a header. A package to find is the tidy way
+  # to have it and is used where there is one, but an include path that already
+  # reaches it is just as good, and a consumer with nothing but a prefix and a
+  # -I is not a consumer whose build should be stopped. So it is looked for,
+  # used if it is there, and said once if it is not.
+  string(APPEND scan_config
+    "if(_scan_taken_as STREQUAL \"headers\")\n"
+    "  if(\"binding-pack\" IN_LIST scan_FIND_COMPONENTS)\n"
+    "    set_property(TARGET scan::headers APPEND PROPERTY\n"
+    "                 INTERFACE_COMPILE_DEFINITIONS\n"
+    "                 SCAN_FIELDS_BY_BINDING_PACK=1)\n"
+    "  else()\n"
+    "    if(NOT TARGET Boost::pfr)\n"
+    "      find_package(boost_pfr QUIET)\n"
+    "    endif()\n"
+    "    if(TARGET Boost::pfr)\n"
+    "      set_property(TARGET scan::headers APPEND PROPERTY\n"
+    "                   INTERFACE_LINK_LIBRARIES Boost::pfr)\n"
+    "    elseif(NOT scan_FIND_QUIETLY)\n"
+    "      message(STATUS\n"
+    "        \"scan: the headers read <boost/pfr.hpp>, and there is no \"\n"
+    "        \"boost_pfr package here to say where it is; they will read it \"\n"
+    "        \"from wherever this build's include paths point. Ask for \"\n"
+    "        \"COMPONENTS binding-pack to take aggregates apart with a \"\n"
+    "        \"structured binding pack instead, which needs C++26 and no \"\n"
+    "        \"library at all.\")\n"
+    "    endif()\n"
+    "  endif()\n"
+    "endif()\n")
+  string(APPEND scan_config
     "if(NOT TARGET scan::scan)\n"
     "  add_library(scan::scan INTERFACE IMPORTED)\n"
     "  set_property(TARGET scan::scan PROPERTY\n"
     "               INTERFACE_LINK_LIBRARIES scan::\${_scan_taken_as})\n"
     "endif()\n")
-  if(NOT SCAN_FIELDS_BY_BINDING_PACK)
-    string(APPEND scan_config
-      "set_property(TARGET scan::\${_scan_taken_as} APPEND PROPERTY\n"
-      "             INTERFACE_LINK_LIBRARIES Boost::pfr)\n")
-  endif()
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake" "${scan_config}")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
