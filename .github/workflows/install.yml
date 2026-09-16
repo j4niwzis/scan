@@ -235,76 +235,6 @@ jobs:
           name: scan-headers
           path: include
 
-      # The same installed copy, taken the other way.
-      #
-      # This is the question a prefix answers: the library is installed once,
-      # with its module interfaces and the headers beside them, and a project
-      # that cannot take modules asks for the headers and gets them from that
-      # copy rather than building one of its own. `COMPONENTS headers` is the
-      # whole of what it says differently.
-      - name: the same copy, asked for as headers
-        run: |
-          mkdir -p /tmp/by-headers
-          cat > /tmp/by-headers/CMakeLists.txt <<'EOF'
-          cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
-          project(by_headers LANGUAGES CXX)
-          set(CMAKE_CXX_STANDARD 23)
-          set(CMAKE_CXX_EXTENSIONS OFF)
-          find_package(scan REQUIRED COMPONENTS headers)
-          add_executable(by_headers main.cc)
-          target_link_libraries(by_headers PRIVATE scan::scan)
-          EOF
-          cat > /tmp/by-headers/main.cc <<'EOF'
-          #include <scan.hpp>
-
-          struct row {
-            std::string_view left;
-            std::string_view right;
-          };
-
-          int main() {
-            const std::string_view text = "left,right";
-            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(text);
-            return one.left == "left" && one.right == "right" ? 0 : 1;
-          }
-          EOF
-          pfr=$(find ~/.cache/cmake-everywhere build -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
-          pfr_include=$(dirname "$(dirname "$pfr")")
-          cmake -S /tmp/by-headers -B /tmp/by-headers/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
-            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++ -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0" \
-            -DCMAKE_PREFIX_PATH="$PWD/prefix"
-          cmake --build /tmp/by-headers/build
-          /tmp/by-headers/build/by_headers
-
-      # And into the tree.
-      #
-      # A consumer pins a revision, and a revision that carries the sources
-      # should carry what was made from them -- so these are committed rather
-      # than attached to a release, and every checkout has them whether it is
-      # a release or not.
-      #
-      # `[skip ci]`, because the run that answers for this content is the one
-      # that just made it: these files were generated from this build,
-      # compiled, and linked from two translation units a few steps ago.
-      - name: the headers, into the tree
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name 'j4niwzis'
-          git config user.email 'j4niwzis@proton.me'
-          git add -A include
-          if git diff --cached --quiet; then
-            echo "the headers are what they already were"
-            exit 0
-          fi
-          git commit -m "The headers, as this tree generates them [skip ci]"
-          # Somebody may have pushed while this was building; what is here is
-          # generated from this commit and is not a change to anybody else's.
-          git pull --rebase --autostash origin main
-          git push origin HEAD:main
-
       # One pattern to a test, and every one of them is a machine built while
       # it compiles -- so this is the long part of the run and the part worth
       # having.
@@ -391,3 +321,73 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/prefix"
           cmake --build /tmp/consumer/build
           /tmp/consumer/build/consumer
+
+      # The same installed copy, taken the other way.
+      #
+      # This is the question a prefix answers: the library is installed once,
+      # with its module interfaces and the headers beside them, and a project
+      # that cannot take modules asks for the headers and gets them from that
+      # copy rather than building one of its own. `COMPONENTS headers` is the
+      # whole of what it says differently.
+      - name: the same copy, asked for as headers
+        run: |
+          mkdir -p /tmp/by-headers
+          cat > /tmp/by-headers/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
+          project(by_headers LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 23)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          find_package(scan REQUIRED COMPONENTS headers)
+          add_executable(by_headers main.cc)
+          target_link_libraries(by_headers PRIVATE scan::scan)
+          EOF
+          cat > /tmp/by-headers/main.cc <<'EOF'
+          #include <scan.hpp>
+
+          struct row {
+            std::string_view left;
+            std::string_view right;
+          };
+
+          int main() {
+            const std::string_view text = "left,right";
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(text);
+            return one.left == "left" && one.right == "right" ? 0 : 1;
+          }
+          EOF
+          pfr=$(find ~/.cache/cmake-everywhere build -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
+          pfr_include=$(dirname "$(dirname "$pfr")")
+          cmake -S /tmp/by-headers -B /tmp/by-headers/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++ -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0" \
+            -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build /tmp/by-headers/build
+          /tmp/by-headers/build/by_headers
+
+      # And into the tree.
+      #
+      # A consumer pins a revision, and a revision that carries the sources
+      # should carry what was made from them -- so these are committed rather
+      # than attached to a release, and every checkout has them whether it is
+      # a release or not.
+      #
+      # `[skip ci]`, because the run that answers for this content is the one
+      # that just made it: these files were generated from this build,
+      # compiled, and linked from two translation units a few steps ago.
+      - name: the headers, into the tree
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name 'j4niwzis'
+          git config user.email 'j4niwzis@proton.me'
+          git add -A include
+          if git diff --cached --quiet; then
+            echo "the headers are what they already were"
+            exit 0
+          fi
+          git commit -m "The headers, as this tree generates them [skip ci]"
+          # Somebody may have pushed while this was building; what is here is
+          # generated from this commit and is not a change to anybody else's.
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
