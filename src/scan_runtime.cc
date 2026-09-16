@@ -30,33 +30,115 @@ inline constexpr mark absent_mark = [] {
   }
 }();
 
-template <class mark, std::size_t register_count>
-SCAN_FORCE_INLINE constexpr void execute_command(
-    const packed_command& command, mark source_value,
-    std::array<mark, register_count>& registers, mark here) {
+template <class mark, class sequence>
+struct marks_tuple;
+template <class mark, std::size_t... which>
+struct marks_tuple<mark, std::index_sequence<which...>> {
+  using type = std::tuple<decltype(which, mark())...>;
+};
+
+// The marks a walk writes: a variable each, not a row of cells.
+//
+// A tuple rather than an array, and that is the whole point of it. Every index
+// into this file is known while the program is compiled -- the commands of a
+// move are unrolled with their destinations as constants -- and a tuple is the
+// type that says so, because an index that came out of the data does not
+// compile against it. An array allowed one, and one is all it takes: a single
+// access with a computed index puts the whole file in memory, and every
+// command after it becomes a store with a dependent load behind it.
+//
+// re2c has no such array. It writes `yyt1 = YYCURSOR` against a named local
+// and copies marks between locals, which is why what it emits keeps them in
+// machine registers. This is that, said in a type.
+template <class mark, std::size_t count>
+struct register_file {
+  using storage_type =
+      typename marks_tuple<mark, std::make_index_sequence<count>>::type;
+  storage_type kept{};
+
+  template <std::size_t which>
+  [[nodiscard]] constexpr mark& at() noexcept {
+    return std::get<which>(kept);
+  }
+  template <std::size_t which>
+  [[nodiscard]] constexpr const mark& at() const noexcept {
+    return std::get<which>(kept);
+  }
+  // Where the answer is read out of the file, which happens once a reading and
+  // never on a character.
+  [[nodiscard]] constexpr std::array<mark, count> row() const noexcept {
+    return [&]<std::size_t... which>(std::index_sequence<which...>) {
+      return std::array<mark, count>{std::get<which>(kept)...};
+    }(std::make_index_sequence<count>{});
+  }
+  constexpr void fill(mark value) noexcept {
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ((std::get<which>(kept) = value), ...);
+    }(std::make_index_sequence<count>{});
+  }
+  // The one place a number is not known while compiling: the commands a
+  // machine runs before it reads anything. Written out as a comparison per
+  // slot, which costs what it costs once and keeps the file out of memory.
+  constexpr void write(std::size_t which, mark value) noexcept {
+    [&]<std::size_t... slot>(std::index_sequence<slot...>) {
+      (((slot == which) ? void(std::get<slot>(kept) = value) : void()), ...);
+    }(std::make_index_sequence<count>{});
+  }
+  [[nodiscard]] constexpr mark read(std::size_t which) const noexcept {
+    mark found = absent_mark<mark>;
+    [&]<std::size_t... slot>(std::index_sequence<slot...>) {
+      (((slot == which) ? void(found = std::get<slot>(kept)) : void()), ...);
+    }(std::make_index_sequence<count>{});
+    return found;
+  }
+};
+
+// A mark by a number known while compiling, from whichever file holds it.
+//
+// The walk that runs keeps its marks in a tuple, where the number has to be a
+// constant. The walk that reads an automaton built at run time keeps them in a
+// vector, where it cannot be. Both are asked the same way here.
+template <std::size_t which, class file_type>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto mark_at(const file_type& registers) {
+  if constexpr (requires { registers.template at<which>(); }) {
+    return registers.template at<which>();
+  } else {
+    return registers[which];
+  }
+}
+
+template <class mark>
+SCAN_FORCE_INLINE constexpr void execute_command(const packed_command& command,
+                                                 mark source_value, mark& slot,
+                                                 mark here) {
   mark value = absent_mark<mark>;
   if (command.source != packed_command::no_source) {
     value = source_value;
   }
   if (command.value == -1) value = absent_mark<mark>;
   if (command.value == 0) value = here;
-  registers[command.destination] = value;
+  slot = value;
 }
 
 template <class mark, std::size_t register_count, std::size_t command_count>
 SCAN_FORCE_INLINE constexpr void execute_commands(
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, std::array<mark, register_count>& registers, mark here) {
+    std::size_t count, register_file<mark, register_count>& registers, mark here) {
   std::array<mark, command_count> source_values{};
   std::size_t index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
     source_values[index++] = command.source == packed_command::no_source
                                  ? absent_mark<mark>
-                                 : registers[command.source];
+                                 : registers.read(command.source);
   }
   index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
-    execute_command(command, source_values[index++], registers, here);
+    mark value = absent_mark<mark>;
+    const mark source_value = source_values[index++];
+    if (command.source != packed_command::no_source) value = source_value;
+    if (command.value == -1) value = absent_mark<mark>;
+    if (command.value == 0) value = here;
+    registers.write(command.destination, value);
   }
 }
 
@@ -146,22 +228,28 @@ inline constexpr auto registers_worth_writing = [] consteval {
 template <auto& automaton, std::size_t state, std::size_t range,
           std::uint64_t tags_read, class mark, std::size_t register_count>
 SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
-    std::array<mark, register_count>& registers, mark here) {
+    register_file<mark, register_count>& registers, mark here) {
   constexpr const auto& transition =
       automaton.states[state].ranges[range];
   static constexpr auto live = registers_worth_writing<automaton, tags_read>;
   [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
       std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
-            (!live[transition.commands[index].destination] ||
-                     transition.commands[index].source ==
-                         packed_command::no_source
-                 ? absent_mark<mark>
-                 : registers[transition.commands[index].source])...};
+            [&] SCAN_FORCE_INLINE_LAMBDA() -> mark {
+              constexpr auto command = transition.commands[index];
+              if constexpr (!live[command.destination] ||
+                            command.source == packed_command::no_source) {
+                return absent_mark<mark>;
+              } else {
+                return registers.template at<command.source>();
+              }
+            }()...};
         ([&] SCAN_FORCE_INLINE_LAMBDA {
           if constexpr (live[transition.commands[index].destination]) {
-            execute_command(transition.commands[index], source_values[index],
-                            registers, here);
+            execute_command(
+                transition.commands[index], source_values[index],
+                registers.template at<transition.commands[index].destination>(),
+                here);
           }
         }(),
          ...);
@@ -171,17 +259,24 @@ SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
 template <auto& automaton, std::size_t state, class mark,
           std::size_t register_count>
 SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
-    std::array<mark, register_count>& registers, mark here) {
+    register_file<mark, register_count>& registers, mark here) {
   constexpr const auto& packed_state = automaton.states[state];
   [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
       std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
-            (packed_state.final_commands[index].source ==
-                     packed_command::no_source
-                 ? absent_mark<mark>
-                 : registers[packed_state.final_commands[index].source])...};
-        (execute_command(packed_state.final_commands[index],
-                         source_values[index], registers, here),
+            [&] SCAN_FORCE_INLINE_LAMBDA() -> mark {
+              constexpr auto command = packed_state.final_commands[index];
+              if constexpr (command.source == packed_command::no_source) {
+                return absent_mark<mark>;
+              } else {
+                return registers.template at<command.source>();
+              }
+            }()...};
+        (execute_command(
+             packed_state.final_commands[index], source_values[index],
+             registers.template at<packed_state.final_commands[index]
+                                       .destination>(),
+             here),
          ...);
       }(std::make_index_sequence<packed_state.final_command_count>{});
 }
@@ -692,7 +787,7 @@ template <auto& automaton, std::size_t state, std::uint64_t tags_read,
           class mark, std::size_t register_count, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool
 execute_tagged_self_transition(
-    unsigned char symbol, std::array<mark, register_count>& registers,
+    unsigned char symbol, register_file<mark, register_count>& registers,
     mark here) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
@@ -730,7 +825,7 @@ template <auto& automaton, std::size_t state, std::uint64_t tags_read,
           class gatherer, class mark, std::size_t register_count,
           std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::size_t taken_self_move(
-    unsigned char symbol, std::array<mark, register_count>& registers,
+    unsigned char symbol, register_file<mark, register_count>& registers,
     mark here, gatherer& into) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
@@ -1140,7 +1235,7 @@ template <auto& automaton, std::size_t state, class answer_type,
           class cursor_type, class mark, std::size_t register_count,
           class gatherer>
 SCAN_FORCE_INLINE constexpr void keep_the_place(
-    answer_type& best, const std::array<mark, register_count>& registers,
+    answer_type& best, const register_file<mark, register_count>& registers,
     const cursor_type& cursor, mark place, gatherer& into) {
   if constexpr (requires { best.kept = registers; }) {
     best.kept = registers;
@@ -1166,7 +1261,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           class gatherer, class answer_type>
 [[nodiscard]] constexpr bool run_body(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
-    std::array<mark, register_count>& __restrict registers,
+    register_file<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best);
 
 // Reached by a call, with the chain ahead of it written out again from there.
@@ -1175,7 +1270,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
           class gatherer, class answer_type>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_state(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
-    std::array<mark, register_count>& __restrict registers,
+    register_file<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
   return run_body<automaton, shape, state, shape.budget, 0, mark, cursor_type,
                   sentinel_type, register_count, gatherer, answer_type>(
@@ -1188,7 +1283,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           class gatherer, class answer_type, std::size_t which = 0>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool dispatch_continuation(
     unsigned char symbol, cursor_type& cursor, sentinel_type last, mark& place,
-    std::array<mark, register_count>& registers, gatherer& into,
+    register_file<mark, register_count>& registers, gatherer& into,
     answer_type& best) {
   constexpr auto moves = distinct_moves<automaton, state>();
   if constexpr (which == moves.count) {
@@ -1290,7 +1385,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           class gatherer, class answer_type>
 [[nodiscard]] constexpr bool run_body(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
-    std::array<mark, register_count>& __restrict registers,
+    register_file<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
   constexpr bool by_place = std::is_pointer_v<mark>;
   constexpr bool gathers = !std::same_as<gatherer, gathers_nothing>;
@@ -1522,7 +1617,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           class gatherer, class answer_type>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_continuation(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
-    std::array<mark, register_count>& __restrict registers,
+    register_file<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
   // One function a machine while the program runs, and the states written out
   // where they are reached while it is compiled.
@@ -1672,7 +1767,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
 [[nodiscard]] SCAN_FORCE_INLINE constexpr step_said step_in_state(
     cursor_type& __restrict here, sentinel_type& __restrict last,
     mark& __restrict spot,
-    std::array<mark, register_count>& __restrict registers,
+    register_file<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best,
     unsigned char& symbol) {
   constexpr bool by_place = std::is_pointer_v<mark>;
@@ -1805,7 +1900,7 @@ template <auto& automaton, walk_shape shape, std::size_t state, class mark,
 template <auto& automaton, walk_shape shape, std::size_t state, class mark,
           std::size_t register_count, class gatherer, class answer_type>
 SCAN_FORCE_INLINE constexpr void end_with_no_move(
-    mark& spot, std::array<mark, register_count>& registers, gatherer& into,
+    mark& spot, register_file<mark, register_count>& registers, gatherer& into,
     answer_type& best) {
   if constexpr (shape.longest) {
     constexpr bool accepts_here =
@@ -1828,7 +1923,7 @@ template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t which, class mark, std::size_t register_count,
           class gatherer>
 SCAN_FORCE_INLINE constexpr void take_move(
-    unsigned char symbol, std::array<mark, register_count>& registers,
+    unsigned char symbol, register_file<mark, register_count>& registers,
     mark& spot, gatherer& into) {
   constexpr std::size_t move = move_at<automaton, state, which>();
   into.template moving<state, move>(registers, spot);
@@ -2441,7 +2536,7 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
           class gatherer, class answer_type>
 [[nodiscard]] bool run_threaded(
     cursor_type& __restrict cursor, sentinel_type last, mark& __restrict place,
-    std::array<mark, register_count>& __restrict registers,
+    register_file<mark, register_count>& __restrict registers,
     gatherer& __restrict into, answer_type& __restrict best) {
   static_assert(states_in<automaton> <= SCAN_LADDER,
                 "this machine has more states than the ladder has rungs: "
@@ -2502,13 +2597,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
                 "this machine has more states than the ladder has rungs: "
                 "build with -DSCAN_LADDER=4096");
   static void* const rungs[] = {SCAN_EVERY_RUNG(SCAN_RUNG_NAME)};
-  std::array<mark, register_count> registers{};
+  register_file<mark, register_count> registers{};
   if constexpr (std::is_pointer_v<mark>) {
-    std::ranges::fill(registers, nullptr);
+    registers.fill(nullptr);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, static_cast<const char*>(nullptr));
   } else {
-    std::ranges::fill(registers, scan::tre::negative_tag);
+    registers.fill(scan::tre::negative_tag);
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, mark{});
   }
@@ -2530,7 +2625,7 @@ scan_over:
   if constexpr (std::same_as<make_type, taken_from_gatherer>) {
     return into.taken();
   } else {
-    return make(registers, best.matched);
+    return make(registers.row(), best.matched);
   }
 }
 
@@ -2549,13 +2644,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
                                         const char* text, mark start,
                                         make_type make = {}) {
   if consteval {
-    std::array<mark, register_count> registers{};
+    register_file<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
-      std::ranges::fill(registers, nullptr);
+      registers.fill(nullptr);
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, static_cast<const char*>(nullptr));
     } else {
-      std::ranges::fill(registers, scan::tre::negative_tag);
+      registers.fill(scan::tre::negative_tag);
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, mark{});
     }
@@ -2571,17 +2666,17 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
     if constexpr (std::same_as<make_type, taken_from_gatherer>) {
       return into.taken();
     } else {
-      return make(registers, best.matched);
+      return make(registers.row(), best.matched);
     }
   } else {
    if constexpr (automaton.states.size() <= SCAN_WRITTEN_OUT) {
-    std::array<mark, register_count> registers{};
+    register_file<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
-      std::ranges::fill(registers, nullptr);
+      registers.fill(nullptr);
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, static_cast<const char*>(nullptr));
     } else {
-      std::ranges::fill(registers, scan::tre::negative_tag);
+      registers.fill(scan::tre::negative_tag);
       execute_commands(automaton.initialize, automaton.initialize.size(),
                        registers, mark{});
     }
@@ -2597,7 +2692,7 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
     if constexpr (std::same_as<make_type, taken_from_gatherer>) {
       return into.taken();
     } else {
-      return make(registers, best.matched);
+      return make(registers.row(), best.matched);
     }
    } else {
     return run_threaded_owning<automaton, shape, entry, mark,
