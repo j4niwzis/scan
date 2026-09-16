@@ -2120,14 +2120,6 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       // boundary and read again here. Handed this instead, the walk owns the
       // marks and keeps them wherever values go, and what comes back is the
       // answer.
-      constexpr unsigned char terminator =
-          sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
-      constexpr bool by_terminator =
-          sentinel >= 0 ||
-          (terminated && is_safe_tagged_sentinel<automaton, terminator>());
-      // Where the walk read a copy, the marks point into the copy, and the
-      // distance back to the subject is the same for all of them.
-      std::ptrdiff_t carried = 0;
       const auto build = [&](const auto& registers, bool matched) {
         if (!matched) {
           return ending::template went_wrong<groups_type, scan::failure>(
@@ -2144,15 +2136,7 @@ template <class type, fixed_string format, int sentinel, bool terminated,
             // end, and not here.
             if (begin == nullptr) return std::string_view{};
           }
-          // Only a walk that could have read a copy carries anything; the
-          // rest are told so here rather than made to add nothing.
-          if constexpr (by_terminator) {
-            return std::string_view(begin,
-                                    static_cast<std::size_t>(end - begin));
-          } else {
-            return std::string_view(begin + carried,
-                                    static_cast<std::size_t>(end - begin));
-          }
+          return std::string_view(begin, static_cast<std::size_t>(end - begin));
         };
         // Where the automaton writes every tag on every path, no group can have
         // taken no part, and the walk over them at the end is a walk over a
@@ -2166,6 +2150,11 @@ template <class type, fixed_string format, int sentinel, bool terminated,
           return answer(std::array{capture.template operator()<index>()...});
         }
       };
+      constexpr unsigned char terminator =
+          sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
+      constexpr bool by_terminator =
+          sentinel >= 0 ||
+          (terminated && is_safe_tagged_sentinel<automaton, terminator>());
       static_assert(!by_terminator ||
                         is_safe_tagged_sentinel<automaton, terminator>(),
                     "the terminator must be rejected in every state");
@@ -2187,48 +2176,20 @@ template <class type, fixed_string format, int sentinel, bool terminated,
       };
       const char* const from = input.data();
       const char* const upto = from + input.size();
-      const auto go = [&]<walk_shape shape>(const char* begin,
-                                           const char* end) {
+      const auto go = [&]<walk_shape shape>() {
         return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
                           const char*, false, const char*, const char*,
                           automaton.register_count, gathers_nothing,
                           walk_answer<const char*>, decltype(build)>(
-            begin, end, begin, begin, build);
+            from, upto, from, from, build);
       };
-      // A subject short enough to copy is a subject we can give a terminator
-      // to.
-      //
-      // Without one every character read has to be guarded, and the guard is a
-      // comparison and a branch on each of them -- measured, that is the whole
-      // difference between the two forms and nothing else. Copied into room of
-      // our own with a nul written after it, the same characters are read by
-      // the walk that needs no guard, because the terminator is rejected in
-      // every state and stops the walk itself. What comes back points into the
-      // copy, so the marks are carried back by the distance between them.
-      constexpr unsigned char room_terminator = 0;
-      if constexpr (!by_terminator &&
-                    is_safe_tagged_sentinel<automaton, room_terminator>()) {
-        constexpr std::size_t worth_copying = 64;
-        if (input.size() < worth_copying) {
-          char room[worth_copying];
-          __builtin_memcpy(room, from, input.size());
-          room[input.size()] = static_cast<char>(room_terminator);
-          const std::ptrdiff_t back = from - static_cast<const char*>(room);
-          carried = from - static_cast<const char*>(room);
-          constexpr walk_shape made{.in_words = false,
-                                    .by_terminator = true,
-                                    .terminator = room_terminator,
-                                    .budget = bodies_worth_writing<automaton>()};
-          return go.template operator()<made>(room, room + input.size());
-        }
-      }
       constexpr std::size_t worth_a_word = worth_reading_in_words<automaton>();
       constexpr bool asks = walk == how_to_walk::by_length;
       if (asks ? input.size() < worth_a_word
                : walk == how_to_walk::one_at_a_time) {
-        return go.template operator()<shape_for(false)>(from, upto);
+        return go.template operator()<shape_for(false)>();
       }
-      return go.template operator()<shape_for(true)>(from, upto);
+      return go.template operator()<shape_for(true)>();
     }
   }
 }
