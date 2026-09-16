@@ -41,7 +41,7 @@ if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
       ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
 endif()
 
-project(scan VERSION 0.1 LANGUAGES CXX)
+project(scan VERSION 0.1.0 LANGUAGES CXX)
 
 # CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call and
 # by no other, so a build configured from a subdirectory of this has no
