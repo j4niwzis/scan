@@ -23,6 +23,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# The header generator, by the release it is taken from. One place, so that
+# moving to a newer one is one line.
+env:
+  DEMODULIZER: 0.1.0
+
 jobs:
   install:
     name: clang ${{ matrix.llvm }}, libc++, import std
@@ -110,6 +115,73 @@ jobs:
             -DCME_SOURCES_ENABLED=ON \
             -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
           cmake --build build
+
+      # The headers, for whoever cannot take modules.
+      #
+      # Generated rather than kept: the sources stay module interface units and
+      # pay nothing for the fallback. What generates them is released on its
+      # own and downloaded here as a binary, so this repository carries no
+      # libtooling and no clang development packages.
+      #
+      # The interfaces it parses are the ones this build just compiled. CMake
+      # writes the mapping from module name to compiled interface beside each
+      # object -- a `.modmap` -- which is exactly the flags the tool needs, so
+      # nothing here has to know how the ports were built or where Boost.PFR
+      # came from.
+      - name: the headers, generated
+        run: |
+          curl -fsSL -o demodulizer \
+            https://github.com/j4niwzis/demodulizer/releases/download/v${{ env.DEMODULIZER }}/demodulizer
+          chmod +x demodulizer
+          mkdir -p include
+          for one in src/*.cc; do
+            map=$(find build -name "$(basename "$one").o.modmap" | head -1)
+            if [ -z "$map" ]; then
+              echo "no module map for $one; what there is:"
+              find build -name '*.modmap' | head -20
+              exit 1
+            fi
+            ./demodulizer --into=include --spell 'boost.pfr=<boost/pfr.hpp>' \
+              "$one" -- clang++ -std=c++23 -stdlib=libc++ -x c++-module \
+              $(grep -h '^-fmodule-file=' "$map" | tr '\n' ' ')
+          done
+          ls -l include
+
+      # A header that compiles is not yet a header that links: a definition at
+      # namespace scope that is not inline is one per translation unit that
+      # includes it, and one translation unit never shows that. The tool
+      # refuses those on sight -- this is the other half, and it is the answer
+      # rather than the argument.
+      - name: and they build, and link twice
+        run: |
+          pfr=$(find ~/.cache/cmake-everywhere build -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
+          test -n "$pfr" || { echo "Boost.PFR headers not found"; exit 1; }
+          pfr_include=$(dirname "$(dirname "$pfr")")
+          cat > /tmp/one.cc <<'EOF'
+          #include "scan.hpp"
+          struct row { std::string_view left, right; };
+          int how_long(const char* text) {
+            std::string_view view(text);
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(view);
+            return static_cast<int>(one.left.size() + one.right.size());
+          }
+          EOF
+          cat > /tmp/two.cc <<'EOF'
+          #include "scan.hpp"
+          #include <cstdio>
+          int how_long(const char* text);
+          int main() { std::printf("%d\n", how_long("left,right")); return 0; }
+          EOF
+          clang++ -std=c++23 -stdlib=libc++ -I include -I "$pfr_include" \
+            -DBOOST_PFR_USE_STD_MODULE=0 \
+            -fconstexpr-steps=300000000 -fconstexpr-depth=4096 \
+            /tmp/one.cc /tmp/two.cc -o /tmp/both
+          test "$(/tmp/both)" = "9"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scan-headers
+          path: include
 
       # One pattern to a test, and every one of them is a machine built while
       # it compiles -- so this is the long part of the run and the part worth
