@@ -235,19 +235,31 @@ jobs:
           name: scan-headers
           path: include
 
-      # What a release of this carries besides the source: the headers, for
-      # whoever cannot take modules. Made by the run that just proved they
-      # compile and link, rather than by hand afterwards.
-      - name: the headers, attached to the release
-        if: startsWith(github.ref, 'refs/tags/')
-        run: tar czf "scan-headers-${GITHUB_REF_NAME}.tar.gz" -C include .
-
-      - name: the release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: scan-headers-*.tar.gz
-          fail_on_unmatched_files: true
+      # And into the tree.
+      #
+      # A consumer pins a revision, and a revision that carries the sources
+      # should carry what was made from them -- so these are committed rather
+      # than attached to a release, and every checkout has them whether it is
+      # a release or not.
+      #
+      # `[skip ci]`, because the run that answers for this content is the one
+      # that just made it: these files were generated from this build,
+      # compiled, and linked from two translation units a few steps ago.
+      - name: the headers, into the tree
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name 'j4niwzis'
+          git config user.email 'j4niwzis@proton.me'
+          git add -A include
+          if git diff --cached --quiet; then
+            echo "the headers are what they already were"
+            exit 0
+          fi
+          git commit -m "The headers, as this tree generates them [skip ci]"
+          # Somebody may have pushed while this was building; what is here is
+          # generated from this commit and is not a change to anybody else's.
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
 
       # One pattern to a test, and every one of them is a machine built while
       # it compiles -- so this is the long part of the run and the part worth

@@ -196,9 +196,10 @@ if(SCAN_AS_HEADERS)
   if(NOT EXISTS "${scan_headers_dir}/scan.hpp")
     message(FATAL_ERROR
       "scan: SCAN_AS_HEADERS is on and there is nothing at "
-      "${scan_headers_dir}. The headers are generated from the module "
-      "interface units and are carried by a release, not by a branch -- so "
-      "this wants a release, or SCAN_AS_HEADERS off.")
+      "${scan_headers_dir}. They are generated from the module interface "
+      "units by the run that builds this, and committed -- so a checkout has "
+      "them. One that has not is a tree from before that was so, or one "
+      "whose generation has not run yet.")
   endif()
   add_library(scan INTERFACE)
   add_library(scan::scan ALIAS scan)
@@ -355,13 +356,28 @@ if(COMMAND cme_port_feature)
   # whichever it turned out to be, in its own CMakeLists, where the switches
   # have been read. A feature that named one of them would be naming it for
   # all three.
-  cme_port_feature(scan headers
+  cme_port_feature(scan headers AT_USE
     SUMMARY "the generated headers rather than the module interface units"
     OPTIONS "SCAN_AS_HEADERS ON")
 
-  cme_port_feature(scan binding-pack
+  cme_port_feature(scan binding-pack AT_USE
     SUMMARY "an aggregate's fields from a structured binding pack (C++26), which needs no Boost.PFR"
     OPTIONS "SCAN_FIELDS_BY_BINDING_PACK ON")
+
+  # And what this build turned out to be, said as the features rather than
+  # only as the options.
+  #
+  # A feature sets an option, and an option can also be set on its own -- so a
+  # copy built with `-DSCAN_AS_HEADERS=ON` and nothing else would install a
+  # port recording no features, and look to the next project like an ordinary
+  # copy. What is installed beside a library is a record of what that copy is,
+  # and it has to say this.
+  if(SCAN_AS_HEADERS)
+    cme_features(scan headers)
+  endif()
+  if(SCAN_FIELDS_BY_BINDING_PACK)
+    cme_features(scan binding-pack)
+  endif()
 
   cme_port_feature(scan tests
     SUMMARY "the test suite"
