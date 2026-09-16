@@ -301,8 +301,22 @@ struct staying_class {
 // machine can shuffle bytes; below it the runs are compared, which needs no
 // tables and no loads.
 inline constexpr std::size_t runs_worth_comparing_in_lanes = 3;
+// How many runs a move is worth comparing before it is worth a table.
+//
+// Nought, which is to say always the table -- and the number is here rather
+// than in the sentence above because it was measured and the measurement went
+// the other way from the guess. Instructions for one reading, the process
+// start subtracted: a fold over a thousand heaps is 58,541 comparing and
+// 55,541 by table, and a match of an address is 376 comparing and 298 by
+// table. The table is a byte read out of a line the walk is already standing
+// on; the comparisons are a chain whose length is the number of runs, and a
+// state's runs are answered one after another for every way out of it.
+//
+// Left as a number somebody can put back: a machine whose states have one run
+// each pays a load where a compare would have done, and the line it reads is
+// one the cache would rather have kept for the subject.
 #ifndef SCAN_TABLE_ABOVE
-#define SCAN_TABLE_ABOVE runs_worth_comparing_in_lanes
+#define SCAN_TABLE_ABOVE 0
 #endif
 
 #if defined(__clang__) || defined(__GNUC__)
