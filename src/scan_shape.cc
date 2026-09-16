@@ -3178,7 +3178,14 @@ template <class type, fixed_string format, auto& automaton>
           return false;
         }
       }();
-      if constexpr (!(how::folds && how::inside)) {
+      // A fold that hears everything from the moves does not need its own
+      // pair either. What its place stands for is never cut out of the
+      // subject: the value is what finish_groups makes of the state it was
+      // handed, and where the place began and ended is read by nobody. A place
+      // taken over and over is the exception, and says so by itself --
+      // told_by_the_moves is false for it, because its turns are told by its
+      // marks, the same as any list's.
+      if constexpr (!(how::folds && (how::inside || told_by_the_moves))) {
         made |= std::uint64_t{1} << group;
       }
       // Asked of the place, not of what stands inside it. `inside` counts the
