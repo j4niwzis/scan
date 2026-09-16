@@ -2012,8 +2012,7 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   [&]<std::size_t... tag>(std::index_sequence<tag...>) {
     ((written_everywhere[tag] ? void() : slot_write(registers, tag, nullptr)), ...);
   }(std::make_index_sequence<automaton.tag_count>{});
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   begin);
+  execute_initial<automaton>(registers, begin);
 
   gathers_nothing nothing;
   // Where the machine can read past a match and die away from one, the
@@ -4758,8 +4757,7 @@ class stream_state {
   constexpr stream_state() {
     scanner_states_ = make_register_states<type, format, automaton>();
     std::ranges::fill(registers_, scan::tre::negative_tag);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers_, std::ptrdiff_t{0});
+    execute_initial<automaton>(registers_, std::ptrdiff_t{0});
   }
 
   constexpr void push(char symbol) {
@@ -5724,8 +5722,7 @@ template <class type, fixed_string format, class source_type>
   taken_from_pieces<type, format, source_type> said;
   std::array<std::ptrdiff_t, automaton.register_count> registers{};
   std::ranges::fill(registers, scan::tre::negative_tag);
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   place);
+  execute_initial<automaton>(registers, place);
   // The same note as everywhere else, and here it costs nothing to go back to:
   // the place is an address inside a piece the reading is still holding.
   constexpr bool walks_past = walk_past_a_match<automaton>() != 0;
@@ -5764,8 +5761,7 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
   constexpr const auto& automaton = streaming_automaton<type, format>;
   std::array<std::ptrdiff_t, automaton.register_count> registers{};
   std::ranges::fill(registers, scan::tre::negative_tag);
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   std::ptrdiff_t{0});
+  execute_initial<automaton>(registers, std::ptrdiff_t{0});
   auto view = std::views::all(std::forward<pieces_type>(pieces));
   typename field_gatherer<type, format, automaton>::cold_type collected{};
   gathers_from_pieces<field_gatherer<type, format, automaton>, decltype(view),
@@ -5864,12 +5860,10 @@ template <class type, fixed_string format,
     std::array<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {
       std::ranges::fill(registers, nullptr);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, static_cast<const char*>(nullptr));
+      execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
     } else {
       std::ranges::fill(registers, scan::tre::negative_tag);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, std::ptrdiff_t{0});
+      execute_initial<automaton>(registers, std::ptrdiff_t{0});
     }
     typename field_gatherer<type, format, automaton, in_a_row,
                             mark_kind>::cold_type collected{};

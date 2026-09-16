@@ -147,6 +147,52 @@ SCAN_FORCE_INLINE constexpr void execute_command(const packed_command& command,
   slot = value;
 }
 
+// A slot of whichever file holds the marks, by a number known while compiling.
+template <std::size_t which, class file_type>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto& slot_ref(file_type& registers) {
+  if constexpr (requires { registers.template at<which>(); }) {
+    return registers.template at<which>();
+  } else {
+    return registers[which];
+  }
+}
+
+// The commands a machine runs before it reads anything, with their numbers
+// where they belong -- in the code.
+//
+// The list is a constant of the machine: every destination and every source in
+// it is known while compiling. Asked by number instead, against a file that is
+// a tuple, each one costs a comparison with every slot it is not -- a hundred
+// of them before the first character, paid by every reading. On a long subject
+// that hides; on a short one it is most of the time.
+template <auto& automaton, class mark, class file_type>
+SCAN_FORCE_INLINE constexpr void execute_initial(file_type& registers,
+                                                 mark here) {
+  [&]<std::size_t... index>(std::index_sequence<index...>) {
+    // Every source read before any destination is written: the commands of one
+    // step happen at once.
+    const std::array<mark, sizeof...(index)> source_values{
+        [&]() -> mark {
+          constexpr auto one = automaton.initialize[index];
+          if constexpr (one.source == packed_command::no_source) {
+            return absent_mark<mark>;
+          } else {
+            return slot_ref<one.source>(registers);
+          }
+        }()...};
+    ([&] {
+      constexpr auto one = automaton.initialize[index];
+      mark value = absent_mark<mark>;
+      if constexpr (one.source != packed_command::no_source) {
+        value = source_values[index];
+      }
+      if constexpr (one.value == -1) value = absent_mark<mark>;
+      if constexpr (one.value == 0) value = here;
+      slot_ref<one.destination>(registers) = value;
+    }(), ...);
+  }(std::make_index_sequence<automaton.initialize.size()>{});
+}
+
 template <class mark, class file_type, std::size_t command_count>
 SCAN_FORCE_INLINE constexpr void execute_commands(
     const std::array<packed_command, command_count>& commands,
@@ -262,7 +308,7 @@ SCAN_FORCE_INLINE constexpr void execute_static_transition_commands(
   [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
       std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
-            [&] SCAN_FORCE_INLINE_LAMBDA() -> mark {
+            [&]() -> mark {
               constexpr auto command = transition.commands[index];
               if constexpr (!live[command.destination] ||
                             command.source == packed_command::no_source) {
@@ -291,7 +337,7 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
   [&]<std::size_t... index> SCAN_FORCE_INLINE_LAMBDA(
       std::index_sequence<index...>) {
         const std::array<mark, sizeof...(index)> source_values{
-            [&] SCAN_FORCE_INLINE_LAMBDA() -> mark {
+            [&]() -> mark {
               constexpr auto command = packed_state.final_commands[index];
               if constexpr (command.source == packed_command::no_source) {
                 return absent_mark<mark>;
@@ -2618,12 +2664,10 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
   register_file<mark, register_count> registers{};
   if constexpr (std::is_pointer_v<mark>) {
     registers.fill(nullptr);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, static_cast<const char*>(nullptr));
+    execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
   } else {
     registers.fill(scan::tre::negative_tag);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers, mark{});
+    execute_initial<automaton>(registers, mark{});
   }
   typename gatherer::cold_type collected{};
   gatherer into{collected};
@@ -2665,12 +2709,10 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
     register_file<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
       registers.fill(nullptr);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, static_cast<const char*>(nullptr));
+      execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
     } else {
       registers.fill(scan::tre::negative_tag);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, mark{});
+      execute_initial<automaton>(registers, mark{});
     }
     typename gatherer::cold_type collected{};
   gatherer into{collected};
