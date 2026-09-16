@@ -5857,12 +5857,12 @@ template <class type, fixed_string format,
                       walk_answer<const char*>>(cursor, last, nullptr,
                                                 mark_kind{});
   } else {
-    std::array<mark_kind, automaton.register_count> registers{};
+    register_file<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {
-      std::ranges::fill(registers, nullptr);
+      registers.fill(nullptr);
       execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
     } else {
-      std::ranges::fill(registers, scan::tre::negative_tag);
+      registers.fill(scan::tre::negative_tag);
       execute_initial<automaton>(registers, std::ptrdiff_t{0});
     }
     typename field_gatherer<type, format, automaton, in_a_row,
