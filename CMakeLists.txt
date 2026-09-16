@@ -8,7 +8,22 @@ cmake_minimum_required(VERSION 4.2 FATAL_ERROR)
 # targets. A provider puts the request here before adding this file; a build
 # saying it with -D says the same thing under the same name, and either way it
 # is read before anything is decided.
-if(NOT DEFINED SCAN_MODULES AND "headers" IN_LIST CME_FEATURES_scan)
+#
+# Asked for, the headers are what this build makes: not the headers as well,
+# and not the headers only where nothing else had an opinion. A copy carrying
+# both shapes is what a build of this library makes for whoever installs it,
+# and a project that asked for one shape is not that. So the ask decides it,
+# over anything this build was told by other means -- and says so where it
+# overrules something, because a switch that was set and did not hold is worth
+# a line in a log.
+if("headers" IN_LIST CME_FEATURES_scan AND
+   NOT "modules" IN_LIST CME_FEATURES_scan)
+  if(SCAN_MODULES)
+    message(STATUS
+      "scan: the headers were asked for, so the module interface units are "
+      "not built here, and SCAN_MODULES is off for this build whatever it was "
+      "set to.")
+  endif()
   set(SCAN_MODULES OFF)
 endif()
 
