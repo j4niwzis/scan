@@ -366,6 +366,57 @@ jobs:
           cmake --build /tmp/by-headers/build
           /tmp/by-headers/build/by_headers
 
+      # A consumer that has never heard of modules, fetching this as a port.
+      #
+      # Not the same question as the two above: those configure this project
+      # directly, or read a prefix something else installed. This one is a
+      # project of its own that says nothing about `import std`, has no gate
+      # set before its project(), and asks the provider for the library --
+      # which is what everybody who cannot take modules will actually do.
+      - name: a project with no modules at all, through the provider
+        run: |
+          mkdir -p /tmp/plain/cmake
+          cp cmake/get_cme.cmake /tmp/plain/cmake/
+          pfr=$(find ~/.cache/cmake-everywhere build -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
+          pfr_include=$(dirname "$(dirname "$pfr")")
+          cat > /tmp/plain/CMakeLists.txt <<EOF
+          cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
+          if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
+            set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+                \${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+          endif()
+          project(plain LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 23)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          cme_declare_port(NAME scan SOURCE_DIR $PWD)
+          find_package(scan REQUIRED COMPONENTS headers)
+          add_executable(plain main.cc)
+          target_link_libraries(plain PRIVATE scan::scan)
+          EOF
+          cat > /tmp/plain/main.cc <<'EOF'
+          #include <scan.hpp>
+
+          struct row {
+            std::string_view left;
+            std::string_view right;
+          };
+
+          int main() {
+            const std::string_view text = "left,right";
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(text);
+            return one.left == "left" && one.right == "right" ? 0 : 1;
+          }
+          EOF
+          # Unix Makefiles on purpose: a build that takes the headers has no
+          # modules to scan for, and should not need a generator that can.
+          cmake -S /tmp/plain -B /tmp/plain/build -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++ -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0"
+          cmake --build /tmp/plain/build
+          /tmp/plain/build/plain
+
       # And into the tree.
       #
       # A consumer pins a revision, and a revision that carries the sources

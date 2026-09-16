@@ -1,6 +1,21 @@
 cmake_minimum_required(VERSION 4.2 FATAL_ERROR)
 
-include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
+# Only where the modules are being built.
+#
+# `import std` is what the interface units are written against, and saying so
+# turns it on for every target in this build. A build making only the headers
+# asks the toolchain for nothing of the sort -- and asking makes a consumer's
+# project answer a question it never had, because the gate CMake keeps that
+# support behind has to be set before its own project() call. What it gets
+# instead is a refusal about a toolchain that was never scanned, and a demand
+# for a generator that can build modules it is not building.
+#
+# Read out of the cache rather than from the option below, which is declared
+# after project() and does not exist yet. What a build was told with -D, and
+# what a provider set before adding this, are both there already.
+if(NOT DEFINED SCAN_MODULES OR SCAN_MODULES)
+  include(${CMAKE_CURRENT_LIST_DIR}/cmake/import-std.cmake)
+endif()
 set(CMAKE_CXX_EXTENSIONS OFF)
 # Said as a property of the build and not only of the targets, because the
 # dependencies read it. Boost.PFR's module unit asks `import std` of itself
