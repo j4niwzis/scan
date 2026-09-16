@@ -1599,15 +1599,6 @@ template <auto& automaton>
 #define SCAN_RUNG(M, t) M(t)
 #define SCAN_ROW_OF_16(M, p) SCAN_ROW_A(M, p, SCAN_RUNG)
 #define SCAN_ROW_OF_256(M, p) SCAN_ROW_B(M, p, SCAN_ROW_OF_16)
-// How small a machine is worth writing out where it runs rather than walking
-// with the ladder. Counted in states, and answered by measurement: a fold over
-// a dozen states is two and a half times slower walked than written out, and
-// the written-out form is a function whose size goes with the machine, which
-// whoever includes this pays for while compiling.
-#ifndef SCAN_WRITTEN_OUT
-#define SCAN_WRITTEN_OUT 24
-#endif
-
 #ifndef SCAN_LADDER
 #define SCAN_LADDER 256
 #endif
@@ -2534,18 +2525,7 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
 [[nodiscard]] constexpr auto run_owning(cursor_type cursor, sentinel_type last,
                                         const char* text, mark start,
                                         make_type make = {}) {
-  // Written out where it runs, too, when the machine is small enough for that
-  // to be one function rather than a book.
-  //
-  // The ladder is a computed goto: one indirect jump a character, and an
-  // indirect jump is a jump the processor has to guess. A machine of a dozen
-  // states written out is a switch and a direct jump, which it does not guess
-  // -- and that is the whole distance between this library and the same
-  // machine written out by hand on a reading that does little per character,
-  // which is what a fold is. Above the threshold the ladder wins anyway: the
-  // written-out form is a function whose size goes with the machine, and a
-  // consumer pays for that size while compiling.
-  const auto written_out = [&] {
+  if consteval {
     std::array<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
       std::ranges::fill(registers, nullptr);
@@ -2570,18 +2550,11 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
     } else {
       return make(registers, best.matched);
     }
-  };
-  if consteval {
-    return written_out();
   } else {
-    if constexpr (states_in<automaton> <= SCAN_WRITTEN_OUT) {
-      return written_out();
-    } else {
-      return run_threaded_owning<automaton, shape, entry, mark,
-                                 points_at_subject, cursor_type, sentinel_type,
-                                 register_count, gatherer, answer_type,
-                                 make_type>(cursor, last, text, start, make);
-    }
+    return run_threaded_owning<automaton, shape, entry, mark,
+                               points_at_subject, cursor_type, sentinel_type,
+                               register_count, gatherer, answer_type,
+                               make_type>(cursor, last, text, start, make);
   }
 }
 
