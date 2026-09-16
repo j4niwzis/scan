@@ -79,6 +79,22 @@ option(SCAN_BUILD_BENCHMARKS "Build regex engine comparison benchmarks" OFF)
 # every build carry.
 option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 
+# ---- Modules, or the headers made from them ----
+#
+# A project that cannot take modules -- an older CMake, a compiler whose
+# support for them is not there yet, or a dependency graph that is not modules
+# -- gets the same library as headers. They are generated from these very
+# interface units, and they travel in the tree of a release rather than of a
+# branch: a checkout of `main` does not carry them, and this says so rather
+# than failing later with something about a missing file.
+#
+# Which set of them is the same question as for the modules -- with Boost.PFR,
+# or with a binding pack and nothing at all -- so it is the same switch. A
+# consumer on C++26 whose project is not modules wants the second, and
+# nothing about that is unusual.
+option(SCAN_AS_HEADERS
+       "Use the generated headers rather than the module interface units" OFF)
+
 # ---- What this reads a shape with ----
 #
 # How a shape's fields are found, which is the one thing this library asks of
@@ -94,7 +110,12 @@ option(SCAN_FIELDS_BY_BINDING_PACK
        "Take an aggregate apart with a structured binding pack (C++26) rather than with Boost.PFR"
        OFF)
 
-if(NOT SCAN_FIELDS_BY_BINDING_PACK)
+if(NOT SCAN_FIELDS_BY_BINDING_PACK AND SCAN_AS_HEADERS)
+  # The ordinary Boost.PFR: a header build reads its headers, which is what
+  # every machine that has Boost already has. Nothing to build here, and
+  # nothing to say about modules.
+  find_package(boost_pfr REQUIRED)
+elseif(NOT SCAN_FIELDS_BY_BINDING_PACK)
   # Boost.PFR, as a module: the fields of an aggregate, by nothing but the type.
   # It is asked for as modules, and a copy of it installed on the machine is
   # headers -- so this one is built rather than taken, because what it is taken
@@ -166,6 +187,30 @@ if(NOT SCAN_FIELDS_BY_BINDING_PACK)
   endif()
 endif()
 
+if(SCAN_AS_HEADERS)
+  if(SCAN_FIELDS_BY_BINDING_PACK)
+    set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/binding-pack")
+  else()
+    set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/boost-pfr")
+  endif()
+  if(NOT EXISTS "${scan_headers_dir}/scan.hpp")
+    message(FATAL_ERROR
+      "scan: SCAN_AS_HEADERS is on and there is nothing at "
+      "${scan_headers_dir}. The headers are generated from the module "
+      "interface units and are carried by a release, not by a branch -- so "
+      "this wants a release, or SCAN_AS_HEADERS off.")
+  endif()
+  add_library(scan INTERFACE)
+  add_library(scan::scan ALIAS scan)
+  include(GNUInstallDirs)
+  target_include_directories(scan INTERFACE
+    $<BUILD_INTERFACE:${scan_headers_dir}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+  # Everything below says PUBLIC where there is something to compile and
+  # INTERFACE where there is not; the word is chosen once, here.
+  set(scan_reaches INTERFACE)
+else()
+set(scan_reaches PUBLIC)
 add_library(scan)
 add_library(scan::scan ALIAS scan)
 target_sources(
@@ -182,7 +227,8 @@ target_sources(
     src/scan_scanners.cc
     src/scan.cc
 )
-target_compile_features(scan PUBLIC cxx_std_23)
+endif()
+target_compile_features(scan ${scan_reaches} cxx_std_23)
 # In this build only. A Boost.PFR the provider built is a target of this build
 # directory, and install(EXPORT) refuses to export something that links it --
 # rightly, since what would be installed is a library whose dependency exists
@@ -192,12 +238,14 @@ if(SCAN_FIELDS_BY_BINDING_PACK)
   # PUBLIC, and not only for this build: a module library installs its
   # interface units and whoever links it compiles them itself, so the answer
   # has to reach that compile as well as this one.
-  target_compile_definitions(scan PUBLIC SCAN_FIELDS_BY_BINDING_PACK=1)
+  target_compile_definitions(scan ${scan_reaches} SCAN_FIELDS_BY_BINDING_PACK=1)
 else()
-  target_link_libraries(scan PUBLIC $<BUILD_INTERFACE:Boost::pfr>)
+  target_link_libraries(scan ${scan_reaches} $<BUILD_INTERFACE:Boost::pfr>)
 endif()
-target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
-target_compile_options(scan PUBLIC
+if(NOT SCAN_AS_HEADERS)
+  target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+target_compile_options(scan ${scan_reaches}
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=300000000>
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-depth=4096>
 )
@@ -250,7 +298,7 @@ option(SCAN_AUTOMATA_AT_RUNTIME
 if(SCAN_AUTOMATA_AT_RUNTIME)
   # PUBLIC: the choice is written into the module this builds, and whoever
   # imports it is reading the same one.
-  target_compile_definitions(scan PUBLIC
+  target_compile_definitions(scan ${scan_reaches}
     $<BUILD_INTERFACE:SCAN_AUTOMATA_AT_RUNTIME=1>)
 endif()
 
@@ -263,6 +311,11 @@ endif()
 # again.
 if(SCAN_FIELDS_BY_BINDING_PACK)
   set(scan_port_depends "")
+elseif(SCAN_AS_HEADERS)
+  # The ordinary one. A header build reads Boost.PFR's headers, which is what
+  # a machine that has Boost already carries -- there is nothing here that has
+  # to be a module.
+  set(scan_port_depends "boost-pfr")
 else()
   set(scan_port_depends "boost-pfr[modules]")
 endif()
@@ -295,6 +348,21 @@ endif()
 # have every consumer of this fetch a testing framework. Said as a feature, it
 # is recorded as a fact about this copy and not about the library.
 if(COMMAND cme_port_feature)
+  # The same library, for a project that cannot take modules. What it needs
+  # is not said here: the two switches decide between three answers -- the
+  # module units with Boost.PFR as a module, the headers with Boost.PFR as
+  # headers, and either of those with neither -- and the library asks for
+  # whichever it turned out to be, in its own CMakeLists, where the switches
+  # have been read. A feature that named one of them would be naming it for
+  # all three.
+  cme_port_feature(scan headers
+    SUMMARY "the generated headers rather than the module interface units"
+    OPTIONS "SCAN_AS_HEADERS ON")
+
+  cme_port_feature(scan binding-pack
+    SUMMARY "an aggregate's fields from a structured binding pack (C++26), which needs no Boost.PFR"
+    OPTIONS "SCAN_FIELDS_BY_BINDING_PACK ON")
+
   cme_port_feature(scan tests
     SUMMARY "the test suite"
     DEPENDS googletest-modules
@@ -825,14 +893,25 @@ endif()
 option(SCAN_INSTALL "Install scan and its CMake package" ${PROJECT_IS_TOP_LEVEL})
 if(SCAN_INSTALL)
   include(GNUInstallDirs)
-  install(TARGETS scan
-    EXPORT scanTargets
-    FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/scan/modules
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(EXPORT scanTargets
-    NAMESPACE scan::
-    CXX_MODULES_DIRECTORY modules
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
+  if(SCAN_AS_HEADERS)
+    # Nothing is compiled and nothing is archived: what is installed is the
+    # headers and a target that points at them.
+    install(TARGETS scan EXPORT scanTargets)
+    install(DIRECTORY "${scan_headers_dir}/"
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(EXPORT scanTargets
+      NAMESPACE scan::
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
+  else()
+    install(TARGETS scan
+      EXPORT scanTargets
+      FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/scan/modules
+      ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    install(EXPORT scanTargets
+      NAMESPACE scan::
+      CXX_MODULES_DIRECTORY modules
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
+  endif()
   # Whatever the exported target names has to be found again by whoever
   # includes this, in the same words -- and whoever includes this may have no
   # provider at all, which is the case this file is written for: a consumer

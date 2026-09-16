@@ -1326,6 +1326,34 @@ ctest --test-dir build
 | `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
 | `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
 | `SCAN_FIELDS_BY_BINDING_PACK` | the fields of an aggregate from a structured binding pack rather than from Boost.PFR |
+| `SCAN_AS_HEADERS` | the generated headers rather than the module interface units |
+
+### Without modules
+
+A project that cannot take modules -- an older CMake, a compiler whose support
+is not there yet, or a dependency graph that is not modules -- reads the same
+library as headers. They are generated from these very interface units by
+[demodulizer](https://github.com/j4niwzis/demodulizer), checked in the same
+run that builds the library, and carried in the tree of a release. A checkout
+of `main` does not have them, and says so rather than failing later.
+
+There are two sets, because *cannot take modules* and *cannot take C++26* are
+different projects:
+
+| | needs | |
+| --- | --- | --- |
+| `include/boost-pfr` | Boost.PFR's headers | compiles wherever this library otherwise does |
+| `include/binding-pack` | C++26 | no dependency at all |
+
+Both are the same library; `SCAN_FIELDS_BY_BINDING_PACK` picks between them,
+which is the same switch that picks between them for the modules.
+
+Through `cmake-everywhere` it is two features:
+
+```cmake
+find_package(scan REQUIRED COMPONENTS headers)                # the first
+find_package(scan REQUIRED COMPONENTS headers binding-pack)   # the second
+```
 
 The last of those is the only dependency this library has, and the switch is
 whether to have it. A shape's fields are asked for in one place and three

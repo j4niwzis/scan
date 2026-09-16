@@ -121,44 +121,66 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
           cmake --build build
 
-      # The headers, for whoever cannot take modules.
+      # The headers, for whoever cannot take modules -- and there are two
+      # sets of them, because "cannot take modules" and "cannot take C++26"
+      # are different projects. One reads Boost.PFR's headers and compiles
+      # anywhere this library otherwise does; the other takes an aggregate
+      # apart with a binding pack and needs nobody at all.
       #
-      # Generated rather than kept: the sources stay module interface units and
-      # pay nothing for the fallback. What generates them is released on its
-      # own and downloaded here as a binary, so this repository carries no
+      # Generated rather than kept: the sources stay module interface units
+      # and pay nothing for the fallback. What generates them is released on
+      # its own and comes down as a binary, so this repository carries no
       # libtooling and no clang development packages.
-      #
-      # The interfaces it parses are the ones this build just compiled. CMake
-      # writes the mapping from module name to compiled interface beside each
-      # object -- a `.modmap` -- which is exactly the flags the tool needs, so
-      # nothing here has to know how the ports were built or where Boost.PFR
-      # came from.
-      - name: the headers, generated
+      - name: the header generator
         run: |
           curl -fsSL -o demodulizer \
             https://github.com/j4niwzis/demodulizer/releases/download/v${{ env.DEMODULIZER }}/demodulizer
           chmod +x demodulizer
-          mkdir -p include
-          for one in src/*.cc; do
-            map="build/CMakeFiles/scan.dir/$one.o.modmap"
-            if [ ! -f "$map" ]; then
-              echo "no module map at $map; what there is:"
-              find build -name '*.modmap' | head -20
-              exit 1
-            fi
-            # The map is written for the build directory, so its paths are
-            # relative to it, and each is in quotes -- which a shell that
-            # splits the line on spaces keeps rather than removes, turning the
-            # module's name into `"scan.scanners` and losing it.
-            flags=$(sed -n 's|^-fmodule-file="\([^=]*\)=\(.*\)"$|-fmodule-file=\1='"$PWD"'/build/\2|p' "$map")
-            ./demodulizer --into=include --spell 'boost.pfr=<boost/pfr.hpp>' \
-              "$one" -- clang++ -std=c++23 -stdlib=libc++ -x c++-module $flags
-          done
-          ls -l include
+
+      # The interfaces it parses are the ones a build just compiled: CMake
+      # writes the mapping from module name to compiled interface beside each
+      # object, and that is exactly the flags the tool wants -- so nothing
+      # here has to know how the ports were built or where Boost.PFR came
+      # from. The map's paths are relative to the build directory and quoted,
+      # which a shell splitting on spaces keeps rather than removes.
+      - name: the headers, generated both ways
+        run: |
+          generate() {
+            from=$1; into=$2
+            mkdir -p "$into"
+            for one in src/*.cc; do
+              map="$from/CMakeFiles/scan.dir/$one.o.modmap"
+              if [ ! -f "$map" ]; then
+                echo "no module map at $map; what there is:"
+                find "$from" -name '*.modmap' | head -20
+                exit 1
+              fi
+              flags=$(sed -n 's|^-fmodule-file="\([^=]*\)=\(.*\)"$|-fmodule-file=\1='"$PWD/$from"'/\2|p' "$map")
+              ./demodulizer --into="$into" --spell 'boost.pfr=<boost/pfr.hpp>' \
+                "$one" -- clang++ -std=c++23 -stdlib=libc++ -x c++-module $flags
+            done
+            ls -l "$into"
+          }
+          generate build include/boost-pfr
+
+          # The other set needs its own build: the switch is read while the
+          # interfaces are compiled, so the interfaces have to have been
+          # compiled with it. Nothing is fetched for this one -- that is the
+          # point of it.
+          cmake -S . -B build-pack -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DSCAN_FIELDS_BY_BINDING_PACK=ON \
+            -DSCAN_BUILD_TESTS=OFF \
+            -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON
+          cmake --build build-pack --target scan
+          generate build-pack include/binding-pack
 
       # A header that compiles is not yet a header that links: a definition at
       # namespace scope that is not inline is one per translation unit that
-      # includes it, and one translation unit never shows that. The tool
+      # includes it, and one translation unit never shows that. The generator
       # refuses those on sight -- this is the other half, and it is the answer
       # rather than the argument.
       - name: and they build, and link twice
@@ -181,11 +203,33 @@ jobs:
           int how_long(const char* text);
           int main() { std::printf("%d\n", how_long("left,right")); return 0; }
           EOF
-          clang++ -std=c++23 -stdlib=libc++ -I include -I "$pfr_include" \
-            -DBOOST_PFR_USE_STD_MODULE=0 \
-            -fconstexpr-steps=300000000 -fconstexpr-depth=4096 \
-            /tmp/one.cc /tmp/two.cc -o /tmp/both
-          test "$(/tmp/both)" = "9"
+          for pair in "include/boost-pfr -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0" \
+                      "include/binding-pack -Wno-c++26-extensions"; do
+            set -- $pair
+            where=$1; shift
+            echo "--- $where"
+            clang++ -std=c++23 -stdlib=libc++ -I "$where" "$@" \
+              -fconstexpr-steps=300000000 -fconstexpr-depth=4096 \
+              /tmp/one.cc /tmp/two.cc -o /tmp/both
+            test "$(/tmp/both)" = "9"
+          done
+
+      # And the whole of what a consumer does: the library configured as
+      # headers, installed, and something built against the prefix.
+      - name: as a consumer that cannot take modules
+        run: |
+          cmake -S . -B build-hdr -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DSCAN_AS_HEADERS=ON -DSCAN_BUILD_TESTS=OFF \
+            -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON \
+            -DCMAKE_INSTALL_PREFIX="$PWD/prefix-hdr"
+          cmake --build build-hdr
+          cmake --install build-hdr
+          find prefix-hdr -name 'scan.hpp' | head -2
+          test -f prefix-hdr/lib/cmake/scan/scanConfig.cmake
 
       - uses: actions/upload-artifact@v4
         with:
