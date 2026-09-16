@@ -235,6 +235,50 @@ jobs:
           name: scan-headers
           path: include
 
+      # The same installed copy, taken the other way.
+      #
+      # This is the question a prefix answers: the library is installed once,
+      # with its module interfaces and the headers beside them, and a project
+      # that cannot take modules asks for the headers and gets them from that
+      # copy rather than building one of its own. `COMPONENTS headers` is the
+      # whole of what it says differently.
+      - name: the same copy, asked for as headers
+        run: |
+          mkdir -p /tmp/by-headers
+          cat > /tmp/by-headers/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.28 FATAL_ERROR)
+          project(by_headers LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 23)
+          set(CMAKE_CXX_EXTENSIONS OFF)
+          find_package(scan REQUIRED COMPONENTS headers)
+          add_executable(by_headers main.cc)
+          target_link_libraries(by_headers PRIVATE scan::scan)
+          EOF
+          cat > /tmp/by-headers/main.cc <<'EOF'
+          #include <scan.hpp>
+
+          struct row {
+            std::string_view left;
+            std::string_view right;
+          };
+
+          int main() {
+            const std::string_view text = "left,right";
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(text);
+            return one.left == "left" && one.right == "right" ? 0 : 1;
+          }
+          EOF
+          pfr=$(find ~/.cache/cmake-everywhere build -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
+          pfr_include=$(dirname "$(dirname "$pfr")")
+          cmake -S /tmp/by-headers -B /tmp/by-headers/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++ -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0" \
+            -DCMAKE_PREFIX_PATH="$PWD/prefix"
+          cmake --build /tmp/by-headers/build
+          /tmp/by-headers/build/by_headers
+
       # And into the tree.
       #
       # A consumer pins a revision, and a revision that carries the sources

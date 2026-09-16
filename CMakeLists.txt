@@ -188,11 +188,13 @@ elseif(NOT SCAN_FIELDS_BY_BINDING_PACK)
   endif()
 endif()
 
+# One set of headers, and it answers to both switches: the condition around an
+# import is kept in the generated header, so the same files read Boost.PFR or
+# take an aggregate apart with a binding pack, by what the build that reads
+# them defines.
+set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
 if(SCAN_AS_HEADERS)
-  # One set, and it answers to both switches: the condition around an import
-  # is kept in the generated header, so the same files read Boost.PFR or take
-  # an aggregate apart with a binding pack, by what this build defines.
-  set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include")
   if(NOT EXISTS "${scan_headers_dir}/scan.hpp")
     message(FATAL_ERROR
       "scan: SCAN_AS_HEADERS is on and there is nothing at "
@@ -229,6 +231,32 @@ target_sources(
     src/scan.cc
 )
 endif()
+
+# What this target is called where it is installed. A copy can carry both
+# shapes, so neither of them may take the name a consumer asks for: the
+# package config makes `scan::scan` out of whichever was asked.
+if(SCAN_AS_HEADERS)
+  set_target_properties(scan PROPERTIES EXPORT_NAME headers)
+else()
+  set_target_properties(scan PROPERTIES EXPORT_NAME modules)
+endif()
+
+# And the headers beside the modules, where a build made both. One copy that
+# answers to either is what lets a project that cannot take modules use a
+# library already installed, instead of building its own.
+if(NOT SCAN_AS_HEADERS AND EXISTS "${scan_headers_dir}/scan.hpp")
+  include(GNUInstallDirs)
+  add_library(scan_headers INTERFACE)
+  set_target_properties(scan_headers PROPERTIES EXPORT_NAME headers)
+  target_include_directories(scan_headers INTERFACE
+    $<BUILD_INTERFACE:${scan_headers_dir}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+  target_compile_features(scan_headers INTERFACE cxx_std_23)
+  target_compile_options(scan_headers INTERFACE
+    $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=300000000>
+    $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-depth=4096>)
+endif()
+
 target_compile_features(scan ${scan_reaches} cxx_std_23)
 # In this build only. A Boost.PFR the provider built is a target of this build
 # directory, and install(EXPORT) refuses to export something that links it --
@@ -923,6 +951,13 @@ if(SCAN_INSTALL)
       EXPORT scanTargets
       FILE_SET CXX_MODULES DESTINATION ${CMAKE_INSTALL_LIBDIR}/scan/modules
       ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    # And the headers with them. A copy that carries both is one a project
+    # that cannot take modules can use as it stands.
+    if(TARGET scan_headers)
+      install(TARGETS scan_headers EXPORT scanTargets)
+      install(DIRECTORY "${scan_headers_dir}/"
+              DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    endif()
     install(EXPORT scanTargets
       NAMESPACE scan::
       CXX_MODULES_DIRECTORY modules
@@ -939,22 +974,52 @@ if(SCAN_INSTALL)
   # Asked for only where nothing has answered for it already: a consumer with
   # a provider has the port added by the provider, and adding it again is two
   # copies of the same target.
-  if(SCAN_FIELDS_BY_BINDING_PACK)
-    # Nothing to find. The switch itself travels on the exported target --
-    # a consumer compiles the module interface units installed beside this,
-    # and those read it -- so the config has only the targets to include.
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
-      "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n")
-  else()
-    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
-      "include(CMakeFindDependencyMacro)\n"
+  # What a consumer gets is chosen here, out of what this copy has.
+  #
+  # Neither shape may be called `scan::scan` where it is installed: a copy can
+  # carry both, and the name has to be free for whichever was asked for. So
+  # they are installed as `scan::modules` and `scan::headers`, and this makes
+  # the name out of one of them -- by `COMPONENTS headers` if that was said,
+  # and by the modules otherwise.
+  #
+  # A copy that has not got what was asked reports itself not found, with the
+  # reason, which is what lets a provider go and build one that has.
+  set(scan_config "include(CMakeFindDependencyMacro)\n")
+  if(NOT SCAN_FIELDS_BY_BINDING_PACK)
+    # Whatever the exported target names has to be found again by whoever
+    # includes this, in the same words -- and whoever includes this may have
+    # no provider at all, which is the case this file is written for: a
+    # consumer with nothing but a prefix. Asked for only where nothing has
+    # answered for it already, since adding it twice is two copies of one
+    # target.
+    string(APPEND scan_config
       "if(NOT TARGET Boost::pfr)\n"
       "  find_dependency(boost_pfr)\n"
-      "endif()\n"
-      "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n"
-      "set_property(TARGET scan::scan APPEND PROPERTY\n"
+      "endif()\n")
+  endif()
+  string(APPEND scan_config
+    "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n"
+    "set(_scan_taken_as modules)\n"
+    "if(\"headers\" IN_LIST scan_FIND_COMPONENTS)\n"
+    "  set(_scan_taken_as headers)\n"
+    "endif()\n"
+    "if(NOT TARGET scan::\${_scan_taken_as})\n"
+    "  set(scan_NOT_FOUND_MESSAGE\n"
+    "      \"the scan installed here does not carry \${_scan_taken_as}\")\n"
+    "  set(scan_FOUND FALSE)\n"
+    "  return()\n"
+    "endif()\n"
+    "if(NOT TARGET scan::scan)\n"
+    "  add_library(scan::scan INTERFACE IMPORTED)\n"
+    "  set_property(TARGET scan::scan PROPERTY\n"
+    "               INTERFACE_LINK_LIBRARIES scan::\${_scan_taken_as})\n"
+    "endif()\n")
+  if(NOT SCAN_FIELDS_BY_BINDING_PACK)
+    string(APPEND scan_config
+      "set_property(TARGET scan::\${_scan_taken_as} APPEND PROPERTY\n"
       "             INTERFACE_LINK_LIBRARIES Boost::pfr)\n")
   endif()
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake" "${scan_config}")
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
 endif()
