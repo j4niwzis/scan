@@ -351,27 +351,6 @@ if(SCAN_MODULES AND EXISTS "${scan_headers_dir}/scan.hpp")
 endif()
 
 target_compile_features(scan ${scan_reaches} cxx_std_23)
-
-# Direct jumps out of a computed goto.
-#
-# The walk is one function with a label for every state and a computed goto
-# between them, which is what keeps the marks it writes in machine registers:
-# one frame, no call, nothing whose address is taken. What it costs is the jump
-# itself -- an indirect jump is a jump the processor has to guess, and it
-# guesses a scanner's next state badly, because the answer is the next
-# character.
-#
-# LLVM will thread such a jump into a direct one per place it is reached from,
-# which is exactly the switch a generator would have written, but it will not
-# do it across the header of a loop unless it is told it may. A machine walked
-# in a loop is nothing but that case.
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("-mllvm -jump-threading-across-loop-headers=true"
-                        SCAN_THREADS_JUMPS)
-if(SCAN_THREADS_JUMPS)
-  target_compile_options(scan ${scan_reaches}
-    "SHELL:-mllvm -jump-threading-across-loop-headers=true")
-endif()
 # In this build only. A Boost.PFR the provider built is a target of this build
 # directory, and install(EXPORT) refuses to export something that links it --
 # rightly, since what would be installed is a library whose dependency exists
@@ -817,6 +796,22 @@ if(SCAN_BUILD_BENCHMARKS)
     check_linker_flag(CXX
                       "LINKER:-mllvm,-jump-threading-across-loop-headers=true"
                       SCAN_THREADS_ACROSS_LOOP_HEADERS)
+    # And of the compiler, for the half of a benchmark that is compiled here.
+    #
+    # The walk is one frame: a label for every state, a computed goto between
+    # them, and nothing whose address is taken -- which is what lets its marks
+    # live in machine registers. What it costs is the jump, and an indirect
+    # jump is guessed, badly, because a scanner's next state is answered by the
+    # next character. Told it may thread jumps across the header of a loop,
+    # LLVM turns that goto into a direct jump for each place it is reached
+    # from, which is the switch a generator would have written.
+    #
+    # Asked here and not of the library, because it is asked of code generation
+    # for everything it reaches. It pays on a machine walked in a loop and can
+    # cost anywhere else, and that is not ours to spend for whoever uses this.
+    include(CheckCXXCompilerFlag)
+    check_cxx_compiler_flag("-mllvm -jump-threading-across-loop-headers=true"
+                            SCAN_COMPILES_THREADED_JUMPS)
   endif()
 
   # The ports below are not module libraries, and some of them say C++11.
@@ -993,6 +988,13 @@ if(SCAN_BUILD_BENCHMARKS)
     if(SCAN_THREADS_ACROSS_LOOP_HEADERS)
       target_link_options(${name}_benchmark PRIVATE
         "$<$<CONFIG:Release>:LINKER:-mllvm,-jump-threading-across-loop-headers=true>")
+    endif()
+    # The same of the compiler, and only of this target: what it compiles is
+    # our half of the benchmark, because the other engine's code arrives
+    # already generated.
+    if(SCAN_COMPILES_THREADED_JUMPS)
+      target_compile_options(${name}_benchmark PRIVATE
+        "SHELL:-mllvm -jump-threading-across-loop-headers=true")
     endif()
     # And not the bytecode interpreter, whatever the option says.
     #
