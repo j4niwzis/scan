@@ -1170,6 +1170,88 @@ advance. The third is a thing `sscanf` cannot do at all. What the numbers do
 not show is where its time goes: the format is a string it parses again on
 every call.
 
+**A fold, and the same machine written out beside it.**
+`benchmarks/fold_benchmark.cc` measures the thing this library can do that the
+others cannot, rather than describing it. The subject is `value=(`, then turns
+of `_A` and `__B`, then `)` and a tail of letters, and the type that reads the
+turns never sees a character of the subject:
+
+```cpp
+template <>
+struct scan::scanner<tally> {
+  static constexpr std::string_view pattern() {
+    return R"(\(((_+)((A)|(B)))*\))";
+  }
+  struct state_type { unsigned long total = 0; unsigned place = 0, digit = 0; };
+  static constexpr state_type begin_groups() { return {}; }
+  static constexpr void opened_group(state_type& one, scan::group_at<0>) {
+    one.place = 0; one.digit = 0;                     // a turn begins
+  }
+  static constexpr void closed_group(state_type& one, scan::group_at<0>) {
+    unsigned long weight = 1;                         // a turn ends: place it
+    for (unsigned step = 1; step < one.place; ++step) weight *= 10;
+    one.total += weight * one.digit;
+  }
+  static constexpr void push_group(state_type& one, scan::group_at<1>, char) {
+    ++one.place;                                      // an underscore
+  }
+  static constexpr void push_group(state_type& one, scan::group_at<3>, char) {
+    one.digit = 1;                                    // an A
+  }
+  static constexpr void push_group(state_type& one, scan::group_at<4>, char) {
+    one.digit = 2;                                    // a B
+  }
+  static constexpr tally finish_groups(state_type one) { return {one.total}; }
+};
+```
+
+It is told which of its own groups each character belongs to **while the walk
+is passing over it**, and does its arithmetic there. No turn is kept, no
+substring is made, nothing is gathered into a container to be walked a second
+time; the number is finished at the moment the match is. Group one is the
+underscores, which give the decimal place; groups three and four are the two
+letters, which give the digit; group zero is the turn, and closing it puts the
+digit in its place. That mid-parse view of the groups is the whole point, and
+it is what the columns beside it have to be compared against.
+
+Three of them: the same automaton written out by hand as labels and direct
+jumps, calling this scanner's own hooks so that nothing but the way through the
+machine differs; the same reading written by hand as loops and a pointer; and
+the library left to choose its own walk. Ten, a hundred and a thousand turns to
+a subject:
+
+| turns | `scan::scan<f>.scalar()` | written out | by hand | `scan::scan<f>` |
+| --- | --- | --- | --- | --- |
+| 10 | 35.4 ns | 29.4 ns | 32.3 ns | 43.0 ns |
+| 100 | 178 ns | 196 ns | 217 ns | 348 ns |
+| 1000 | 1542 ns | 1766 ns | 2011 ns | 3409 ns |
+
+Which is two straight lines and a crossing, and both of their numbers are worth
+having. Fitted through the three points, a turn costs 1.52 ns here, 1.75 ns
+written out and 2.00 ns by hand; a call costs 20 ns here against 12 ns for
+either of the others. The walk is thirteen per cent cheaper per turn than the
+same machine written out, twenty-four per cent cheaper than the hand-written
+reading, and eight nanoseconds dearer to enter -- so the lines cross at
+thirty-six turns, and below that the machine written out is faster.
+
+That the walk beats a person writing the same states out is the part worth
+saying why. These states are not written by a person: they are written from the
+automaton. Each one compares the ranges it actually has and no others, a move
+to the state next door is a jump to a label rather than a lookup in a table,
+and a tag that no reader ever asks for is not written at all. Somebody writing
+the machine out writes the states they thought of, and writes every tag,
+because they cannot see which of them the answer will not read.
+
+The last column is the library left to itself, and it is the same fault the
+address benchmark shows. The length at which the reading starts taking words
+instead of characters is worked out from the pattern -- sixteen characters for
+every run in it worth stepping over -- and not from the subject, and a turn of
+one to four characters is far shorter than what one vector step passes over.
+Every step is then mostly work thrown away and a search for where it went
+wrong: 3.40 ns a turn against 1.52. Asked for `.scalar()` it is the fastest
+column here. Two benchmarks now say the same thing about that threshold, which
+is where to look next.
+
 ## What this is built on
 
 The machine is a tagged deterministic finite automaton, and the construction
