@@ -351,6 +351,27 @@ if(SCAN_MODULES AND EXISTS "${scan_headers_dir}/scan.hpp")
 endif()
 
 target_compile_features(scan ${scan_reaches} cxx_std_23)
+
+# Direct jumps out of a computed goto.
+#
+# The walk is one function with a label for every state and a computed goto
+# between them, which is what keeps the marks it writes in machine registers:
+# one frame, no call, nothing whose address is taken. What it costs is the jump
+# itself -- an indirect jump is a jump the processor has to guess, and it
+# guesses a scanner's next state badly, because the answer is the next
+# character.
+#
+# LLVM will thread such a jump into a direct one per place it is reached from,
+# which is exactly the switch a generator would have written, but it will not
+# do it across the header of a loop unless it is told it may. A machine walked
+# in a loop is nothing but that case.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-mllvm -jump-threading-across-loop-headers=true"
+                        SCAN_THREADS_JUMPS)
+if(SCAN_THREADS_JUMPS)
+  target_compile_options(scan ${scan_reaches}
+    "SHELL:-mllvm -jump-threading-across-loop-headers=true")
+endif()
 # In this build only. A Boost.PFR the provider built is a target of this build
 # directory, and install(EXPORT) refuses to export something that links it --
 # rightly, since what would be installed is a library whose dependency exists

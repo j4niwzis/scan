@@ -1595,22 +1595,6 @@ template <auto& automaton, walk_shape shape, std::size_t state,
 //
 // Everything above passes a chain along; a caller outside has none, and what
 // it wants back is whether the reading was a match.
-// How small a machine is written out where it runs rather than walked by the
-// ladder.
-//
-// The ladder is a computed goto, and a computed goto is what stops the
-// compiler keeping anything in a machine register: the marks a walk writes
-// live in an array that every rung can reach, so each command is a store to
-// the stack and the next reading of it a dependent load. Written out, the
-// same commands are assignments between locals -- which is what re2c emits,
-// and why its generated machines run at a rate this one could not touch.
-//
-// Counted in states, because the written-out form is a function whose size
-// goes with the machine, and whoever compiles against this pays for it.
-#ifndef SCAN_WRITTEN_OUT
-#define SCAN_WRITTEN_OUT 24
-#endif
-
 template <auto& automaton, walk_shape shape, std::size_t state,
           std::size_t budget, std::size_t certain, class mark,
           class cursor_type, class sentinel_type, std::size_t register_count,
@@ -1630,16 +1614,9 @@ template <auto& automaton, walk_shape shape, std::size_t state,
                     sentinel_type, register_count, gatherer, answer_type>(
         cursor, last, place, registers, into, best);
   } else {
-    if constexpr (automaton.states.size() <= SCAN_WRITTEN_OUT) {
-      return run_body<automaton, shape, state, budget, certain, mark,
-                      cursor_type, sentinel_type, register_count, gatherer,
-                      answer_type>(cursor, last, place, registers, into, best);
-    } else {
-      return run_threaded<automaton, shape, state, mark, cursor_type,
-                          sentinel_type, register_count, gatherer,
-                          answer_type>(cursor, last, place, registers, into,
-                                       best);
-    }
+    return run_threaded<automaton, shape, state, mark, cursor_type,
+                        sentinel_type, register_count, gatherer, answer_type>(
+        cursor, last, place, registers, into, best);
   }
 }
 
@@ -2669,37 +2646,10 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
       return make(registers.row(), best.matched);
     }
   } else {
-   if constexpr (automaton.states.size() <= SCAN_WRITTEN_OUT) {
-    register_file<mark, register_count> registers{};
-    if constexpr (std::is_pointer_v<mark>) {
-      registers.fill(nullptr);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, static_cast<const char*>(nullptr));
-    } else {
-      registers.fill(scan::tre::negative_tag);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, mark{});
-    }
-    typename gatherer::cold_type collected{};
-  gatherer into{collected};
-    if constexpr (points_at_subject) into.points_at(text);
-    answer_type best;
-    cursor_type here = cursor;
-    mark spot = start;
-    (void)run_body<automaton, shape, entry, budget, certain, mark, cursor_type,
-                   sentinel_type, register_count, gatherer, answer_type>(
-        here, last, spot, registers, into, best);
-    if constexpr (std::same_as<make_type, taken_from_gatherer>) {
-      return into.taken();
-    } else {
-      return make(registers.row(), best.matched);
-    }
-   } else {
     return run_threaded_owning<automaton, shape, entry, mark,
                                points_at_subject, cursor_type, sentinel_type,
                                register_count, gatherer, answer_type,
                                make_type>(cursor, last, text, start, make);
-   }
   }
 }
 
