@@ -133,8 +133,10 @@ using tstate = hooks::state_type;
 
 // The same machine, written out: a label for a state, a direct jump for a
 // move, one switch on the character for the fork. This is the shape a scanner
-// generator emits, and it came out of this library's own automaton state for
-// state.
+// generator emits, and it is this library's own automaton -- taken off it
+// state for state, including the two that differ only in whether the heap has
+// just begun, and including the register commands, which are named locals
+// here because that is what a generator emits for them.
 //
 // It takes the longest beginning rather than the whole subject, which is what
 // the automaton does. On these subjects the two are the same, because the tail
@@ -145,6 +147,12 @@ answer fold_written_out(const char* p, const char* e) {
   const char* tail_to = nullptr;
   bool matched = false;
   unsigned long best = 0;
+  // The registers this machine hands out, one named local each, which is what
+  // a generator emits for them -- re2c writes `yyt1 = YYCURSOR`. Three are
+  // written as it goes and the rest at the end, exactly as the table says.
+  const char *r20 = nullptr, *r21 = nullptr, *r22 = nullptr;
+  const char *r0 = nullptr, *r1 = nullptr, *r2 = nullptr, *r3 = nullptr,
+             *r8 = nullptr, *r9 = nullptr;
   goto s0;
 
 s0:
@@ -205,6 +213,7 @@ s6:
   if (p == e) goto done;
   switch (static_cast<unsigned char>(*p)) {
   case 40: {
+    r20 = p;
     ++p; goto s7;
   }
   default: goto done;
@@ -219,6 +228,7 @@ s7:
   case 95: {
     hooks::opened_group(ts, scan::group_at<0>{});
     hooks::push_group(ts, scan::group_at<1>{}, *p);
+    r21 = p;
     ++p; goto s9;
   }
   default: goto done;
@@ -230,6 +240,7 @@ s8:
   switch (static_cast<unsigned char>(*p)) {
   case 97 ... 122: {
     tail_from = p;
+    r22 = p;
     ++p;
     tail_to = p;
     goto s10;
@@ -237,12 +248,15 @@ s8:
   default: goto done;
   }
 
+// The underscores of a heap just begun. The machine keeps this apart from s12,
+// the underscores of one already running, because only the first of them
+// writes the mark that says the heap began.
 s9:
   if (p == e) goto done;
   switch (static_cast<unsigned char>(*p)) {
   case 95: {
     hooks::push_group(ts, scan::group_at<1>{}, *p);
-    ++p; goto s9;
+    ++p; goto s12;
   }
   case 88:
   case 89: {
@@ -251,6 +265,7 @@ s9:
   }
   case 41: {
     hooks::closed_group(ts, scan::group_at<0>{});
+    r20 = r21;
     ++p; goto s8;
   }
   default: goto done;
@@ -280,16 +295,50 @@ s11:
     hooks::closed_group(ts, scan::group_at<0>{});
     hooks::opened_group(ts, scan::group_at<0>{});
     hooks::push_group(ts, scan::group_at<1>{}, *p);
+    r21 = p;
     ++p; goto s9;
   }
   case 41: {
     hooks::closed_group(ts, scan::group_at<0>{});
+    r20 = r21;
+    ++p; goto s8;
+  }
+  default: goto done;
+  }
+
+s12:
+  if (p == e) goto done;
+  switch (static_cast<unsigned char>(*p)) {
+  case 95: {
+    hooks::push_group(ts, scan::group_at<1>{}, *p);
+    ++p; goto s12;
+  }
+  case 88:
+  case 89: {
+    hooks::push_group(ts, scan::group_at<2>{}, *p);
+    ++p; goto s11;
+  }
+  case 41: {
+    hooks::closed_group(ts, scan::group_at<0>{});
+    r20 = r21;
     ++p; goto s8;
   }
   default: goto done;
   }
 
 done:
+  // What the machine does when it stops: the final commands of the state it
+  // stopped in, which are how the answer is made out of the registers. Kept
+  // from being optimised away, because this column is here to pay what the
+  // machine pays and not what is left of it when the answer is read some other
+  // way.
+  r8 = p;
+  r9 = p;
+  r0 = r20;
+  r1 = r21;
+  r2 = r20;
+  r3 = r22;
+  asm volatile("" : : "r"(r0), "r"(r1), "r"(r2), "r"(r3), "r"(r8), "r"(r9));
   answer out{};
   out.matched = matched;
   out.value = matched ? best : 0;
