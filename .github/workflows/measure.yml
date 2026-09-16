@@ -1,0 +1,129 @@
+# Built to be measured, not to be kept: this runs the captures benchmark
+# under callgrind and prints instructions retired, which is a number that
+# does not depend on what else the runner is doing.
+#
+# Three questions, and the third is the one nothing here ever asked: does it
+# build, do the tests pass, and is what it installs something a consumer can
+# use? A module library installs its interface units beside the archive --
+# whoever links it compiles them itself -- so an install that is wrong is a
+# library nobody can consume, and every part of that is written in
+# CMakeLists.txt where nothing runs it.
+name: measure
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ measure-captures, measure-base ]
+# One run to a commit on the main branch, and they do not wait for each other:
+# what is being asked is whether that commit is good, and a commit does not
+# become good by being answered later. A branch under review is the other way
+# round -- only the tip is worth an answer, so a push cancels the run before
+# it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  install:
+    name: clang ${{ matrix.llvm }}, libc++, import std
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry, and a second is one line: the library is written against
+        # C++23 modules and asks nothing of a compiler that a release before
+        # this one does not have.
+        llvm: [22]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Clang and libc++, which is where `import std` comes from: the library
+      # ships the source of the std module and CMake compiles it. The -dev
+      # package is what carries it.
+      - name: clang and libc++
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y ninja-build lsb-release software-properties-common gnupg curl
+          curl -fsSL https://apt.llvm.org/llvm.sh -o /tmp/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh ${{ matrix.llvm }}
+          sudo apt-get install -y libc++-${{ matrix.llvm }}-dev libc++abi-${{ matrix.llvm }}-dev
+          echo /usr/lib/llvm-${{ matrix.llvm }}/bin >> "$GITHUB_PATH"
+
+      - name: cmake
+        run: |
+          version=4.4.3
+          curl -sSL -o cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
+          sudo tar xzf cmake.tar.gz -C /opt
+          echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      # Where `import std` is read from, put where this build looks for it.
+      #
+      # The source of the std module is in the toolchain's own directory --
+      # <toolchain>/share/libc++/v1/std.cppm -- and what CMake asks for is
+      # /lib/share/libc++/v1/std.cppm, which no package puts there. It is
+      # worked out from where the compiler is, and the compiler a
+      # distribution installs is a link in a directory that says nothing
+      # about its toolchain. So both ends are said outright: the compiler
+      # under a prefix of its own, and the module sources where the answer
+      # lands.
+      - name: where import std is read from
+        run: |
+          sudo mkdir -p /lib/share/libc++
+          sudo ln -sfn /usr/lib/llvm-${{ matrix.llvm }}/share/libc++/v1 /lib/share/libc++/v1
+          sudo ln -sf /usr/lib/llvm-${{ matrix.llvm }}/bin/clang++ /usr/local/bin/clang++
+          sudo ln -sf /usr/lib/llvm-${{ matrix.llvm }}/bin/clang /usr/local/bin/clang
+          test -f /lib/share/libc++/v1/std.cppm
+          test -f /lib/share/libc++/v1/std.compat.cppm
+
+      # What the ports were fetched from and what came out of building them.
+      # Keyed by the pin and the lock, so a run that changes neither fetches
+      # and builds nothing.
+      - name: what was fetched and built before
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/cmake-everywhere/sources
+            ~/.cache/cmake-everywhere/store
+          # The compiler is part of the key, and not a detail of it: what the
+          # store keeps are compiled modules, and a module built by one clang
+          # is not readable by another. A key without it restored a copy built
+          # by the release before this one, and what said so was a test that
+          # could not find a header.
+          # The generation is bumped by hand where a stored copy has to be
+          # thrown away. A key that only grew a compiler to it was not enough:
+          # the first run with the new compiler restored the old store through
+          # the old prefix, and then saved that mixture under the new name.
+          key: scan-2-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-${{ github.sha }}
+          restore-keys: scan-2-${{ matrix.llvm }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}-
+
+      - name: valgrind
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq valgrind
+
+      - name: build the captures benchmark
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+            -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON \
+            -DSCAN_BUILD_BENCHMARKS=ON
+          cmake --build build --target captures_benchmark
+
+      - name: count what each engine does
+        run: |
+          for one in scan_captures_views_sentinel scan_captures_views re2c_captures ctre_captures; do
+            for turns in 1 11; do
+              valgrind --tool=callgrind --callgrind-out-file=/dev/null \
+                ./build/captures_benchmark \
+                --benchmark_filter="^$one$" \
+                --benchmark_min_time=${turns}x \
+                --benchmark_repetitions=1 2>&1 |
+                grep "I   refs" | tr -d ' ,' | sed "s/.*refs:/$one $turns /"
+            done
+          done
