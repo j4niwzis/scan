@@ -652,9 +652,9 @@ regex_match(std::string_view input) {
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
     for (std::size_t capture : std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
           const auto begin =
-              registers.read(capture * 2);
+              slot_read(registers, capture * 2);
           const auto end =
-              registers.read(capture * 2 + 1);
+              slot_read(registers, capture * 2 + 1);
           if (begin == nullptr || end == nullptr) continue;
           captures[capture] =
               regex_submatch(std::string_view(begin, static_cast<std::size_t>(end - begin)));
@@ -736,8 +736,8 @@ regex_match_sentinel(std::string_view input) {
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
     for (std::size_t capture :
          std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
-      const char* const from = registers.read(capture * 2);
-      const char* const to = registers.read(capture * 2 + 1);
+      const char* const from = slot_read(registers, capture * 2);
+      const char* const to = slot_read(registers, capture * 2 + 1);
       if (from == nullptr || to == nullptr) continue;
       captures[capture] = regex_submatch(
           std::string_view(from, static_cast<std::size_t>(to - from)));
@@ -849,7 +849,7 @@ template <fixed_string pattern, std::size_t group, class registers_type>
   if (packed.reading_count == 0) return false;
   const std::uint32_t opening = packed.readings[0][group * 2];
   const std::uint32_t closing = packed.readings[0][group * 2 + 1];
-  return registers.read(opening) >= 0 && registers.read(closing) < registers.read(opening);
+  return slot_read(registers, opening) >= 0 && slot_read(registers, closing) < slot_read(registers, opening);
 }
 
 
@@ -1690,7 +1690,7 @@ struct collected_match_closure
         constexpr const auto& entered =
             detail::regex_automaton<pattern>.states[landed];
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
-        const auto began = registers.read(opening);
+        const auto began = slot_read(registers, opening);
         if (began < 0 || told_at_[theirs] == began) return;
         detail::open_one_group<held, inside>(std::get<group>(states_));
         told_at_[theirs] = began;
@@ -1710,7 +1710,7 @@ struct collected_match_closure
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (!open_[theirs]) return;
-        if (registers.read(closing) >= registers.read(opening)) return;
+        if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
         detail::push_one_group<held, inside>(std::get<group>(states_), letter);
       }
     }
@@ -1727,7 +1727,7 @@ struct collected_match_closure
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (!open_[theirs]) return;
-        if (registers.read(closing) < registers.read(opening)) return;
+        if (slot_read(registers, closing) < slot_read(registers, opening)) return;
         detail::close_one_group<held, inside>(std::get<group>(states_));
         open_[theirs] = false;
       }
@@ -1776,8 +1776,8 @@ struct collected_match_closure
           constexpr std::size_t where = owner_type::template group_of<group>();
           constexpr std::uint32_t opening = entered.readings[0][where * 2];
           constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
-          if (registers.read(opening) < 0) return;
-          if (registers.read(closing) >= registers.read(opening)) return;
+          if (slot_read(registers, opening) < 0) return;
+          if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
           if constexpr (owner_type::template gathers_its_own_groups<group>()) {
             // Told by the step above, which asks the positions rather than
             // whether the group around it happens to be open here.
@@ -1826,8 +1826,8 @@ struct collected_match_closure
           constexpr std::size_t where = owner_type::template group_of<group>();
           constexpr std::uint32_t opening = entered.readings[0][where * 2];
           constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
-          if (registers.read(opening) < 0) return;
-          if (registers.read(closing) >= registers.read(opening)) return;
+          if (slot_read(registers, opening) < 0) return;
+          if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
           if constexpr (owner_type::template gathers_its_own_groups<
                             group>()) {
             // Told by the step above.

@@ -93,6 +93,33 @@ struct register_file {
   }
 };
 
+// A mark by a number nobody knows while compiling, from whichever file holds
+// it.
+//
+// The walk that runs keeps its marks in a tuple; the walk that reads a range as
+// it comes, and the one that reads an automaton built at run time, keep theirs
+// in an array. Both are asked the same way here, so that a number out of the
+// data stays possible where it is unavoidable and impossible everywhere else.
+template <class file_type>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto slot_read(
+    const file_type& registers, std::size_t which) {
+  if constexpr (requires { registers.read(which); }) {
+    return registers.read(which);
+  } else {
+    return registers[which];
+  }
+}
+
+template <class file_type, class mark>
+SCAN_FORCE_INLINE constexpr void slot_write(file_type& registers,
+                                            std::size_t which, mark value) {
+  if constexpr (requires { registers.write(which, value); }) {
+    registers.write(which, value);
+  } else {
+    registers[which] = value;
+  }
+}
+
 // A mark by a number known while compiling, from whichever file holds it.
 //
 // The walk that runs keeps its marks in a tuple, where the number has to be a
@@ -120,16 +147,16 @@ SCAN_FORCE_INLINE constexpr void execute_command(const packed_command& command,
   slot = value;
 }
 
-template <class mark, std::size_t register_count, std::size_t command_count>
+template <class mark, class file_type, std::size_t command_count>
 SCAN_FORCE_INLINE constexpr void execute_commands(
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, register_file<mark, register_count>& registers, mark here) {
+    std::size_t count, file_type& registers, mark here) {
   std::array<mark, command_count> source_values{};
   std::size_t index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
     source_values[index++] = command.source == packed_command::no_source
                                  ? absent_mark<mark>
-                                 : registers.read(command.source);
+                                 : slot_read(registers, command.source);
   }
   index = 0;
   for (const packed_command& command : commands | std::views::take(count)) {
@@ -138,7 +165,7 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
     if (command.source != packed_command::no_source) value = source_value;
     if (command.value == -1) value = absent_mark<mark>;
     if (command.value == 0) value = here;
-    registers.write(command.destination, value);
+    slot_write(registers, command.destination, value);
   }
 }
 

@@ -2010,7 +2010,7 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   register_file<const char*, automaton.register_count> registers{};
   constexpr auto written_everywhere = tags_always_written<automaton>();
   [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-    ((written_everywhere[tag] ? void() : registers.write(tag, nullptr)), ...);
+    ((written_everywhere[tag] ? void() : slot_write(registers, tag, nullptr)), ...);
   }(std::make_index_sequence<automaton.tag_count>{});
   execute_commands(automaton.initialize, automaton.initialize.size(), registers,
                    begin);
@@ -2705,10 +2705,10 @@ SCAN_FORCE_INLINE constexpr void fold_one_step(
   using held_type = std::remove_cv_t<held>;
   constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   const auto opening_of = [&](std::size_t which) {
-    return registers.read(reading[(place + 1 + which) * 2]);
+    return slot_read(registers, reading[(place + 1 + which) * 2]);
   };
   const auto closing_of = [&](std::size_t which) {
-    return registers.read(reading[(place + 1 + which) * 2 + 1]);
+    return slot_read(registers, reading[(place + 1 + which) * 2 + 1]);
   };
   [[clang::always_inline]] [&]<std::size_t... step>(std::index_sequence<step...>) {
     ((void)[&] {
@@ -3026,7 +3026,7 @@ constexpr void fold_the_readings(
     const std::uint32_t at = entered.readings[reading][place * 2];
     // Nowhere is said as a negative count or as no address at all, and the
     // walk says it whichever way it says positions.
-    if (told[at] || stood_nowhere(registers.read(at))) continue;
+    if (told[at] || stood_nowhere(slot_read(registers, at))) continue;
     told[at] = true;
     auto& folding = std::get<slot>(states[at]);
     // Said every step rather than once, because a fold is made where its place
@@ -3795,7 +3795,7 @@ constexpr void advance_scanner(
           ([&] {
             if (command_index++ >= count) return;
             if (automaton.register_tag[command.destination] != closing) return;
-            if (registers.read(command.destination) != position) return;
+            if (slot_read(registers, command.destination) != position) return;
             // What the turn gathered is at the opening the state being left
             // named, not the one the state being entered names: this step is
             // where the group is renamed, and the register the characters went
@@ -3804,7 +3804,7 @@ constexpr void advance_scanner(
             for (std::size_t reading = 0; reading < left.reading_count;
                  ++reading) {
               const std::uint32_t was = left.readings[reading][opening];
-              if (stood_nowhere(registers.read(was))) continue;
+              if (stood_nowhere(slot_read(registers, was))) continue;
               std::get<gathering_slot<type, format, group>>(
                   states[command.destination]) =
                   std::get<gathering_slot<type, format, group>>(states[was]);
@@ -3852,7 +3852,7 @@ constexpr void advance_scanner(
                   gathering_of<type, format, group>::begin(
                       spread.parameters[group].view());
             }
-          } else if (tag == closing && registers.read(command.destination) != position &&
+          } else if (tag == closing && slot_read(registers, command.destination) != position &&
                      command.source != packed_command::no_source &&
                      command.value == -2) {
             // A closing already written, only being carried along, keeps what
@@ -3903,8 +3903,8 @@ constexpr void advance_scanner(
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
       if (filled.test(open)) continue;
-      if (stood_nowhere(registers.read(open)) ||
-          closed_since_turn(registers.read(close), registers.read(open),
+      if (stood_nowhere(slot_read(registers, open)) ||
+          closed_since_turn(slot_read(registers, close), slot_read(registers, open),
                             how::place_repeats))
         continue;
       filled.set(open);
@@ -3977,7 +3977,7 @@ struct gathered_by_the_registers {
       // end standing where the beginning stands is the end of the turn before,
       // and the copy taken then is a turn behind.
       const bool still_reading = !closed_since_turn(
-          registers.read(close), registers.read(open),
+          slot_read(registers, close), slot_read(registers, open),
           gathering_of<type, format, place>::place_repeats);
       return std::get<gathering_slot<type, format, place>>(
           states[still_reading ? open : close]);
@@ -4019,7 +4019,7 @@ struct gathered_by_the_registers {
         return (kept.turns & (std::uint64_t{1} << place)) != 0;
       }
     } else {
-      return !stood_nowhere(registers.read(reading[place * 2]));
+      return !stood_nowhere(slot_read(registers, reading[place * 2]));
     }
   }
 
@@ -4030,15 +4030,15 @@ struct gathered_by_the_registers {
   // one, so what a place stood on begins one before where its opening says.
   template <std::size_t place>
   [[nodiscard]] constexpr std::string_view span(const char* text) const {
-    const auto began = registers.read(reading[place * 2]);
+    const auto began = slot_read(registers, reading[place * 2]);
     if (stood_nowhere(began)) return {};
-    const auto walked = registers.read(reading[place * 2 + 1]);
+    const auto walked = slot_read(registers, reading[place * 2 + 1]);
     // Closed as the walk passed, or closed by the commands that end a match
     // because the match ended while it was still open. The second is not in
     // the reading at all -- the ending writes registers of its own -- and read
     // through the reading such a group looked like one that never closed.
     const auto ended =
-        closed_since(walked, began) ? walked : registers.read(ending[place * 2 + 1]);
+        closed_since(walked, began) ? walked : slot_read(registers, ending[place * 2 + 1]);
     if (!closed_since(ended, began)) return {};
     if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(began)>>) {
       // What a group stood on is what lies between its marks. Nothing is taken
@@ -4255,7 +4255,7 @@ constexpr void collect_element(
     for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
       const std::uint32_t open = packed.readings[reading][group * 2];
       const std::uint32_t into = packed.readings[reading][list_group * 2];
-      if (done[into] || stood_nowhere(registers.read(open))) continue;
+      if (done[into] || stood_nowhere(slot_read(registers, open))) continue;
       done[into] = true;
       auto one = finish_value<type, element, group, false, failure_type>(
           by_the_registers<type, format>(packed.readings[reading], states,
@@ -5344,9 +5344,9 @@ class field_gatherer {
           const auto& reading = packed.readings[packed.accepting_slot];
           for (std::size_t which = 0; which < inside; ++which) {
             one.here.told_at[which] =
-                registers.read(reading[(group + 1 + which) * 2]);
+                slot_read(registers, reading[(group + 1 + which) * 2]);
             one.here.ended_at[which] =
-                registers.read(reading[(group + 1 + which) * 2 + 1]);
+                slot_read(registers, reading[(group + 1 + which) * 2 + 1]);
           }
         }
       }(), ...);
@@ -5545,8 +5545,8 @@ class field_gatherer {
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
         const std::uint32_t closing = pairs.shut[which];
-        if (given.test(opening) || stood_nowhere(registers.read(opening))) continue;
-        if (closed_since_turn(registers.read(closing), registers.read(opening),
+        if (given.test(opening) || stood_nowhere(slot_read(registers, opening))) continue;
+        if (closed_since_turn(slot_read(registers, closing), slot_read(registers, opening),
                               how::place_repeats)) continue;
         given.set(opening);
         gathering_of<type, format, group>::push_run(
@@ -5657,8 +5657,8 @@ class field_gatherer {
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
         const std::uint32_t closing = pairs.shut[which];
-        if (given.test(opening) || stood_nowhere(registers.read(opening))) continue;
-        if (closed_since_turn(registers.read(closing), registers.read(opening),
+        if (given.test(opening) || stood_nowhere(slot_read(registers, opening))) continue;
+        if (closed_since_turn(slot_read(registers, closing), slot_read(registers, opening),
                               how::place_repeats)) continue;
         given.set(opening);
         gathering_of<type, format, group>::push(
