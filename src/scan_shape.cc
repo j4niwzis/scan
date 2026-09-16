@@ -3181,7 +3181,14 @@ template <class type, fixed_string format, auto& automaton>
       if constexpr (!(how::folds && how::inside)) {
         made |= std::uint64_t{1} << group;
       }
-      if constexpr (!told_by_the_moves) {
+      // Asked of the place, not of what stands inside it. `inside` counts the
+      // groups of the whole leaf, which is an answer about a place -- and a
+      // group standing inside a fold is not a place, so what it counted was
+      // the groups that follow it. Every group inside a fold claimed the
+      // marks of the groups after it, the claims overlapped, and a fold
+      // whose groups nobody asks about kept every mark it has -- a machine
+      // writing tags on every character for nobody to read.
+      if constexpr (how::the_place && !told_by_the_moves) {
         for (std::size_t which = 0; which < inside; ++which) {
           made |= std::uint64_t{1} << (group + 1 + which);
         }
@@ -3235,20 +3242,41 @@ template <class type, fixed_string format, std::size_t group>
   return made;
 }
 
+// Which tags the machine is worth writing at all.
+//
+// Said by the tag and not by the group, because a group can be worth half of
+// itself. A mark somebody reads is a pair -- where it began and where it ended
+// -- and both halves have to be written for the answer to be cut out of the
+// subject. A group whose edges are only listened for is not read anywhere: all
+// it owes is the opening, which is what tells a turn from the turn before it,
+// and its closing is told by the moves, which say which groups a character
+// lies inside. Kept by the group, such a group carried a closing mark written
+// on the last character of every turn for nobody to read.
 template <class type, fixed_string format, auto& automaton>
-[[nodiscard]] consteval std::uint64_t groups_whose_tags_matter() {
-  std::uint64_t made = groups_whose_mark_is_read<type, format, automaton>();
+[[nodiscard]] consteval std::uint64_t tags_that_matter() {
+  const std::uint64_t read = groups_whose_mark_is_read<type, format, automaton>();
+  std::uint64_t edges = 0;
   [&]<std::size_t... group>(std::index_sequence<group...>) {
-    ((made |= edges_listened_for<type, format, group>()), ...);
+    ((edges |= edges_listened_for<type, format, group>()), ...);
   }(std::make_index_sequence<groups_of_output<type>()>{});
+  std::uint64_t made = 0;
+  for (std::size_t group = 0; group < 32; ++group) {
+    const std::uint64_t opening = std::uint64_t{1} << (2 * group);
+    const std::uint64_t closing = std::uint64_t{1} << (2 * group + 1);
+    if (((read >> group) & 1) != 0) {
+      made |= opening | closing;
+    } else if (((edges >> group) & 1) != 0) {
+      made |= opening;
+    }
+  }
   return made;
 }
 
 template <class type, fixed_string format, bool cut = true>
 inline constexpr auto& streaming_automaton = packed_text_automaton<
     spread_text<type, format>, false, cut,
-    groups_whose_tags_matter<type, format,
-                             streaming_automaton_whole<type, format, cut>>()>;
+    tags_that_matter<type, format,
+                     streaming_automaton_whole<type, format, cut>>()>;
 
 // Which groups' positions anybody will read.
 //
@@ -3282,7 +3310,14 @@ template <class type, fixed_string format, auto& automaton>
           return false;
         }
       }();
-      if constexpr (!told_by_the_moves) {
+      // Asked of the place, not of what stands inside it. `inside` counts the
+      // groups of the whole leaf, which is an answer about a place -- and a
+      // group standing inside a fold is not a place, so what it counted was
+      // the groups that follow it. Every group inside a fold claimed the
+      // marks of the groups after it, the claims overlapped, and a fold
+      // whose groups nobody asks about kept every mark it has -- a machine
+      // writing tags on every character for nobody to read.
+      if constexpr (how::the_place && !told_by_the_moves) {
         for (std::size_t which = 0; which < inside; ++which) {
           made |= std::uint64_t{1} << (group + 1 + which);
         }
