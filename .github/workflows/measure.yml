@@ -115,15 +115,11 @@ jobs:
             -DSCAN_BUILD_BENCHMARKS=ON
           cmake --build build --target captures_benchmark
 
-      - name: count what each engine does
-        run: |
-          for one in scan_captures_views_sentinel scan_captures_views re2c_captures ctre_captures; do
-            for turns in 1 11; do
-              valgrind --tool=callgrind --callgrind-out-file=/dev/null \
-                ./build/captures_benchmark \
-                --benchmark_filter="^$one$" \
-                --benchmark_min_time=${turns}x \
-                --benchmark_repetitions=1 2>&1 |
-                grep "I   refs" | tr -d ' ,' | sed "s/.*refs:/$one $turns /"
-            done
-          done
+      - name: what each engine takes
+      run: |
+        ./build/captures_benchmark \
+          --benchmark_repetitions=7 \
+          --benchmark_report_aggregates_only=true \
+          --benchmark_min_warmup_time=0.2 || true
+        echo "--- and the address one, if it was built"
+        ./build/address_benchmark || true
