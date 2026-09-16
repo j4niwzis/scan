@@ -354,7 +354,10 @@ void scan_fold(harness::State& state) {
   for (auto _ : state) {
     std::string_view view(text);
     harness::DoNotOptimize(view);
-    const reading got =
+    // Not const: the const-ref DoNotOptimize is the deprecated one, and what
+    // it is deprecated for is letting the optimiser move the work it was asked
+    // to keep. A non-const lvalue picks the overload that does not.
+    reading got =
         scan::scan<"value={}{[a-z]*}">.scalar()(view).of<reading>();
     harness::DoNotOptimize(got.number.value);
     harness::DoNotOptimize(got.tail);
@@ -367,7 +370,7 @@ void scan_fold_vectors(harness::State& state) {
   for (auto _ : state) {
     std::string_view view(text);
     harness::DoNotOptimize(view);
-    const reading got = scan::scan<"value={}{[a-z]*}">(view).of<reading>();
+    reading got = scan::scan<"value={}{[a-z]*}">(view).of<reading>();
     harness::DoNotOptimize(got.number.value);
     harness::DoNotOptimize(got.tail);
   }
@@ -379,7 +382,7 @@ void written_out(harness::State& state) {
   for (auto _ : state) {
     const char* from = text.data();
     harness::DoNotOptimize(from);
-    const answer got = fold_written_out(from, from + text.size());
+    answer got = fold_written_out(from, from + text.size());
     harness::DoNotOptimize(got.value);
     harness::DoNotOptimize(got.tail);
   }
@@ -391,7 +394,7 @@ void by_hand(harness::State& state) {
   for (auto _ : state) {
     const char* from = text.data();
     harness::DoNotOptimize(from);
-    const answer got = fold_by_hand(from, from + text.size());
+    answer got = fold_by_hand(from, from + text.size());
     harness::DoNotOptimize(got.value);
     harness::DoNotOptimize(got.tail);
   }
