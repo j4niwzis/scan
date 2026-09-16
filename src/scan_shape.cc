@@ -4994,8 +4994,8 @@ class field_gatherer {
       std::array<register_state<type, format, mark_kind>,
                  nothing_at_a_register ? 0 : automaton.register_count>;
 
-  // Слот по номеру: тёплый из своего кортежа, собирающий -- из того, которым
-  // владеет обход.
+  // A slot by its number: a warm one out of this gatherer's own tuple, a
+  // gathering one out of the tuple the walk owns.
   template <std::size_t which>
   [[nodiscard]] constexpr auto& slot() {
     using kind = std::tuple_element_t<which, plain_folds_type>;

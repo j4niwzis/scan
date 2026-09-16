@@ -2687,7 +2687,7 @@ scan_over:
   if constexpr (std::same_as<make_type, taken_from_gatherer>) {
     return into.taken();
   } else {
-    return make(registers.row(), best.matched);
+    return make(registers, best.matched);
   }
 }
 
@@ -2726,7 +2726,7 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
     if constexpr (std::same_as<make_type, taken_from_gatherer>) {
       return into.taken();
     } else {
-      return make(registers.row(), best.matched);
+      return make(registers, best.matched);
     }
   } else {
     return run_threaded_owning<automaton, shape, entry, mark,
