@@ -12,6 +12,46 @@ if(NOT DEFINED SCAN_MODULES AND "headers" IN_LIST CME_FEATURES_scan)
   set(SCAN_MODULES OFF)
 endif()
 
+# And what this build can compile at all.
+#
+# `import std` is behind a gate CMake reads once, while it scans the toolchain
+# -- which happens where CXX is enabled, in a consumer's project() call, before
+# this file is read at all. Opening it below is then opening it too late: the
+# targets ask for the module `std`, the scan that would have found it never
+# ran, and the build stops at generate time saying that the support "must be
+# set before CXX is enabled", about a project() call that is not in this file.
+#
+# CXX already loaded means an enclosing project enabled it. The gate already
+# open means that project opened it first, which is what a project that wants
+# these modules does -- scan's own cmake/import-std.cmake, read through
+# CMAKE_PROJECT_TOP_LEVEL_INCLUDES. Loaded and closed is a build where the
+# interface units cannot be compiled whatever anyone sets, and the only
+# question left is whether they were asked for: something nobody asked for is
+# not worth stopping a build over, when the headers are right here and are the
+# same library.
+if(CMAKE_CXX_COMPILER_LOADED AND NOT CMAKE_EXPERIMENTAL_CXX_IMPORT_STD)
+  if(SCAN_MODULES)
+    message(FATAL_ERROR
+      "scan: the modules were asked for and this build cannot compile them. "
+      "`import std` is behind a gate CMake reads while it scans the toolchain, "
+      "and CXX was enabled in this build before scan was added, so the gate "
+      "can no longer be opened for it. Read scan's cmake/import-std.cmake "
+      "before project(), through CMAKE_PROJECT_TOP_LEVEL_INCLUDES, or ask for "
+      "the headers instead, with "
+      "find_package(scan REQUIRED COMPONENTS headers). If this build "
+      "configured with the modules once already, what it was told then is "
+      "still in its CMakeCache.txt.")
+  elseif(NOT DEFINED SCAN_MODULES)
+    message(STATUS
+      "scan: this build enabled CXX before scan was added, so `import std` "
+      "cannot be turned on for it and the module interface units cannot be "
+      "compiled here; the headers are used instead, which are the same "
+      "library. Read scan's cmake/import-std.cmake before project() to build "
+      "the modules.")
+    set(SCAN_MODULES OFF)
+  endif()
+endif()
+
 # Only where the modules are being built.
 #
 # `import std` is what the interface units are written against, and saying so
