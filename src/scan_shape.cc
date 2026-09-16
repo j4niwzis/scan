@@ -2047,8 +2047,8 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   }();
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ((said.groups[group] = [&]() -> std::string_view {
-        const char* const from = said_by[group * 2];
-        const char* const to = said_by[group * 2 + 1];
+        const char* const from = mark_at<group * 2>(said_by);
+        const char* const to = mark_at<group * 2 + 1>(said_by);
         // Pointing nowhere is how a group that took no part is said, here as
         // everywhere: whether that is a failure is decided by whoever asked,
         // and there is nothing to throw it at from inside a walk.
