@@ -81,73 +81,88 @@ option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 
 # ---- What this reads a shape with ----
 #
-# Boost.PFR, as a module: the fields of an aggregate, by nothing but the type.
-# It is asked for as modules, and a copy of it installed on the machine is
-# headers -- so this one is built rather than taken, because what it is taken
-# as decides whether `import boost.pfr` means anything.
-# Asked for as a module, which is a thing the port can be rather than an
-# option set beside it: whoever resolves the port first is the one an option
-# would have had to come before, and that is not always this file -- a build
-# that fetches this library resolves what it needs before its CMakeLists is
-# added at all.
-# And not the copy on the machine, whatever it is: what is installed anywhere
-# is headers, and a module is what this compiles against. Said as a rule of
-# this build rather than of the port, because a Boost.PFR built as a module is
-# a perfectly good answer if a machine ever has one.
-set(CME_SYSTEM_boost_pfr OFF CACHE BOOL
-    "Boost.PFR is built here, because it is wanted as a module")
-# Said to the port and not only around it. Boost.PFR is built on its own, in
-# a configure of its own, and what reaches that one is what is named here --
-# everything else is the build this file is in, which the port never sees. It
-# is also what names the result: the options are part of the identity a built
-# port is stored under, so a build that says something different gets a
-# different port rather than the one already lying there.
+# How a shape's fields are found, which is the one thing this library asks of
+# anybody else.
 #
-# And what it has to be told is which standard this is and that `import std`
-# works, because those are what its module unit asks before deciding whether
-# to import the standard library or to include it. Left unanswered it
-# includes -- and then the library exists twice in one program, once in the
-# module `std` everything here imports and once in that global module
-# fragment. Clang drops the capture of a lambda in an out-of-line member
-# template merged from two such copies and reads an uninitialised local in
-# its place (llvm/llvm-project#221548); `std::vector::emplace_back` in libc++
-# is written that way, so a `push_back` writes through a pointer nobody set.
-cme_options(boost-pfr
-    "BUILD_TESTING OFF"
-    "CMAKE_CXX_STANDARD 23"
-    "CMAKE_CXX_MODULE_STD 1"
-    "CMAKE_EXPERIMENTAL_CXX_IMPORT_STD ${CMAKE_EXPERIMENTAL_CXX_IMPORT_STD}")
-find_package(boost_pfr REQUIRED COMPONENTS modules)
+# Boost.PFR reads an aggregate's members by probing what it can be built from,
+# and works on every compiler this library otherwise needs. A structured
+# binding pack names them outright -- `auto&& [...parts] = value;` -- which is
+# C++26, needs no library at all, and makes this the only dependency-free
+# answer. Off by default, because the compilers that have it are the newest
+# ones and the other answer costs nothing to keep.
+option(SCAN_FIELDS_BY_BINDING_PACK
+       "Take an aggregate apart with a structured binding pack (C++26) rather than with Boost.PFR"
+       OFF)
 
-# Said out loud, because getting this wrong is not a build error.
-#
-# Without it the module unit includes the standard library into its own global
-# module fragment, the library exists twice in one program, and clang drops the
-# capture of a lambda merged from the two copies. Nothing fails to compile; a
-# `std::vector` push_back writes through a pointer nobody set. So the answer is
-# printed where a build log will show it.
-if(TARGET Boost::pfr)
-  get_target_property(scan_pfr_definitions Boost::pfr
-                      INTERFACE_COMPILE_DEFINITIONS)
-  message(STATUS "scan: Boost.PFR was built with: ${scan_pfr_definitions}")
-  if(NOT scan_pfr_definitions MATCHES "BOOST_PFR_USE_STD_MODULE")
-    # Said here as well, because the port decides it in a configure of its
-    # own and there is no arguing with a decision already made. This build
-    # imports the standard library as a module throughout -- it is what the
-    # library itself is written against -- so the answer is not in doubt,
-    # and the module unit is compiled in this build, where this is read.
-    message(STATUS
-      "scan: telling Boost.PFR to import std, which its own build did not")
-    # Through the alias, where there is one: a build that took Boost.PFR
-    # some other way names it `Boost::pfr` and means a target called
-    # something else, and a property cannot be set on the name.
-    get_target_property(scan_pfr_target Boost::pfr ALIASED_TARGET)
-    if(NOT scan_pfr_target)
-      set(scan_pfr_target Boost::pfr)
+if(NOT SCAN_FIELDS_BY_BINDING_PACK)
+  # Boost.PFR, as a module: the fields of an aggregate, by nothing but the type.
+  # It is asked for as modules, and a copy of it installed on the machine is
+  # headers -- so this one is built rather than taken, because what it is taken
+  # as decides whether `import boost.pfr` means anything.
+  # Asked for as a module, which is a thing the port can be rather than an
+  # option set beside it: whoever resolves the port first is the one an option
+  # would have had to come before, and that is not always this file -- a build
+  # that fetches this library resolves what it needs before its CMakeLists is
+  # added at all.
+  # And not the copy on the machine, whatever it is: what is installed anywhere
+  # is headers, and a module is what this compiles against. Said as a rule of
+  # this build rather than of the port, because a Boost.PFR built as a module is
+  # a perfectly good answer if a machine ever has one.
+  set(CME_SYSTEM_boost_pfr OFF CACHE BOOL
+      "Boost.PFR is built here, because it is wanted as a module")
+  # Said to the port and not only around it. Boost.PFR is built on its own, in
+  # a configure of its own, and what reaches that one is what is named here --
+  # everything else is the build this file is in, which the port never sees. It
+  # is also what names the result: the options are part of the identity a built
+  # port is stored under, so a build that says something different gets a
+  # different port rather than the one already lying there.
+  #
+  # And what it has to be told is which standard this is and that `import std`
+  # works, because those are what its module unit asks before deciding whether
+  # to import the standard library or to include it. Left unanswered it
+  # includes -- and then the library exists twice in one program, once in the
+  # module `std` everything here imports and once in that global module
+  # fragment. Clang drops the capture of a lambda in an out-of-line member
+  # template merged from two such copies and reads an uninitialised local in
+  # its place (llvm/llvm-project#221548); `std::vector::emplace_back` in libc++
+  # is written that way, so a `push_back` writes through a pointer nobody set.
+  cme_options(boost-pfr
+      "BUILD_TESTING OFF"
+      "CMAKE_CXX_STANDARD 23"
+      "CMAKE_CXX_MODULE_STD 1"
+      "CMAKE_EXPERIMENTAL_CXX_IMPORT_STD ${CMAKE_EXPERIMENTAL_CXX_IMPORT_STD}")
+  find_package(boost_pfr REQUIRED COMPONENTS modules)
+
+  # Said out loud, because getting this wrong is not a build error.
+  #
+  # Without it the module unit includes the standard library into its own global
+  # module fragment, the library exists twice in one program, and clang drops the
+  # capture of a lambda merged from the two copies. Nothing fails to compile; a
+  # `std::vector` push_back writes through a pointer nobody set. So the answer is
+  # printed where a build log will show it.
+  if(TARGET Boost::pfr)
+    get_target_property(scan_pfr_definitions Boost::pfr
+                        INTERFACE_COMPILE_DEFINITIONS)
+    message(STATUS "scan: Boost.PFR was built with: ${scan_pfr_definitions}")
+    if(NOT scan_pfr_definitions MATCHES "BOOST_PFR_USE_STD_MODULE")
+      # Said here as well, because the port decides it in a configure of its
+      # own and there is no arguing with a decision already made. This build
+      # imports the standard library as a module throughout -- it is what the
+      # library itself is written against -- so the answer is not in doubt,
+      # and the module unit is compiled in this build, where this is read.
+      message(STATUS
+        "scan: telling Boost.PFR to import std, which its own build did not")
+      # Through the alias, where there is one: a build that took Boost.PFR
+      # some other way names it `Boost::pfr` and means a target called
+      # something else, and a property cannot be set on the name.
+      get_target_property(scan_pfr_target Boost::pfr ALIASED_TARGET)
+      if(NOT scan_pfr_target)
+        set(scan_pfr_target Boost::pfr)
+      endif()
+      set_property(TARGET ${scan_pfr_target} APPEND
+                   PROPERTY INTERFACE_COMPILE_DEFINITIONS
+                            BOOST_PFR_USE_STD_MODULE)
     endif()
-    set_property(TARGET ${scan_pfr_target} APPEND
-                 PROPERTY INTERFACE_COMPILE_DEFINITIONS
-                          BOOST_PFR_USE_STD_MODULE)
   endif()
 endif()
 
@@ -173,7 +188,14 @@ target_compile_features(scan PUBLIC cxx_std_23)
 # rightly, since what would be installed is a library whose dependency exists
 # nowhere else. An installed copy names it the way a machine can answer for it,
 # which is what the config file below writes.
-target_link_libraries(scan PUBLIC $<BUILD_INTERFACE:Boost::pfr>)
+if(SCAN_FIELDS_BY_BINDING_PACK)
+  # PUBLIC, and not only for this build: a module library installs its
+  # interface units and whoever links it compiles them itself, so the answer
+  # has to reach that compile as well as this one.
+  target_compile_definitions(scan PUBLIC SCAN_FIELDS_BY_BINDING_PACK=1)
+else()
+  target_link_libraries(scan PUBLIC $<BUILD_INTERFACE:Boost::pfr>)
+endif()
 target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
 target_compile_options(scan PUBLIC
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=300000000>
@@ -239,6 +261,11 @@ endif()
 # beside the library, so a prefix that has scan has the description of scan --
 # which is what lets a machine answer for it instead of everyone fetching it
 # again.
+if(SCAN_FIELDS_BY_BINDING_PACK)
+  set(scan_port_depends "")
+else()
+  set(scan_port_depends "boost-pfr[modules]")
+endif()
 if(COMMAND cme_declare_port)
   cme_declare_port(
     NAME scan
@@ -247,14 +274,16 @@ if(COMMAND cme_declare_port)
     GITHUB_REPOSITORY j4niwzis/scan
     GIT_TAG main
     LICENSE GPL-3.0-only
-    # Boost.PFR as a module, said here as well as where it is asked for.
+    # Boost.PFR as a module, said here as well as where it is asked for --
+    # and nothing at all where the fields come from a binding pack, which is
+    # the whole of that switch: a copy built that way needs nobody.
     #
     # Whoever fetches this resolves what it needs before this file is added,
     # so a build that learns about the module only from the find_package
     # below has already answered for Boost.PFR by then -- as headers, which
     # is not the same library -- and has to be configured a second time. Said
     # in the port, the first answer is the right one.
-    DEPENDS "boost-pfr[modules]"
+    DEPENDS ${scan_port_depends}
     TARGETS scan::scan
   )
 endif()
@@ -815,14 +844,22 @@ if(SCAN_INSTALL)
   # Asked for only where nothing has answered for it already: a consumer with
   # a provider has the port added by the provider, and adding it again is two
   # copies of the same target.
-  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
-    "include(CMakeFindDependencyMacro)\n"
-    "if(NOT TARGET Boost::pfr)\n"
-    "  find_dependency(boost_pfr)\n"
-    "endif()\n"
-    "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n"
-    "set_property(TARGET scan::scan APPEND PROPERTY\n"
-    "             INTERFACE_LINK_LIBRARIES Boost::pfr)\n")
+  if(SCAN_FIELDS_BY_BINDING_PACK)
+    # Nothing to find. The switch itself travels on the exported target --
+    # a consumer compiles the module interface units installed beside this,
+    # and those read it -- so the config has only the targets to include.
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
+      "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n")
+  else()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
+      "include(CMakeFindDependencyMacro)\n"
+      "if(NOT TARGET Boost::pfr)\n"
+      "  find_dependency(boost_pfr)\n"
+      "endif()\n"
+      "include(\"\${CMAKE_CURRENT_LIST_DIR}/scanTargets.cmake\")\n"
+      "set_property(TARGET scan::scan APPEND PROPERTY\n"
+      "             INTERFACE_LINK_LIBRARIES Boost::pfr)\n")
+  endif()
   install(FILES "${CMAKE_CURRENT_BINARY_DIR}/scanConfig.cmake"
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/scan)
 endif()

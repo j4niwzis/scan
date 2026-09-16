@@ -1325,6 +1325,20 @@ ctest --test-dir build
 | `SCAN_BUILD_BENCHMARKS` | the benchmarks: against CTRE, RE2, re2c and `sscanf`. Brings all four in |
 | `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
 | `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
+| `SCAN_FIELDS_BY_BINDING_PACK` | the fields of an aggregate from a structured binding pack rather than from Boost.PFR |
+
+The last of those is the only dependency this library has, and the switch is
+whether to have it. A shape's fields are asked for in one place and three
+ways: how many there are, what the one at an index is, and how to reach it in
+a value. Boost.PFR answers by probing what an aggregate can be built from,
+which works on every compiler this otherwise needs. A structured binding pack
+answers by naming them -- `auto&& [...parts] = value;` -- and the pack says
+its own size and can be indexed, which is all three questions and no library
+at all. That is C++26, so it is off by default; turned on, nothing is fetched
+and nothing is linked.
+
+A type that is not an aggregate answers for itself either way, by
+specialising `scan::fields`.
 
 The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
 `scan.compiler`, `scan.runtime`, `scan.range`, `scan.scanners` -- with `scan`

@@ -11,7 +11,9 @@ export module scan.shape;
 
 import std;
 import scan.tre;
+#if !SCAN_FIELDS_BY_BINDING_PACK
 import boost.pfr;
+#endif
 export import scan.compiler;
 export import scan.runtime;
 
@@ -25,7 +27,9 @@ export namespace scan {
 // members at all.
 //
 // The default answer is what an aggregate says about itself, read with
-// Boost.PFR. A type that is not an aggregate -- one with invariants to keep,
+// Boost.PFR -- or, where `SCAN_FIELDS_BY_BINDING_PACK` is on, read by taking
+// the aggregate apart with a structured binding pack, which needs no library
+// at all and needs C++26. A type that is not an aggregate -- one with invariants to keep,
 // or members nobody outside may touch, or an order of its own that has nothing
 // to do with the order it was written in -- answers them itself:
 //
@@ -34,6 +38,50 @@ export namespace scan {
 //     template <std::size_t index> using at = …;
 //     template <std::size_t index> static constexpr auto& of(my_type&);
 //   };
+#if SCAN_FIELDS_BY_BINDING_PACK
+// Asked of the language rather than of a library.
+//
+// A structured binding pack names every member of an aggregate at once, and
+// the pack tells its own size and can be indexed -- which is all three
+// questions, with nothing to fetch and nothing to build. It is C++26, so it
+// is behind a switch until that is what everybody has; where it is on, this
+// library has no dependencies at all.
+//
+// The binding is written inside a call in an unevaluated operand for the two
+// questions that are about the type rather than about a value: no object has
+// to exist for `sizeof...` or for the type at a place, and requiring one
+// would rule out every aggregate that cannot be default-constructed.
+template <class type>
+struct fields {
+ private:
+  static constexpr auto taken_apart = [](type& value) {
+    auto&& [...parts] = value;
+    return std::integral_constant<std::size_t, sizeof...(parts)>{};
+  };
+
+ public:
+  static constexpr std::size_t count =
+      decltype(taken_apart(std::declval<type&>()))::value;
+
+  template <std::size_t index>
+  using at = std::remove_cvref_t<decltype([](type& value) -> decltype(auto) {
+    auto&& [...parts] = value;
+    return parts...[index];
+  }(std::declval<type&>()))>;
+
+  template <std::size_t index>
+  [[nodiscard]] static constexpr auto& of(type& value) {
+    auto&& [...parts] = value;
+    return parts...[index];
+  }
+
+  template <std::size_t index>
+  [[nodiscard]] static constexpr const auto& of(const type& value) {
+    auto&& [...parts] = value;
+    return parts...[index];
+  }
+};
+#else
 template <class type>
 struct fields {
   static constexpr std::size_t count = boost::pfr::tuple_size_v<type>;
@@ -51,6 +99,7 @@ struct fields {
     return boost::pfr::get<index>(value);
   }
 };
+#endif
 
 }  // namespace scan
 
