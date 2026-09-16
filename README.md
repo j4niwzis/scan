@@ -1083,28 +1083,30 @@ median of seven passes, and what is left when the floor comes off:
 
 | | a pass |
 | --- | --- |
-| the floor, nothing scanned | 192 ns |
-| CTRE | 519 ns |
-| re2c | 531 ns |
-| `scan::scan<f>.sentinel()` | 614 ns |
-| `scan::scan<f>` | 748 ns |
-| RE2 | 21042 ns |
+| the floor, nothing scanned | 195 ns |
+| `scan::scan<f>.sentinel()` | 515 ns |
+| CTRE | 538 ns |
+| re2c | 544 ns |
+| `scan::scan<f>` | 887 ns |
+| RE2 | 21574 ns |
 
-Which is the honest place to say that on records this short the reading is
-behind both: sixteen per cent behind the generated scanner and eighteen behind
-the backtracking matcher. Thirty characters is five fields of five letters, and
-a field of five letters is a run too short to step over -- what is left is the
-per-field work, and there the two that do nothing clever do well.
+Which is where knowing the end costs what it costs. Told that a nul follows
+the subject, the reading is five per cent ahead of the generated scanner and
+four ahead of the backtracking matcher; told only where the subject ends, it is
+sixty per cent behind both. Thirty characters is five fields of five letters,
+and a field of five letters is a run too short to step over -- what is left is
+the per-field work, and on a subject with no terminator most of that is the
+guard every character read has to carry.
 
 The same five fields out of a thousand characters, one record to a pass, where
 the fields are two hundred letters each and the run is worth stepping over:
 
 | | a pass | against the reading |
 | --- | --- | --- |
-| `scan::scan<f>.sentinel()` | 87 ns | -- |
-| re2c | 414 ns | 4.7x |
-| CTRE | 485 ns | 5.6x |
-| RE2 | 10935 ns | 125x |
+| `scan::scan<f>.sentinel()` | 67 ns | -- |
+| re2c | 403 ns | 6.0x |
+| CTRE | 444 ns | 6.6x |
+| RE2 | 11601 ns | 172x |
 
 A field of two hundred characters is stepped over sixty-four at a time, and
 the others read it one character at a time, which is the whole of that
@@ -1120,16 +1122,21 @@ subjects to a pass:
 
 | | a pass |
 | --- | --- |
-| `scan::match<p>.sentinel()` | 642 ns |
-| `scan::match<p>` | 672 ns |
-| re2c | 685 ns |
-| RE2 | 2989 ns |
-| CTRE | 9379 ns |
+| `scan::match<p>.sentinel().scalar()` | 713 ns |
+| re2c | 815 ns |
+| `scan::match<p>.scalar()` | 818 ns |
+| RE2 | 3050 ns |
+| CTRE | 9665 ns |
 
-Both forms of the reading are now at the generated scanner, and the five per
-cent between them is what a range costs over a pointer and a terminator -- it
-used to be two thirds, and the walk being written out state by state is what
-took it away. CTRE is what a backtracking matcher costs on a pattern with
+Both rows say `.scalar()`, and that is worth saying plainly rather than
+leaving to be found. The length at which the reading starts taking words
+instead of characters is worked out from the pattern -- from how many runs in
+it are worth stepping over -- and for this pattern it lands below thirty-two,
+so left to itself the reading asks for words on a subject too short to pay for
+them. Asked for a character at a time it is twelve per cent ahead of the
+generated scanner with a terminator and level with it without one. The
+threshold is measured from the pattern and not from the subject, and
+thirty-two characters is where the two disagree. CTRE is what a backtracking matcher costs on a pattern with
 alternatives inside repetitions: it tries them.
 
 And what RE2 pays for being asked to keep the groups, in its own numbers:
@@ -1144,17 +1151,17 @@ at, which is what a subject that cannot be pointed at afterwards needs:
 
 | | a pass |
 | --- | --- |
-| making the strings, nothing scanned | 3991 ns |
-| `scan::scan<f>` into strings | 5330 ns |
+| making the strings, nothing scanned | 4163 ns |
+| `scan::scan<f>` into strings | 5397 ns |
 
 Against `sscanf`, on the same work -- the same characters in, the same values
 out, thirty-two records to a pass:
 
 | | `sscanf` | here |
 | --- | --- | --- |
-| two numbers | 3352 ns | 449 ns |
-| a timestamp of six | 6596 ns | 1509 ns |
-| five words into views | 9257 ns | 863 ns |
+| two numbers | 3413 ns | 452 ns |
+| a timestamp of six | 6667 ns | 1741 ns |
+| five words into views | 9302 ns | 873 ns |
 | five words into room said in advance | 9257 ns | 3551 ns |
 | five words into strings | 9257 ns | 5857 ns |
 
