@@ -28,7 +28,7 @@ concurrency:
 # The header generator, by the release it is taken from. One place, so that
 # moving to a newer one is one line.
 env:
-  DEMODULIZER: 0.1.0
+  DEMODULIZER: 0.1.1
 
 jobs:
   install:
@@ -121,11 +121,10 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
           cmake --build build
 
-      # The headers, for whoever cannot take modules -- and there are two
-      # sets of them, because "cannot take modules" and "cannot take C++26"
-      # are different projects. One reads Boost.PFR's headers and compiles
-      # anywhere this library otherwise does; the other takes an aggregate
-      # apart with a binding pack and needs nobody at all.
+      # The headers, for whoever cannot take modules. One set, which answers
+      # to both switches: what is generated keeps the condition around the
+      # import it came from, so the same files read Boost.PFR or take an
+      # aggregate apart with a binding pack, by what the consumer defines.
       #
       # Generated rather than kept: the sources stay module interface units
       # and pay nothing for the fallback. What generates them is released on
@@ -143,7 +142,7 @@ jobs:
       # here has to know how the ports were built or where Boost.PFR came
       # from. The map's paths are relative to the build directory and quoted,
       # which a shell splitting on spaces keeps rather than removes.
-      - name: the headers, generated both ways
+      - name: the headers, generated
         run: |
           generate() {
             from=$1; into=$2
@@ -161,22 +160,7 @@ jobs:
             done
             ls -l "$into"
           }
-          generate build include/boost-pfr
-
-          # The other set needs its own build: the switch is read while the
-          # interfaces are compiled, so the interfaces have to have been
-          # compiled with it. Nothing is fetched for this one -- that is the
-          # point of it.
-          cmake -S . -B build-pack -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
-            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DSCAN_FIELDS_BY_BINDING_PACK=ON \
-            -DSCAN_BUILD_TESTS=OFF \
-            -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON
-          cmake --build build-pack --target scan
-          generate build-pack include/binding-pack
+          generate build include
 
       # A header that compiles is not yet a header that links: a definition at
       # namespace scope that is not inline is one per translation unit that
@@ -203,16 +187,31 @@ jobs:
           int how_long(const char* text);
           int main() { std::printf("%d\n", how_long("left,right")); return 0; }
           EOF
-          for pair in "include/boost-pfr -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0" \
-                      "include/binding-pack -Wno-c++26-extensions"; do
+          # The same files, twice: once reading Boost.PFR and once with no
+          # Boost on the include path at all.
+          for pair in "with-pfr -I$pfr_include -DBOOST_PFR_USE_STD_MODULE=0" \
+                      "by-pack -DSCAN_FIELDS_BY_BINDING_PACK=1 -Wno-c++26-extensions"; do
             set -- $pair
-            where=$1; shift
-            echo "--- $where"
-            clang++ -std=c++23 -stdlib=libc++ -I "$where" "$@" \
+            what=$1; shift
+            echo "--- $what"
+            clang++ -std=c++23 -stdlib=libc++ -I include "$@" \
               -fconstexpr-steps=300000000 -fconstexpr-depth=4096 \
               /tmp/one.cc /tmp/two.cc -o /tmp/both
             test "$(/tmp/both)" = "9"
           done
+
+      # And that the other switch still builds as modules, which nothing else
+      # here compiles. Nothing is fetched for it -- that is the point of it.
+      - name: the modules, with the other switch
+        run: |
+          cmake -S . -B build-pack -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DSCAN_FIELDS_BY_BINDING_PACK=ON -DSCAN_BUILD_TESTS=OFF \
+            -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON
+          cmake --build build-pack --target scan
 
       # And the whole of what a consumer does: the library configured as
       # headers, installed, and something built against the prefix.

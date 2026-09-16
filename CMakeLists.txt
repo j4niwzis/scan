@@ -88,10 +88,11 @@ option(SCAN_BUILD_FUZZER "Build the differential fuzzer against RE2" OFF)
 # branch: a checkout of `main` does not carry them, and this says so rather
 # than failing later with something about a missing file.
 #
-# Which set of them is the same question as for the modules -- with Boost.PFR,
-# or with a binding pack and nothing at all -- so it is the same switch. A
-# consumer on C++26 whose project is not modules wants the second, and
-# nothing about that is unusual.
+# There is one set of them, not two: the generated headers keep the condition
+# around the import they came from, so the same files read Boost.PFR or take
+# an aggregate apart with a binding pack -- whichever
+# `SCAN_FIELDS_BY_BINDING_PACK` says here. A consumer on C++26 whose project
+# is not modules wants the second, and nothing about that is unusual.
 option(SCAN_AS_HEADERS
        "Use the generated headers rather than the module interface units" OFF)
 
@@ -188,11 +189,10 @@ elseif(NOT SCAN_FIELDS_BY_BINDING_PACK)
 endif()
 
 if(SCAN_AS_HEADERS)
-  if(SCAN_FIELDS_BY_BINDING_PACK)
-    set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/binding-pack")
-  else()
-    set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include/boost-pfr")
-  endif()
+  # One set, and it answers to both switches: the condition around an import
+  # is kept in the generated header, so the same files read Boost.PFR or take
+  # an aggregate apart with a binding pack, by what this build defines.
+  set(scan_headers_dir "${CMAKE_CURRENT_SOURCE_DIR}/include")
   if(NOT EXISTS "${scan_headers_dir}/scan.hpp")
     message(FATAL_ERROR
       "scan: SCAN_AS_HEADERS is on and there is nothing at "

@@ -1337,16 +1337,12 @@ library as headers. They are generated from these very interface units by
 run that builds the library, and carried in the tree of a release. A checkout
 of `main` does not have them, and says so rather than failing later.
 
-There are two sets, because *cannot take modules* and *cannot take C++26* are
-different projects:
-
-| | needs | |
-| --- | --- | --- |
-| `include/boost-pfr` | Boost.PFR's headers | compiles wherever this library otherwise does |
-| `include/binding-pack` | C++26 | no dependency at all |
-
-Both are the same library; `SCAN_FIELDS_BY_BINDING_PACK` picks between them,
-which is the same switch that picks between them for the modules.
+There is one set of them and it answers to both switches. A generated header
+keeps the condition around the import it came from, so the same files read
+Boost.PFR where `SCAN_FIELDS_BY_BINDING_PACK` is off and take an aggregate
+apart with a binding pack where it is on -- in the second case with no Boost
+on the include path at all. Which is the same switch that decides it for the
+modules, and the same three answers.
 
 Through `cmake-everywhere` it is two features:
 
