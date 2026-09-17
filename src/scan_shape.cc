@@ -3220,7 +3220,18 @@ build_value(std::span<const std::string_view> groups,
       }(std::make_index_sequence<inside>{});
       const auto pieces = std::span<const std::string_view>(theirs);
       if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-        auto got = scan::scanner_told_from_groups<held, ending>(pieces, given);
+        // Told where the type can take it, and asked the old way where it
+        // cannot: a shape that reads its own groups need not take a context.
+        auto got = [&] {
+          if constexpr (requires {
+                          scan::scanner_told_from_groups<held, ending>(pieces,
+                                                                       given);
+                        }) {
+            return scan::scanner_told_from_groups<held, ending>(pieces, given);
+          } else {
+            return scan::scanner_told_from_groups<held, ending>(pieces);
+          }
+        }();
         if (got) return std::move(*got);
         return ending::template went_wrong<type, failure_type>(
             std::move(got).error());
@@ -5687,7 +5698,15 @@ template <class root, class type, std::size_t offset, bool as_output,
     }(std::make_index_sequence<inside>{});
     const auto pieces = std::span<const std::string_view>(theirs);
     if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-      auto got = scan::scanner_told_from_groups<held>(pieces, given);
+      auto got = [&] {
+        if constexpr (requires {
+                        scan::scanner_told_from_groups<held>(pieces, given);
+                      }) {
+          return scan::scanner_told_from_groups<held>(pieces, given);
+        } else {
+          return scan::scanner_told_from_groups<held>(pieces);
+        }
+      }();
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));

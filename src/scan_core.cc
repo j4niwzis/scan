@@ -699,8 +699,17 @@ template <class type, class ending = hands_a_failure_back, class told_type>
     return scanner<held>{}.template from_groups<ending>(given, told);
   } else if constexpr (requires { scanner<held>{}.from_groups(given, told); }) {
     return scanner<held>{}.from_groups(given, told);
+  } else if constexpr (requires {
+                         scanner<held>{}.template from_groups<ending>(given);
+                       }) {
+    // Said here rather than by calling the shape without a context: that one
+    // is constrained, and a body that names it is a body that cannot be
+    // compiled for a type which says no from_groups at all -- and a return
+    // type deduced from a body that cannot be compiled takes this overload out
+    // of the set, which reads at the call as no such function.
+    return scanner<held>{}.template from_groups<ending>(given);
   } else {
-    return scanner_told_from_groups<type, ending>(given);
+    return scanner<held>{}.from_groups(given);
   }
 }
 
