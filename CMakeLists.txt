@@ -664,6 +664,7 @@ set(scan_tests
   a_context_reaches_a_list_test
   every_subject_agrees_test
   turns_a_place_takes_test
+  a_container_that_says_its_room_test
   a_field_that_matches_nothing_test
   a_group_taken_over_and_over_test
   a_field_wider_than_the_room_it_was_test

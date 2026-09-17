@@ -2989,20 +2989,40 @@ template <class told>
 // A list built where its place said to build it. A container that takes an
 // allocator is given the one its place was told about; one that takes none is
 // made the way it always was.
-template <class held, class told>
+template <class held, std::size_t most = turns_unbounded, class told>
 [[nodiscard]] constexpr held made_range(const told& given) {
-  if constexpr (requires {
-                  typename held::value_type;
-                  held(std::pmr::polymorphic_allocator<typename held::value_type>{});
-                }) {
-    if (std::pmr::memory_resource* where = resource_of(given)) {
-      return held(std::pmr::polymorphic_allocator<typename held::value_type>(where));
-    }
-    return held{};
-  } else {
-    static_cast<void>(given);
-    return held{};
+  // What the format could ask for, against what this container holds. A
+  // container that says nothing says nothing here either.
+  if constexpr (requires { scan::room_for<held>::most; }) {
+    static_assert(most <= scan::room_for<held>::most,
+                  "this place may take more turns than the container it is "
+                  "read into has room for: say a count in braces after the "
+                  "place, or read it into something with more room");
   }
+  const auto begun = [&] {
+    if constexpr (requires {
+                    typename held::value_type;
+                    held(std::pmr::polymorphic_allocator<
+                         typename held::value_type>{});
+                  }) {
+      if (std::pmr::memory_resource* where = resource_of(given)) {
+        return held(
+            std::pmr::polymorphic_allocator<typename held::value_type>(where));
+      }
+      return held{};
+    } else {
+      static_cast<void>(given);
+      return held{};
+    }
+  };
+  held made = begun();
+  // Room for everything the format could ask for, taken once. A list whose
+  // count has no end asks for nothing here: what it will be is not known, and
+  // guessing it is the container's business and not this one's.
+  if constexpr (most != turns_unbounded) {
+    if constexpr (requires { made.reserve(most); }) made.reserve(most);
+  }
+  return made;
 }
 
 // An empty list of the same kind as one that stands here already, keeping the
@@ -4458,7 +4478,8 @@ template <class type, fixed_string format, std::size_t... group>
   const auto one = []<std::size_t which>() {
     using held_type = leaf_kind_of_output<type, which>;
     if constexpr (scanned_as_range<held_type>) {
-      return held_type{};
+      return made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
+          scan::nothing_given{});
     } else {
       return gathering_of<type, format, which>::begin(
           spread.parameters[which].view());
@@ -4483,7 +4504,7 @@ template <class type, fixed_string format, class told_type, std::size_t... group
   const auto one = [&]<std::size_t which>() {
     using held_type = leaf_kind_of_output<type, which>;
     if constexpr (scanned_as_range<held_type>) {
-      return made_range<std::remove_cv_t<held_type>>(
+      return made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
           context_at_group<type, which>(told));
     } else {
       return gathering_of<type, format, which>::begin(
@@ -4663,8 +4684,9 @@ template <class type, fixed_string format, class mark_type = std::ptrdiff_t,
     const auto one = [&]<std::size_t which>() {
       using held_type = leaf_kind_of_output<type, which>;
       if constexpr (scanned_as_range<held_type>) {
+        static constexpr auto spread = spread_of<type, format>();
         std::get<gathering_slot<type, format, which, mark_type>>(made) =
-            made_range<std::remove_cv_t<held_type>>(
+            made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
                 context_at_group<type, which>(told));
       } else {
         static constexpr auto spread = spread_of<type, format>();
@@ -4708,8 +4730,9 @@ template <class type, fixed_string format, auto& automaton,
         const std::uint32_t at = initial.readings[reading][group * 2];
         if (at >= automaton.register_count) continue;
         if constexpr (scanned_as_range<held_type>) {
+          static constexpr auto spread = spread_of<type, format>();
           std::get<gathering_slot<type, format, group, mark_type>>(states[at]) =
-              made_range<std::remove_cv_t<held_type>>(
+              made_range<std::remove_cv_t<held_type>, spread.turns_most[group]>(
                   context_at_group<type, group>(told));
         } else {
           static constexpr auto spread = spread_of<type, format>();

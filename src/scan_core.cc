@@ -143,6 +143,23 @@ struct scanner;
 //     template <std::size_t which, class value>
 //     static constexpr my_either<parts...> make(value&& one) { … }
 //   };
+// How much room a container has, where it has a fixed amount of it.
+//
+// A list place says how many turns it may take -- `{2,5}`, or `?`, or nothing
+// at all for as many as there are -- and a container written with room said in
+// advance can be asked whether that many will fit. Said here rather than
+// guessed: `reserve` says a container can grow, and nothing in the standard
+// says one cannot.
+//
+//   template <> struct scan::room_for<my_small_list> {
+//     static constexpr std::size_t most = 8;
+//   };
+//
+// Where a container says it and the format could ask for more, the reading is
+// refused where it is compiled. Where it says nothing, nothing is checked.
+template <class list>
+struct room_for;
+
 template <class type>
 struct branches;
 
@@ -666,6 +683,24 @@ template <class type, class ending = hands_a_failure_back>
     return scanner<held>{}.template from_groups<ending>(given);
   } else {
     return scanner<held>{}.from_groups(given);
+  }
+}
+
+// The same, where the place this shape stands at was told a context. A shape
+// that reads its own groups is a reading like any other inside, and what its
+// places were told reaches them through here.
+template <class type, class ending = hands_a_failure_back, class told_type>
+[[nodiscard]] constexpr decltype(auto) scanner_told_from_groups(
+    std::span<const std::string_view> given, const told_type& told) {
+  using held = std::remove_cv_t<type>;
+  if constexpr (requires {
+                  scanner<held>{}.template from_groups<ending>(given, told);
+                }) {
+    return scanner<held>{}.template from_groups<ending>(given, told);
+  } else if constexpr (requires { scanner<held>{}.from_groups(given, told); }) {
+    return scanner<held>{}.from_groups(given, told);
+  } else {
+    return scanner_told_from_groups<type, ending>(given);
   }
 }
 
