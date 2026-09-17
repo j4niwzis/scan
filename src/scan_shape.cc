@@ -3289,12 +3289,51 @@ template <class type, fixed_string format, std::size_t group>
   return made;
 }
 
+// Every group a fold is told the characters of, in one mask.
+template <class type, fixed_string format>
+[[nodiscard]] consteval std::uint64_t groups_told_of() {
+  std::uint64_t made = 0;
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ((made |= characters_told_of<type, format, group>()), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  return made;
+}
+
+// Whether a machine still shows every group a fold is told about.
+//
+// This is what taking a tag away can cost, and the cost does not look like an
+// error. Two groups that are alternatives of each other -- `(A)|(B)` -- are
+// told apart by nothing but their tags, so with the tags gone their positions
+// fold together and one of them wins: the machine still says which groups a
+// character lies inside, and for a B it says the A. A group that has lost that
+// argument does not appear in any move at all, which is a thing that can be
+// looked for.
+//
+// A fold that tells its groups apart by the character rather than by the group
+// -- `(X|Y)` read as one group -- loses nothing, and that is the common shape.
+// It keeps the trimming; the other one does not.
+template <class type, fixed_string format, auto& automaton>
+[[nodiscard]] consteval bool every_told_group_is_seen() {
+  const std::uint64_t told = groups_told_of<type, format>();
+  for (std::size_t group = 0; group < 64; ++group) {
+    if (((told >> group) & 1) == 0) continue;
+    bool seen = false;
+    for (std::size_t state = 0; state < automaton.states.size(); ++state) {
+      const auto& here = automaton.states[state];
+      for (std::size_t move = 0; move < here.range_count; ++move) {
+        if ((here.ranges[move].groups_open & (std::uint64_t{1} << group)) != 0) {
+          seen = true;
+        }
+      }
+    }
+    if (!seen) return false;
+  }
+  return true;
+}
+
 template <class type, fixed_string format, auto& automaton>
 [[nodiscard]] consteval std::uint64_t tags_that_matter() {
-  std::uint64_t read = groups_whose_mark_is_read<type, format, automaton>();
-  [&]<std::size_t... group>(std::index_sequence<group...>) {
-    ((read |= characters_told_of<type, format, group>()), ...);
-  }(std::make_index_sequence<groups_of_output<type>()>{});
+  const std::uint64_t read = groups_whose_mark_is_read<type, format, automaton>();
   std::uint64_t edges = 0;
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ((edges |= edges_listened_for<type, format, group>()), ...);
@@ -3328,9 +3367,27 @@ template <class type, fixed_string format, auto& automaton>
 // walked now, and where trimming would cost it that, nothing is trimmed.
 template <class type, fixed_string format, bool cut>
 inline constexpr std::uint64_t tags_worth_keeping = [] {
-  constexpr std::uint64_t wanted =
+  constexpr std::uint64_t slim =
       tags_that_matter<type, format,
                        streaming_automaton_whole<type, format, cut>>();
+  // The groups a fold is told the characters of, both halves of each.
+  constexpr std::uint64_t told = [] {
+    const std::uint64_t groups = groups_told_of<type, format>();
+    std::uint64_t made = 0;
+    for (std::size_t group = 0; group < 32; ++group) {
+      if (((groups >> group) & 1) != 0) {
+        made |= (std::uint64_t{1} << (2 * group)) |
+                (std::uint64_t{1} << (2 * group + 1));
+      }
+    }
+    return made;
+  }();
+  constexpr std::uint64_t wanted =
+      every_told_group_is_seen<type, format,
+                               packed_text_automaton<spread_text<type, format>,
+                                                     false, cut, slim>>()
+          ? slim
+          : (slim | told);
   if constexpr (every_move_says_the_groups<
                     packed_text_automaton<spread_text<type, format>, false, cut,
                                           wanted>>()) {
