@@ -1137,7 +1137,21 @@ class as_collector {
     // Asked of the scanner itself, not of the helper: the helper is a template
     // whose body is what fails for a type that has no scanner, and a body
     // failing is not a question anyone can ask.
-    if constexpr (scan::says_what_went_wrong<type>) {
+    // Arguments given are the arguments the value is made with, and that is
+    // the whole point of giving them: a type that also says a scanner of its
+    // own would have that scanner asked instead, and the arguments would go
+    // nowhere. A pool said here is said because the value has to be built with
+    // it, and no scanner of that type knows about it.
+    if constexpr (sizeof...(arguments) != 0 &&
+                  requires(const arguments&... given) {
+                    value_type(text.begin(), text.end(), given...);
+                  }) {
+      return std::apply(
+          [&](const arguments&... given) {
+            return value_type(text.begin(), text.end(), given...);
+          },
+          arguments_);
+    } else if constexpr (scan::says_what_went_wrong<type>) {
       // A collector has to give a value, so this is the throwing way of
       // reading and the scanner is told so. One written against it throws
       // where it stands and never builds the expected that would only be
@@ -1165,7 +1179,16 @@ class as_collector {
   // Characters as they come, for a subject that cannot be looked at twice.
   [[nodiscard]] constexpr auto begin_pushing(
       std::string_view parameters) const {
-    if constexpr (requires {
+    if constexpr (sizeof...(arguments) != 0 &&
+                  requires(const arguments&... given) {
+                    value_type(given...);
+                  }) {
+      // The same rule where the characters arrive one at a time: what the
+      // value is made with is what was said here.
+      return std::apply(
+          [&](const arguments&... given) { return value_type(given...); },
+          arguments_);
+    } else if constexpr (requires {
                     std::declval<scan::scanner<type>&>().begin(parameters);
                   } || requires {
                     std::declval<scan::scanner<type>&>().begin();

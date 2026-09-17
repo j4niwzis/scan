@@ -7,6 +7,7 @@
 #include <expected>
 #include <iterator>
 #include <limits>
+#include <memory_resource>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -198,6 +199,44 @@ struct scanner<held<capacity>> {
   [[nodiscard]] static constexpr held<capacity> parse(std::string_view text,
                                                       std::string_view) {
     return parse(text);
+  }
+};
+
+// A string that keeps its own resource, read without anybody saying so.
+//
+// The same reading as std::string, begun with the allocator the place was told
+// about where it was told about one: an allocator said at the call, a resource,
+// or anything that hands one of those back. Told nothing, it is the default
+// resource, which is what std::pmr::string would have used anyway.
+template <>
+struct scanner<std::pmr::string> {
+  [[nodiscard]] static constexpr std::string_view pattern() { return ".*"; }
+  [[nodiscard]] static pattern_buffer<> pattern(std::string_view parameters) {
+    return scanner<std::string>::pattern(parameters);
+  }
+
+  using state_type = std::pmr::string;
+
+  [[nodiscard]] static state_type begin() { return {}; }
+  [[nodiscard]] static state_type begin(std::string_view) { return {}; }
+  [[nodiscard]] static state_type begin(std::string_view,
+                                        std::pmr::polymorphic_allocator<> where) {
+    return state_type(where);
+  }
+  static void push(state_type& state, char value) { state.push_back(value); }
+  static void push(state_type& state, std::string_view run) {
+    state.append(run);
+  }
+  [[nodiscard]] static std::pmr::string finish(state_type state) {
+    return state;
+  }
+
+  [[nodiscard]] static std::pmr::string parse(std::string_view text) {
+    return std::pmr::string(text);
+  }
+  [[nodiscard]] static std::pmr::string parse(
+      std::string_view text, std::pmr::polymorphic_allocator<> where) {
+    return std::pmr::string(text, where);
   }
 };
 

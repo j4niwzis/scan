@@ -16,6 +16,8 @@
 #include <expected>
 #include <iterator>
 #include <limits>
+#include <memory>
+#include <memory_resource>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -1019,6 +1021,13 @@ inline constexpr bool needs_the_turns =
 struct spread_format {
   pattern_buffer<2048> text{};
   pattern_buffer<64> parameters[32]{};
+  // How many turns a place may take, where it takes turns at all: what was
+  // written after it, said as two numbers. Kept per place because whoever
+  // collects the turns has a right to know -- a container with room said in
+  // advance can say whether that many will fit, and it can only say it if the
+  // number reached it.
+  std::size_t turns_least[32]{};
+  std::size_t turns_most[32]{};
   std::size_t leaves = 0;
   // Carried rather than passed: the format says it, and everything that
   // spreads a format is already handed this.
@@ -1033,6 +1042,75 @@ struct spread_format {
 // the format, in the order the format has them, so a type handed its own groups
 // is handed its places, and the thing that reads a format is the thing that
 // reads an expression.
+// A repetition as one shape, whatever it was written as.
+//
+// A star, a plus and a question mark are the three counts everybody writes, and
+// each is a count in braces said shorter: `*` is `{0,}`, `+` is `{1,}`, `?` is
+// `{0,1}`. Written one way here, everything downstream reads one thing -- the
+// machine, and whoever asks how many turns a list may take.
+inline constexpr std::size_t turns_unbounded = ~std::size_t{0};
+
+struct turns_written {
+  std::size_t least = 1;
+  std::size_t most = turns_unbounded;
+};
+
+[[nodiscard]] constexpr turns_written turns_of(std::string_view repetition) {
+  if (repetition.empty()) return {1, turns_unbounded};
+  switch (repetition.front()) {
+    case '*':
+      return {0, turns_unbounded};
+    case '+':
+      return {1, turns_unbounded};
+    case '?':
+      return {0, 1};
+    default:
+      break;
+  }
+  // A count in braces: `{n}`, `{n,}` or `{n,m}`.
+  std::size_t at = 1;
+  std::size_t least = 0;
+  while (at < repetition.size() && repetition[at] >= '0' &&
+         repetition[at] <= '9') {
+    least = least * 10 + static_cast<std::size_t>(repetition[at] - '0');
+    ++at;
+  }
+  if (at < repetition.size() && repetition[at] == '}') return {least, least};
+  if (at >= repetition.size() || repetition[at] != ',') {
+    throw "a count after a place is written {n}, {n,} or {n,m}";
+  }
+  ++at;
+  if (at < repetition.size() && repetition[at] == '}') {
+    return {least, turns_unbounded};
+  }
+  std::size_t most = 0;
+  while (at < repetition.size() && repetition[at] >= '0' &&
+         repetition[at] <= '9') {
+    most = most * 10 + static_cast<std::size_t>(repetition[at] - '0');
+    ++at;
+  }
+  if (most < least) throw "a place cannot take fewer turns than its own least";
+  return {least, most};
+}
+
+constexpr void say_number(spread_format& made, std::size_t value) {
+  char digits[20]{};
+  std::size_t written = 0;
+  do {
+    digits[written++] = static_cast<char>('0' + value % 10);
+    value /= 10;
+  } while (value != 0);
+  while (written != 0) made.text.push_back(digits[--written]);
+}
+
+constexpr void say_turns(spread_format& made, turns_written turns) {
+  made.text.push_back('{');
+  say_number(made, turns.least);
+  made.text.push_back(',');
+  if (turns.most != turns_unbounded) say_number(made, turns.most);
+  made.text.push_back('}');
+}
+
 constexpr void say_place_begin(spread_format& made) { made.text.push_back('('); }
 
 constexpr void say_place_end(spread_format& made) { made.text.push_back(')'); }
@@ -1218,6 +1296,9 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     // other way round -- a group repeated -- would open the list again on
     // every turn, and a list opened again is an empty one.
     say_place_begin(made);
+    // Which place this is, taken before the element is spread: the places of
+    // the element are counted after it and would carry the number away.
+    const std::size_t mine = made.leaves;
     ++made.leaves;
     say_group_begin(made);
     using element = std::remove_cvref_t<std::ranges::range_value_t<kind>>;
@@ -1242,7 +1323,10 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     // repetition -- and when the two became one the unwritten one was lost. A
     // list read one turn and stopped: "7" was a list of one, and "1,2,3" was
     // not a list at all.
-    made.text.append(repetition.empty() ? std::string_view("+") : repetition);
+    const turns_written turns = turns_of(repetition);
+    say_turns(made, turns);
+    made.turns_least[mine] = turns.least;
+    made.turns_most[mine] = turns.most;
     say_place_end(made);
   } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body
@@ -2513,9 +2597,32 @@ template <class held, bool told_apart, class context_type>
 [[nodiscard]] constexpr std::expected<held, failure_for<held>> groups_value(
     std::span<const std::string_view> groups, context_type&& given);
 
+template <class told>
+[[nodiscard]] constexpr std::pmr::memory_resource* resource_of(const told& given);
+
 // The state a scanner that gathers begins with. A scanner told a context and a
 // scanner told none begin the same kind of state -- that is what lets a place
 // hand the context over without the type of it crossing the door.
+// The state a scanner that is handed pieces begins with -- the other gathering
+// protocol, and the same rule: told a context or told none, what it begins is
+// the same kind of thing, so a place can hand the context over without the type
+// of it crossing the door.
+template <class held>
+using gather_state_for = decltype([] {
+  if constexpr (requires {
+                  scan::scanner<std::remove_cv_t<held>>{}.begin(
+                      std::string_view{});
+                }) {
+    return scan::scanner<std::remove_cv_t<held>>{}.begin(std::string_view{});
+  } else if constexpr (requires {
+                         scan::scanner<std::remove_cv_t<held>>{}.begin();
+                       }) {
+    return scan::scanner<std::remove_cv_t<held>>{}.begin();
+  } else {
+    return scan::nothing_given{};
+  }
+}());
+
 template <class held>
 using fold_state_for = decltype([] {
   if constexpr (requires { scan::scanner<std::remove_cv_t<held>>{}.begin_groups(); }) {
@@ -2531,6 +2638,13 @@ struct reading_of {
   using answer = std::expected<held, failure_for<held>>;
 
   constexpr virtual ~reading_of() = default;
+  // The resource the context keeps, where it keeps one. Answered rather than
+  // named: a resource is already a thing asked at runtime.
+  [[nodiscard]] constexpr virtual std::pmr::memory_resource* told_resource()
+      const = 0;
+  // The same, for a scanner handed its pieces rather than its groups.
+  [[nodiscard]] constexpr virtual gather_state_for<held> begin_gather(
+      std::string_view parameters) = 0;
   // Begun where the context still has its type, handed back as the state the
   // scanner would have begun anyway.
   [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
@@ -2578,6 +2692,28 @@ struct reading_by final : reading_of<field_type> {
   static constexpr bool reads_a_piece =
       requires(std::string_view text) { scan::scanner<held>{}.parse(text); } ||
       requires(std::string_view text) { scan::scanner<held>::try_parse(text); };
+
+  [[nodiscard]] constexpr std::pmr::memory_resource* told_resource()
+      const override {
+    return resource_of(*kept);
+  }
+
+  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
+      std::string_view parameters) override {
+    if constexpr (requires {
+                    scan::scanner<held>{}.begin(parameters, *kept);
+                  }) {
+      return scan::scanner<held>{}.begin(parameters, *kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(*kept); }) {
+      return scan::scanner<held>{}.begin(*kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(parameters); }) {
+      return scan::scanner<held>{}.begin(parameters);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(); }) {
+      return scan::scanner<held>{}.begin();
+    } else {
+      return scan::nothing_given{};
+    }
+  }
 
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
     if constexpr (requires { scan::scanner<held>{}.begin_groups(*kept); }) {
@@ -2685,6 +2821,13 @@ class context_leaf {
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() const {
     return how_->begin_fold();
+  }
+  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
+      std::string_view parameters) const {
+    return how_->begin_gather(parameters);
+  }
+  [[nodiscard]] constexpr std::pmr::memory_resource* told_resource() const {
+    return how_ == nullptr ? nullptr : how_->told_resource();
   }
   [[nodiscard]] constexpr answer read(std::string_view text,
                                       std::string_view parameters) const {
@@ -2831,18 +2974,123 @@ template <class type, std::size_t place>
 template <class type, std::size_t place>
 using context_place_of = typename decltype(context_place_kind<type, place>())::type;
 
+// The memory resource a context keeps, where it keeps one.
+//
+// An allocator says it, a resource is one, a thing that hands either back says
+// it too, and a place told in braces is asked through the interface that
+// carries it -- a resource is already a thing answered at runtime, so nothing
+// of the context's type has to cross the door for this.
+template <class told>
+[[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
+    const told& given) {
+  using kind = std::remove_cvref_t<told>;
+  if constexpr (std::same_as<kind, std::pmr::memory_resource*>) {
+    return given;
+  } else if constexpr (requires { given.resource(); }) {
+    return given.resource();
+  } else if constexpr (requires { given.get_allocator().resource(); }) {
+    return given.get_allocator().resource();
+  } else if constexpr (requires { given.told_resource(); }) {
+    return given.told_resource();
+  } else if constexpr (requires { given.leaf(); }) {
+    // A context said at a call is carried in a wrapper -- one for everybody,
+    // one per place -- and what it keeps is inside. Asked after the carrier,
+    // because a carrier answers `leaf` with itself.
+    return resource_of(given.leaf());
+  } else {
+    static_cast<void>(given);
+    return nullptr;
+  }
+}
+
+// A list built where its place said to build it. A container that takes an
+// allocator is given the one its place was told about; one that takes none is
+// made the way it always was.
+template <class held, std::size_t most = turns_unbounded, class told>
+[[nodiscard]] constexpr held made_range(const told& given) {
+  // What the format could ask for, against what this container holds. A
+  // container that says nothing says nothing here either.
+  if constexpr (requires { scan::room_for<held>::most; }) {
+    static_assert(most <= scan::room_for<held>::most,
+                  "this place may take more turns than the container it is "
+                  "read into has room for: say a count in braces after the "
+                  "place, or read it into something with more room");
+  }
+  const auto begun = [&] {
+    if constexpr (requires {
+                    typename held::value_type;
+                    held(std::pmr::polymorphic_allocator<
+                         typename held::value_type>{});
+                  }) {
+      if (std::pmr::memory_resource* where = resource_of(given)) {
+        return held(
+            std::pmr::polymorphic_allocator<typename held::value_type>(where));
+      }
+      return held{};
+    } else {
+      static_cast<void>(given);
+      return held{};
+    }
+  };
+  held made = begun();
+  // Room for everything the format could ask for, taken once. A list whose
+  // count has no end asks for nothing here: what it will be is not known, and
+  // guessing it is the container's business and not this one's.
+  if constexpr (most != turns_unbounded) {
+    if constexpr (requires { made.reserve(most); }) made.reserve(most);
+  }
+  return made;
+}
+
+// An empty list of the same kind as one that stands here already, keeping the
+// resource that one was made with. A turn ending and the next one beginning is
+// not a reason to go back to the default resource.
+template <class held>
+[[nodiscard]] constexpr held made_like(const held& other) {
+  if constexpr (requires { typename held::allocator_type; }) {
+    return held(other.get_allocator());
+  } else {
+    static_cast<void>(other);
+    return held{};
+  }
+}
+
 // A scanner begun with the context its place was given, asked for in the shapes
 // it may have been written in, and begun the way it always was where it takes
 // none.
 template <class held, class told_type>
 [[nodiscard]] constexpr auto scanner_begin_given(std::string_view parameters,
                                                  const told_type& told) {
-  if constexpr (!std::same_as<told_type, scan::default_context_t> &&
+  // Only where what the carrier begins is the very thing this call hands back:
+  // a scanner with no gathering of its own begins nothing, and the branches
+  // below must all agree on one return type.
+  if constexpr (requires {
+                  told.told();
+                  told.begin_gather(parameters);
+                  requires std::same_as<decltype(told.begin_gather(parameters)),
+                                        decltype(scanner_begin<held>(parameters))>;
+                }) {
+    // A place told in braces: the context is behind an interface that knows the
+    // field, and beginning is part of that interface.
+    if (told.told()) return told.begin_gather(parameters);
+    return scanner_begin<held>(parameters);
+  } else if constexpr (!std::same_as<told_type, scan::default_context_t> &&
                 requires { scan::scanner<held>{}.begin(parameters, told); }) {
     return scan::scanner<held>{}.begin(parameters, told);
   } else if constexpr (!std::same_as<told_type, scan::default_context_t> &&
                        requires { scan::scanner<held>{}.begin(told); }) {
     return scan::scanner<held>{}.begin(told);
+  } else if constexpr (requires {
+                         scan::scanner<held>{}.begin(
+                             parameters, std::pmr::polymorphic_allocator<>{});
+                       }) {
+    // The place was told something that keeps a resource, and this scanner
+    // knows what to do with one. Nobody wrote anything for this to happen.
+    if (std::pmr::memory_resource* where = resource_of(told)) {
+      return scan::scanner<held>{}.begin(
+          parameters, std::pmr::polymorphic_allocator<>(where));
+    }
+    return scanner_begin<held>(parameters);
   } else {
     static_cast<void>(told);
     return scanner_begin<held>(parameters);
@@ -2987,14 +3235,29 @@ build_value(std::span<const std::string_view> groups,
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((theirs[at] = groups[offset + 1 + at]), ...);
       }(std::make_index_sequence<inside>{});
-      const auto given = std::span<const std::string_view>(theirs);
+      const auto pieces = std::span<const std::string_view>(theirs);
       if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-        auto got = scan::scanner_told_from_groups<held, ending>(given);
+        // Told where the type can take it, and asked the old way where it
+        // cannot: a shape that reads its own groups need not take a context.
+        auto got = [&] {
+          if constexpr (requires {
+                          scan::scanner_told_from_groups<held, ending>(pieces,
+                                                                       given);
+                        }) {
+            return scan::scanner_told_from_groups<held, ending>(pieces, given);
+          } else {
+            return scan::scanner_told_from_groups<held, ending>(pieces);
+          }
+        }();
         if (got) return std::move(*got);
         return ending::template went_wrong<type, failure_type>(
             std::move(got).error());
+      } else if constexpr (requires {
+                             scan::scanner<held>{}.from_groups(pieces, given);
+                           }) {
+        return scan::scanner<held>{}.from_groups(pieces, given);
       } else {
-        return scan::scanner<held>{}.from_groups(given);
+        return scan::scanner<held>{}.from_groups(pieces);
       }
     } else {
       auto state = begun_groups<held>(given.leaf());
@@ -4243,7 +4506,8 @@ template <class type, fixed_string format, std::size_t... group>
   const auto one = []<std::size_t which>() {
     using held_type = leaf_kind_of_output<type, which>;
     if constexpr (scanned_as_range<held_type>) {
-      return held_type{};
+      return made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
+          scan::nothing_given{});
     } else {
       return gathering_of<type, format, which>::begin(
           spread.parameters[which].view());
@@ -4256,6 +4520,32 @@ template <class type, fixed_string format>
 [[nodiscard]] constexpr auto make_scanner_state() {
   return make_scanner_state<type, format>(
       std::make_index_sequence<groups_of_output<type>()>{});
+}
+
+// The same, told what the place this shape stands at was told. Every place
+// inside begins with what it was told, which is what a place told a context
+// means one level down as much as it does at the call.
+template <class type, fixed_string format, class told_type, std::size_t... group>
+[[nodiscard]] constexpr auto make_scanner_state_told(
+    const told_type& told, std::index_sequence<group...>) {
+  static constexpr auto spread = spread_of<type, format>();
+  const auto one = [&]<std::size_t which>() {
+    using held_type = leaf_kind_of_output<type, which>;
+    if constexpr (scanned_as_range<held_type>) {
+      return made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
+          context_at_group<type, which>(told));
+    } else {
+      return gathering_of<type, format, which>::begin(
+          spread.parameters[which].view(), context_at_group<type, which>(told));
+    }
+  };
+  return std::tuple{one.template operator()<group>()...};
+}
+
+template <class type, fixed_string format, class told_type>
+[[nodiscard]] constexpr auto make_scanner_state_told(const told_type& told) {
+  return make_scanner_state_told<type, format>(
+      told, std::make_index_sequence<groups_of_output<type>()>{});
 }
 
 // One slot per kind of gathering, not one per group.
@@ -4422,8 +4712,10 @@ template <class type, fixed_string format, class mark_type = std::ptrdiff_t,
     const auto one = [&]<std::size_t which>() {
       using held_type = leaf_kind_of_output<type, which>;
       if constexpr (scanned_as_range<held_type>) {
+        static constexpr auto spread = spread_of<type, format>();
         std::get<gathering_slot<type, format, which, mark_type>>(made) =
-            std::remove_cv_t<held_type>{};
+            made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
+                context_at_group<type, which>(told));
       } else {
         static constexpr auto spread = spread_of<type, format>();
         std::get<gathering_slot<type, format, which, mark_type, told_type>>(
@@ -4448,10 +4740,15 @@ template <class type, fixed_string format, auto& automaton,
           class told_type = scan::default_context_t>
 [[nodiscard]] constexpr auto make_register_states(
     const told_type& told = told_type{}) {
-  std::array<register_state<type, format, mark_type, told_type>,
-             automaton.register_count>
-      states{};
-  std::ranges::fill(states, make_slots<type, format, mark_type>(told));
+  // Made one by one rather than made once and filled in. A container that
+  // keeps a resource takes it when it is constructed and keeps its own when it
+  // is assigned or copied, so filling an array of default-made states with a
+  // well-made one leaves every register on the default resource.
+  auto states = [&]<std::size_t... at>(std::index_sequence<at...>) {
+    return std::array<register_state<type, format, mark_type, told_type>,
+                      automaton.register_count>{
+        ((void)at, make_slots<type, format, mark_type>(told))...};
+  }(std::make_index_sequence<automaton.register_count>{});
   const auto& initial = automaton.states[automaton.initial];
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ([&] {
@@ -4461,8 +4758,10 @@ template <class type, fixed_string format, auto& automaton,
         const std::uint32_t at = initial.readings[reading][group * 2];
         if (at >= automaton.register_count) continue;
         if constexpr (scanned_as_range<held_type>) {
+          static constexpr auto spread = spread_of<type, format>();
           std::get<gathering_slot<type, format, group, mark_type>>(states[at]) =
-              std::remove_cv_t<held_type>{};
+              made_range<std::remove_cv_t<held_type>, spread.turns_most[group]>(
+                  context_at_group<type, group>(told));
         } else {
           static constexpr auto spread = spread_of<type, format>();
           std::get<gathering_slot<type, format, group, mark_type, told_type>>(
@@ -4523,6 +4822,33 @@ struct kept_gatherings {
   }
 };
 
+// A copy of one gathering that keeps the resource it was made with.
+//
+// A container that keeps its own resource does not hand it on when it is
+// copied -- select_on_container_copy_construction says so -- so a walk that
+// keeps a gathering for later would keep it on the default resource and hand
+// that back at the end. Said once here, because every other copy of a
+// gathering goes through an assignment, and an assignment keeps the resource
+// the thing being assigned to was made with.
+template <class kind>
+[[nodiscard]] constexpr kind copied_gathering(const kind& one) {
+  if constexpr (requires {
+                  typename kind::allocator_type;
+                  one.get_allocator();
+                  kind(one, one.get_allocator());
+                }) {
+    return kind(one, one.get_allocator());
+  } else {
+    return one;
+  }
+}
+
+template <class slots_type, std::size_t... at>
+[[nodiscard]] constexpr slots_type copied_slots(const slots_type& all,
+                                                std::index_sequence<at...>) {
+  return slots_type{copied_gathering(std::get<at>(all))...};
+}
+
 template <class states_type, std::size_t command_count>
 [[nodiscard]] constexpr auto keep_gatherings(
     const states_type& states,
@@ -4544,7 +4870,10 @@ template <class states_type, std::size_t command_count>
     }
     if (already) continue;
     kept.which[kept.count] = commands[index].source;
-    kept.held[kept.count].emplace(states[commands[index].source]);
+    using slots_kind = std::remove_cvref_t<decltype(states[0])>;
+    kept.held[kept.count].emplace(copied_slots<slots_kind>(
+        states[commands[index].source],
+        std::make_index_sequence<std::tuple_size_v<slots_kind>>{}));
     ++kept.count;
   }
   return kept;
@@ -4639,6 +4968,55 @@ constexpr void advance_scanner(
         },
         commands);
   }
+  // A turn that ended is set aside where it was gathered.
+  //
+  // The characters of a turn go to the register the readings of the state being
+  // left name for this place's opening. The command that begins the next turn
+  // writes a register of its own, and for the first turn of a list that is a
+  // register with nothing in it yet -- so setting the turn aside by the command
+  // lost the first turn of every list, and only the first: from the second turn
+  // on, the register the command writes is the one the turn before it was
+  // carried into. It is set aside by the readings now, which is how the turn
+  // that ended is looked for everywhere else.
+  if constexpr (how::folds && how::the_place && how::place_repeats) {
+    bool beginning_another = false;
+    std::uint32_t begins_at = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+      const auto& command = commands[index];
+      if (command.value == -2) continue;
+      if (automaton.register_tag[command.destination] != opening) continue;
+      beginning_another = true;
+      begins_at = command.destination;
+      break;
+    }
+    if (beginning_another) {
+      // Gathered at the register the readings of the state being left name for
+      // this place. The move that begins the next turn renames the register --
+      // turn one lives at one number and turn two at another -- so the turn
+      // that ended is looked for where it was gathered, which is the old name.
+      const auto& left = automaton.states[left_state];
+      std::array<bool, automaton.register_count> aside{};
+      for (std::size_t reading = 0; reading < left.reading_count; ++reading) {
+        const std::uint32_t was = left.readings[reading][opening];
+        if (aside[was]) continue;
+        aside[was] = true;
+        auto& fold =
+            std::get<gathering_slot<type, format, group>>(states[was]);
+        if (!fold.here.started) continue;
+        // Set aside where the next turn will be looked for. The move renames
+        // the register -- the turn that ended was gathered under the old name
+        // and the turn that follows it is written under the new one -- and
+        // whoever makes the element of a turn that ended looks under the new
+        // name, because that is where the walk is now.
+        auto& into = std::get<gathering_slot<type, format, group>>(
+            states[begins_at]);
+        into.going = std::move(fold.here);
+        into.has_going = true;
+        fold.here = std::remove_cvref_t<decltype(fold.here)>(
+            context_at_group<type, group>(told));
+      }
+    }
+  }
   command_index = 0;
   std::apply(
       [&](const auto&... command) {
@@ -4654,23 +5032,28 @@ constexpr void advance_scanner(
                   std::get<gathering_slot<type, format, group>>(
                       old_states[command.source]);
             } else if constexpr (gathers_a_list) {
-              std::get<gathering_slot<type, format, group>>(
-                  states[command.destination]) = held_type{};
+              // A list begins empty, and begins once. This command writes the
+              // register that holds where the list opened -- which happens when
+              // the list starts and again at a turn boundary, where the
+              // boundary has just handed the turn that ended to this very list.
+              // Emptying it there throws that turn away, and only that one: the
+              // boundaries after it arrive as copies and go down the branch
+              // above. So it is emptied where it is starting, and where it is
+              // starting the register it is written into stood nowhere.
+              if (stood_nowhere(slot_read(registers, command.destination))) {
+                auto& stands_here =
+                    std::get<gathering_slot<type, format, group>>(
+                        states[command.destination]);
+                stands_here = made_like(stands_here);
+              }
             } else if constexpr (how::folds && how::the_place &&
                                  how::place_repeats) {
-              // A turn ending and the next one beginning. The one that is
-              // ending has not been told what closed it -- that arrives on
-              // this very step, a moment from now -- so it is moved aside
-              // rather than thrown away, and the element is made from it once
-              // it has heard the rest.
+              // The turn that ended was set aside above, where it was
+              // gathered. What this register holds now is the turn that is
+              // beginning, and a turn begins with what its place was told --
+              // the same as the first turn did.
               auto& fold = std::get<gathering_slot<type, format, group>>(
                   states[command.destination]);
-              if (fold.here.started) {
-                fold.going = std::move(fold.here);
-                fold.has_going = true;
-              }
-              // A turn beginning is a state beginning, and a state begins
-              // with what its place was told -- the same as the first turn did.
               fold.here = std::remove_cvref_t<decltype(fold.here)>(
                   context_at_group<type, group>(told));
             } else {
@@ -5067,12 +5450,13 @@ inline constexpr auto gathered_pairs = [] consteval {
 
 template <std::size_t group, class type, fixed_string format, auto& automaton,
           class failure_type, class states_type, class registers_type,
-          std::size_t command_count>
+          std::size_t command_count,
+          class told_carrier = scan::nothing_given>
 constexpr void collect_element(
     std::size_t state, const registers_type& registers, states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, const char* text,
-    std::optional<failure_type>& failed) {
+    std::size_t count, const char* text, std::optional<failure_type>& failed,
+    const told_carrier& told = told_carrier{}) {
   if constexpr (group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind_of_output<type, group - 1>>) {
@@ -5112,10 +5496,13 @@ constexpr void collect_element(
       const std::uint32_t into = packed.readings[reading][list_group * 2];
       if (done[into] || stood_nowhere(slot_read(registers, open))) continue;
       done[into] = true;
+      // An element of a list is a reading of its own, and what the list's place
+      // was told is what it was told: a whole shape standing here reads its
+      // places with it, the way one standing anywhere else does.
       auto one = finish_value<type, element, group, false, failure_type>(
           by_the_registers<type, format>(packed.readings[reading], states,
                                          registers),
-          text);
+          text, context_at_group<type, list_group>(told));
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;
@@ -5201,14 +5588,15 @@ constexpr void collect_turns_that_ended(
 
 template <class type, fixed_string format, auto& automaton, class failure_type,
           class registers_type, class states_type, std::size_t command_count,
-          std::size_t... group>
+          class told_carrier = scan::nothing_given, std::size_t... group>
 constexpr void collect_elements(
     std::size_t state, const registers_type& registers, states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, std::index_sequence<group...>, const char* text,
-    std::optional<failure_type>& failed) {
+    std::optional<failure_type>& failed,
+    const told_carrier& told = told_carrier{}) {
   (collect_element<group, type, format, automaton, failure_type>(
-       state, registers, states, commands, count, text, failed),
+       state, registers, states, commands, count, text, failed, told),
    ...);
 }
 
@@ -5325,18 +5713,30 @@ template <class root, class type, std::size_t offset, bool as_output,
         theirs[at] = stood_on;
       }(), ...);
     }(std::make_index_sequence<inside>{});
-    const auto given = std::span<const std::string_view>(theirs);
+    const auto pieces = std::span<const std::string_view>(theirs);
     if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-      auto got = scan::scanner_told_from_groups<held>(given);
+      auto got = [&] {
+        if constexpr (requires {
+                        scan::scanner_told_from_groups<held>(pieces, given);
+                      }) {
+          return scan::scanner_told_from_groups<held>(pieces, given);
+        } else {
+          return scan::scanner_told_from_groups<held>(pieces);
+        }
+      }();
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else if constexpr (requires {
-                           scan::scanner<held>{}.from_groups(given);
+                           scan::scanner<held>{}.from_groups(pieces, given);
                          }) {
-      return scan::scanner<held>{}.from_groups(given);
+      return scan::scanner<held>{}.from_groups(pieces, given);
+    } else if constexpr (requires {
+                           scan::scanner<held>{}.from_groups(pieces);
+                         }) {
+      return scan::scanner<held>{}.from_groups(pieces);
     } else {
-      auto state = scan::scanner<held>{}.begin_groups();
+      auto state = begun_groups<held>(given);
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           if (!took[at]) return;
@@ -5401,7 +5801,40 @@ template <class root, class type, std::size_t offset, bool as_output,
     // What has been put in as each element ended, and then the one that was
     // still being read when the whole thing ended.
     using element = std::remove_cvref_t<std::ranges::range_value_t<type>>;
-    type made = source.template list<offset>();
+    // Taken with the allocator it was gathered with. A container that keeps a
+    // resource does not hand it on when it is copied -- that is what
+    // select_on_container_copy_construction says -- so a list gathered into
+    // the caller's resource would arrive holding the default one.
+    // Handed back on the resource the caller said, whatever the walk gathered
+    // it on. What a walk allocates while it reads is its own business -- it may
+    // keep a gathering, copy it between registers, begin it again on a turn --
+    // and none of that should decide where the value the caller is handed
+    // lives. So the list is taken onto the resource its place was told about,
+    // and onto the one it was gathered with where its place was told nothing.
+    type made = [&] -> type {
+      const auto& gathered = source.template list<offset>();
+      // Asked of the very construction that would be used: a container with an
+      // allocator of its own is not thereby a container that takes a resource,
+      // and asking the wrong question here says yes for every one of them.
+      if constexpr (requires {
+                      type(gathered,
+                           std::pmr::polymorphic_allocator<
+                               typename type::value_type>{});
+                    }) {
+        if (std::pmr::memory_resource* where = resource_of(given)) {
+          return type(gathered,
+                      std::pmr::polymorphic_allocator<typename type::value_type>(
+                          where));
+        }
+        return type(gathered, gathered.get_allocator());
+      } else if constexpr (requires {
+                             type(gathered, gathered.get_allocator());
+                           }) {
+        return type(gathered, gathered.get_allocator());
+      } else {
+        return gathered;
+      }
+    }();
     // The turn that was still going when the whole thing ended. Where the list
     // is written to be allowed none at all, there may not have been one.
     if (source.template took_part<offset + 1>()) {
@@ -5461,9 +5894,17 @@ template <class type, fixed_string format,
 struct shape_turns {
   using held = std::remove_cv_t<type>;
   static constexpr std::size_t places = groups_of_output<held>();
-  using gatherings_type = decltype(make_scanner_state<held, format>());
+  using gatherings_type =
+      decltype(make_scanner_state_told<held, format>(
+          std::declval<const told_type&>()));
 
-  gatherings_type gatherings = make_scanner_state<held, format>();
+  constexpr shape_turns() = default;
+  constexpr explicit shape_turns(const told_type& given)
+      : gatherings(make_scanner_state_told<held, format>(given)),
+        told(given) {}
+
+  gatherings_type gatherings =
+      make_scanner_state_told<held, format>(told_type{});
   // An element that did not read, kept until there is somebody to hand it to:
   // a turn ends in the middle of a walk, where there is nowhere to say so.
   std::optional<shape_failure<held>> went_wrong{};
@@ -5964,6 +6405,15 @@ class field_gatherer {
     begin_again();
   }
 
+  // The slots, made where the places were told rather than made empty and
+  // assigned afterwards. A container that keeps a resource does not take the
+  // other one's resource when it is assigned, so a slot that begins empty
+  // stays on the default resource whatever is put in it later.
+  template <class other>
+  [[nodiscard]] static constexpr cold_type cold_for(const other& told) {
+    return made_cold_at_places<type, format, mark_kind, cold_type>(told);
+  }
+
   // Where the gathering slots lie, said again.
   //
   // The gatherer holds where they are, not the slots themselves, so a gatherer
@@ -5989,7 +6439,13 @@ class field_gatherer {
       ((slot<which>() = std::get<which>(all)), ...);
     }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
     if constexpr (!nothing_at_a_register) {
-      states_ = make_register_states<type, format, automaton, mark_kind, told_type>(told_);
+      // Built where it stands, for the same reason: assigning these would
+      // leave every container on whatever resource it was made with.
+      std::destroy_at(&states_);
+      std::construct_at(
+          &states_,
+          make_register_states<type, format, automaton, mark_kind, told_type>(
+              told_));
     }
   }
 
@@ -6009,7 +6465,7 @@ class field_gatherer {
     constexpr const auto& taken = automaton.states[state].ranges[move];
     collect_elements<type, format, automaton, failure_for<type>>(
         state, registers, states_, taken.commands, taken.command_count,
-        std::make_index_sequence<field_count>{}, text_, failed_);
+        std::make_index_sequence<field_count>{}, text_, failed_, told_);
   }
 
   // Whether anything open on this state's run would rather have it whole.
@@ -6774,8 +7230,14 @@ template <class type, fixed_string format,
   // rather than iterators, which is what a range in a row has.
   // A list is left out of it: its elements are handed over turn by turn and a
   // run stepped over in one go is one turn as far as the walk can tell.
-  if constexpr (std::ranges::contiguous_range<range_type> &&
-                !holds_a_range<type>()) {
+  if constexpr (std::ranges::contiguous_range<range_type>) {
+    // Where the reading holds a list, its elements are turns: the runs cannot
+    // be stepped over whole -- a run stepped over in one go is one turn as far
+    // as the walk can tell -- and there is nothing to point at through them.
+    // Everything else about the two walks is the same, and they were written
+    // out twice until one of the two went without the contexts the caller
+    // said, which is a thing a second copy of an argument list will do.
+    constexpr bool points_at_it = !holds_a_range<type>();
     const char* cursor = std::ranges::data(input);
     const char* const last = cursor + std::ranges::size(input);
     // Runs stepped over whole, unless the caller asked for a character at a
@@ -6786,11 +7248,16 @@ template <class type, fixed_string format,
     // because a walk to a terminator is a state and a comparison; a walk that
     // gathers is a body a state, and two of them is twice the code for a
     // question that a subject of any length answers the same way.
-    constexpr walk_shape shape{
-        .in_words = walk != how_to_walk::one_at_a_time,
-        .tags_read = groups_whose_place_is_read<type, format, automaton>(),
-        .tags_written = groups_whose_mark_is_read<type, format, automaton>(),
-        .budget = bodies_worth_writing<automaton>()};
+    constexpr walk_shape shape =
+        points_at_it
+            ? walk_shape{
+                  .in_words = walk != how_to_walk::one_at_a_time,
+                  .tags_read =
+                      groups_whose_place_is_read<type, format, automaton>(),
+                  .tags_written =
+                      groups_whose_mark_is_read<type, format, automaton>(),
+                  .budget = bodies_worth_writing<automaton>()}
+            : walk_shape{.budget = bodies_worth_writing<automaton>()};
     // Nothing the reading fills in is made here.
     //
     // A walk written as labels is a walk no inliner will fold into this one,
@@ -6799,29 +7266,13 @@ template <class type, fixed_string format,
     // of the subject. Told to make its own instead, the gatherer and the
     // registers are values of the walk and go wherever values go.
     return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
-                      const char*, true, const char*, const char*,
+                      const char*, points_at_it, const char*, const char*,
                       automaton.register_count,
                       field_gatherer<type, format, automaton, in_a_row,
                                      mark_kind, told_type>,
-                      walk_answer<const char*>>(cursor, last, cursor, cursor,
-                                                {}, told);
-  } else if constexpr (std::ranges::contiguous_range<range_type>) {
-    // A subject in a row whose reading holds a list.
-    //
-    // The runs cannot be stepped over whole here -- an element is a turn, and
-    // a run stepped over in one go is one turn as far as the walk can tell --
-    // but that is all a list costs. The walk still owns what it reads into,
-    // and the reading is not built out of addresses this frame handed over.
-    const char* cursor = std::ranges::data(input);
-    const char* const last = cursor + std::ranges::size(input);
-    constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
-    return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
-                      const char*, false, const char*, const char*,
-                      automaton.register_count,
-                      field_gatherer<type, format, automaton, in_a_row,
-                                     mark_kind, told_type>,
-                      walk_answer<const char*>>(cursor, last, nullptr,
-                                                mark_kind{});
+                      walk_answer<const char*>>(
+        cursor, last, points_at_it ? cursor : nullptr,
+        points_at_it ? cursor : mark_kind{}, {}, told);
   } else {
     register_file<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {
@@ -7178,6 +7629,23 @@ struct aggregate_scanner {
                                true>(groups);
   }
 
+  // The same, told what the place this shape stands at was told. A shape
+  // standing inside another shape is read by the same builder, so what reaches
+  // it here reaches its places the way it reaches everything else.
+  template <class self_type, class told_type>
+    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
+  [[nodiscard]] constexpr auto from_groups(
+      this const self_type& self, std::span<const std::string_view> groups,
+      const told_type& told)
+      -> std::expected<scanner_target_t<self_type>,
+                       detail::shape_failure<scanner_target_t<self_type>>> {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    return detail::build_value<detail::shape_failure<type>,
+                               detail::format_parameters<type, format>, type, 0,
+                               true>(groups, told);
+  }
+
   // Told its groups as they happen.
   //
   // Every shape that can be says this, not only one made of turns: a subject
@@ -7196,9 +7664,8 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr auto begin_groups(this const self_type& self,
                                             const told& given) {
     static_cast<void>(self);
-    detail::shape_turns<scanner_target_t<self_type>, format, told> made{};
-    made.told = given;
-    return made;
+    return detail::shape_turns<scanner_target_t<self_type>, format, told>(
+        given);
   }
 
   template <class self_type>
@@ -7247,8 +7714,18 @@ struct aggregate_scanner {
       return std::expected<type, failure_type>(
           std::unexpected(std::move(*state.went_wrong)));
     }
-    return detail::finish_value<type, type, 0, true, failure_type>(
-        detail::gathered_by_a_fold<state_type>{state}, nullptr);
+    // Told what the place this shape stands at was told. The state kept it
+    // from the moment it was begun -- a shape standing inside another shape is
+    // told at the door, the same as one standing on its own -- and its places
+    // read with it, which is the whole of what a context said at a place
+    // means.
+    if constexpr (requires { state.told; }) {
+      return detail::finish_value<type, type, 0, true, failure_type>(
+          detail::gathered_by_a_fold<state_type>{state}, nullptr, state.told);
+    } else {
+      return detail::finish_value<type, type, 0, true, failure_type>(
+          detail::gathered_by_a_fold<state_type>{state}, nullptr);
+    }
   }
 
   // Gathered a character at a time, for whoever holds the characters and not
