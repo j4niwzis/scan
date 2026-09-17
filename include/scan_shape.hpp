@@ -2478,37 +2478,13 @@ class context_leaf {
   read_by<held> given_{};
 };
 
-template <class field_type>
-class context_shape;
-
-template <class type, std::size_t place>
-[[nodiscard]] consteval auto context_place_kind() {
-  if constexpr (parts_under<type>() == 0) {
-    if constexpr (place == 0) {
-      return std::type_identity<context_leaf<std::remove_cv_t<type>>>{};
-    } else {
-      return std::type_identity<no_place>{};
-    }
-  } else if constexpr (place < parts_under<type>()) {
-    using part = std::remove_cv_t<typename parts_of<type>::template at<place>>;
-    if constexpr (parts_under<part>() == 0) {
-      return std::type_identity<context_leaf<part>>{};
-    } else {
-      return std::type_identity<context_shape<part>>{};
-    }
-  } else {
-    return std::type_identity<no_place>{};
-  }
-}
-
-template <class type, std::size_t place>
-using context_place_of = typename decltype(context_place_kind<type, place>())::type;
-
-template <class field_type>
+// A place that is a shape, and the contexts of its parts.
+//
+// Templated over the parts themselves, so the constructor that takes them is
+// generated with exactly as many parameters as the shape has parts: no number
+// is written anywhere here, and there is nothing to run out of.
+template <class... parts>
 class context_shape {
-  template <std::size_t k>
-  using part = context_place_of<field_type, k>;
-
  public:
   static constexpr bool told_apart = true;
 
@@ -2519,20 +2495,12 @@ class context_shape {
   template <class it>
     requires(!std::same_as<std::remove_cvref_t<it>, context_shape> &&
              !std::same_as<std::remove_cvref_t<it>, scan::default_context_t> &&
-             !std::same_as<std::remove_cvref_t<it>, no_place> &&
-             !std::same_as<std::remove_cvref_t<it>, part<0>>)
-  constexpr context_shape(const it& given)
-      : parts_{part<0>::spread(given), part<1>::spread(given),
-               part<2>::spread(given), part<3>::spread(given),
-               part<4>::spread(given), part<5>::spread(given),
-               part<6>::spread(given), part<7>::spread(given)} {}
+             !std::same_as<std::remove_cvref_t<it>, no_place>)
+  constexpr context_shape(const it& given) : parts_(parts::spread(given)...) {}
 
-  // Or its parts, one by one, in braces.
-  constexpr context_shape(part<0> first, part<1> second = {},
-                          part<2> third = {}, part<3> fourth = {},
-                          part<4> fifth = {}, part<5> sixth = {},
-                          part<6> seventh = {}, part<7> eighth = {})
-      : parts_{first, second, third, fourth, fifth, sixth, seventh, eighth} {}
+  // Or its parts, one by one, in braces -- all of them, because a shape whose
+  // parts are being told apart is being told apart.
+  constexpr context_shape(parts... given) : parts_(given...) {}
 
   template <class it>
   [[nodiscard]] static constexpr context_shape spread(const it& given) {
@@ -2541,7 +2509,7 @@ class context_shape {
 
   template <std::size_t k>
   [[nodiscard]] constexpr auto for_part() const {
-    if constexpr (k < 8) {
+    if constexpr (k < sizeof...(parts)) {
       return std::get<k>(parts_);
     } else {
       return scan::nothing_given{};
@@ -2549,10 +2517,50 @@ class context_shape {
   }
 
  private:
-  std::tuple<part<0>, part<1>, part<2>, part<3>, part<4>, part<5>, part<6>,
-             part<7>>
-      parts_{};
+  std::tuple<parts...> parts_{};
 };
+
+// Which carrier a field wants: read whole, and it is a leaf; made of parts, and
+// it is a shape over their carriers, worked out the same way.
+template <class field_type, bool whole = (parts_under<field_type>() == 0)>
+struct carrier_of;
+
+template <class field_type>
+struct carrier_of<field_type, true> {
+  using type = context_leaf<field_type>;
+};
+
+template <class field_type>
+struct carrier_of<field_type, false> {
+  template <std::size_t... k>
+  static auto made(std::index_sequence<k...>)
+      -> context_shape<typename carrier_of<std::remove_cv_t<
+          typename parts_of<field_type>::template at<k>>>::type...>;
+  using type =
+      decltype(made(std::make_index_sequence<parts_under<field_type>()>{}));
+};
+
+template <class field_type>
+using carrier_for = typename carrier_of<std::remove_cv_t<field_type>>::type;
+
+template <class type, std::size_t place>
+[[nodiscard]] consteval auto context_place_kind() {
+  if constexpr (parts_under<type>() == 0) {
+    if constexpr (place == 0) {
+      return std::type_identity<context_leaf<std::remove_cv_t<type>>>{};
+    } else {
+      return std::type_identity<no_place>{};
+    }
+  } else if constexpr (place < parts_under<type>()) {
+    return std::type_identity<
+        carrier_for<typename parts_of<type>::template at<place>>>{};
+  } else {
+    return std::type_identity<no_place>{};
+  }
+}
+
+template <class type, std::size_t place>
+using context_place_of = typename decltype(context_place_kind<type, place>())::type;
 
 // What a call collects its places into.
 template <class type>

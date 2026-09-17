@@ -182,29 +182,38 @@ class borrowed_result {
     return read_or_throw<type>();
   }
 
-  // Asked for with a context said at each place, and braces where a place is a
-  // shape whose parts want their own. A value at a place is that place's and
+  // The same, where a place is a shape and its parts want their own contexts.
+  //
+  // A braced list has no type to deduce, so the places have to be written out
+  // for it -- eight to a level, and that is the only place a number appears in
+  // any of this. Above eight, or wherever braces are not wanted, the form above
+  // takes as many places as there are. A value at a place is that place's and
   // every part of it; scan::default_context stands where a place wants none.
   //
   //   scan<"{} {}">(text).of<pair>(memory)                 -- both places
   //   scan<"{} {}">(text).of<pair>(memory, default_context)
   //   scan<"{}/{} {}">(text).of<nest>({fast, slow}, other) -- parts of a place
-  // One context and nothing else said is everybody's: the deduced parameter
-  // takes the value as it stands, which is a better match than the conversion
-  // the writing-out below would need, so this is the one that is chosen.
-  template <class type, class context>
-    requires(!std::same_as<std::remove_cvref_t<context>, context_place_of<type, 0>> &&
-             !std::same_as<std::remove_cvref_t<context>, scan::default_context_t>)
-  [[nodiscard]] constexpr type of(const context& given) const {
-    return read_or_throw<type>(scan::one_given<context, false>{given});
+  // Contexts written as they stand, without braces: as many places as the
+  // output has, because nothing here is written out place by place. One is
+  // everybody's; more are one per place, in the order the places are read.
+  //
+  // This is chosen over the writing-out below whenever it can be: its
+  // parameters take what was handed over as it stands, and an exact match beats
+  // the conversion the written-out one would need. A braced list deduces
+  // nothing, so where one is written this is not a candidate at all -- which is
+  // exactly the division of labour wanted: no braces, no limit; braces, and the
+  // places are written out.
+  template <class type, class... contexts>
+    requires(sizeof...(contexts) > 0)
+  [[nodiscard]] constexpr type of(const contexts&... given) const {
+    return read_or_throw<type>(scan::contexts_given<contexts...>(given...));
   }
 
-  template <class type, class context>
-    requires(!std::same_as<std::remove_cvref_t<context>, context_place_of<type, 0>> &&
-             !std::same_as<std::remove_cvref_t<context>, scan::default_context_t>)
+  template <class type, class... contexts>
+    requires(sizeof...(contexts) > 0)
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      const context& given) const {
-    return read<type>(scan::one_given<context, false>{given});
+      const contexts&... given) const {
+    return read<type>(scan::contexts_given<contexts...>(given...));
   }
 
   template <class type>
