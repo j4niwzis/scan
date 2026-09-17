@@ -2681,7 +2681,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
     registers.fill(scan::tre::negative_tag);
     execute_initial<automaton>(registers, mark{});
   }
-  typename gatherer::cold_type collected{};
+  typename gatherer::cold_type collected = [&] {
+    if constexpr (requires { gatherer::cold_for(told); }) {
+      return gatherer::cold_for(told);
+    } else {
+      return typename gatherer::cold_type{};
+    }
+  }();
   gatherer into = [&] {
     if constexpr (requires { gatherer{collected, told}; }) {
       return gatherer{collected, told};
@@ -2735,7 +2741,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
       registers.fill(scan::tre::negative_tag);
       execute_initial<automaton>(registers, mark{});
     }
-    typename gatherer::cold_type collected{};
+    typename gatherer::cold_type collected = [&] {
+    if constexpr (requires { gatherer::cold_for(told); }) {
+      return gatherer::cold_for(told);
+    } else {
+      return typename gatherer::cold_type{};
+    }
+  }();
   gatherer into = [&] {
     if constexpr (requires { gatherer{collected, told}; }) {
       return gatherer{collected, told};

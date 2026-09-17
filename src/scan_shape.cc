@@ -2498,6 +2498,9 @@ template <class held, bool told_apart, class context_type>
 [[nodiscard]] constexpr std::expected<held, failure_for<held>> groups_value(
     std::span<const std::string_view> groups, context_type&& given);
 
+template <class told>
+[[nodiscard]] constexpr std::pmr::memory_resource* resource_of(const told& given);
+
 // The state a scanner that gathers begins with. A scanner told a context and a
 // scanner told none begin the same kind of state -- that is what lets a place
 // hand the context over without the type of it crossing the door.
@@ -2516,6 +2519,10 @@ struct reading_of {
   using answer = std::expected<held, failure_for<held>>;
 
   constexpr virtual ~reading_of() = default;
+  // The resource the context keeps, where it keeps one. Answered rather than
+  // named: a resource is already a thing asked at runtime.
+  [[nodiscard]] constexpr virtual std::pmr::memory_resource* told_resource()
+      const = 0;
   // Begun where the context still has its type, handed back as the state the
   // scanner would have begun anyway.
   [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
@@ -2563,6 +2570,11 @@ struct reading_by final : reading_of<field_type> {
   static constexpr bool reads_a_piece =
       requires(std::string_view text) { scan::scanner<held>{}.parse(text); } ||
       requires(std::string_view text) { scan::scanner<held>::try_parse(text); };
+
+  [[nodiscard]] constexpr std::pmr::memory_resource* told_resource()
+      const override {
+    return resource_of(*kept);
+  }
 
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
     if constexpr (requires { scan::scanner<held>{}.begin_groups(*kept); }) {
@@ -2670,6 +2682,9 @@ class context_leaf {
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() const {
     return how_->begin_fold();
+  }
+  [[nodiscard]] constexpr std::pmr::memory_resource* told_resource() const {
+    return how_ == nullptr ? nullptr : how_->told_resource();
   }
   [[nodiscard]] constexpr answer read(std::string_view text,
                                       std::string_view parameters) const {
@@ -2816,6 +2831,62 @@ template <class type, std::size_t place>
 template <class type, std::size_t place>
 using context_place_of = typename decltype(context_place_kind<type, place>())::type;
 
+// The memory resource a context keeps, where it keeps one.
+//
+// An allocator says it, a resource is one, a thing that hands either back says
+// it too, and a place told in braces is asked through the interface that
+// carries it -- a resource is already a thing answered at runtime, so nothing
+// of the context's type has to cross the door for this.
+template <class told>
+[[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
+    const told& given) {
+  using kind = std::remove_cvref_t<told>;
+  if constexpr (std::same_as<kind, std::pmr::memory_resource*>) {
+    return given;
+  } else if constexpr (requires { given.resource(); }) {
+    return given.resource();
+  } else if constexpr (requires { given.get_allocator().resource(); }) {
+    return given.get_allocator().resource();
+  } else if constexpr (requires { given.told_resource(); }) {
+    return given.told_resource();
+  } else {
+    static_cast<void>(given);
+    return nullptr;
+  }
+}
+
+// A list built where its place said to build it. A container that takes an
+// allocator is given the one its place was told about; one that takes none is
+// made the way it always was.
+template <class held, class told>
+[[nodiscard]] constexpr held made_range(const told& given) {
+  if constexpr (requires {
+                  typename held::value_type;
+                  held(std::pmr::polymorphic_allocator<typename held::value_type>{});
+                }) {
+    if (std::pmr::memory_resource* where = resource_of(given)) {
+      return held(std::pmr::polymorphic_allocator<typename held::value_type>(where));
+    }
+    return held{};
+  } else {
+    static_cast<void>(given);
+    return held{};
+  }
+}
+
+// An empty list of the same kind as one that stands here already, keeping the
+// resource that one was made with. A turn ending and the next one beginning is
+// not a reason to go back to the default resource.
+template <class held>
+[[nodiscard]] constexpr held made_like(const held& other) {
+  if constexpr (requires { typename held::allocator_type; }) {
+    return held(other.get_allocator());
+  } else {
+    static_cast<void>(other);
+    return held{};
+  }
+}
+
 // A scanner begun with the context its place was given, asked for in the shapes
 // it may have been written in, and begun the way it always was where it takes
 // none.
@@ -2828,6 +2899,17 @@ template <class held, class told_type>
   } else if constexpr (!std::same_as<told_type, scan::default_context_t> &&
                        requires { scan::scanner<held>{}.begin(told); }) {
     return scan::scanner<held>{}.begin(told);
+  } else if constexpr (requires {
+                         scan::scanner<held>{}.begin(
+                             parameters, std::pmr::polymorphic_allocator<>{});
+                       }) {
+    // The place was told something that keeps a resource, and this scanner
+    // knows what to do with one. Nobody wrote anything for this to happen.
+    if (std::pmr::memory_resource* where = resource_of(told)) {
+      return scan::scanner<held>{}.begin(
+          parameters, std::pmr::polymorphic_allocator<>(where));
+    }
+    return scanner_begin<held>(parameters);
   } else {
     static_cast<void>(told);
     return scanner_begin<held>(parameters);
@@ -4408,7 +4490,8 @@ template <class type, fixed_string format, class mark_type = std::ptrdiff_t,
       using held_type = leaf_kind_of_output<type, which>;
       if constexpr (scanned_as_range<held_type>) {
         std::get<gathering_slot<type, format, which, mark_type>>(made) =
-            std::remove_cv_t<held_type>{};
+            made_range<std::remove_cv_t<held_type>>(
+                context_at_group<type, which>(told));
       } else {
         static constexpr auto spread = spread_of<type, format>();
         std::get<gathering_slot<type, format, which, mark_type, told_type>>(
@@ -4447,7 +4530,8 @@ template <class type, fixed_string format, auto& automaton,
         if (at >= automaton.register_count) continue;
         if constexpr (scanned_as_range<held_type>) {
           std::get<gathering_slot<type, format, group, mark_type>>(states[at]) =
-              std::remove_cv_t<held_type>{};
+              made_range<std::remove_cv_t<held_type>>(
+                  context_at_group<type, group>(told));
         } else {
           static constexpr auto spread = spread_of<type, format>();
           std::get<gathering_slot<type, format, group, mark_type, told_type>>(
@@ -4639,8 +4723,9 @@ constexpr void advance_scanner(
                   std::get<gathering_slot<type, format, group>>(
                       old_states[command.source]);
             } else if constexpr (gathers_a_list) {
-              std::get<gathering_slot<type, format, group>>(
-                  states[command.destination]) = held_type{};
+              auto& stands_here = std::get<gathering_slot<type, format, group>>(
+                  states[command.destination]);
+              stands_here = made_like(stands_here);
             } else if constexpr (how::folds && how::the_place &&
                                  how::place_repeats) {
               // A turn ending and the next one beginning. The one that is
@@ -5386,7 +5471,18 @@ template <class root, class type, std::size_t offset, bool as_output,
     // What has been put in as each element ended, and then the one that was
     // still being read when the whole thing ended.
     using element = std::remove_cvref_t<std::ranges::range_value_t<type>>;
-    type made = source.template list<offset>();
+    // Taken with the allocator it was gathered with. A container that keeps a
+    // resource does not hand it on when it is copied -- that is what
+    // select_on_container_copy_construction says -- so a list gathered into
+    // the caller's resource would arrive holding the default one.
+    type made = [&] -> type {
+      const auto& gathered = source.template list<offset>();
+      if constexpr (requires { typename type::allocator_type; }) {
+        return type(gathered, gathered.get_allocator());
+      } else {
+        return gathered;
+      }
+    }();
     // The turn that was still going when the whole thing ended. Where the list
     // is written to be allowed none at all, there may not have been one.
     if (source.template took_part<offset + 1>()) {
@@ -5947,6 +6043,15 @@ class field_gatherer {
                                     const told_type& told = told_type{})
       : cold_(&cold), told_(told) {
     begin_again();
+  }
+
+  // The slots, made where the places were told rather than made empty and
+  // assigned afterwards. A container that keeps a resource does not take the
+  // other one's resource when it is assigned, so a slot that begins empty
+  // stays on the default resource whatever is put in it later.
+  template <class other>
+  [[nodiscard]] static constexpr cold_type cold_for(const other& told) {
+    return made_cold_at_places<type, format, mark_kind, cold_type>(told);
   }
 
   // Where the gathering slots lie, said again.
