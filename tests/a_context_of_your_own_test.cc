@@ -90,7 +90,7 @@ TEST_F(a_context_of_your_own, APlaceThatWantsNoneSaysSo) {
 
 TEST_F(a_context_of_your_own, BracesSayThePartsOfAPlace) {
   const auto got = scan::scan<"{} {} {}">("abc def ghi"sv)
-                       .of<nest>({fast, scan::default_context}, slow);
+                       .of<nest>({{fast, scan::default_context}, slow});
   EXPECT_EQ(got.both.left.room, first());
   EXPECT_EQ(got.both.right.room, nullptr);
   EXPECT_EQ(got.last.text, "ghi");

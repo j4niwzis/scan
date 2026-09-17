@@ -161,34 +161,26 @@ class borrowed_result {
   // Asked for with the contexts the places were given.
   //
   // One context is everybody's; more than one is one per place, in the order
-  // the places are read, with scan::by_default standing for a place that wants
-  // none. Each reaches the one call where its place makes its value.
+  // the places are read, with scan::default_context standing for a place that
+  // wants none. Each reaches the one call where its place makes its value.
   template <class type>
   [[nodiscard]] constexpr type of() const {
     return read_or_throw<type>();
   }
 
-  // The same, where a place is a shape and its parts want their own contexts.
-  //
-  // A braced list has no type to deduce, so the places have to be written out
-  // for it -- eight to a level, and that is the only place a number appears in
-  // any of this. Above eight, or wherever braces are not wanted, the form above
-  // takes as many places as there are. A value at a place is that place's and
-  // every part of it; scan::default_context stands where a place wants none.
-  //
-  //   scan<"{} {}">(text).of<pair>(memory)                 -- both places
-  //   scan<"{} {}">(text).of<pair>(memory, default_context)
-  //   scan<"{}/{} {}">(text).of<nest>({fast, slow}, other) -- parts of a place
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of()
+      const {
+    return read<type>();
+  }
+
   // Contexts written as they stand, without braces: as many places as the
   // output has, because nothing here is written out place by place. One is
-  // everybody's; more are one per place, in the order the places are read.
+  // everybody's; more are one per place.
   //
-  // This is chosen over the writing-out below whenever it can be: its
-  // parameters take what was handed over as it stands, and an exact match beats
-  // the conversion the written-out one would need. A braced list deduces
-  // nothing, so where one is written this is not a candidate at all -- which is
-  // exactly the division of labour wanted: no braces, no limit; braces, and the
-  // places are written out.
+  // Chosen over the braced form below whenever it can be -- its parameters take
+  // what was handed over as it stands, and an exact match beats the conversion
+  // the other would need.
   template <class type, class... contexts>
     requires(sizeof...(contexts) > 0)
   [[nodiscard]] constexpr type of(const contexts&... given) const {
@@ -202,33 +194,24 @@ class borrowed_result {
     return read<type>(scan::contexts_given<contexts...>(given...));
   }
 
+  // The same, where a place is a shape and its parts want their own contexts.
+  //
+  // A braced list deduces nothing, so it cannot be a pack -- it is the whole
+  // list at once, in braces, and inside it braces go as deep as the shape does.
+  // That is the price of writing any braces at all here, and what it buys is
+  // that no number is written anywhere: as many places as the output has.
+  //
+  //   scan<"{} {}">(text).of<pair>(fast, slow)         -- as they stand
+  //   scan<"{} {} {}">(text).of<nest>({{fast, default_context}, slow})
   template <class type>
-  [[nodiscard]] constexpr type of(context_place_of<type, 0> first,
-                                  context_place_of<type, 1> second = {},
-                                  context_place_of<type, 2> third = {},
-                                  context_place_of<type, 3> fourth = {},
-                                  context_place_of<type, 4> fifth = {},
-                                  context_place_of<type, 5> sixth = {},
-                                  context_place_of<type, 6> seventh = {},
-                                  context_place_of<type, 7> eighth = {}) const {
-    return read_or_throw<type>(contexts_by_place<type>(
-        first, second, third, fourth, fifth, sixth, seventh, eighth));
-  }
-
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of()
-      const {
-    return read<type>();
+  [[nodiscard]] constexpr type of(carrier_for<type> given) const {
+    return read_or_throw<type>(given);
   }
 
   template <class type>
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      context_place_of<type, 0> first, context_place_of<type, 1> second = {},
-      context_place_of<type, 2> third = {}, context_place_of<type, 3> fourth = {},
-      context_place_of<type, 4> fifth = {}, context_place_of<type, 5> sixth = {},
-      context_place_of<type, 6> seventh = {}, context_place_of<type, 7> eighth = {}) const {
-    return read<type>(contexts_by_place<type>(first, second, third, fourth,
-                                              fifth, sixth, seventh, eighth));
+      carrier_for<type> given) const {
+    return read<type>(given);
   }
 
   // The same contexts, told before the output type is named -- which is what a
