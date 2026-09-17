@@ -1004,6 +1004,13 @@ inline constexpr bool needs_the_turns =
 struct spread_format {
   pattern_buffer<2048> text{};
   pattern_buffer<64> parameters[32]{};
+  // How many turns a place may take, where it takes turns at all: what was
+  // written after it, said as two numbers. Kept per place because whoever
+  // collects the turns has a right to know -- a container with room said in
+  // advance can say whether that many will fit, and it can only say it if the
+  // number reached it.
+  std::size_t turns_least[32]{};
+  std::size_t turns_most[32]{};
   std::size_t leaves = 0;
   // Carried rather than passed: the format says it, and everything that
   // spreads a format is already handed this.
@@ -1018,6 +1025,75 @@ struct spread_format {
 // the format, in the order the format has them, so a type handed its own groups
 // is handed its places, and the thing that reads a format is the thing that
 // reads an expression.
+// A repetition as one shape, whatever it was written as.
+//
+// A star, a plus and a question mark are the three counts everybody writes, and
+// each is a count in braces said shorter: `*` is `{0,}`, `+` is `{1,}`, `?` is
+// `{0,1}`. Written one way here, everything downstream reads one thing -- the
+// machine, and whoever asks how many turns a list may take.
+inline constexpr std::size_t turns_unbounded = ~std::size_t{0};
+
+struct turns_written {
+  std::size_t least = 1;
+  std::size_t most = turns_unbounded;
+};
+
+[[nodiscard]] constexpr turns_written turns_of(std::string_view repetition) {
+  if (repetition.empty()) return {1, turns_unbounded};
+  switch (repetition.front()) {
+    case '*':
+      return {0, turns_unbounded};
+    case '+':
+      return {1, turns_unbounded};
+    case '?':
+      return {0, 1};
+    default:
+      break;
+  }
+  // A count in braces: `{n}`, `{n,}` or `{n,m}`.
+  std::size_t at = 1;
+  std::size_t least = 0;
+  while (at < repetition.size() && repetition[at] >= '0' &&
+         repetition[at] <= '9') {
+    least = least * 10 + static_cast<std::size_t>(repetition[at] - '0');
+    ++at;
+  }
+  if (at < repetition.size() && repetition[at] == '}') return {least, least};
+  if (at >= repetition.size() || repetition[at] != ',') {
+    throw "a count after a place is written {n}, {n,} or {n,m}";
+  }
+  ++at;
+  if (at < repetition.size() && repetition[at] == '}') {
+    return {least, turns_unbounded};
+  }
+  std::size_t most = 0;
+  while (at < repetition.size() && repetition[at] >= '0' &&
+         repetition[at] <= '9') {
+    most = most * 10 + static_cast<std::size_t>(repetition[at] - '0');
+    ++at;
+  }
+  if (most < least) throw "a place cannot take fewer turns than its own least";
+  return {least, most};
+}
+
+constexpr void say_number(spread_format& made, std::size_t value) {
+  char digits[20]{};
+  std::size_t written = 0;
+  do {
+    digits[written++] = static_cast<char>('0' + value % 10);
+    value /= 10;
+  } while (value != 0);
+  while (written != 0) made.text.push_back(digits[--written]);
+}
+
+constexpr void say_turns(spread_format& made, turns_written turns) {
+  made.text.push_back('{');
+  say_number(made, turns.least);
+  made.text.push_back(',');
+  if (turns.most != turns_unbounded) say_number(made, turns.most);
+  made.text.push_back('}');
+}
+
 constexpr void say_place_begin(spread_format& made) { made.text.push_back('('); }
 
 constexpr void say_place_end(spread_format& made) { made.text.push_back(')'); }
@@ -1203,6 +1279,9 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     // other way round -- a group repeated -- would open the list again on
     // every turn, and a list opened again is an empty one.
     say_place_begin(made);
+    // Which place this is, taken before the element is spread: the places of
+    // the element are counted after it and would carry the number away.
+    const std::size_t mine = made.leaves;
     ++made.leaves;
     say_group_begin(made);
     using element = std::remove_cvref_t<std::ranges::range_value_t<kind>>;
@@ -1227,7 +1306,10 @@ constexpr void spread_place(spread_format& made, std::string_view body,
     // repetition -- and when the two became one the unwritten one was lost. A
     // list read one turn and stopped: "7" was a list of one, and "1,2,3" was
     // not a list at all.
-    made.text.append(repetition.empty() ? std::string_view("+") : repetition);
+    const turns_written turns = turns_of(repetition);
+    say_turns(made, turns);
+    made.turns_least[mine] = turns.least;
+    made.turns_most[mine] = turns.most;
     say_place_end(made);
   } else if constexpr (scanned_as_variant<kind>) {
     // The branches, held together, each headed by a mark. Written out, the body
