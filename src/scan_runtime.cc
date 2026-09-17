@@ -2741,7 +2741,7 @@ template <auto& automaton, unsigned char terminator, bool in_words,
           std::size_t state, std::size_t register_count>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_to_terminator(
     const char* cursor, const char* end,
-    std::array<const char*, register_count>& registers) {
+    register_file<const char*, register_count>& registers) {
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
@@ -2869,7 +2869,7 @@ template <auto& automaton>
 template <auto& automaton, std::size_t state, std::size_t register_count>
 [[nodiscard]] constexpr const char* run_head(
     const char* cursor, const char* end,
-    std::array<const char*, register_count>& registers) {
+    register_file<const char*, register_count>& registers) {
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
@@ -2886,7 +2886,7 @@ template <auto& automaton, bool in_words, std::size_t state,
           std::size_t register_count>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_here(
     const char* cursor, const char* end,
-    std::array<const char*, register_count>& registers) {
+    register_file<const char*, register_count>& registers) {
   gathers_nothing nothing;
   const char* place = cursor;
   walk_answer<const char*> best;
