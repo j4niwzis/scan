@@ -4391,6 +4391,32 @@ template <class type, fixed_string format>
       std::make_index_sequence<groups_of_output<type>()>{});
 }
 
+// The same, told what the place this shape stands at was told. Every place
+// inside begins with what it was told, which is what a place told a context
+// means one level down as much as it does at the call.
+template <class type, fixed_string format, class told_type, std::size_t... group>
+[[nodiscard]] constexpr auto make_scanner_state_told(
+    const told_type& told, std::index_sequence<group...>) {
+  static constexpr auto spread = spread_of<type, format>();
+  const auto one = [&]<std::size_t which>() {
+    using held_type = leaf_kind_of_output<type, which>;
+    if constexpr (scanned_as_range<held_type>) {
+      return made_range<std::remove_cv_t<held_type>>(
+          context_at_group<type, which>(told));
+    } else {
+      return gathering_of<type, format, which>::begin(
+          spread.parameters[which].view(), context_at_group<type, which>(told));
+    }
+  };
+  return std::tuple{one.template operator()<group>()...};
+}
+
+template <class type, fixed_string format, class told_type>
+[[nodiscard]] constexpr auto make_scanner_state_told(const told_type& told) {
+  return make_scanner_state_told<type, format>(
+      told, std::make_index_sequence<groups_of_output<type>()>{});
+}
+
 // One slot per kind of gathering, not one per group.
 //
 // The machine keeps a gathering for every register, and a register is made for
@@ -5727,9 +5753,17 @@ template <class type, fixed_string format,
 struct shape_turns {
   using held = std::remove_cv_t<type>;
   static constexpr std::size_t places = groups_of_output<held>();
-  using gatherings_type = decltype(make_scanner_state<held, format>());
+  using gatherings_type =
+      decltype(make_scanner_state_told<held, format>(
+          std::declval<const told_type&>()));
 
-  gatherings_type gatherings = make_scanner_state<held, format>();
+  constexpr shape_turns() = default;
+  constexpr explicit shape_turns(const told_type& given)
+      : gatherings(make_scanner_state_told<held, format>(given)),
+        told(given) {}
+
+  gatherings_type gatherings =
+      make_scanner_state_told<held, format>(told_type{});
   // An element that did not read, kept until there is somebody to hand it to:
   // a turn ends in the middle of a walk, where there is nowhere to say so.
   std::optional<shape_failure<held>> went_wrong{};
@@ -7489,9 +7523,8 @@ struct aggregate_scanner {
   [[nodiscard]] constexpr auto begin_groups(this const self_type& self,
                                             const told& given) {
     static_cast<void>(self);
-    detail::shape_turns<scanner_target_t<self_type>, format, told> made{};
-    made.told = given;
-    return made;
+    return detail::shape_turns<scanner_target_t<self_type>, format, told>(
+        given);
   }
 
   template <class self_type>
@@ -7540,8 +7573,18 @@ struct aggregate_scanner {
       return std::expected<type, failure_type>(
           std::unexpected(std::move(*state.went_wrong)));
     }
-    return detail::finish_value<type, type, 0, true, failure_type>(
-        detail::gathered_by_a_fold<state_type>{state}, nullptr);
+    // Told what the place this shape stands at was told. The state kept it
+    // from the moment it was begun -- a shape standing inside another shape is
+    // told at the door, the same as one standing on its own -- and its places
+    // read with it, which is the whole of what a context said at a place
+    // means.
+    if constexpr (requires { state.told; }) {
+      return detail::finish_value<type, type, 0, true, failure_type>(
+          detail::gathered_by_a_fold<state_type>{state}, nullptr, state.told);
+    } else {
+      return detail::finish_value<type, type, 0, true, failure_type>(
+          detail::gathered_by_a_fold<state_type>{state}, nullptr);
+    }
   }
 
   // Gathered a character at a time, for whoever holds the characters and not
