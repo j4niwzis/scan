@@ -774,6 +774,61 @@ template <class type>
   }
 }
 
+// A place that was given no context of its own.
+//
+// Stands in a list of contexts for a place that wants none, so that the places
+// after it keep their numbers. A scanner is never handed this: where it stands
+// the reading is the one that was there before contexts existed.
+struct by_default {};
+
+// The contexts a call was given, in the order the places are read.
+//
+// One context is everybody's -- whoever wants it takes it, and a scanner that
+// takes none is read as it always was. More than one is one per place, and
+// then a context handed to a place whose scanner does not take one is a
+// mistake said at compile time rather than a thing quietly dropped.
+//
+// A place picks its own by the same number its parameters are picked by, so
+// the contexts line up with the places without anything being said twice.
+// Held by value: a reading may be carried away from the call that made it, and
+// a context is a handle -- an allocator, a pool, a pointer to the caller's
+// world -- so the copy costs a word and cannot dangle.
+template <class... contexts>
+struct contexts_given {
+  static constexpr bool for_everyone = sizeof...(contexts) == 1;
+  static constexpr bool told_apart = !for_everyone;
+  static constexpr std::size_t count = sizeof...(contexts);
+
+  constexpr explicit contexts_given(contexts... given)
+      : all(std::move(given)...) {}
+
+  template <std::size_t place>
+  [[nodiscard]] constexpr decltype(auto) at() const {
+    if constexpr (for_everyone) {
+      return std::get<0>(all);
+    } else {
+      static_assert(place < sizeof...(contexts),
+                    "this reading has more places than it was given contexts: "
+                    "give one for every place, one for all of them, or write "
+                    "scan::by_default where a place wants none");
+      return std::get<place>(all);
+    }
+  }
+
+  std::tuple<contexts...> all;
+};
+
+// No contexts at all, which is what every call said before there were any.
+struct nothing_given {
+  static constexpr bool for_everyone = false;
+  static constexpr bool told_apart = false;
+  static constexpr std::size_t count = 0;
+  template <std::size_t>
+  [[nodiscard]] constexpr by_default at() const {
+    return {};
+  }
+};
+
 
 
 
