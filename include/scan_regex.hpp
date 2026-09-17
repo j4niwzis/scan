@@ -554,9 +554,9 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
   using mark_type =
       std::conditional_t<std::is_pointer_v<cursor_type>, const char*,
                          std::ptrdiff_t>;
-  std::array<mark_type, automaton.register_count> registers{};
+  detail::register_file<mark_type, automaton.register_count> registers{};
   if constexpr (!std::is_pointer_v<cursor_type>) {
-    std::ranges::fill(registers, scan::tre::negative_tag);
+    registers.fill(scan::tre::negative_tag);
   }
   detail::gathers_nothing nothing;
   mark_type place{};
@@ -638,7 +638,7 @@ regex_match(std::string_view input) {
     // A register holds where in the subject something happened, and holds it as
     // the address itself, so that nothing has to be added to it or taken from
     // it. A slot that was never written holds nothing at all.
-    std::array<const char*, automaton.register_count> registers{};
+    detail::register_file<const char*, automaton.register_count> registers{};
     const char* cursor = input.data();
     const char* const end = cursor + input.size();
     execute_commands(automaton.initialize, automaton.initialize.size(),
@@ -664,9 +664,9 @@ regex_match(std::string_view input) {
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
     for (std::size_t capture : std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
           const auto begin =
-              registers[capture * 2];
+              slot_read(registers, capture * 2);
           const auto end =
-              registers[capture * 2 + 1];
+              slot_read(registers, capture * 2 + 1);
           if (begin == nullptr || end == nullptr) continue;
           captures[capture] =
               regex_submatch(std::string_view(begin, static_cast<std::size_t>(end - begin)));
@@ -723,7 +723,7 @@ regex_match_sentinel(std::string_view input) {
     // layer has always used for a terminated subject. What the terminator
     // saves is the end test, and a group is written by the same operations
     // whether the end is tested or not -- so there was nothing here to refuse.
-    std::array<const char*, automaton.register_count> registers{};
+    detail::register_file<const char*, automaton.register_count> registers{};
     const char* cursor = input.data();
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, cursor);
@@ -748,8 +748,8 @@ regex_match_sentinel(std::string_view input) {
     std::array<regex_submatch, automaton.tag_count / 2> captures{};
     for (std::size_t capture :
          std::views::iota(std::size_t{0}, automaton.tag_count / 2)) {
-      const char* const from = registers[capture * 2];
-      const char* const to = registers[capture * 2 + 1];
+      const char* const from = slot_read(registers, capture * 2);
+      const char* const to = slot_read(registers, capture * 2 + 1);
       if (from == nullptr || to == nullptr) continue;
       captures[capture] = regex_submatch(
           std::string_view(from, static_cast<std::size_t>(to - from)));
@@ -861,7 +861,7 @@ template <fixed_string pattern, std::size_t group, class registers_type>
   if (packed.reading_count == 0) return false;
   const std::uint32_t opening = packed.readings[0][group * 2];
   const std::uint32_t closing = packed.readings[0][group * 2 + 1];
-  return registers[opening] >= 0 && registers[closing] < registers[opening];
+  return slot_read(registers, opening) >= 0 && slot_read(registers, closing) < slot_read(registers, opening);
 }
 
 
@@ -1511,8 +1511,8 @@ struct collected_match_closure
     using result_type =
         typed_result<holder, detail::collected_type<collectors, held_type>...>;
 
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, scan::tre::negative_tag);
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
+    registers.fill(scan::tre::negative_tag);
     detail::execute_commands(automaton.initialize,
                              automaton.initialize.size(), registers,
                              std::ptrdiff_t{0});
@@ -1560,8 +1560,8 @@ struct collected_match_closure
     using result_type =
         typed_result<holder, detail::collected_type<collectors, held_type>...>;
 
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, scan::tre::negative_tag);
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
+    registers.fill(scan::tre::negative_tag);
     detail::execute_commands(automaton.initialize,
                              automaton.initialize.size(), registers,
                              std::ptrdiff_t{0});
@@ -1702,7 +1702,7 @@ struct collected_match_closure
         constexpr const auto& entered =
             detail::regex_automaton<pattern>.states[landed];
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
-        const auto began = registers[opening];
+        const auto began = slot_read(registers, opening);
         if (began < 0 || told_at_[theirs] == began) return;
         detail::open_one_group<held, inside>(std::get<group>(states_));
         told_at_[theirs] = began;
@@ -1722,7 +1722,7 @@ struct collected_match_closure
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (!open_[theirs]) return;
-        if (registers[closing] >= registers[opening]) return;
+        if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
         detail::push_one_group<held, inside>(std::get<group>(states_), letter);
       }
     }
@@ -1739,7 +1739,7 @@ struct collected_match_closure
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (!open_[theirs]) return;
-        if (registers[closing] < registers[opening]) return;
+        if (slot_read(registers, closing) < slot_read(registers, opening)) return;
         detail::close_one_group<held, inside>(std::get<group>(states_));
         open_[theirs] = false;
       }
@@ -1788,8 +1788,8 @@ struct collected_match_closure
           constexpr std::size_t where = owner_type::template group_of<group>();
           constexpr std::uint32_t opening = entered.readings[0][where * 2];
           constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
-          if (registers[opening] < 0) return;
-          if (registers[closing] >= registers[opening]) return;
+          if (slot_read(registers, opening) < 0) return;
+          if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
           if constexpr (owner_type::template gathers_its_own_groups<group>()) {
             // Told by the step above, which asks the positions rather than
             // whether the group around it happens to be open here.
@@ -1838,8 +1838,8 @@ struct collected_match_closure
           constexpr std::size_t where = owner_type::template group_of<group>();
           constexpr std::uint32_t opening = entered.readings[0][where * 2];
           constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
-          if (registers[opening] < 0) return;
-          if (registers[closing] >= registers[opening]) return;
+          if (slot_read(registers, opening) < 0) return;
+          if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
           if constexpr (owner_type::template gathers_its_own_groups<
                             group>()) {
             // Told by the step above.
@@ -2154,8 +2154,8 @@ struct match_closure
     auto view = std::views::all(std::forward<pieces_type>(input));
     detail::gathers_from_pieces<detail::keeps_into<held_type>, decltype(view)>
         into(detail::keeps_into<held_type>{held}, std::move(view));
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, scan::tre::negative_tag);
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
+    registers.fill(scan::tre::negative_tag);
     const char* cursor = nullptr;
     const char* last = nullptr;
     std::ptrdiff_t place = 0;
@@ -2183,8 +2183,8 @@ struct match_closure
     constexpr const auto& automaton = detail::regex_automaton<pattern>;
     held_type held;
     detail::keeps_into<held_type> keep{held};
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
-    std::ranges::fill(registers, scan::tre::negative_tag);
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
+    registers.fill(scan::tre::negative_tag);
     std::ptrdiff_t place = 0;
     auto cursor = std::ranges::begin(input);
     detail::walk_answer<decltype(cursor)> best;

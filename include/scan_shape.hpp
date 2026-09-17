@@ -2021,13 +2021,12 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   };
   answer said;
   const char* const begin = input.data();
-  std::array<const char*, automaton.register_count> registers{};
+  register_file<const char*, automaton.register_count> registers{};
   constexpr auto written_everywhere = tags_always_written<automaton>();
   [&]<std::size_t... tag>(std::index_sequence<tag...>) {
-    ((written_everywhere[tag] ? void() : void(registers[tag] = nullptr)), ...);
+    ((written_everywhere[tag] ? void() : slot_write(registers, tag, nullptr)), ...);
   }(std::make_index_sequence<automaton.tag_count>{});
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   begin);
+  execute_initial<automaton>(registers, begin);
 
   gathers_nothing nothing;
   // Where the machine can read past a match and die away from one, the
@@ -2036,7 +2035,8 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   constexpr bool walks_past = walk_past_a_match<automaton>() != 0;
   using kept_type =
       std::conditional_t<walks_past,
-                         std::array<const char*, automaton.register_count>,
+                         register_file<const char*,
+                                       automaton.register_count>,
                          nothing_kept>;
   walk_answer<const char*, kept_type> best;
   const char* cursor = begin;
@@ -2061,8 +2061,8 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   }();
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ((said.groups[group] = [&]() -> std::string_view {
-        const char* const from = said_by[group * 2];
-        const char* const to = said_by[group * 2 + 1];
+        const char* const from = mark_at<group * 2>(said_by);
+        const char* const to = mark_at<group * 2 + 1>(said_by);
         // Pointing nowhere is how a group that took no part is said, here as
         // everywhere: whether that is a failure is decided by whoever asked,
         // and there is nothing to throw it at from inside a walk.
@@ -2084,7 +2084,7 @@ template <class type, fixed_string format>
                               begin + input.size());
   } else {
     constexpr const auto& automaton = packed_automaton<type, format>;
-    std::array<const char*, automaton.register_count> registers{};
+    register_file<const char*, automaton.register_count> registers{};
     best = run_head<automaton, automaton.initial>(begin, begin + input.size(),
                                                   registers);
   }
@@ -2159,8 +2159,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
             no_match<>("input does not match scan expression"));
       }
       const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
-        const char* const begin = registers[capture_index * 2];
-        const char* const end = registers[capture_index * 2 + 1];
+        const char* const begin = mark_at<capture_index * 2>(registers);
+        const char* const end = mark_at<capture_index * 2 + 1>(registers);
         // A group that took no part is an error where every group was meant to
         // take part, and the ordinary state of affairs where the format has
         // branches and only one of them ran. Which it is, is decided once, at
@@ -2190,8 +2190,8 @@ template <class type, fixed_string format, int sentinel, bool terminated,
         }
       constexpr auto always_written = tags_always_written<automaton>();
         const auto capture = [&]<std::size_t capture_index>() -> std::string_view {
-          const auto begin = registers[capture_index * 2];
-          const auto end = registers[capture_index * 2 + 1];
+          const auto begin = mark_at<capture_index * 2>(registers);
+          const auto end = mark_at<capture_index * 2 + 1>(registers);
           if constexpr (!(always_written[capture_index * 2] &&
                           always_written[capture_index * 2 + 1])) {
             // A group that took no part points nowhere, which no group that did
@@ -2719,10 +2719,10 @@ SCAN_FORCE_INLINE constexpr void fold_one_step(
   using held_type = std::remove_cv_t<held>;
   constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   const auto opening_of = [&](std::size_t which) {
-    return registers[reading[(place + 1 + which) * 2]];
+    return slot_read(registers, reading[(place + 1 + which) * 2]);
   };
   const auto closing_of = [&](std::size_t which) {
-    return registers[reading[(place + 1 + which) * 2 + 1]];
+    return slot_read(registers, reading[(place + 1 + which) * 2 + 1]);
   };
   [[clang::always_inline]] [&]<std::size_t... step>(std::index_sequence<step...>) {
     ((void)[&] {
@@ -3040,7 +3040,7 @@ constexpr void fold_the_readings(
     const std::uint32_t at = entered.readings[reading][place * 2];
     // Nowhere is said as a negative count or as no address at all, and the
     // walk says it whichever way it says positions.
-    if (told[at] || stood_nowhere(registers[at])) continue;
+    if (told[at] || stood_nowhere(slot_read(registers, at))) continue;
     told[at] = true;
     auto& folding = std::get<slot>(states[at]);
     // Said every step rather than once, because a fold is made where its place
@@ -3192,10 +3192,24 @@ template <class type, fixed_string format, auto& automaton>
           return false;
         }
       }();
-      if constexpr (!(how::folds && how::inside)) {
+      // A fold that hears everything from the moves does not need its own
+      // pair either. What its place stands for is never cut out of the
+      // subject: the value is what finish_groups makes of the state it was
+      // handed, and where the place began and ended is read by nobody. A place
+      // taken over and over is the exception, and says so by itself --
+      // told_by_the_moves is false for it, because its turns are told by its
+      // marks, the same as any list's.
+      if constexpr (!(how::folds && (how::inside || told_by_the_moves))) {
         made |= std::uint64_t{1} << group;
       }
-      if constexpr (!told_by_the_moves) {
+      // Asked of the place, not of what stands inside it. `inside` counts the
+      // groups of the whole leaf, which is an answer about a place -- and a
+      // group standing inside a fold is not a place, so what it counted was
+      // the groups that follow it. Every group inside a fold claimed the
+      // marks of the groups after it, the claims overlapped, and a fold
+      // whose groups nobody asks about kept every mark it has -- a machine
+      // writing tags on every character for nobody to read.
+      if constexpr (how::the_place && !told_by_the_moves) {
         for (std::size_t which = 0; which < inside; ++which) {
           made |= std::uint64_t{1} << (group + 1 + which);
         }
@@ -3249,20 +3263,101 @@ template <class type, fixed_string format, std::size_t group>
   return made;
 }
 
-template <class type, fixed_string format, auto& automaton>
-[[nodiscard]] consteval std::uint64_t groups_whose_tags_matter() {
-  std::uint64_t made = groups_whose_mark_is_read<type, format, automaton>();
-  [&]<std::size_t... group>(std::index_sequence<group...>) {
-    ((made |= edges_listened_for<type, format, group>()), ...);
-  }(std::make_index_sequence<groups_of_output<type>()>{});
+// Which tags the machine is worth writing at all.
+//
+// Said by the tag and not by the group, because a group can be worth half of
+// itself. A mark somebody reads is a pair -- where it began and where it ended
+// -- and both halves have to be written for the answer to be cut out of the
+// subject. A group whose edges are only listened for is not read anywhere: all
+// it owes is the opening, which is what tells a turn from the turn before it,
+// and its closing is told by the moves, which say which groups a character
+// lies inside. Kept by the group, such a group carried a closing mark written
+// on the last character of every turn for nobody to read.
+// The groups of a fold whose characters it is told about.
+//
+// Their marks are read by nobody, and for a while that was taken to mean the
+// machine need not write them. It does: a tag is what holds two readings
+// apart, and two readings that differ only in which group a character fell in
+// are exactly the two a fold is told apart by. Merge them and the move still
+// says which groups the character lies inside -- it says the wrong ones, the
+// ones of whichever reading survived. `\(((_+)((A)|(B)))*\))` then answers 11
+// where it means 21, because the B is announced as an A.
+//
+// So a group whose characters go to a fold keeps its marks, unread as they
+// are. What is left to save is the groups a fold hears nothing about.
+template <class type, fixed_string format, std::size_t group>
+[[nodiscard]] consteval std::uint64_t characters_told_of() {
+  using how = gathering_of<type, format, group>;
+  using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+  std::uint64_t made = 0;
+  if constexpr (how::folds && how::the_place) {
+    using state_type = decltype(scan::scanner<held>{}.begin_groups());
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ([&] {
+        if constexpr (takes_group_characters<held, which, state_type>) {
+          made |= std::uint64_t{1} << (group + 1 + which);
+        }
+      }(), ...);
+    }(std::make_index_sequence<groups_a_leaf_opens<held>()>{});
+  }
   return made;
 }
 
+template <class type, fixed_string format, auto& automaton>
+[[nodiscard]] consteval std::uint64_t tags_that_matter() {
+  std::uint64_t read = groups_whose_mark_is_read<type, format, automaton>();
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ((read |= characters_told_of<type, format, group>()), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  std::uint64_t edges = 0;
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ((edges |= edges_listened_for<type, format, group>()), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
+  std::uint64_t made = 0;
+  for (std::size_t group = 0; group < 32; ++group) {
+    const std::uint64_t opening = std::uint64_t{1} << (2 * group);
+    const std::uint64_t closing = std::uint64_t{1} << (2 * group + 1);
+    if (((read >> group) & 1) != 0) {
+      made |= opening | closing;
+    } else if (((edges >> group) & 1) != 0) {
+      made |= opening;
+    }
+  }
+  return made;
+}
+
+// The tags the machine is built with, and a check that keeping so few has not
+// cost it something else.
+//
+// A tag is not only a mark somebody reads: it is what holds two readings
+// apart. Take away the tags of a group nobody asks the position of, and two
+// readings that differed in nothing else become one -- and then a move can no
+// longer say which groups the character it reads lies inside. That is exactly
+// what a fold is told, so a fold beside such a reading stops being told which
+// of its groups a character fell in, and answers with the wrong number rather
+// than with an error.
+//
+// The question was asked of the whole machine and the answer used for the
+// trimmed one, which is the mistake. It is asked of the machine that will be
+// walked now, and where trimming would cost it that, nothing is trimmed.
+template <class type, fixed_string format, bool cut>
+inline constexpr std::uint64_t tags_worth_keeping = [] {
+  constexpr std::uint64_t wanted =
+      tags_that_matter<type, format,
+                       streaming_automaton_whole<type, format, cut>>();
+  if constexpr (every_move_says_the_groups<
+                    packed_text_automaton<spread_text<type, format>, false, cut,
+                                          wanted>>()) {
+    return wanted;
+  } else {
+    return ~std::uint64_t{0};
+  }
+}();
+
 template <class type, fixed_string format, bool cut = true>
-inline constexpr auto& streaming_automaton = packed_text_automaton<
-    spread_text<type, format>, false, cut,
-    groups_whose_tags_matter<type, format,
-                             streaming_automaton_whole<type, format, cut>>()>;
+inline constexpr auto& streaming_automaton =
+    packed_text_automaton<spread_text<type, format>, false, cut,
+                          tags_worth_keeping<type, format, cut>>;
 
 // Which groups' positions anybody will read.
 //
@@ -3296,7 +3391,14 @@ template <class type, fixed_string format, auto& automaton>
           return false;
         }
       }();
-      if constexpr (!told_by_the_moves) {
+      // Asked of the place, not of what stands inside it. `inside` counts the
+      // groups of the whole leaf, which is an answer about a place -- and a
+      // group standing inside a fold is not a place, so what it counted was
+      // the groups that follow it. Every group inside a fold claimed the
+      // marks of the groups after it, the claims overlapped, and a fold
+      // whose groups nobody asks about kept every mark it has -- a machine
+      // writing tags on every character for nobody to read.
+      if constexpr (how::the_place && !told_by_the_moves) {
         for (std::size_t which = 0; which < inside; ++which) {
           made |= std::uint64_t{1} << (group + 1 + which);
         }
@@ -3767,7 +3869,7 @@ constexpr void advance_scanner(
           ([&] {
             if (command_index++ >= count) return;
             if (automaton.register_tag[command.destination] != closing) return;
-            if (registers[command.destination] != position) return;
+            if (slot_read(registers, command.destination) != position) return;
             // What the turn gathered is at the opening the state being left
             // named, not the one the state being entered names: this step is
             // where the group is renamed, and the register the characters went
@@ -3776,7 +3878,7 @@ constexpr void advance_scanner(
             for (std::size_t reading = 0; reading < left.reading_count;
                  ++reading) {
               const std::uint32_t was = left.readings[reading][opening];
-              if (stood_nowhere(registers[was])) continue;
+              if (stood_nowhere(slot_read(registers, was))) continue;
               std::get<gathering_slot<type, format, group>>(
                   states[command.destination]) =
                   std::get<gathering_slot<type, format, group>>(states[was]);
@@ -3824,7 +3926,7 @@ constexpr void advance_scanner(
                   gathering_of<type, format, group>::begin(
                       spread.parameters[group].view());
             }
-          } else if (tag == closing && registers[command.destination] != position &&
+          } else if (tag == closing && slot_read(registers, command.destination) != position &&
                      command.source != packed_command::no_source &&
                      command.value == -2) {
             // A closing already written, only being carried along, keeps what
@@ -3875,8 +3977,8 @@ constexpr void advance_scanner(
       const std::uint32_t open = packed.readings[reading][opening];
       const std::uint32_t close = packed.readings[reading][closing];
       if (filled.test(open)) continue;
-      if (stood_nowhere(registers[open]) ||
-          closed_since_turn(registers[close], registers[open],
+      if (stood_nowhere(slot_read(registers, open)) ||
+          closed_since_turn(slot_read(registers, close), slot_read(registers, open),
                             how::place_repeats))
         continue;
       filled.set(open);
@@ -3939,7 +4041,7 @@ struct gathered_by_the_registers {
   // gathered; one that ended earlier is the copy taken when it closed, which
   // the readings that went on adding to the opening cannot have changed.
   template <std::size_t place>
-  [[nodiscard]] constexpr const auto& gathering() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr const auto& gathering() const {
     if constexpr (kept_here<place>()) {
       return std::get<gathering_slot<type, format, place>>(kept.slots);
     } else {
@@ -3949,7 +4051,7 @@ struct gathered_by_the_registers {
       // end standing where the beginning stands is the end of the turn before,
       // and the copy taken then is a turn behind.
       const bool still_reading = !closed_since_turn(
-          registers[close], registers[open],
+          slot_read(registers, close), slot_read(registers, open),
           gathering_of<type, format, place>::place_repeats);
       return std::get<gathering_slot<type, format, place>>(
           states[still_reading ? open : close]);
@@ -3971,7 +4073,7 @@ struct gathered_by_the_registers {
   // A list is gathered and read at its opening throughout: its elements go on
   // being added to the same list however the readings divide.
   template <std::size_t place>
-  [[nodiscard]] constexpr const auto& list() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr const auto& list() const {
     if constexpr (kept_here<place>()) {
       return std::get<gathering_slot<type, format, place>>(kept.slots);
     } else {
@@ -3981,7 +4083,7 @@ struct gathered_by_the_registers {
   }
 
   template <std::size_t place>
-  [[nodiscard]] constexpr bool took_part() const {
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr bool took_part() const {
     // A turn the walk was gathering is said by the walk: there is no register
     // holding where it began, because it was never at a register.
     if constexpr (kept_here<place>()) {
@@ -3991,7 +4093,7 @@ struct gathered_by_the_registers {
         return (kept.turns & (std::uint64_t{1} << place)) != 0;
       }
     } else {
-      return !stood_nowhere(registers[reading[place * 2]]);
+      return !stood_nowhere(slot_read(registers, reading[place * 2]));
     }
   }
 
@@ -4001,16 +4103,16 @@ struct gathered_by_the_registers {
   // A position here is how many characters have been read and not the index of
   // one, so what a place stood on begins one before where its opening says.
   template <std::size_t place>
-  [[nodiscard]] constexpr std::string_view span(const char* text) const {
-    const auto began = registers[reading[place * 2]];
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr std::string_view span(const char* text) const {
+    const auto began = slot_read(registers, reading[place * 2]);
     if (stood_nowhere(began)) return {};
-    const auto walked = registers[reading[place * 2 + 1]];
+    const auto walked = slot_read(registers, reading[place * 2 + 1]);
     // Closed as the walk passed, or closed by the commands that end a match
     // because the match ended while it was still open. The second is not in
     // the reading at all -- the ending writes registers of its own -- and read
     // through the reading such a group looked like one that never closed.
     const auto ended =
-        closed_since(walked, began) ? walked : registers[ending[place * 2 + 1]];
+        closed_since(walked, began) ? walked : slot_read(registers, ending[place * 2 + 1]);
     if (!closed_since(ended, began)) return {};
     if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(began)>>) {
       // What a group stood on is what lies between its marks. Nothing is taken
@@ -4227,7 +4329,7 @@ constexpr void collect_element(
     for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
       const std::uint32_t open = packed.readings[reading][group * 2];
       const std::uint32_t into = packed.readings[reading][list_group * 2];
-      if (done[into] || stood_nowhere(registers[open])) continue;
+      if (done[into] || stood_nowhere(slot_read(registers, open))) continue;
       done[into] = true;
       auto one = finish_value<type, element, group, false, failure_type>(
           by_the_registers<type, format>(packed.readings[reading], states,
@@ -4730,8 +4832,7 @@ class stream_state {
   constexpr stream_state() {
     scanner_states_ = make_register_states<type, format, automaton>();
     std::ranges::fill(registers_, scan::tre::negative_tag);
-    execute_commands(automaton.initialize, automaton.initialize.size(),
-                     registers_, std::ptrdiff_t{0});
+    execute_initial<automaton>(registers_, std::ptrdiff_t{0});
   }
 
   constexpr void push(char symbol) {
@@ -4968,8 +5069,8 @@ class field_gatherer {
       std::array<register_state<type, format, mark_kind>,
                  nothing_at_a_register ? 0 : automaton.register_count>;
 
-  // Слот по номеру: тёплый из своего кортежа, собирающий -- из того, которым
-  // владеет обход.
+  // A slot by its number: a warm one out of this gatherer's own tuple, a
+  // gathering one out of the tuple the walk owns.
   template <std::size_t which>
   [[nodiscard]] constexpr auto& slot() {
     using kind = std::tuple_element_t<which, plain_folds_type>;
@@ -5316,9 +5417,9 @@ class field_gatherer {
           const auto& reading = packed.readings[packed.accepting_slot];
           for (std::size_t which = 0; which < inside; ++which) {
             one.here.told_at[which] =
-                registers[reading[(group + 1 + which) * 2]];
+                slot_read(registers, reading[(group + 1 + which) * 2]);
             one.here.ended_at[which] =
-                registers[reading[(group + 1 + which) * 2 + 1]];
+                slot_read(registers, reading[(group + 1 + which) * 2 + 1]);
           }
         }
       }(), ...);
@@ -5517,8 +5618,8 @@ class field_gatherer {
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
         const std::uint32_t closing = pairs.shut[which];
-        if (given.test(opening) || stood_nowhere(registers[opening])) continue;
-        if (closed_since_turn(registers[closing], registers[opening],
+        if (given.test(opening) || stood_nowhere(slot_read(registers, opening))) continue;
+        if (closed_since_turn(slot_read(registers, closing), slot_read(registers, opening),
                               how::place_repeats)) continue;
         given.set(opening);
         gathering_of<type, format, group>::push_run(
@@ -5629,8 +5730,8 @@ class field_gatherer {
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
         const std::uint32_t closing = pairs.shut[which];
-        if (given.test(opening) || stood_nowhere(registers[opening])) continue;
-        if (closed_since_turn(registers[closing], registers[opening],
+        if (given.test(opening) || stood_nowhere(slot_read(registers, opening))) continue;
+        if (closed_since_turn(slot_read(registers, closing), slot_read(registers, opening),
                               how::place_repeats)) continue;
         given.set(opening);
         gathering_of<type, format, group>::push(
@@ -5694,16 +5795,16 @@ template <class type, fixed_string format, class source_type>
                                               std::ptrdiff_t& place) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
   taken_from_pieces<type, format, source_type> said;
-  std::array<std::ptrdiff_t, automaton.register_count> registers{};
-  std::ranges::fill(registers, scan::tre::negative_tag);
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   place);
+  register_file<std::ptrdiff_t, automaton.register_count> registers{};
+  registers.fill(scan::tre::negative_tag);
+  execute_initial<automaton>(registers, place);
   // The same note as everywhere else, and here it costs nothing to go back to:
   // the place is an address inside a piece the reading is still holding.
   constexpr bool walks_past = walk_past_a_match<automaton>() != 0;
   using kept_type =
       std::conditional_t<walks_past,
-                         std::array<std::ptrdiff_t, automaton.register_count>,
+                         register_file<std::ptrdiff_t,
+                                       automaton.register_count>,
                          nothing_kept>;
   walk_answer<const char*, kept_type> best;
   constexpr walk_shape shape{.in_words = true, .longest = true};
@@ -5734,10 +5835,9 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
 [[nodiscard]] constexpr std::expected<type, failure_for<type>> scan_pieces(
     pieces_type&& pieces) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
-  std::array<std::ptrdiff_t, automaton.register_count> registers{};
-  std::ranges::fill(registers, scan::tre::negative_tag);
-  execute_commands(automaton.initialize, automaton.initialize.size(), registers,
-                   std::ptrdiff_t{0});
+  register_file<std::ptrdiff_t, automaton.register_count> registers{};
+  registers.fill(scan::tre::negative_tag);
+  execute_initial<automaton>(registers, std::ptrdiff_t{0});
   auto view = std::views::all(std::forward<pieces_type>(pieces));
   typename field_gatherer<type, format, automaton>::cold_type collected{};
   gathers_from_pieces<field_gatherer<type, format, automaton>, decltype(view),
@@ -5833,15 +5933,13 @@ template <class type, fixed_string format,
                       walk_answer<const char*>>(cursor, last, nullptr,
                                                 mark_kind{});
   } else {
-    std::array<mark_kind, automaton.register_count> registers{};
+    register_file<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {
-      std::ranges::fill(registers, nullptr);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, static_cast<const char*>(nullptr));
+      registers.fill(nullptr);
+      execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
     } else {
-      std::ranges::fill(registers, scan::tre::negative_tag);
-      execute_commands(automaton.initialize, automaton.initialize.size(),
-                       registers, std::ptrdiff_t{0});
+      registers.fill(scan::tre::negative_tag);
+      execute_initial<automaton>(registers, std::ptrdiff_t{0});
     }
     typename field_gatherer<type, format, automaton, in_a_row,
                             mark_kind>::cold_type collected{};

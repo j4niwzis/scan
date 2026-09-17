@@ -522,9 +522,16 @@ struct groups_inside {
   for (auto& out : machine.transitions) {
     for (auto& edge : out) {
       if (edge.kind != transition_kind::tag) continue;
-      const std::size_t group = edge.tag / 2;
-      if (group >= 64) continue;
-      if (((keep >> group) & 1) != 0) continue;
+      // A bit for each tag and not for each group, because the two halves of a
+      // group are not worth the same. A group whose edges somebody listens for
+      // needs its opening written -- that is how one turn is told from the
+      // turn before it -- and needs nothing of its closing: the moves say
+      // which groups a character lies inside, and a group that has stopped
+      // being open has closed. Asking by the group kept both or neither, so a
+      // fold heard its turns at the price of a mark on every character of
+      // them.
+      if (edge.tag >= 64) continue;
+      if (((keep >> edge.tag) & 1) != 0) continue;
       edge.kind = transition_kind::epsilon;
       edge.tag = 0;
     }
