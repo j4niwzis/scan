@@ -2423,6 +2423,30 @@ template <class type, std::size_t group>
   return found;
 }
 
+// Which branch of one-of-several a group belongs to: the branches stand in
+// order, each taking its mark and whatever it reads after it.
+template <class type, std::size_t group>
+[[nodiscard]] consteval std::size_t branch_holding_group() {
+  std::size_t found = 0;
+  [&]<std::size_t... which>(std::index_sequence<which...>) {
+    ((groups_before_branch<type, which>() <= group ? (found = which) : found),
+     ...);
+  }(std::make_index_sequence<branch_count<type>()>{});
+  return found;
+}
+
+// What a part of a place was told. A carrier knows its parts; a place told
+// nothing has no parts to ask about and says the same nothing to each of them,
+// which is what the whole-place forms do one level up.
+template <std::size_t part, class told_carrier>
+[[nodiscard]] constexpr auto told_for_part(const told_carrier& given) {
+  if constexpr (requires { given.template for_part<part>(); }) {
+    return given.template for_part<part>();
+  } else {
+    return given;
+  }
+}
+
 // The context said at the place a group belongs to.
 //
 // The walk knows groups; the caller said places. This walks down the shape the
@@ -2430,7 +2454,19 @@ template <class type, std::size_t group>
 // output ends at the context that place was given.
 template <class type, std::size_t group, class carrier>
 [[nodiscard]] constexpr auto context_at_group(const carrier& given) {
-  if constexpr (!requires { given.leaf(); }) {
+  if constexpr (scanned_as_variant<std::remove_cv_t<type>> &&
+                requires { given.template for_part<0>(); }) {
+    // One of several opens up into its branches: the group belongs to the one
+    // that stands where it stands, and that branch was told its own. Asked of
+    // a place that was handed a context rather than a list of them, this is
+    // not the way down -- the same one goes to whichever branch runs.
+    using kind = std::remove_cv_t<type>;
+    constexpr std::size_t which = branch_holding_group<kind, group>();
+    constexpr std::size_t inside = group - groups_before_branch<kind, which>();
+    return context_at_group<std::remove_cv_t<branch_at<kind, which>>,
+                            (inside == 0 ? 0 : inside - 1)>(
+        told_for_part<which>(given));
+  } else if constexpr (!requires { given.leaf(); }) {
     // Already a context and not a carrier: a place that was handed one
     // directly hands the same one down.
     return given;
@@ -2681,9 +2717,35 @@ struct readings_for<no_place, it> {
   using type = scan::nothing_given;
 };
 
-// Which carrier a field wants: read whole, and it is a leaf; made of parts, and
-// it is a shape over their carriers, worked out the same way.
-template <class field_type, bool whole = (parts_under<field_type>() == 0)>
+// How many places a context may be said at, for one field. A shape opens up
+// into its parts; one of several opens up into its branches, because exactly
+// one of them runs and the caller may want to say something to each; anything
+// read whole is one place and takes one context.
+template <class field_type>
+[[nodiscard]] consteval std::size_t carrier_places() {
+  if constexpr (scanned_as_variant<field_type>) {
+    return branch_count<field_type>();
+  } else {
+    return parts_under<field_type>();
+  }
+}
+
+template <class field_type, std::size_t k>
+[[nodiscard]] consteval auto carrier_place_kind() {
+  if constexpr (scanned_as_variant<field_type>) {
+    return std::type_identity<std::remove_cv_t<branch_at<field_type, k>>>{};
+  } else {
+    return std::type_identity<
+        std::remove_cv_t<typename parts_of<field_type>::template at<k>>>{};
+  }
+}
+
+template <class field_type, std::size_t k>
+using carrier_place_for = typename decltype(carrier_place_kind<field_type, k>())::type;
+
+// Which carrier a field wants: read whole, and it is a leaf; opening up into
+// places, and it is a shape over their carriers, worked out the same way.
+template <class field_type, bool whole = (carrier_places<field_type>() == 0)>
 struct carrier_of;
 
 template <class field_type>
@@ -2695,10 +2757,10 @@ template <class field_type>
 struct carrier_of<field_type, false> {
   template <std::size_t... k>
   static auto made(std::index_sequence<k...>)
-      -> context_shape<typename carrier_of<std::remove_cv_t<
-          typename parts_of<field_type>::template at<k>>>::type...>;
+      -> context_shape<
+          typename carrier_of<carrier_place_for<field_type, k>>::type...>;
   using type =
-      decltype(made(std::make_index_sequence<parts_under<field_type>()>{}));
+      decltype(made(std::make_index_sequence<carrier_places<field_type>()>{}));
 };
 
 template <class field_type>
@@ -2706,15 +2768,14 @@ using carrier_for = typename carrier_of<std::remove_cv_t<field_type>>::type;
 
 template <class type, std::size_t place>
 [[nodiscard]] consteval auto context_place_kind() {
-  if constexpr (parts_under<type>() == 0) {
+  if constexpr (carrier_places<type>() == 0) {
     if constexpr (place == 0) {
       return std::type_identity<context_leaf<std::remove_cv_t<type>>>{};
     } else {
       return std::type_identity<no_place>{};
     }
-  } else if constexpr (place < parts_under<type>()) {
-    return std::type_identity<
-        carrier_for<typename parts_of<type>::template at<place>>>{};
+  } else if constexpr (place < carrier_places<type>()) {
+    return std::type_identity<carrier_for<carrier_place_for<type, place>>>{};
   } else {
     return std::type_identity<no_place>{};
   }
@@ -2924,7 +2985,8 @@ build_value(std::span<const std::string_view> groups,
         if (made || groups[mark].data() == nullptr) return;
         using alternative = branch_at<type, which>;
         auto part = build_value<failure_type, parameters, alternative, mark + 1,
-                                false, ending>(groups, given);
+                                false, ending>(groups,
+                                               told_for_part<which>(given));
         if (!ending::read(part)) {
           made = ending::template went_wrong<type, failure_type>(
               ending::failure(std::move(part)));
@@ -4819,17 +4881,6 @@ template <class root, class type, std::size_t offset, bool as_output = false,
 // rather than as lambdas called where they stand. A lambda holding references
 // and called inside the argument of something that itself holds references is
 // more than the constant evaluator will follow.
-// What a part of a place was told. A carrier knows its parts; a place told
-// nothing has no parts to ask about and says the same nothing to each of them,
-// which is what the whole-place forms do one level up.
-template <std::size_t part, class told_carrier>
-[[nodiscard]] constexpr auto told_for_part(const told_carrier& given) {
-  if constexpr (requires { given.template for_part<part>(); }) {
-    return given.template for_part<part>();
-  } else {
-    return given;
-  }
-}
 
 template <class root, class type, std::size_t offset, class failure_type,
           class source_type, class told_carrier, std::size_t... part>
@@ -5317,7 +5368,8 @@ template <class root, class type, std::size_t offset, bool as_output,
         if (made || !source.template took_part<mark>()) return;
         using alternative = branch_at<type, which>;
         auto part = finish_value<root, alternative, mark + 1, false,
-                                 failure_type>(source, text, given);
+                                 failure_type>(source, text,
+                                               told_for_part<which>(given));
         if (!part) {
           made = std::unexpected(std::move(part).error());
           return;
