@@ -1505,7 +1505,19 @@ template <class type, class failure_type, bool told_apart,
 [[nodiscard]] constexpr std::expected<type, failure_type> parse_value_given(
     std::string_view text, std::string_view parameters, const context& given) {
   using value_type = std::remove_cv_t<type>;
-  if constexpr (std::same_as<context, scan::by_default>) {
+  if constexpr (requires {
+                  given.told();
+                  given.read(text, parameters);
+                }) {
+    // The call kept the context's type to itself and left this reading in its
+    // place: written where that type was still known, so what it hands the
+    // scanner is the caller's own thing and not a picture of it.
+    if (!given.told()) return parse_value<type, failure_type, ending>(text, parameters);
+    auto got = given.read(text, parameters);
+    if (got) return std::move(*got);
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::move(got).error()));
+  } else if constexpr (std::same_as<context, scan::default_context_t>) {
     // A place that was given nothing reads as it did before: said here and not
     // left to overload resolution, because a scanner whose context is a
     // template would otherwise take this standing-in-for-nothing as a context.
@@ -1538,7 +1550,7 @@ template <class type, class failure_type, bool told_apart,
     static_assert(!told_apart,
                   "this place was given a context of its own and its scanner "
                   "takes none: write parse(string_view, context) on "
-                  "scan::scanner<T>, or write scan::by_default in its place");
+                  "scan::scanner<T>, or write scan::default_context_t in its place");
     return parse_value<type, failure_type, ending>(text, parameters);
   }
 }
@@ -2364,12 +2376,223 @@ template <class type, bool as_output = false>
   }
 }
 
+// Contexts told place by place, with braces for the parts of a place.
+//
+// `of` calls at once, so everything a caller writes in its arguments is alive
+// for the whole of the call. That is what makes braces possible: a parameter
+// whose type does not depend on what the caller hands over can be written out,
+// and a braced list needs nothing deduced. The type of the thing handed over is
+// forgotten at the door and the call that needs it back is written where it is
+// still known -- so the scanner is handed the caller's own thing, by its own
+// type, and nothing about it reaches any type the automaton is built from.
+//
+// The places are the fields of the output, in the order they are read. A value
+// at a place is that place's and every part of it; a braced list at a place says
+// its parts one by one, as deep as the shape goes. Eight places at a level,
+// which is where the writing-out stops.
+
+// Where there is no place to say anything at.
+struct no_place {
+  static constexpr bool told_apart = false;
+  constexpr no_place() = default;
+  constexpr no_place(scan::default_context_t) {}
+  template <class it>
+  [[nodiscard]] static constexpr no_place spread(const it&) {
+    return {};
+  }
+  template <std::size_t>
+  [[nodiscard]] constexpr scan::nothing_given for_part() const {
+    return {};
+  }
+  [[nodiscard]] constexpr scan::default_context_t leaf() const { return {}; }
+};
+
+// How many parts a place opens up into, and zero for one that is read whole.
+template <class type>
+[[nodiscard]] consteval std::size_t parts_under() {
+  if constexpr (scanned_as_variant<type> || scanned_as_leaf<type>) {
+    return 0;
+  } else if constexpr (std::is_aggregate_v<type> &&
+                       requires { parts_of<type>::count; }) {
+    return parts_of<type>::count;
+  } else {
+    return 0;
+  }
+}
+
+// One leaf's reading, with the context that was said at its place.
+template <class field_type>
+struct read_by {
+  using held = std::remove_cv_t<field_type>;
+  using answer = std::expected<held, failure_for<held>>;
+  answer (*how)(const void*, std::string_view, std::string_view) = nullptr;
+  const void* it = nullptr;
+  [[nodiscard]] constexpr bool told() const { return how != nullptr; }
+  [[nodiscard]] constexpr answer read(std::string_view text,
+                                      std::string_view parameters) const {
+    return how(it, text, parameters);
+  }
+};
+
+template <class field_type, class context, bool told_apart>
+[[nodiscard]] constexpr typename read_by<field_type>::answer read_one(
+    const void* it, std::string_view text, std::string_view parameters) {
+  using held = std::remove_cv_t<field_type>;
+  return parse_value_given<held, failure_for<held>, told_apart>(
+      text, parameters, *static_cast<const context*>(it));
+}
+
+template <class field_type>
+class context_leaf {
+ public:
+  using held = std::remove_cv_t<field_type>;
+  static constexpr bool told_apart = false;
+
+  constexpr context_leaf() = default;
+  constexpr context_leaf(scan::default_context_t) {}
+
+  template <class it>
+    requires(!std::same_as<std::remove_cvref_t<it>, context_leaf> &&
+             !std::same_as<std::remove_cvref_t<it>, scan::default_context_t> &&
+             !std::same_as<std::remove_cvref_t<it>, no_place>)
+  constexpr context_leaf(const it& given)
+      : given_{&read_one<held, std::remove_cvref_t<it>, true>, &given} {}
+
+  template <class it>
+  [[nodiscard]] static constexpr context_leaf spread(const it& given) {
+    context_leaf made;
+    made.given_ = read_by<held>{&read_one<held, std::remove_cvref_t<it>, false>,
+                                &given};
+    return made;
+  }
+
+  // A leaf's inside is the leaf's own business: a context said at this place
+  // was said about the value here, not about whatever this value is built from.
+  template <std::size_t>
+  [[nodiscard]] constexpr scan::nothing_given for_part() const {
+    return {};
+  }
+  [[nodiscard]] constexpr read_by<held> leaf() const { return given_; }
+
+ private:
+  read_by<held> given_{};
+};
+
+template <class field_type>
+class context_shape;
+
+template <class type, std::size_t place>
+[[nodiscard]] consteval auto context_place_kind() {
+  if constexpr (parts_under<type>() == 0) {
+    if constexpr (place == 0) {
+      return std::type_identity<context_leaf<std::remove_cv_t<type>>>{};
+    } else {
+      return std::type_identity<no_place>{};
+    }
+  } else if constexpr (place < parts_under<type>()) {
+    using part = std::remove_cv_t<typename parts_of<type>::template at<place>>;
+    if constexpr (parts_under<part>() == 0) {
+      return std::type_identity<context_leaf<part>>{};
+    } else {
+      return std::type_identity<context_shape<part>>{};
+    }
+  } else {
+    return std::type_identity<no_place>{};
+  }
+}
+
+template <class type, std::size_t place>
+using context_place_of = typename decltype(context_place_kind<type, place>())::type;
+
+template <class field_type>
+class context_shape {
+  template <std::size_t k>
+  using part = context_place_of<field_type, k>;
+
+ public:
+  static constexpr bool told_apart = true;
+
+  constexpr context_shape() = default;
+  constexpr context_shape(scan::default_context_t) {}
+
+  // One value at a place is that place's and every part of it.
+  template <class it>
+    requires(!std::same_as<std::remove_cvref_t<it>, context_shape> &&
+             !std::same_as<std::remove_cvref_t<it>, scan::default_context_t> &&
+             !std::same_as<std::remove_cvref_t<it>, no_place> &&
+             !std::same_as<std::remove_cvref_t<it>, part<0>>)
+  constexpr context_shape(const it& given)
+      : parts_{part<0>::spread(given), part<1>::spread(given),
+               part<2>::spread(given), part<3>::spread(given),
+               part<4>::spread(given), part<5>::spread(given),
+               part<6>::spread(given), part<7>::spread(given)} {}
+
+  // Or its parts, one by one, in braces.
+  constexpr context_shape(part<0> first, part<1> second = {},
+                          part<2> third = {}, part<3> fourth = {},
+                          part<4> fifth = {}, part<5> sixth = {},
+                          part<6> seventh = {}, part<7> eighth = {})
+      : parts_{first, second, third, fourth, fifth, sixth, seventh, eighth} {}
+
+  template <class it>
+  [[nodiscard]] static constexpr context_shape spread(const it& given) {
+    return context_shape(given);
+  }
+
+  template <std::size_t k>
+  [[nodiscard]] constexpr auto for_part() const {
+    if constexpr (k < 8) {
+      return std::get<k>(parts_);
+    } else {
+      return scan::nothing_given{};
+    }
+  }
+
+ private:
+  std::tuple<part<0>, part<1>, part<2>, part<3>, part<4>, part<5>, part<6>,
+             part<7>>
+      parts_{};
+};
+
+// What a call collects its places into.
+template <class type>
+class contexts_by_place {
+  template <std::size_t k>
+  using place = context_place_of<type, k>;
+
+ public:
+  static constexpr bool told_apart = true;
+
+  constexpr contexts_by_place(place<0> first, place<1> second, place<2> third,
+                              place<3> fourth, place<4> fifth, place<5> sixth,
+                              place<6> seventh, place<7> eighth)
+      : parts_{first, second, third, fourth, fifth, sixth, seventh, eighth} {}
+
+  template <std::size_t k>
+  [[nodiscard]] constexpr auto for_part() const {
+    if constexpr (k < 8) {
+      return std::get<k>(parts_);
+    } else {
+      return scan::nothing_given{};
+    }
+  }
+
+  // Where the whole output is one value, the first place is that value's.
+  [[nodiscard]] constexpr auto leaf() const { return std::get<0>(parts_).leaf(); }
+
+ private:
+  std::tuple<place<0>, place<1>, place<2>, place<3>, place<4>, place<5>,
+             place<6>, place<7>>
+      parts_;
+};
+
 // The state of a leaf that is built from its own groups, told the context its
 // place was given. The same rule as everywhere: asked for with the context
 // first, and a scanner that takes none is begun the way it always was.
 template <class held, class context>
 [[nodiscard]] constexpr auto begun_groups(const context& given) {
-  if constexpr (!std::same_as<context, scan::by_default> &&
+  if constexpr (!std::same_as<context, scan::default_context_t> &&
+                !requires { given.told(); } &&
                 requires { scan::scanner<held>{}.begin_groups(given); }) {
     return scan::scanner<held>{}.begin_groups(given);
   } else {
@@ -2394,22 +2617,21 @@ template <class parameters, class type, std::size_t offset,
           parse_value_given<std::remove_cv_t<type>,
                             failure_for<std::remove_cv_t<type>>,
                             given_type::told_apart, scan::throws_a_failure>(
-              groups[offset], parameters::at(offset),
-              given.template at<offset>()));
+              groups[offset], parameters::at(offset), given.leaf()));
     }
   } else if constexpr (scanned_from_values<type>) {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return scan::scanner<std::remove_cv_t<type>>{}.parse(
           built_value<parameters, typename parts_of<type>::template at<index>,
-                      offset + groups_before_field<type, index>()>(groups,
-                                                                   given)...);
+                      offset + groups_before_field<type, index>()>(
+              groups, given.template for_part<index>())...);
     }(std::make_index_sequence<parts_of<type>::count>{});
   } else {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return type{
           built_value<parameters, typename parts_of<type>::template at<index>,
-                      offset + groups_before_field<type, index>()>(groups,
-                                                                   given)...};
+                      offset + groups_before_field<type, index>()>(
+              groups, given.template for_part<index>())...};
     }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
@@ -2454,7 +2676,7 @@ build_value(std::span<const std::string_view> groups,
         return scan::scanner<held>{}.from_groups(given);
       }
     } else {
-      auto state = begun_groups<held>(given.template at<offset>());
+      auto state = begun_groups<held>(given.leaf());
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           // A group that took no part in the match is not opened at all, which
@@ -2482,8 +2704,7 @@ build_value(std::span<const std::string_view> groups,
       } else {
         return parse_value_given<std::remove_cv_t<type>, failure_type,
                                  given_type::told_apart>(
-            groups[offset], parameters::at(offset),
-            given.template at<offset>());
+            groups[offset], parameters::at(offset), given.leaf());
       }
     }();
     if (got) return std::move(*got);
@@ -2530,12 +2751,12 @@ build_value(std::span<const std::string_view> groups,
             build_value<failure_type, parameters,
                         typename parts_of<type>::template at<index>,
                         offset + groups_before_field<type, index>(), false,
-                        ending>(groups, given)...);
+                        ending>(groups, given.template for_part<index>())...);
       } else {
         auto parts = std::tuple{build_value<
             failure_type, parameters, typename parts_of<type>::template at<index>,
             offset + groups_before_field<type, index>(), false, ending>(
-            groups, given)...};
+            groups, given.template for_part<index>())...};
         if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
           return std::unexpected(std::move(*went_wrong));
         }
@@ -2552,12 +2773,13 @@ build_value(std::span<const std::string_view> groups,
         return type{build_value<failure_type, parameters,
                                 typename parts_of<type>::template at<index>,
                                 offset + groups_before_field<type, index>(),
-                                false, ending>(groups, given)...};
+                                false, ending>(
+            groups, given.template for_part<index>())...};
       } else {
         auto parts = std::tuple{build_value<
             failure_type, parameters, typename parts_of<type>::template at<index>,
             offset + groups_before_field<type, index>(), false, ending>(
-            groups, given)...};
+            groups, given.template for_part<index>())...};
         if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
           return std::unexpected(std::move(*went_wrong));
         }

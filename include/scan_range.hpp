@@ -177,23 +177,63 @@ class borrowed_result {
   // One context is everybody's; more than one is one per place, in the order
   // the places are read, with scan::by_default standing for a place that wants
   // none. Each reaches the one call where its place makes its value.
-  template <class type, class... contexts>
-  [[nodiscard]] constexpr type of(contexts... given) const {
-    if constexpr (sizeof...(contexts) == 0) {
-      return read_or_throw<type>();
-    } else {
-      return read_or_throw<type>(scan::contexts_given<contexts...>(given...));
-    }
+  template <class type>
+  [[nodiscard]] constexpr type of() const {
+    return read_or_throw<type>();
   }
 
-  template <class type, class... contexts>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
-  try_of(contexts... given) const {
-    if constexpr (sizeof...(contexts) == 0) {
-      return read<type>();
-    } else {
-      return read<type>(scan::contexts_given<contexts...>(given...));
-    }
+  // Asked for with a context said at each place, and braces where a place is a
+  // shape whose parts want their own. A value at a place is that place's and
+  // every part of it; scan::default_context stands where a place wants none.
+  //
+  //   scan<"{} {}">(text).of<pair>(memory)                 -- both places
+  //   scan<"{} {}">(text).of<pair>(memory, default_context)
+  //   scan<"{}/{} {}">(text).of<nest>({fast, slow}, other) -- parts of a place
+  // One context and nothing else said is everybody's: the deduced parameter
+  // takes the value as it stands, which is a better match than the conversion
+  // the writing-out below would need, so this is the one that is chosen.
+  template <class type, class context>
+    requires(!std::same_as<std::remove_cvref_t<context>, context_place_of<type, 0>> &&
+             !std::same_as<std::remove_cvref_t<context>, scan::default_context_t>)
+  [[nodiscard]] constexpr type of(const context& given) const {
+    return read_or_throw<type>(scan::one_given<context, false>{given});
+  }
+
+  template <class type, class context>
+    requires(!std::same_as<std::remove_cvref_t<context>, context_place_of<type, 0>> &&
+             !std::same_as<std::remove_cvref_t<context>, scan::default_context_t>)
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
+      const context& given) const {
+    return read<type>(scan::one_given<context, false>{given});
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of(context_place_of<type, 0> first,
+                                  context_place_of<type, 1> second = {},
+                                  context_place_of<type, 2> third = {},
+                                  context_place_of<type, 3> fourth = {},
+                                  context_place_of<type, 4> fifth = {},
+                                  context_place_of<type, 5> sixth = {},
+                                  context_place_of<type, 6> seventh = {},
+                                  context_place_of<type, 7> eighth = {}) const {
+    return read_or_throw<type>(contexts_by_place<type>(
+        first, second, third, fourth, fifth, sixth, seventh, eighth));
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of()
+      const {
+    return read<type>();
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
+      context_place_of<type, 0> first, context_place_of<type, 1> second = {},
+      context_place_of<type, 2> third = {}, context_place_of<type, 3> fourth = {},
+      context_place_of<type, 4> fifth = {}, context_place_of<type, 5> sixth = {},
+      context_place_of<type, 6> seventh = {}, context_place_of<type, 7> eighth = {}) const {
+    return read<type>(contexts_by_place<type>(first, second, third, fourth,
+                                              fifth, sixth, seventh, eighth));
   }
 
   // The same contexts, told before the output type is named -- which is what a

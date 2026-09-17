@@ -790,7 +790,38 @@ template <class type>
 // Stands in a list of contexts for a place that wants none, so that the places
 // after it keep their numbers. A scanner is never handed this: where it stands
 // the reading is the one that was there before contexts existed.
-struct by_default {};
+struct default_context_t {};
+
+// Said as a value, because that is how it is written at a call: one place of a
+// list of contexts wants none, and `scan::default_context` is what stands there.
+inline constexpr default_context_t default_context{};
+
+// No contexts at all, which is what every call said before there were any.
+struct nothing_given {
+  static constexpr bool for_everyone = false;
+  static constexpr bool told_apart = false;
+  static constexpr std::size_t count = 0;
+  template <std::size_t>
+  [[nodiscard]] constexpr nothing_given for_part() const {
+    return {};
+  }
+  [[nodiscard]] constexpr default_context_t leaf() const { return {}; }
+};
+
+// One context, and everything below the place it was said at.
+//
+// A place that is a shape hands the same one to each of its parts, which is
+// what "a value at a place is that place's and all of its parts'" means.
+template <class it, bool apart>
+struct one_given {
+  static constexpr bool told_apart = apart;
+  it thing;
+  template <std::size_t>
+  [[nodiscard]] constexpr one_given for_part() const {
+    return *this;
+  }
+  [[nodiscard]] constexpr const it& leaf() const { return thing; }
+};
 
 // The contexts a call was given, in the order the places are read.
 //
@@ -814,34 +845,26 @@ struct contexts_given {
       : all(std::move(given)...) {}
 
   template <std::size_t place>
-  [[nodiscard]] constexpr decltype(auto) at() const {
+  [[nodiscard]] constexpr auto for_part() const {
     if constexpr (for_everyone) {
-      return std::get<0>(all);
+      using first = std::tuple_element_t<0, std::tuple<contexts...>>;
+      return one_given<first, false>{std::get<0>(all)};
+    } else if constexpr (place < sizeof...(contexts)) {
+      using here = std::tuple_element_t<place, std::tuple<contexts...>>;
+      return one_given<here, true>{std::get<place>(all)};
     } else {
       static_assert(place < sizeof...(contexts),
                     "this reading has more places than it was given contexts: "
                     "give one for every place, one for all of them, or write "
-                    "scan::by_default where a place wants none");
-      return std::get<place>(all);
+                    "scan::default_context where a place wants none");
+      return nothing_given{};
     }
   }
 
+  [[nodiscard]] constexpr decltype(auto) leaf() const { return std::get<0>(all); }
+
   std::tuple<contexts...> all;
 };
-
-// No contexts at all, which is what every call said before there were any.
-struct nothing_given {
-  static constexpr bool for_everyone = false;
-  static constexpr bool told_apart = false;
-  static constexpr std::size_t count = 0;
-  template <std::size_t>
-  [[nodiscard]] constexpr by_default at() const {
-    return {};
-  }
-};
-
-
-
 
 
 // A scanner that says what went wrong rather than throwing it.
