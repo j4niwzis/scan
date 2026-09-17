@@ -87,10 +87,17 @@ class borrowed_result {
     // them is made of are the turns, and the positions left behind hold the
     // last turn and nothing before it.
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
-      static_assert(std::same_as<given_type, scan::nothing_given>,
-                    "a context does not reach a reading that gathers as it "
-                    "goes yet -- only one whose places are read from the match");
-      return detail::scan_stream<type, format, walk>(input_);
+      // A reading that gathers as it goes keeps its fields' states for the
+      // whole walk, so the type of a state has to be known -- and it is,
+      // wherever the contexts were written as they stand. In braces the type of
+      // a context is forgotten at the door, and a state whose type is forgotten
+      // has nowhere to live.
+      static_assert(!requires { given.leaf().told(); },
+                    "a fold or a list is told its context without braces: "
+                    "scan<f>(text).of<T>(context), not .of<T>({context})");
+      return detail::scan_stream<type, format, walk,
+                                 std::remove_cvref_t<decltype(given.leaf())>>(
+          input_, given.leaf());
     } else {
       // A group that took no part is an error, unless somewhere in this output
       // there is a variant, where exactly one branch takes part and the rest do
@@ -132,10 +139,13 @@ class borrowed_result {
   [[nodiscard]] constexpr type read_or_throw(
       const given_type& given = given_type{}) const {
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
-      static_assert(std::same_as<given_type, scan::nothing_given>,
-                    "a context does not reach a reading that gathers as it "
-                    "goes yet -- only one whose places are read from the match");
-      return or_thrown(detail::scan_stream<type, format, walk>(input_));
+      static_assert(!requires { given.leaf().told(); },
+                    "a fold or a list is told its context without braces: "
+                    "scan<f>(text).of<T>(context), not .of<T>({context})");
+      return or_thrown(
+          detail::scan_stream<type, format, walk,
+                              std::remove_cvref_t<decltype(given.leaf())>>(
+              input_, given.leaf()));
     } else {
       const auto fields = [&] {
         if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
