@@ -2675,10 +2675,12 @@ struct taken_from_gatherer {};
 template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
           bool points_at_subject, class cursor_type, class sentinel_type,
           std::size_t register_count, class gatherer, class answer_type,
-          class make_type = taken_from_gatherer>
+          class make_type = taken_from_gatherer,
+          class told_carrier = scan::nothing_given>
 [[nodiscard]] auto run_threaded_owning(cursor_type cursor, sentinel_type last,
                                        const char* text, mark start,
-                                       make_type make = {}) {
+                                       make_type make = {},
+                                       const told_carrier& told = told_carrier{}) {
   static_assert(states_in<automaton> <= SCAN_LADDER,
                 "this machine has more states than the ladder has rungs: "
                 "build with -DSCAN_LADDER=4096");
@@ -2692,7 +2694,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry, class mark,
     execute_initial<automaton>(registers, mark{});
   }
   typename gatherer::cold_type collected{};
-  gatherer into{collected};
+  gatherer into = [&] {
+    if constexpr (requires { gatherer{collected, told}; }) {
+      return gatherer{collected, told};
+    } else {
+      return gatherer{collected};
+    }
+  }();
   // Only where there is something to point at, and said while compiling: a
   // reading that holds a list is handed nothing, and asking at every reading
   // whether it was is a branch on the way in for a question the type answers.
@@ -2723,10 +2731,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
           std::size_t budget, std::size_t certain, class mark,
           bool points_at_subject, class cursor_type, class sentinel_type,
           std::size_t register_count, class gatherer, class answer_type,
-          class make_type = taken_from_gatherer>
+          class make_type = taken_from_gatherer,
+          class told_carrier = scan::nothing_given>
 [[nodiscard]] constexpr auto run_owning(cursor_type cursor, sentinel_type last,
                                         const char* text, mark start,
-                                        make_type make = {}) {
+                                        make_type make = {},
+                                        const told_carrier& told =
+                                            told_carrier{}) {
   if consteval {
     register_file<mark, register_count> registers{};
     if constexpr (std::is_pointer_v<mark>) {
@@ -2737,7 +2748,13 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
       execute_initial<automaton>(registers, mark{});
     }
     typename gatherer::cold_type collected{};
-  gatherer into{collected};
+  gatherer into = [&] {
+    if constexpr (requires { gatherer{collected, told}; }) {
+      return gatherer{collected, told};
+    } else {
+      return gatherer{collected};
+    }
+  }();
     if constexpr (points_at_subject) into.points_at(text);
     answer_type best;
     cursor_type here = cursor;
@@ -2753,8 +2770,9 @@ template <auto& automaton, walk_shape shape, std::size_t entry,
   } else {
     return run_threaded_owning<automaton, shape, entry, mark,
                                points_at_subject, cursor_type, sentinel_type,
-                               register_count, gatherer, answer_type,
-                               make_type>(cursor, last, text, start, make);
+                               register_count, gatherer, answer_type, make_type,
+                               told_carrier>(cursor, last, text, start, make,
+                                             told);
   }
 }
 

@@ -95,9 +95,7 @@ class borrowed_result {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
-      return detail::scan_stream<type, format, walk,
-                                 std::remove_cvref_t<decltype(given.leaf())>>(
-          input_, given.leaf());
+      return detail::scan_stream<type, format, walk, given_type>(input_, given);
     } else {
       // A group that took no part is an error, unless somewhere in this output
       // there is a variant, where exactly one branch takes part and the rest do
@@ -143,9 +141,7 @@ class borrowed_result {
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
       return or_thrown(
-          detail::scan_stream<type, format, walk,
-                              std::remove_cvref_t<decltype(given.leaf())>>(
-              input_, given.leaf()));
+          detail::scan_stream<type, format, walk, given_type>(input_, given));
     } else {
       const auto fields = [&] {
         if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
