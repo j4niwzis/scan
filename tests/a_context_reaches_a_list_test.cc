@@ -39,9 +39,29 @@ struct row {
 
 }  // namespace
 
+// Read whole where the subject can be pointed at, and told its characters as
+// they arrive where it cannot -- which is what an element of a list has to be,
+// because the walk gathers a turn as it goes.
 template <>
 struct scan::scanner<counted> {
   static constexpr std::string_view pattern() { return "[0-9]+"; }
+
+  struct state {
+    int running = 0;
+    int mark = 0;
+  };
+  static constexpr state begin() { return {}; }
+  static constexpr state begin(std::string_view) { return {}; }
+  static constexpr state begin(std::string_view, const room& where) {
+    return state{0, where.mark};
+  }
+  static constexpr void push(state& made, char value) {
+    made.running = made.running * 10 + (value - '0');
+  }
+  static constexpr counted finish(state made) {
+    return counted{made.running + made.mark};
+  }
+
   static constexpr counted parse(std::string_view text) {
     return counted{number(text)};
   }
