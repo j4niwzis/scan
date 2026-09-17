@@ -194,9 +194,28 @@ struct scan::scanner<dashed> {
   }
 };
 
+// A list whose element is a shape of its own, read by its own scanner. Two
+// things are wrong here and both are written down rather than worked around:
+// the first turn never reaches the list, and what the list's place was told
+// does not reach the element's places. These tests fail, and are here because a
+// fault nobody has written down is a fault that comes back.
+namespace {
+struct both {
+  counted number;
+  dashed word;
+};
+struct rows {
+  std::vector<both> items;
+};
+}  // namespace
+
+template <>
+struct scan::scanner<both> : scan::aggregate_scanner<"{}:{}"> {};
+
 namespace {
 
 constexpr auto subject = "1,2,3"sv;
+constexpr auto pairs = "1:ab 2:cd 3:ef"sv;
 constexpr auto digits = "42"sv;
 constexpr auto letters = "abc"sv;
 
@@ -255,6 +274,22 @@ TEST_F(every_subject, AFoldInPiecesIsTold) {
                 .of<folded>(fast)
                 .list.mark,
             10);
+}
+
+TEST_F(every_subject, EveryTurnOfAListOfShapesArrives) {
+  const auto got = scan::scan<"{{}{* ?}}+">(pairs).of<rows>();
+  ASSERT_EQ(got.items.size(), 3u);
+  EXPECT_EQ(got.items[0].number.value, 1);
+  EXPECT_EQ(got.items[1].number.value, 2);
+  EXPECT_EQ(got.items[2].number.value, 3);
+}
+
+TEST_F(every_subject, AListOfShapesTellsItsElementsWhatItWasTold) {
+  const auto got = scan::scan<"{{}{* ?}}+">(pairs).of<rows>(fast);
+  ASSERT_EQ(got.items.size(), 3u);
+  EXPECT_EQ(got.items[0].number.value, 11);
+  EXPECT_EQ(got.items[0].word.mark, 10);
+  EXPECT_EQ(got.items[2].word.mark, 10);
 }
 
 TEST_F(every_subject, TheBranchThatRanIsTold) {
