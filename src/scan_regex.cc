@@ -1499,7 +1499,7 @@ struct collected_match_closure
     using result_type =
         typed_result<holder, detail::collected_type<collectors, held_type>...>;
 
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     detail::execute_commands(automaton.initialize,
                              automaton.initialize.size(), registers,
@@ -1548,7 +1548,7 @@ struct collected_match_closure
     using result_type =
         typed_result<holder, detail::collected_type<collectors, held_type>...>;
 
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     detail::execute_commands(automaton.initialize,
                              automaton.initialize.size(), registers,
@@ -2142,7 +2142,7 @@ struct match_closure
     auto view = std::views::all(std::forward<pieces_type>(input));
     detail::gathers_from_pieces<detail::keeps_into<held_type>, decltype(view)>
         into(detail::keeps_into<held_type>{held}, std::move(view));
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     const char* cursor = nullptr;
     const char* last = nullptr;
@@ -2171,7 +2171,7 @@ struct match_closure
     constexpr const auto& automaton = detail::regex_automaton<pattern>;
     held_type held;
     detail::keeps_into<held_type> keep{held};
-    std::array<std::ptrdiff_t, automaton.register_count> registers{};
+    detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     std::ptrdiff_t place = 0;
     auto cursor = std::ranges::begin(input);

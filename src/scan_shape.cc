@@ -5720,15 +5720,16 @@ template <class type, fixed_string format, class source_type>
                                               std::ptrdiff_t& place) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
   taken_from_pieces<type, format, source_type> said;
-  std::array<std::ptrdiff_t, automaton.register_count> registers{};
-  std::ranges::fill(registers, scan::tre::negative_tag);
+  register_file<std::ptrdiff_t, automaton.register_count> registers{};
+  registers.fill(scan::tre::negative_tag);
   execute_initial<automaton>(registers, place);
   // The same note as everywhere else, and here it costs nothing to go back to:
   // the place is an address inside a piece the reading is still holding.
   constexpr bool walks_past = walk_past_a_match<automaton>() != 0;
   using kept_type =
       std::conditional_t<walks_past,
-                         std::array<std::ptrdiff_t, automaton.register_count>,
+                         register_file<std::ptrdiff_t,
+                                       automaton.register_count>,
                          nothing_kept>;
   walk_answer<const char*, kept_type> best;
   constexpr walk_shape shape{.in_words = true, .longest = true};
@@ -5759,8 +5760,8 @@ template <class type, fixed_string format, piecewise_char_range pieces_type>
 [[nodiscard]] constexpr std::expected<type, failure_for<type>> scan_pieces(
     pieces_type&& pieces) {
   constexpr const auto& automaton = streaming_automaton<type, format>;
-  std::array<std::ptrdiff_t, automaton.register_count> registers{};
-  std::ranges::fill(registers, scan::tre::negative_tag);
+  register_file<std::ptrdiff_t, automaton.register_count> registers{};
+  registers.fill(scan::tre::negative_tag);
   execute_initial<automaton>(registers, std::ptrdiff_t{0});
   auto view = std::views::all(std::forward<pieces_type>(pieces));
   typename field_gatherer<type, format, automaton>::cold_type collected{};
