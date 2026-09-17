@@ -781,6 +781,19 @@ template <class type>
 // the reading is the one that was there before contexts existed.
 struct default_context_t {};
 
+// What a context of your own inherits, and the only thing the library asks of
+// it.
+//
+// A context said in braces has its type forgotten at the door: the place it was
+// said at cannot name it, because the shape of that place is decided by the
+// output and not by what the caller hands over. Carried as a pointer to this
+// and cast back where the type is known again, it survives that trip in a
+// constant expression too -- which a trip through void does not.
+//
+// Said without braces, a context inherits nothing: there its type is never
+// forgotten in the first place.
+struct context {};
+
 // Said as a value, because that is how it is written at a call: one place of a
 // list of contexts wants none, and `scan::default_context` is what stands there.
 inline constexpr default_context_t default_context{};

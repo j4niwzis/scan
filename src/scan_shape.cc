@@ -2406,32 +2406,115 @@ template <class type>
   }
 }
 
-// One leaf's reading, with the context that was said at its place.
+// One leaf read with a context, said as an interface that knows the field.
+//
+// The field is what the answer is made of, so the interface can be written out
+// here, where the place is; the context is what the answer is made with, and it
+// is the one thing this cannot name. So the interface is declared knowing the
+// field and implemented knowing the context, and the implementation is one
+// object per pair of them -- constant, shared, and alive as long as the program
+// is. What crosses the door is a pointer to the interface and a pointer to the
+// context, and both are pointers to something whose type is known again on the
+// other side.
+template <class held, bool told_apart, class context_type>
+[[nodiscard]] constexpr std::expected<held, failure_for<held>> groups_value(
+    std::span<const std::string_view> groups, const context_type& given);
+
 template <class field_type>
-struct read_by {
+struct reading_of {
   using held = std::remove_cv_t<field_type>;
   using answer = std::expected<held, failure_for<held>>;
-  answer (*how)(const void*, std::string_view, std::string_view) = nullptr;
-  const void* it = nullptr;
-  [[nodiscard]] constexpr bool told() const { return how != nullptr; }
-  [[nodiscard]] constexpr answer read(std::string_view text,
-                                      std::string_view parameters) const {
-    return how(it, text, parameters);
+
+  constexpr virtual ~reading_of() = default;
+  [[nodiscard]] constexpr virtual answer read(
+      const scan::context& given, std::string_view text,
+      std::string_view parameters) const = 0;
+  [[nodiscard]] constexpr virtual answer read_groups(
+      const scan::context& given,
+      std::span<const std::string_view> groups) const = 0;
+};
+
+template <class field_type, class context_type, bool told_apart>
+struct reading_by final : reading_of<field_type> {
+  using held = std::remove_cv_t<field_type>;
+  using answer = std::expected<held, failure_for<held>>;
+
+  static constexpr bool by_groups =
+      requires { scan::scanner<held>{}.begin_groups(); } ||
+      requires(std::span<const std::string_view> some) {
+        scan::scanner<held>{}.from_groups(some);
+      };
+
+  // Both of these are written out with the table whether anybody calls them or
+  // not, so each has to say what it does for a leaf that is read the other way
+  // -- and saying it is an answer, not a failure to compile.
+  static constexpr bool takes_a_context =
+      requires(std::string_view text, std::string_view parameters,
+               const context_type& told) {
+        scan::scanner<held>{}.parse(text, told);
+      } || requires(std::string_view text, std::string_view parameters,
+                    const context_type& told) {
+        scan::scanner<held>{}.parse(text, parameters, told);
+      } || requires(std::string_view text, const context_type& told) {
+        scan::scanner<held>::try_parse(text, told);
+      } || requires(std::string_view text, std::string_view parameters,
+                    const context_type& told) {
+        scan::scanner<held>::try_parse(text, parameters, told);
+      };
+
+  static constexpr bool reads_a_piece =
+      requires(std::string_view text) { scan::scanner<held>{}.parse(text); } ||
+      requires(std::string_view text) { scan::scanner<held>::try_parse(text); };
+
+  [[nodiscard]] constexpr answer read(
+      const scan::context& given, std::string_view text,
+      std::string_view parameters) const override {
+    if constexpr (takes_a_context) {
+      return parse_value_given<held, failure_for<held>, told_apart>(
+          text, parameters, static_cast<const context_type&>(given));
+    } else if constexpr (reads_a_piece) {
+      static_assert(!told_apart || by_groups,
+                    "this place was given a context of its own and its scanner "
+                    "takes none: write parse(string_view, context) on "
+                    "scan::scanner<T>, or write scan::default_context in its "
+                    "place");
+      static_cast<void>(given);
+      return parse_value<held, failure_for<held>>(text, parameters);
+    } else {
+      static_cast<void>(given);
+      static_cast<void>(text);
+      static_cast<void>(parameters);
+      return std::unexpected(scan::as_a_failure<failure_for<held>>(
+          scan::no_group<>("this place is not read from a piece")));
+    }
+  }
+
+  // A virtual is written out with the table, whether anybody calls it or not,
+  // so a leaf that is not read from its groups must still have something here
+  // -- and what it has says so rather than failing to compile.
+  [[nodiscard]] constexpr answer read_groups(
+      const scan::context& given,
+      std::span<const std::string_view> groups) const override {
+    if constexpr (by_groups) {
+      return groups_value<held, told_apart>(
+          groups, static_cast<const context_type&>(given));
+    } else {
+      static_cast<void>(given);
+      static_cast<void>(groups);
+      return std::unexpected(scan::as_a_failure<failure_for<held>>(
+          scan::no_group<>("this place is not read from its groups")));
+    }
   }
 };
 
-template <class field_type, class context, bool told_apart>
-[[nodiscard]] constexpr typename read_by<field_type>::answer read_one(
-    const void* it, std::string_view text, std::string_view parameters) {
-  using held = std::remove_cv_t<field_type>;
-  return parse_value_given<held, failure_for<held>, told_apart>(
-      text, parameters, *static_cast<const context*>(it));
-}
+template <class field_type, class context_type, bool told_apart>
+inline constexpr reading_by<field_type, context_type, told_apart> the_reading{};
 
 template <class field_type>
 class context_leaf {
  public:
   using held = std::remove_cv_t<field_type>;
+  using answer = std::expected<held, failure_for<held>>;
   static constexpr bool told_apart = false;
 
   constexpr context_leaf() = default;
@@ -2442,33 +2525,46 @@ class context_leaf {
              !std::same_as<std::remove_cvref_t<it>, scan::default_context_t> &&
              !std::same_as<std::remove_cvref_t<it>, no_place>)
   constexpr context_leaf(const it& given)
-      : given_{&read_one<held, std::remove_cvref_t<it>, true>, &given} {}
+      : how_(&the_reading<held, std::remove_cvref_t<it>, true>), it_(&given) {
+    static_assert(std::derived_from<std::remove_cvref_t<it>, scan::context>,
+                  "a context said in braces must inherit scan::context, so that "
+                  "the place it is said at can carry it without naming it; a "
+                  "context of any type at all can be said without braces");
+  }
 
   template <class it>
   [[nodiscard]] static constexpr context_leaf spread(const it& given) {
+    static_assert(std::derived_from<std::remove_cvref_t<it>, scan::context>,
+                  "a context said in braces must inherit scan::context");
     context_leaf made;
-    made.given_ = read_by<held>{&read_one<held, std::remove_cvref_t<it>, false>,
-                                &given};
+    made.how_ = &the_reading<held, std::remove_cvref_t<it>, false>;
+    made.it_ = &given;
     return made;
   }
 
-  // A leaf's inside is the leaf's own business: a context said at this place
-  // was said about the value here, not about whatever this value is built from.
+  // A leaf's inside is the leaf's own business: a context said at this place was
+  // said about the value here, not about what this value is built from.
   template <std::size_t>
   [[nodiscard]] constexpr scan::nothing_given for_part() const {
     return {};
   }
-  [[nodiscard]] constexpr read_by<held> leaf() const { return given_; }
+  [[nodiscard]] constexpr const context_leaf& leaf() const { return *this; }
+
+  [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
+  [[nodiscard]] constexpr answer read(std::string_view text,
+                                      std::string_view parameters) const {
+    return how_->read(*it_, text, parameters);
+  }
+  [[nodiscard]] constexpr answer read_groups(
+      std::span<const std::string_view> groups) const {
+    return how_->read_groups(*it_, groups);
+  }
 
  private:
-  read_by<held> given_{};
+  const reading_of<held>* how_ = nullptr;
+  const scan::context* it_ = nullptr;
 };
 
-// A place that is a shape, and the contexts of its parts.
-//
-// Templated over the parts themselves, so the constructor that takes them is
-// generated with exactly as many parameters as the shape has parts: no number
-// is written anywhere here, and there is nothing to run out of.
 template <class... parts>
 class context_shape {
  public:
@@ -2563,6 +2659,34 @@ template <class held, class context>
   }
 }
 
+// A leaf read from its own groups, told the context its place was given.
+//
+// Everything this leaf needs is here at once -- the groups are already found --
+// so nothing of it crosses the door: the state is made, told and finished
+// inside this one call, where the context still has its type.
+template <class held, bool told_apart, class context_type>
+[[nodiscard]] constexpr std::expected<held, failure_for<held>> groups_value(
+    std::span<const std::string_view> groups, const context_type& given) {
+  constexpr std::size_t inside = groups_a_leaf_opens<held>();
+  if constexpr (requires {
+                  scan::scanner<held>{}.from_groups(groups, given);
+                }) {
+    return scan::scanner<held>{}.from_groups(groups, given);
+  } else if constexpr (requires { scan::scanner<held>{}.from_groups(groups); }) {
+    return scan::scanner<held>{}.from_groups(groups);
+  } else {
+    auto state = begun_groups<held>(given);
+    [&]<std::size_t... at>(std::index_sequence<at...>) {
+      ((void)[&] {
+        if (groups[at].data() == nullptr) return;
+        open_one_group<held, at>(state);
+        close_one_group<held, at>(state, groups[at]);
+      }(), ...);
+    }(std::make_index_sequence<inside>{});
+    return scan::scanner<held>{}.finish_groups(std::move(state));
+  }
+}
+
 // The value itself, for a reading that cannot go wrong.
 template <class parameters, class type, std::size_t offset,
           bool as_output = false, class given_type = scan::nothing_given>
@@ -2620,6 +2744,25 @@ build_value(std::span<const std::string_view> groups,
     // same way in both places.
     using held = std::remove_cv_t<type>;
     constexpr std::size_t inside = groups_a_leaf_opens<held>();
+    // Where this place was told a context, the whole of this reading is that
+    // context's: the groups are cut out here and handed over in one call.
+    if constexpr (requires {
+                    given.leaf().told();
+                    given.leaf().read_groups(
+                        std::span<const std::string_view>{});
+                  }) {
+      const auto told_here = given.leaf();
+      if (told_here.told()) {
+        std::array<std::string_view, inside> mine{};
+        [&]<std::size_t... at>(std::index_sequence<at...>) {
+          ((mine[at] = groups[offset + 1 + at]), ...);
+        }(std::make_index_sequence<inside>{});
+        auto got = told_here.read_groups(std::span<const std::string_view>(mine));
+        if (got) return std::move(*got);
+        return ending::template went_wrong<type, failure_type>(
+            scan::as_a_failure<failure_type>(std::move(got).error()));
+      }
+    }
     if constexpr (scan::says_what_went_wrong_from_groups<held> ||
                   requires(std::span<const std::string_view> given) {
                     scan::scanner<held>{}.from_groups(given);
