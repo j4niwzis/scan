@@ -3259,9 +3259,42 @@ template <class type, fixed_string format, std::size_t group>
 // and its closing is told by the moves, which say which groups a character
 // lies inside. Kept by the group, such a group carried a closing mark written
 // on the last character of every turn for nobody to read.
+// The groups of a fold whose characters it is told about.
+//
+// Their marks are read by nobody, and for a while that was taken to mean the
+// machine need not write them. It does: a tag is what holds two readings
+// apart, and two readings that differ only in which group a character fell in
+// are exactly the two a fold is told apart by. Merge them and the move still
+// says which groups the character lies inside -- it says the wrong ones, the
+// ones of whichever reading survived. `\(((_+)((A)|(B)))*\))` then answers 11
+// where it means 21, because the B is announced as an A.
+//
+// So a group whose characters go to a fold keeps its marks, unread as they
+// are. What is left to save is the groups a fold hears nothing about.
+template <class type, fixed_string format, std::size_t group>
+[[nodiscard]] consteval std::uint64_t characters_told_of() {
+  using how = gathering_of<type, format, group>;
+  using held = std::remove_cv_t<leaf_kind_of_output<type, group>>;
+  std::uint64_t made = 0;
+  if constexpr (how::folds && how::the_place) {
+    using state_type = decltype(scan::scanner<held>{}.begin_groups());
+    [&]<std::size_t... which>(std::index_sequence<which...>) {
+      ([&] {
+        if constexpr (takes_group_characters<held, which, state_type>) {
+          made |= std::uint64_t{1} << (group + 1 + which);
+        }
+      }(), ...);
+    }(std::make_index_sequence<groups_a_leaf_opens<held>()>{});
+  }
+  return made;
+}
+
 template <class type, fixed_string format, auto& automaton>
 [[nodiscard]] consteval std::uint64_t tags_that_matter() {
-  const std::uint64_t read = groups_whose_mark_is_read<type, format, automaton>();
+  std::uint64_t read = groups_whose_mark_is_read<type, format, automaton>();
+  [&]<std::size_t... group>(std::index_sequence<group...>) {
+    ((read |= characters_told_of<type, format, group>()), ...);
+  }(std::make_index_sequence<groups_of_output<type>()>{});
   std::uint64_t edges = 0;
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ((edges |= edges_listened_for<type, format, group>()), ...);
@@ -3279,11 +3312,38 @@ template <class type, fixed_string format, auto& automaton>
   return made;
 }
 
+// The tags the machine is built with, and a check that keeping so few has not
+// cost it something else.
+//
+// A tag is not only a mark somebody reads: it is what holds two readings
+// apart. Take away the tags of a group nobody asks the position of, and two
+// readings that differed in nothing else become one -- and then a move can no
+// longer say which groups the character it reads lies inside. That is exactly
+// what a fold is told, so a fold beside such a reading stops being told which
+// of its groups a character fell in, and answers with the wrong number rather
+// than with an error.
+//
+// The question was asked of the whole machine and the answer used for the
+// trimmed one, which is the mistake. It is asked of the machine that will be
+// walked now, and where trimming would cost it that, nothing is trimmed.
+template <class type, fixed_string format, bool cut>
+inline constexpr std::uint64_t tags_worth_keeping = [] {
+  constexpr std::uint64_t wanted =
+      tags_that_matter<type, format,
+                       streaming_automaton_whole<type, format, cut>>();
+  if constexpr (every_move_says_the_groups<
+                    packed_text_automaton<spread_text<type, format>, false, cut,
+                                          wanted>>()) {
+    return wanted;
+  } else {
+    return ~std::uint64_t{0};
+  }
+}();
+
 template <class type, fixed_string format, bool cut = true>
-inline constexpr auto& streaming_automaton = packed_text_automaton<
-    spread_text<type, format>, false, cut,
-    tags_that_matter<type, format,
-                     streaming_automaton_whole<type, format, cut>>()>;
+inline constexpr auto& streaming_automaton =
+    packed_text_automaton<spread_text<type, format>, false, cut,
+                          tags_worth_keeping<type, format, cut>>;
 
 // Which groups' positions anybody will read.
 //
