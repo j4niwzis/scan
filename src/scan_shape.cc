@@ -2849,6 +2849,11 @@ template <class told>
     return given.get_allocator().resource();
   } else if constexpr (requires { given.told_resource(); }) {
     return given.told_resource();
+  } else if constexpr (requires { given.leaf(); }) {
+    // A context said at a call is carried in a wrapper -- one for everybody,
+    // one per place -- and what it keeps is inside. Asked after the carrier,
+    // because a carrier answers `leaf` with itself.
+    return resource_of(given.leaf());
   } else {
     static_cast<void>(given);
     return nullptr;
@@ -4516,10 +4521,15 @@ template <class type, fixed_string format, auto& automaton,
           class told_type = scan::default_context_t>
 [[nodiscard]] constexpr auto make_register_states(
     const told_type& told = told_type{}) {
-  std::array<register_state<type, format, mark_type, told_type>,
-             automaton.register_count>
-      states{};
-  std::ranges::fill(states, make_slots<type, format, mark_type>(told));
+  // Made one by one rather than made once and filled in. A container that
+  // keeps a resource takes it when it is constructed and keeps its own when it
+  // is assigned or copied, so filling an array of default-made states with a
+  // well-made one leaves every register on the default resource.
+  auto states = [&]<std::size_t... at>(std::index_sequence<at...>) {
+    return std::array<register_state<type, format, mark_type, told_type>,
+                      automaton.register_count>{
+        ((void)at, make_slots<type, format, mark_type>(told))...};
+  }(std::make_index_sequence<automaton.register_count>{});
   const auto& initial = automaton.states[automaton.initial];
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     ([&] {
@@ -4592,6 +4602,33 @@ struct kept_gatherings {
   }
 };
 
+// A copy of one gathering that keeps the resource it was made with.
+//
+// A container that keeps its own resource does not hand it on when it is
+// copied -- select_on_container_copy_construction says so -- so a walk that
+// keeps a gathering for later would keep it on the default resource and hand
+// that back at the end. Said once here, because every other copy of a
+// gathering goes through an assignment, and an assignment keeps the resource
+// the thing being assigned to was made with.
+template <class kind>
+[[nodiscard]] constexpr kind copied_gathering(const kind& one) {
+  if constexpr (requires {
+                  typename kind::allocator_type;
+                  one.get_allocator();
+                  kind(one, one.get_allocator());
+                }) {
+    return kind(one, one.get_allocator());
+  } else {
+    return one;
+  }
+}
+
+template <class slots_type, std::size_t... at>
+[[nodiscard]] constexpr slots_type copied_slots(const slots_type& all,
+                                                std::index_sequence<at...>) {
+  return slots_type{copied_gathering(std::get<at>(all))...};
+}
+
 template <class states_type, std::size_t command_count>
 [[nodiscard]] constexpr auto keep_gatherings(
     const states_type& states,
@@ -4613,7 +4650,10 @@ template <class states_type, std::size_t command_count>
     }
     if (already) continue;
     kept.which[kept.count] = commands[index].source;
-    kept.held[kept.count].emplace(states[commands[index].source]);
+    using slots_kind = std::remove_cvref_t<decltype(states[0])>;
+    kept.held[kept.count].emplace(copied_slots<slots_kind>(
+        states[commands[index].source],
+        std::make_index_sequence<std::tuple_size_v<slots_kind>>{}));
     ++kept.count;
   }
   return kept;
@@ -5475,9 +5515,23 @@ template <class root, class type, std::size_t offset, bool as_output,
     // resource does not hand it on when it is copied -- that is what
     // select_on_container_copy_construction says -- so a list gathered into
     // the caller's resource would arrive holding the default one.
+    // Handed back on the resource the caller said, whatever the walk gathered
+    // it on. What a walk allocates while it reads is its own business -- it may
+    // keep a gathering, copy it between registers, begin it again on a turn --
+    // and none of that should decide where the value the caller is handed
+    // lives. So the list is taken onto the resource its place was told about,
+    // and onto the one it was gathered with where its place was told nothing.
     type made = [&] -> type {
       const auto& gathered = source.template list<offset>();
-      if constexpr (requires { typename type::allocator_type; }) {
+      if constexpr (requires {
+                      typename type::allocator_type;
+                      type(gathered, gathered.get_allocator());
+                    }) {
+        if (std::pmr::memory_resource* where = resource_of(given)) {
+          return type(gathered,
+                      std::pmr::polymorphic_allocator<typename type::value_type>(
+                          where));
+        }
         return type(gathered, gathered.get_allocator());
       } else {
         return gathered;
@@ -6079,7 +6133,13 @@ class field_gatherer {
       ((slot<which>() = std::get<which>(all)), ...);
     }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
     if constexpr (!nothing_at_a_register) {
-      states_ = make_register_states<type, format, automaton, mark_kind, told_type>(told_);
+      // Built where it stands, for the same reason: assigning these would
+      // leave every container on whatever resource it was made with.
+      std::destroy_at(&states_);
+      std::construct_at(
+          &states_,
+          make_register_states<type, format, automaton, mark_kind, told_type>(
+              told_));
     }
   }
 
@@ -6911,7 +6971,7 @@ template <class type, fixed_string format,
                       field_gatherer<type, format, automaton, in_a_row,
                                      mark_kind, told_type>,
                       walk_answer<const char*>>(cursor, last, nullptr,
-                                                mark_kind{});
+                                                mark_kind{}, {}, told);
   } else {
     register_file<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {

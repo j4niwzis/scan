@@ -1,0 +1,90 @@
+// A context said to a reading that holds a list.
+//
+// A list is read by the machine that gathers as it goes, even where the subject
+// lies in a row -- and that walk used to be started without what the caller
+// said. Nothing was dropped loudly: the places were simply told nothing, and a
+// scanner that takes a context was called as though none had been given.
+//
+// So this says the plain thing first -- every element is told what the list's
+// place was told -- and then the thing that brought it to light: a place whose
+// type keeps its own memory resource is built on the resource the caller said,
+// with nobody writing a scanner for it.
+import std;
+import scan;
+import gtest;
+
+#include "gtest/gtest-macros.h"
+
+namespace {
+
+using namespace std::string_view_literals;
+
+constexpr int number(std::string_view text) {
+  int made = 0;
+  for (char letter : text) made = made * 10 + (letter - '0');
+  return made;
+}
+
+struct room {
+  int mark = 0;
+};
+
+struct counted {
+  int value = 0;
+};
+
+struct row {
+  std::pmr::vector<counted> values;
+};
+
+}  // namespace
+
+template <>
+struct scan::scanner<counted> {
+  static constexpr std::string_view pattern() { return "[0-9]+"; }
+  static constexpr counted parse(std::string_view text) {
+    return counted{number(text)};
+  }
+  static constexpr counted parse(std::string_view text, const room& where) {
+    return counted{number(text) + where.mark};
+  }
+};
+
+namespace {
+
+class a_context_reaches_a_list : public ::testing::Test {
+ protected:
+  room fast{10};
+  std::pmr::monotonic_buffer_resource bytes;
+  std::pmr::polymorphic_allocator<> mine{&bytes};
+};
+
+TEST_F(a_context_reaches_a_list, EveryElementIsToldWhatThePlaceWasTold) {
+  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>(fast);
+  ASSERT_EQ(got.values.size(), 3u);
+  EXPECT_EQ(got.values[0].value, 11);
+  EXPECT_EQ(got.values[1].value, 12);
+  EXPECT_EQ(got.values[2].value, 13);
+}
+
+TEST_F(a_context_reaches_a_list, ToldNothingTheElementsAreReadAsTheyAlwaysWere) {
+  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>();
+  ASSERT_EQ(got.values.size(), 3u);
+  EXPECT_EQ(got.values[0].value, 1);
+  EXPECT_EQ(got.values[2].value, 3);
+}
+
+// The list itself keeps a resource, and the one it keeps is the one the caller
+// said. Nothing here is written for pmr by whoever wrote `row`.
+TEST_F(a_context_reaches_a_list, TheListIsBuiltOnTheResourceItWasTold) {
+  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>(mine);
+  ASSERT_EQ(got.values.size(), 3u);
+  EXPECT_EQ(got.values.get_allocator().resource(), &bytes);
+}
+
+TEST_F(a_context_reaches_a_list, ToldNothingItIsOnTheDefaultResource) {
+  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>();
+  EXPECT_NE(got.values.get_allocator().resource(), &bytes);
+}
+
+}  // namespace
