@@ -2481,9 +2481,13 @@ template <class type, std::size_t group, class carrier>
     return context_at_group<std::remove_cv_t<branch_at<kind, which>>,
                             (inside == 0 ? 0 : inside - 1)>(
         told_for_part<which>(given));
-  } else if constexpr (!requires { given.leaf(); }) {
+  } else if constexpr (!requires { given.leaf(); } &&
+                       !requires { given.template for_part<0>(); }) {
     // Already a context and not a carrier: a place that was handed one
-    // directly hands the same one down.
+    // directly hands the same one down. A carrier says one of these two --
+    // a leaf answers `leaf`, a shape answers `for_part` -- and a shape used
+    // to be mistaken for a context here, which is how a context said in
+    // braces stopped at the door of a place that gathers.
     return given;
   } else if constexpr (parts_under<std::remove_cv_t<type>>() == 0) {
     return given.leaf();
@@ -2509,12 +2513,27 @@ template <class held, bool told_apart, class context_type>
 [[nodiscard]] constexpr std::expected<held, failure_for<held>> groups_value(
     std::span<const std::string_view> groups, context_type&& given);
 
+// The state a scanner that gathers begins with. A scanner told a context and a
+// scanner told none begin the same kind of state -- that is what lets a place
+// hand the context over without the type of it crossing the door.
+template <class held>
+using fold_state_for = decltype([] {
+  if constexpr (requires { scan::scanner<std::remove_cv_t<held>>{}.begin_groups(); }) {
+    return scan::scanner<std::remove_cv_t<held>>{}.begin_groups();
+  } else {
+    return scan::nothing_given{};
+  }
+}());
+
 template <class field_type>
 struct reading_of {
   using held = std::remove_cv_t<field_type>;
   using answer = std::expected<held, failure_for<held>>;
 
   constexpr virtual ~reading_of() = default;
+  // Begun where the context still has its type, handed back as the state the
+  // scanner would have begun anyway.
+  [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
   [[nodiscard]] constexpr virtual answer read(std::string_view text,
                                               std::string_view parameters) = 0;
   [[nodiscard]] constexpr virtual answer read_groups(
@@ -2559,6 +2578,16 @@ struct reading_by final : reading_of<field_type> {
   static constexpr bool reads_a_piece =
       requires(std::string_view text) { scan::scanner<held>{}.parse(text); } ||
       requires(std::string_view text) { scan::scanner<held>::try_parse(text); };
+
+  [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
+    if constexpr (requires { scan::scanner<held>{}.begin_groups(*kept); }) {
+      return scan::scanner<held>{}.begin_groups(*kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
+      return scan::scanner<held>{}.begin_groups();
+    } else {
+      return scan::nothing_given{};
+    }
+  }
 
   [[nodiscard]] constexpr answer read(std::string_view text,
                                       std::string_view parameters) override {
@@ -2654,6 +2683,9 @@ class context_leaf {
   [[nodiscard]] constexpr const context_leaf& leaf() const { return *this; }
 
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
+  [[nodiscard]] constexpr fold_state_for<held> begin_fold() const {
+    return how_->begin_fold();
+  }
   [[nodiscard]] constexpr answer read(std::string_view text,
                                       std::string_view parameters) const {
     return how_->read(text, parameters);
@@ -2822,7 +2854,17 @@ template <class held, class told_type>
 // first, and a scanner that takes none is begun the way it always was.
 template <class held, class context>
 [[nodiscard]] constexpr auto begun_groups(context&& given) {
-  if constexpr (!std::same_as<std::remove_cvref_t<context>,
+  // A place told in braces carries its context behind an interface that knows
+  // the field. The type of the context does not cross the door, but the
+  // beginning of a fold does: the carrier begins it where the type is still
+  // known and hands back the state the scanner would have begun anyway.
+  if constexpr (requires {
+                  given.told();
+                  given.begin_fold();
+                }) {
+    if (given.told()) return given.begin_fold();
+    return scan::scanner<std::remove_cv_t<held>>{}.begin_groups();
+  } else if constexpr (!std::same_as<std::remove_cvref_t<context>,
                               scan::default_context_t> &&
                 !requires { given.told(); } &&
                 requires { scan::scanner<held>{}.begin_groups(given); }) {
@@ -5414,7 +5456,8 @@ template <class root, class type, std::size_t offset, bool as_output,
 // keeps a gathering per register and works out which register holds a place,
 // this keeps them all in one object -- which is what a type is handed when it
 // is told its own groups, and it is told them because its places take turns.
-template <class type, fixed_string format>
+template <class type, fixed_string format,
+          class told_type = scan::default_context_t>
 struct shape_turns {
   using held = std::remove_cv_t<type>;
   static constexpr std::size_t places = groups_of_output<held>();
@@ -5427,6 +5470,10 @@ struct shape_turns {
   // Which places have been opened since they were last read out. A choice says
   // which branch ran by which mark opened; a list says whether a turn is going.
   std::array<bool, places == 0 ? 1 : places> took{};
+  // What this shape was told. A turn ends inside the walk, where the caller is
+  // long out of reach, so what was said at the door is kept here until the
+  // element a turn makes asks for it.
+  [[no_unique_address]] told_type told{};
 };
 
 template <class shape_type>
@@ -5525,8 +5572,20 @@ constexpr void close_shape_place(shape_type& state,
   } else if constexpr (scanned_as_range<stands_for>) {
     using element = std::remove_cvref_t<std::ranges::range_value_t<stands_for>>;
     if (!state.took[place + 1]) return;
-    auto one = finish_value<held, element, place + 1, false, failure_type>(
-        gathered_by_a_fold<shape_type>{state}, nullptr);
+    // Told nothing, this is the walk it always was: the same call, with
+    // nothing in the place of a context. Told something, the element is made
+    // with what its place was given.
+    auto one = [&] {
+      if constexpr (std::same_as<std::remove_cvref_t<decltype(state.told)>,
+                                 scan::default_context_t>) {
+        return finish_value<held, element, place + 1, false, failure_type>(
+            gathered_by_a_fold<shape_type>{state}, nullptr);
+      } else {
+        return finish_value<held, element, place + 1, false, failure_type>(
+            gathered_by_a_fold<shape_type>{state}, nullptr,
+            context_at_group<held, group>(state.told));
+      }
+    }();
     if (!one) {
       if (!failed) failed = std::move(one).error();
       return;
@@ -5753,6 +5812,32 @@ template <class slot_type, class told_type>
     static_cast<void>(told);
     return slot_type{};
   }
+}
+
+// The cold slots, taken out of the slots as they are begun for their places.
+// Taken rather than made: make_slots asks each place what it was told, and a
+// slot built from the whole carrier instead finds no constructor that takes it
+// and quietly begins the untold way -- which is where a context said at a
+// place used to stop on its way to a scanner that gathers.
+template <class cold_type, class all_type, std::size_t... which>
+[[nodiscard]] constexpr cold_type cold_out_of(all_type& all,
+                                              std::index_sequence<which...>) {
+  return std::tuple_cat([&] {
+    if constexpr (keeps_characters<std::tuple_element_t<which, all_type>>) {
+      return std::tuple<std::tuple_element_t<which, all_type>>(
+          std::move(std::get<which>(all)));
+    } else {
+      return std::tuple<>{};
+    }
+  }()...);
+}
+
+template <class type, fixed_string format, class mark_type, class cold_type,
+          class told_type>
+[[nodiscard]] constexpr cold_type made_cold_at_places(const told_type& told) {
+  auto all = make_slots<type, format, mark_type, told_type>(told);
+  return cold_out_of<cold_type>(
+      all, std::make_index_sequence<std::tuple_size_v<decltype(all)>>{});
 }
 
 template <class cold_type, class told_type>
@@ -6635,9 +6720,10 @@ template <class type, fixed_string format,
   auto view = std::views::all(std::forward<pieces_type>(pieces));
   typename field_gatherer<type, format, automaton, false, std::ptrdiff_t,
                           told_type>::cold_type collected =
-      made_cold<typename field_gatherer<type, format, automaton, false,
-                                        std::ptrdiff_t, told_type>::cold_type>(
-          told);
+      made_cold_at_places<
+          type, format, std::ptrdiff_t,
+          typename field_gatherer<type, format, automaton, false,
+                                  std::ptrdiff_t, told_type>::cold_type>(told);
   gathers_from_pieces<field_gatherer<type, format, automaton, false,
                                      std::ptrdiff_t, told_type>,
                       decltype(view),
@@ -6748,7 +6834,8 @@ template <class type, fixed_string format,
     using gatherer_type =
         field_gatherer<type, format, automaton, in_a_row, mark_kind, told_type>;
     typename gatherer_type::cold_type collected =
-        made_cold<typename gatherer_type::cold_type>(told);
+        made_cold_at_places<type, format, mark_kind,
+                            typename gatherer_type::cold_type>(told);
     gatherer_type into{collected, told};
     auto cursor = std::ranges::begin(input);
     mark_kind position = 0;
@@ -7104,6 +7191,16 @@ struct aggregate_scanner {
   // closes, and the element is put together there and added -- by the same
   // builder that puts together everything else, asked for the gatherings a
   // different way.
+  template <class self_type, class told>
+    requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
+  [[nodiscard]] constexpr auto begin_groups(this const self_type& self,
+                                            const told& given) {
+    static_cast<void>(self);
+    detail::shape_turns<scanner_target_t<self_type>, format, told> made{};
+    made.told = given;
+    return made;
+  }
+
   template <class self_type>
     requires(detail::turns_can_be_folded<scanner_target_t<self_type>, format>())
   [[nodiscard]] constexpr auto begin_groups(this const self_type& self) {

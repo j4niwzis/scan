@@ -328,6 +328,39 @@ class pieces_result {
     return read<type>();
   }
 
+  // The same contexts a subject in a row may be told. What is below took them
+  // all along -- the gatherer is told at the door and each place asks it -- so
+  // saying them here is all that was missing.
+  template <class type, class told_type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> read(
+      const told_type& told) {
+    return scan_pieces<type, format, told_type>(std::move(input_), told);
+  }
+
+  template <class type, class... contexts>
+    requires(sizeof...(contexts) > 0)
+  [[nodiscard]] constexpr type of(const contexts&... given) {
+    return or_thrown(read<type>(scan::contexts_given<contexts...>(given...)));
+  }
+
+  template <class type, class... contexts>
+    requires(sizeof...(contexts) > 0)
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
+      const contexts&... given) {
+    return read<type>(scan::contexts_given<contexts...>(given...));
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of(carrier_for<type> given) {
+    return or_thrown(read<type>(given));
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
+      carrier_for<type> given) {
+    return read<type>(given);
+  }
+
  private:
   pieces_type input_;
 };
@@ -364,6 +397,40 @@ class streaming_result {
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
   try_of() {
     return read<type>();
+  }
+
+  // The same contexts a subject in a row may be told. What is below took them
+  // all along -- the gatherer is told at the door and each place asks it -- so
+  // saying them here is all that was missing.
+  template <class type, class told_type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> read(
+      const told_type& told) {
+    return scan_stream<type, format, how_to_walk::by_length, told_type>(
+        input_, told);
+  }
+
+  template <class type, class... contexts>
+    requires(sizeof...(contexts) > 0)
+  [[nodiscard]] constexpr type of(const contexts&... given) {
+    return or_thrown(read<type>(scan::contexts_given<contexts...>(given...)));
+  }
+
+  template <class type, class... contexts>
+    requires(sizeof...(contexts) > 0)
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
+      const contexts&... given) {
+    return read<type>(scan::contexts_given<contexts...>(given...));
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of(carrier_for<type> given) {
+    return or_thrown(read<type>(given));
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
+      carrier_for<type> given) {
+    return read<type>(given);
   }
 
  private:
