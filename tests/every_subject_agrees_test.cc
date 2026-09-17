@@ -106,6 +106,55 @@ struct scan::scanner<counted> {
   }
 };
 
+// A place told its groups as they arrive, rather than read whole: the other way
+// a reading holds turns, and the other walk it takes.
+namespace {
+struct numbers {
+  std::vector<int> values;
+  int mark = 0;
+};
+struct folded {
+  numbers list;
+};
+}  // namespace
+
+template <>
+struct scan::scanner<numbers> {
+  struct state {
+    std::vector<int> values;
+    int running = 0;
+    int mark = 0;
+  };
+  static constexpr std::string_view pattern() {
+    return "([0-9]+)(?:,([0-9]+))*";
+  }
+  static constexpr state begin_groups() { return state{}; }
+  static constexpr state begin_groups(const room& where) {
+    return state{{}, 0, where.mark};
+  }
+  static constexpr void opened_group(state& made, scan::group_at<0>) {
+    made.running = 0;
+  }
+  static constexpr void opened_group(state& made, scan::group_at<1>) {
+    made.running = 0;
+  }
+  static constexpr void push_group(state& made, scan::group_at<0>, char value) {
+    made.running = made.running * 10 + (value - '0');
+  }
+  static constexpr void push_group(state& made, scan::group_at<1>, char value) {
+    made.running = made.running * 10 + (value - '0');
+  }
+  static constexpr void closed_group(state& made, scan::group_at<0>) {
+    made.values.push_back(made.running);
+  }
+  static constexpr void closed_group(state& made, scan::group_at<1>) {
+    made.values.push_back(made.running);
+  }
+  static constexpr numbers finish_groups(state made) {
+    return numbers{std::move(made.values), made.mark};
+  }
+};
+
 namespace {
 
 constexpr auto subject = "1,2,3"sv;
@@ -149,6 +198,33 @@ TEST_F(every_subject, InPiecesAndToldNothing) {
   expect_read(scan::scan<"{{}{*,?}}">(read_once(subject, &at) | scan::in_pieces<2>)
                   .of<row>(),
               0);
+}
+
+TEST_F(every_subject, AFoldInARowIsTold) {
+  EXPECT_EQ(scan::scan<"{}">(subject).of<folded>(fast).list.mark, 10);
+}
+
+TEST_F(every_subject, AFoldReadOnceIsTold) {
+  EXPECT_EQ(scan::scan<"{}">(read_once(subject, &at)).of<folded>(fast).list.mark,
+            10);
+}
+
+TEST_F(every_subject, AFoldInPiecesIsTold) {
+  EXPECT_EQ(scan::scan<"{}">(read_once(subject, &at) | scan::in_pieces<2>)
+                .of<folded>(fast)
+                .list.mark,
+            10);
+}
+
+TEST_F(every_subject, AFoldToldNothingIsToldNothing) {
+  EXPECT_EQ(scan::scan<"{}">(subject).of<folded>().list.mark, 0);
+  std::size_t once = 0;
+  EXPECT_EQ(scan::scan<"{}">(read_once(subject, &once)).of<folded>().list.mark, 0);
+  std::size_t pieces = 0;
+  EXPECT_EQ(scan::scan<"{}">(read_once(subject, &pieces) | scan::in_pieces<2>)
+                .of<folded>()
+                .list.mark,
+            0);
 }
 
 }  // namespace
