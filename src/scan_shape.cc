@@ -5523,15 +5523,23 @@ template <class root, class type, std::size_t offset, bool as_output,
     // and onto the one it was gathered with where its place was told nothing.
     type made = [&] -> type {
       const auto& gathered = source.template list<offset>();
+      // Asked of the very construction that would be used: a container with an
+      // allocator of its own is not thereby a container that takes a resource,
+      // and asking the wrong question here says yes for every one of them.
       if constexpr (requires {
-                      typename type::allocator_type;
-                      type(gathered, gathered.get_allocator());
+                      type(gathered,
+                           std::pmr::polymorphic_allocator<
+                               typename type::value_type>{});
                     }) {
         if (std::pmr::memory_resource* where = resource_of(given)) {
           return type(gathered,
                       std::pmr::polymorphic_allocator<typename type::value_type>(
                           where));
         }
+        return type(gathered, gathered.get_allocator());
+      } else if constexpr (requires {
+                             type(gathered, gathered.get_allocator());
+                           }) {
         return type(gathered, gathered.get_allocator());
       } else {
         return gathered;
@@ -6924,8 +6932,14 @@ template <class type, fixed_string format,
   // rather than iterators, which is what a range in a row has.
   // A list is left out of it: its elements are handed over turn by turn and a
   // run stepped over in one go is one turn as far as the walk can tell.
-  if constexpr (std::ranges::contiguous_range<range_type> &&
-                !holds_a_range<type>()) {
+  if constexpr (std::ranges::contiguous_range<range_type>) {
+    // Where the reading holds a list, its elements are turns: the runs cannot
+    // be stepped over whole -- a run stepped over in one go is one turn as far
+    // as the walk can tell -- and there is nothing to point at through them.
+    // Everything else about the two walks is the same, and they were written
+    // out twice until one of the two went without the contexts the caller
+    // said, which is a thing a second copy of an argument list will do.
+    constexpr bool points_at_it = !holds_a_range<type>();
     const char* cursor = std::ranges::data(input);
     const char* const last = cursor + std::ranges::size(input);
     // Runs stepped over whole, unless the caller asked for a character at a
@@ -6936,11 +6950,16 @@ template <class type, fixed_string format,
     // because a walk to a terminator is a state and a comparison; a walk that
     // gathers is a body a state, and two of them is twice the code for a
     // question that a subject of any length answers the same way.
-    constexpr walk_shape shape{
-        .in_words = walk != how_to_walk::one_at_a_time,
-        .tags_read = groups_whose_place_is_read<type, format, automaton>(),
-        .tags_written = groups_whose_mark_is_read<type, format, automaton>(),
-        .budget = bodies_worth_writing<automaton>()};
+    constexpr walk_shape shape =
+        points_at_it
+            ? walk_shape{
+                  .in_words = walk != how_to_walk::one_at_a_time,
+                  .tags_read =
+                      groups_whose_place_is_read<type, format, automaton>(),
+                  .tags_written =
+                      groups_whose_mark_is_read<type, format, automaton>(),
+                  .budget = bodies_worth_writing<automaton>()}
+            : walk_shape{.budget = bodies_worth_writing<automaton>()};
     // Nothing the reading fills in is made here.
     //
     // A walk written as labels is a walk no inliner will fold into this one,
@@ -6949,29 +6968,13 @@ template <class type, fixed_string format,
     // of the subject. Told to make its own instead, the gatherer and the
     // registers are values of the walk and go wherever values go.
     return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
-                      const char*, true, const char*, const char*,
+                      const char*, points_at_it, const char*, const char*,
                       automaton.register_count,
                       field_gatherer<type, format, automaton, in_a_row,
                                      mark_kind, told_type>,
-                      walk_answer<const char*>>(cursor, last, cursor, cursor,
-                                                {}, told);
-  } else if constexpr (std::ranges::contiguous_range<range_type>) {
-    // A subject in a row whose reading holds a list.
-    //
-    // The runs cannot be stepped over whole here -- an element is a turn, and
-    // a run stepped over in one go is one turn as far as the walk can tell --
-    // but that is all a list costs. The walk still owns what it reads into,
-    // and the reading is not built out of addresses this frame handed over.
-    const char* cursor = std::ranges::data(input);
-    const char* const last = cursor + std::ranges::size(input);
-    constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
-    return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
-                      const char*, false, const char*, const char*,
-                      automaton.register_count,
-                      field_gatherer<type, format, automaton, in_a_row,
-                                     mark_kind, told_type>,
-                      walk_answer<const char*>>(cursor, last, nullptr,
-                                                mark_kind{}, {}, told);
+                      walk_answer<const char*>>(
+        cursor, last, points_at_it ? cursor : nullptr,
+        points_at_it ? cursor : mark_kind{}, {}, told);
   } else {
     register_file<mark_kind, automaton.register_count> registers{};
     if constexpr (in_a_row) {
