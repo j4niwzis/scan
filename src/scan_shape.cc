@@ -4815,6 +4815,12 @@ inline constexpr auto gathered_pairs = [] consteval {
           : automaton.states[state].readings.size();
   gathered_pairs_of<capacity> said;
   const auto& packed = automaton.states[state];
+  // A group the machine does not have is a group no reading stands at. A place
+  // whose own pattern opens groups is counted among the output's groups, while
+  // the machine that walks a stream writes pairs only for the tags it has -- so
+  // asked about a further one, the answer is that nobody is at it. Asking the
+  // reading would be a read past the end of its row.
+  if (group * 2 + 1 >= packed.readings[0].size()) return said;
   for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
     const std::uint32_t open = packed.readings[reading][group * 2];
     const std::uint32_t shut = packed.readings[reading][group * 2 + 1];
