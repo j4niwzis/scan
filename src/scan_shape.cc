@@ -2504,6 +2504,26 @@ template <class told>
 // The state a scanner that gathers begins with. A scanner told a context and a
 // scanner told none begin the same kind of state -- that is what lets a place
 // hand the context over without the type of it crossing the door.
+// The state a scanner that is handed pieces begins with -- the other gathering
+// protocol, and the same rule: told a context or told none, what it begins is
+// the same kind of thing, so a place can hand the context over without the type
+// of it crossing the door.
+template <class held>
+using gather_state_for = decltype([] {
+  if constexpr (requires {
+                  scan::scanner<std::remove_cv_t<held>>{}.begin(
+                      std::string_view{});
+                }) {
+    return scan::scanner<std::remove_cv_t<held>>{}.begin(std::string_view{});
+  } else if constexpr (requires {
+                         scan::scanner<std::remove_cv_t<held>>{}.begin();
+                       }) {
+    return scan::scanner<std::remove_cv_t<held>>{}.begin();
+  } else {
+    return scan::nothing_given{};
+  }
+}());
+
 template <class held>
 using fold_state_for = decltype([] {
   if constexpr (requires { scan::scanner<std::remove_cv_t<held>>{}.begin_groups(); }) {
@@ -2523,6 +2543,9 @@ struct reading_of {
   // named: a resource is already a thing asked at runtime.
   [[nodiscard]] constexpr virtual std::pmr::memory_resource* told_resource()
       const = 0;
+  // The same, for a scanner handed its pieces rather than its groups.
+  [[nodiscard]] constexpr virtual gather_state_for<held> begin_gather(
+      std::string_view parameters) = 0;
   // Begun where the context still has its type, handed back as the state the
   // scanner would have begun anyway.
   [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
@@ -2574,6 +2597,23 @@ struct reading_by final : reading_of<field_type> {
   [[nodiscard]] constexpr std::pmr::memory_resource* told_resource()
       const override {
     return resource_of(*kept);
+  }
+
+  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
+      std::string_view parameters) override {
+    if constexpr (requires {
+                    scan::scanner<held>{}.begin(parameters, *kept);
+                  }) {
+      return scan::scanner<held>{}.begin(parameters, *kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(*kept); }) {
+      return scan::scanner<held>{}.begin(*kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(parameters); }) {
+      return scan::scanner<held>{}.begin(parameters);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(); }) {
+      return scan::scanner<held>{}.begin();
+    } else {
+      return scan::nothing_given{};
+    }
   }
 
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
@@ -2682,6 +2722,10 @@ class context_leaf {
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() const {
     return how_->begin_fold();
+  }
+  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
+      std::string_view parameters) const {
+    return how_->begin_gather(parameters);
   }
   [[nodiscard]] constexpr std::pmr::memory_resource* told_resource() const {
     return how_ == nullptr ? nullptr : how_->told_resource();
@@ -2898,7 +2942,20 @@ template <class held>
 template <class held, class told_type>
 [[nodiscard]] constexpr auto scanner_begin_given(std::string_view parameters,
                                                  const told_type& told) {
-  if constexpr (!std::same_as<told_type, scan::default_context_t> &&
+  // Only where what the carrier begins is the very thing this call hands back:
+  // a scanner with no gathering of its own begins nothing, and the branches
+  // below must all agree on one return type.
+  if constexpr (requires {
+                  told.told();
+                  told.begin_gather(parameters);
+                  requires std::same_as<decltype(told.begin_gather(parameters)),
+                                        decltype(scanner_begin<held>(parameters))>;
+                }) {
+    // A place told in braces: the context is behind an interface that knows the
+    // field, and beginning is part of that interface.
+    if (told.told()) return told.begin_gather(parameters);
+    return scanner_begin<held>(parameters);
+  } else if constexpr (!std::same_as<told_type, scan::default_context_t> &&
                 requires { scan::scanner<held>{}.begin(parameters, told); }) {
     return scan::scanner<held>{}.begin(parameters, told);
   } else if constexpr (!std::same_as<told_type, scan::default_context_t> &&

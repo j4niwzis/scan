@@ -155,9 +155,50 @@ struct scan::scanner<numbers> {
   }
 };
 
+// One of several: exactly one branch runs, and which one is not known where the
+// call is written -- so a context for each branch has to reach the one that did,
+// whichever road the subject took.
+namespace {
+struct dashed {
+  int letters = 0;
+  int mark = 0;
+};
+struct picked {
+  std::variant<counted, dashed> pick;
+};
+}  // namespace
+
+template <>
+struct scan::scanner<dashed> {
+  static constexpr std::string_view pattern() { return "[a-z]+"; }
+
+  struct state {
+    int letters = 0;
+    int mark = 0;
+  };
+  static constexpr state begin() { return {}; }
+  static constexpr state begin(std::string_view) { return {}; }
+  static constexpr state begin(std::string_view, const room& where) {
+    return state{0, where.mark};
+  }
+  static constexpr void push(state& made, char) { ++made.letters; }
+  static constexpr dashed finish(state made) {
+    return dashed{made.letters, made.mark};
+  }
+
+  static constexpr dashed parse(std::string_view text) {
+    return dashed{static_cast<int>(text.size()), 0};
+  }
+  static constexpr dashed parse(std::string_view text, const room& where) {
+    return dashed{static_cast<int>(text.size()), where.mark};
+  }
+};
+
 namespace {
 
 constexpr auto subject = "1,2,3"sv;
+constexpr auto digits = "42"sv;
+constexpr auto letters = "abc"sv;
 
 void expect_read(const row& got, int base) {
   ASSERT_EQ(got.values.size(), 3u);
@@ -214,6 +255,42 @@ TEST_F(every_subject, AFoldInPiecesIsTold) {
                 .of<folded>(fast)
                 .list.mark,
             10);
+}
+
+TEST_F(every_subject, TheBranchThatRanIsTold) {
+  EXPECT_EQ(std::get<0>(scan::scan<"{}">(digits).of<picked>(fast).pick).value, 52);
+  EXPECT_EQ(std::get<1>(scan::scan<"{}">(letters).of<picked>(fast).pick).mark, 10);
+}
+
+TEST_F(every_subject, TheBranchThatRanIsToldOffAStream) {
+  EXPECT_EQ(
+      std::get<0>(scan::scan<"{}">(read_once(digits, &at)).of<picked>(fast).pick)
+          .value,
+      52);
+  std::size_t pieces = 0;
+  EXPECT_EQ(std::get<1>(scan::scan<"{}">(read_once(letters, &pieces) |
+                                         scan::in_pieces<2>)
+                            .of<picked>(fast)
+                            .pick)
+                .mark,
+            10);
+}
+
+// A context per branch, said in braces -- and the branch that runs is told its
+// own, on a subject in a row and on one that arrives a character at a time.
+TEST_F(every_subject, EachBranchIsToldItsOwnWhereverItIsRead) {
+  room slow{2};
+  EXPECT_EQ(
+      std::get<0>(scan::scan<"{}">(digits).of<picked>({{fast, slow}}).pick).value,
+      52);
+  EXPECT_EQ(
+      std::get<1>(scan::scan<"{}">(letters).of<picked>({{fast, slow}}).pick).mark,
+      2);
+  EXPECT_EQ(std::get<1>(scan::scan<"{}">(read_once(letters, &at))
+                            .of<picked>({{fast, slow}})
+                            .pick)
+                .mark,
+            2);
 }
 
 TEST_F(every_subject, AFoldToldNothingIsToldNothing) {
