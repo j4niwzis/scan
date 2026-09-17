@@ -3116,14 +3116,18 @@ build_value(std::span<const std::string_view> groups,
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((theirs[at] = groups[offset + 1 + at]), ...);
       }(std::make_index_sequence<inside>{});
-      const auto given = std::span<const std::string_view>(theirs);
+      const auto pieces = std::span<const std::string_view>(theirs);
       if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-        auto got = scan::scanner_told_from_groups<held, ending>(given);
+        auto got = scan::scanner_told_from_groups<held, ending>(pieces, given);
         if (got) return std::move(*got);
         return ending::template went_wrong<type, failure_type>(
             std::move(got).error());
+      } else if constexpr (requires {
+                             scan::scanner<held>{}.from_groups(pieces, given);
+                           }) {
+        return scan::scanner<held>{}.from_groups(pieces, given);
       } else {
-        return scan::scanner<held>{}.from_groups(given);
+        return scan::scanner<held>{}.from_groups(pieces);
       }
     } else {
       auto state = begun_groups<held>(given.leaf());
@@ -4805,6 +4809,55 @@ constexpr void advance_scanner(
         },
         commands);
   }
+  // A turn that ended is set aside where it was gathered.
+  //
+  // The characters of a turn go to the register the readings of the state being
+  // left name for this place's opening. The command that begins the next turn
+  // writes a register of its own, and for the first turn of a list that is a
+  // register with nothing in it yet -- so setting the turn aside by the command
+  // lost the first turn of every list, and only the first: from the second turn
+  // on, the register the command writes is the one the turn before it was
+  // carried into. It is set aside by the readings now, which is how the turn
+  // that ended is looked for everywhere else.
+  if constexpr (how::folds && how::the_place && how::place_repeats) {
+    bool beginning_another = false;
+    std::uint32_t begins_at = 0;
+    for (std::size_t index = 0; index < count; ++index) {
+      const auto& command = commands[index];
+      if (command.value == -2) continue;
+      if (automaton.register_tag[command.destination] != opening) continue;
+      beginning_another = true;
+      begins_at = command.destination;
+      break;
+    }
+    if (beginning_another) {
+      // Gathered at the register the readings of the state being left name for
+      // this place. The move that begins the next turn renames the register --
+      // turn one lives at one number and turn two at another -- so the turn
+      // that ended is looked for where it was gathered, which is the old name.
+      const auto& left = automaton.states[left_state];
+      std::array<bool, automaton.register_count> aside{};
+      for (std::size_t reading = 0; reading < left.reading_count; ++reading) {
+        const std::uint32_t was = left.readings[reading][opening];
+        if (aside[was]) continue;
+        aside[was] = true;
+        auto& fold =
+            std::get<gathering_slot<type, format, group>>(states[was]);
+        if (!fold.here.started) continue;
+        // Set aside where the next turn will be looked for. The move renames
+        // the register -- the turn that ended was gathered under the old name
+        // and the turn that follows it is written under the new one -- and
+        // whoever makes the element of a turn that ended looks under the new
+        // name, because that is where the walk is now.
+        auto& into = std::get<gathering_slot<type, format, group>>(
+            states[begins_at]);
+        into.going = std::move(fold.here);
+        into.has_going = true;
+        fold.here = std::remove_cvref_t<decltype(fold.here)>(
+            context_at_group<type, group>(told));
+      }
+    }
+  }
   command_index = 0;
   std::apply(
       [&](const auto&... command) {
@@ -4820,24 +4873,28 @@ constexpr void advance_scanner(
                   std::get<gathering_slot<type, format, group>>(
                       old_states[command.source]);
             } else if constexpr (gathers_a_list) {
-              auto& stands_here = std::get<gathering_slot<type, format, group>>(
-                  states[command.destination]);
-              stands_here = made_like(stands_here);
+              // A list begins empty, and begins once. This command writes the
+              // register that holds where the list opened -- which happens when
+              // the list starts and again at a turn boundary, where the
+              // boundary has just handed the turn that ended to this very list.
+              // Emptying it there throws that turn away, and only that one: the
+              // boundaries after it arrive as copies and go down the branch
+              // above. So it is emptied where it is starting, and where it is
+              // starting the register it is written into stood nowhere.
+              if (stood_nowhere(slot_read(registers, command.destination))) {
+                auto& stands_here =
+                    std::get<gathering_slot<type, format, group>>(
+                        states[command.destination]);
+                stands_here = made_like(stands_here);
+              }
             } else if constexpr (how::folds && how::the_place &&
                                  how::place_repeats) {
-              // A turn ending and the next one beginning. The one that is
-              // ending has not been told what closed it -- that arrives on
-              // this very step, a moment from now -- so it is moved aside
-              // rather than thrown away, and the element is made from it once
-              // it has heard the rest.
+              // The turn that ended was set aside above, where it was
+              // gathered. What this register holds now is the turn that is
+              // beginning, and a turn begins with what its place was told --
+              // the same as the first turn did.
               auto& fold = std::get<gathering_slot<type, format, group>>(
                   states[command.destination]);
-              if (fold.here.started) {
-                fold.going = std::move(fold.here);
-                fold.has_going = true;
-              }
-              // A turn beginning is a state beginning, and a state begins
-              // with what its place was told -- the same as the first turn did.
               fold.here = std::remove_cvref_t<decltype(fold.here)>(
                   context_at_group<type, group>(told));
             } else {
@@ -5234,12 +5291,13 @@ inline constexpr auto gathered_pairs = [] consteval {
 
 template <std::size_t group, class type, fixed_string format, auto& automaton,
           class failure_type, class states_type, class registers_type,
-          std::size_t command_count>
+          std::size_t command_count,
+          class told_carrier = scan::nothing_given>
 constexpr void collect_element(
     std::size_t state, const registers_type& registers, states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, const char* text,
-    std::optional<failure_type>& failed) {
+    std::size_t count, const char* text, std::optional<failure_type>& failed,
+    const told_carrier& told = told_carrier{}) {
   if constexpr (group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind_of_output<type, group - 1>>) {
@@ -5279,10 +5337,13 @@ constexpr void collect_element(
       const std::uint32_t into = packed.readings[reading][list_group * 2];
       if (done[into] || stood_nowhere(slot_read(registers, open))) continue;
       done[into] = true;
+      // An element of a list is a reading of its own, and what the list's place
+      // was told is what it was told: a whole shape standing here reads its
+      // places with it, the way one standing anywhere else does.
       auto one = finish_value<type, element, group, false, failure_type>(
           by_the_registers<type, format>(packed.readings[reading], states,
                                          registers),
-          text);
+          text, context_at_group<type, list_group>(told));
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;
@@ -5368,14 +5429,15 @@ constexpr void collect_turns_that_ended(
 
 template <class type, fixed_string format, auto& automaton, class failure_type,
           class registers_type, class states_type, std::size_t command_count,
-          std::size_t... group>
+          class told_carrier = scan::nothing_given, std::size_t... group>
 constexpr void collect_elements(
     std::size_t state, const registers_type& registers, states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, std::index_sequence<group...>, const char* text,
-    std::optional<failure_type>& failed) {
+    std::optional<failure_type>& failed,
+    const told_carrier& told = told_carrier{}) {
   (collect_element<group, type, format, automaton, failure_type>(
-       state, registers, states, commands, count, text, failed),
+       state, registers, states, commands, count, text, failed, told),
    ...);
 }
 
@@ -5492,18 +5554,22 @@ template <class root, class type, std::size_t offset, bool as_output,
         theirs[at] = stood_on;
       }(), ...);
     }(std::make_index_sequence<inside>{});
-    const auto given = std::span<const std::string_view>(theirs);
+    const auto pieces = std::span<const std::string_view>(theirs);
     if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-      auto got = scan::scanner_told_from_groups<held>(given);
+      auto got = scan::scanner_told_from_groups<held>(pieces, given);
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else if constexpr (requires {
-                           scan::scanner<held>{}.from_groups(given);
+                           scan::scanner<held>{}.from_groups(pieces, given);
                          }) {
-      return scan::scanner<held>{}.from_groups(given);
+      return scan::scanner<held>{}.from_groups(pieces, given);
+    } else if constexpr (requires {
+                           scan::scanner<held>{}.from_groups(pieces);
+                         }) {
+      return scan::scanner<held>{}.from_groups(pieces);
     } else {
-      auto state = scan::scanner<held>{}.begin_groups();
+      auto state = begun_groups<held>(given);
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           if (!took[at]) return;
@@ -6224,7 +6290,7 @@ class field_gatherer {
     constexpr const auto& taken = automaton.states[state].ranges[move];
     collect_elements<type, format, automaton, failure_for<type>>(
         state, registers, states_, taken.commands, taken.command_count,
-        std::make_index_sequence<field_count>{}, text_, failed_);
+        std::make_index_sequence<field_count>{}, text_, failed_, told_);
   }
 
   // Whether anything open on this state's run would rather have it whole.
@@ -7386,6 +7452,23 @@ struct aggregate_scanner {
     return detail::build_value<detail::shape_failure<type>,
                                detail::format_parameters<type, format>, type, 0,
                                true>(groups);
+  }
+
+  // The same, told what the place this shape stands at was told. A shape
+  // standing inside another shape is read by the same builder, so what reaches
+  // it here reaches its places the way it reaches everything else.
+  template <class self_type, class told_type>
+    requires(!detail::says_a_list_inside<scanner_target_t<self_type>>())
+  [[nodiscard]] constexpr auto from_groups(
+      this const self_type& self, std::span<const std::string_view> groups,
+      const told_type& told)
+      -> std::expected<scanner_target_t<self_type>,
+                       detail::shape_failure<scanner_target_t<self_type>>> {
+    using type = scanner_target_t<self_type>;
+    static_cast<void>(self);
+    return detail::build_value<detail::shape_failure<type>,
+                               detail::format_parameters<type, format>, type, 0,
+                               true>(groups, told);
   }
 
   // Told its groups as they happen.
