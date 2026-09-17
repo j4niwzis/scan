@@ -432,13 +432,32 @@ jobs:
         run: |
           git config user.name 'j4niwzis'
           git config user.email 'j4niwzis@proton.me'
-          git add -A include
-          if git diff --cached --quiet; then
-            echo "the headers are what they already were"
-            exit 0
-          fi
-          git commit -m "The headers, as this tree generates them [skip ci]"
-          # Somebody may have pushed while this was building; what is here is
-          # generated from this commit and is not a change to anybody else's.
-          git pull --rebase --autostash origin main
-          git push origin HEAD:main
+          # Put on top of whatever main is now, rather than rebased onto it.
+          #
+          # These headers are generated from this tree; they are not an edit
+          # anybody made, so there is nothing of theirs to keep and nothing to
+          # merge. Rebasing a commit of them onto a main that already carries a
+          # run's headers is two generated files meeting in a conflict, which
+          # is what stopped a green build from finishing: the tests had passed
+          # and the step that only writes down what the build produced failed
+          # on a race between two runs.
+          #
+          # Tried a few times, because the same race can happen again between
+          # the fetch and the push.
+          kept=$(mktemp -d)
+          cp -r include "$kept/"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            rm -rf include
+            cp -r "$kept/include" .
+            git add -A include
+            if git diff --cached --quiet; then
+              echo "the headers are what they already were"
+              exit 0
+            fi
+            git commit -m "The headers, as this tree generates them [skip ci]"
+            if git push origin HEAD:main; then exit 0; fi
+            echo "main moved while this was pushing; taking it again"
+          done
+          exit 1
