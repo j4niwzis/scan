@@ -4819,6 +4819,18 @@ template <class root, class type, std::size_t offset, bool as_output = false,
 // rather than as lambdas called where they stand. A lambda holding references
 // and called inside the argument of something that itself holds references is
 // more than the constant evaluator will follow.
+// What a part of a place was told. A carrier knows its parts; a place told
+// nothing has no parts to ask about and says the same nothing to each of them,
+// which is what the whole-place forms do one level up.
+template <std::size_t part, class told_carrier>
+[[nodiscard]] constexpr auto told_for_part(const told_carrier& given) {
+  if constexpr (requires { given.template for_part<part>(); }) {
+    return given.template for_part<part>();
+  } else {
+    return given;
+  }
+}
+
 template <class root, class type, std::size_t offset, class failure_type,
           class source_type, class told_carrier, std::size_t... part>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_parts(
@@ -4828,7 +4840,7 @@ template <class root, class type, std::size_t offset, class failure_type,
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
                               offset + groups_before_field<type, part>(), false,
                               failure_type>(
-          source, text, given.template for_part<part>())...};
+          source, text, told_for_part<part>(given))...};
   if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
@@ -4844,7 +4856,7 @@ template <class root, class type, std::size_t offset, class failure_type,
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
                               offset + groups_before_field<type, part>(), false,
                               failure_type>(
-          source, text, given.template for_part<part>())...};
+          source, text, told_for_part<part>(given))...};
   if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
