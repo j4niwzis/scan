@@ -2021,7 +2021,8 @@ template <class type, fixed_string format, bool absent_is_empty = false>
   constexpr bool walks_past = walk_past_a_match<automaton>() != 0;
   using kept_type =
       std::conditional_t<walks_past,
-                         std::array<const char*, automaton.register_count>,
+                         register_file<const char*,
+                                       automaton.register_count>,
                          nothing_kept>;
   walk_answer<const char*, kept_type> best;
   const char* cursor = begin;

@@ -1324,7 +1324,17 @@ template <auto& automaton, std::size_t state, class answer_type,
 SCAN_FORCE_INLINE constexpr void keep_the_place(
     answer_type& best, const register_file<mark, register_count>& registers,
     const cursor_type& cursor, mark place, gatherer& into) {
-  if constexpr (requires { best.kept = registers; }) {
+  // Asked of the answer and not of the assignment.
+  //
+  // This was `requires { best.kept = registers; }`, which is true where the
+  // answer keeps the marks and false where it keeps nothing -- and false, too,
+  // where it keeps them in a type the marks can no longer be assigned to. That
+  // last one is not a question anybody meant to ask: a change of type turned
+  // it into a walk that quietly stopped keeping the place, and a reading whose
+  // fields all came back empty. Asked this way, a mismatch is a compilation
+  // error, which is what it is.
+  if constexpr (!std::same_as<std::remove_cvref_t<decltype(best.kept)>,
+                              nothing_kept>) {
     best.kept = registers;
     // Where the machine stands, said the way this walk says it: an address
     // where the characters lie in a row, and how far along otherwise.
