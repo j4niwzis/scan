@@ -2562,38 +2562,6 @@ template <class type, std::size_t place>
 template <class type, std::size_t place>
 using context_place_of = typename decltype(context_place_kind<type, place>())::type;
 
-// What a call collects its places into.
-template <class type>
-class contexts_by_place {
-  template <std::size_t k>
-  using place = context_place_of<type, k>;
-
- public:
-  static constexpr bool told_apart = true;
-
-  constexpr contexts_by_place(place<0> first, place<1> second, place<2> third,
-                              place<3> fourth, place<4> fifth, place<5> sixth,
-                              place<6> seventh, place<7> eighth)
-      : parts_{first, second, third, fourth, fifth, sixth, seventh, eighth} {}
-
-  template <std::size_t k>
-  [[nodiscard]] constexpr auto for_part() const {
-    if constexpr (k < 8) {
-      return std::get<k>(parts_);
-    } else {
-      return scan::nothing_given{};
-    }
-  }
-
-  // Where the whole output is one value, the first place is that value's.
-  [[nodiscard]] constexpr auto leaf() const { return std::get<0>(parts_).leaf(); }
-
- private:
-  std::tuple<place<0>, place<1>, place<2>, place<3>, place<4>, place<5>,
-             place<6>, place<7>>
-      parts_;
-};
-
 // The state of a leaf that is built from its own groups, told the context its
 // place was given. The same rule as everywhere: asked for with the context
 // first, and a scanner that takes none is begun the way it always was.
