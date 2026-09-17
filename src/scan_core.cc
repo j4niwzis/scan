@@ -843,6 +843,7 @@ struct contexts_given {
   static constexpr bool told_apart = !for_everyone;
   static constexpr std::size_t count = sizeof...(contexts);
 
+  constexpr contexts_given() = default;
   constexpr explicit contexts_given(contexts... given)
       : all(std::move(given)...) {}
 

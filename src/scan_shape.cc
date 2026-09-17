@@ -2406,6 +2406,39 @@ template <class type>
   }
 }
 
+// Which field of a shape a group falls in: the last one that begins at or
+// before it.
+template <class type, std::size_t group>
+[[nodiscard]] consteval std::size_t field_holding_group() {
+  std::size_t found = 0;
+  [&]<std::size_t... which>(std::index_sequence<which...>) {
+    ((groups_before_field<type, which>() <= group ? (found = which) : found),
+     ...);
+  }(std::make_index_sequence<parts_of<type>::count>{});
+  return found;
+}
+
+// The context said at the place a group belongs to.
+//
+// The walk knows groups; the caller said places. This walks down the shape the
+// same way the value is built, so a group of a place inside a place inside the
+// output ends at the context that place was given.
+template <class type, std::size_t group, class carrier>
+[[nodiscard]] constexpr auto context_at_group(const carrier& given) {
+  if constexpr (!requires { given.leaf(); }) {
+    // Already a context and not a carrier: a place that was handed one
+    // directly hands the same one down.
+    return given;
+  } else if constexpr (parts_under<std::remove_cv_t<type>>() == 0) {
+    return given.leaf();
+  } else {
+    constexpr std::size_t which = field_holding_group<type, group>();
+    using part = std::remove_cv_t<typename parts_of<type>::template at<which>>;
+    return context_at_group<part, group - groups_before_field<type, which>()>(
+        given.template for_part<which>());
+  }
+}
+
 // One leaf read with a context, said as an interface that knows the field.
 //
 // The field is what the answer is made of, so the interface can be written out
@@ -4109,7 +4142,8 @@ template <class type, fixed_string format, std::size_t group,
           bool a_list = scanned_as_range<leaf_kind_of_output<type, group>>>
 struct gathering_state {
   using result = decltype(gathering_of<type, format, group, mark_type>::begin(
-      std::string_view{}, std::declval<const told_type&>()));
+      std::string_view{},
+      context_at_group<type, group>(std::declval<const told_type&>())));
 };
 
 template <class type, fixed_string format, std::size_t group, class mark_type,
@@ -4228,7 +4262,8 @@ template <class type, fixed_string format, class mark_type = std::ptrdiff_t,
         static constexpr auto spread = spread_of<type, format>();
         std::get<gathering_slot<type, format, which, mark_type, told_type>>(
             made) = gathering_of<type, format, which, mark_type>::begin(
-            spread.parameters[which].view(), told);
+            spread.parameters[which].view(),
+            context_at_group<type, which>(told));
       }
     };
     (one.template operator()<groups_of_output<type>() - 1 - group>(), ...);
@@ -4266,7 +4301,8 @@ template <class type, fixed_string format, auto& automaton,
           static constexpr auto spread = spread_of<type, format>();
           std::get<gathering_slot<type, format, group, mark_type, told_type>>(
               states[at]) = gathering_of<type, format, group, mark_type>::begin(
-              spread.parameters[group].view(), told);
+              spread.parameters[group].view(),
+              context_at_group<type, group>(told));
         }
       }
     }(), ...);
@@ -4351,13 +4387,15 @@ template <class states_type, std::size_t command_count>
 template <std::size_t group, class type, fixed_string format, auto& automaton,
           bool hands_the_character = true, bool kept_in_the_walk = false,
           class states_type, class kept_type, class registers_type,
-          std::size_t command_count>
+          std::size_t command_count,
+          class told_carrier = scan::nothing_given>
 constexpr void advance_scanner(
     char symbol, std::size_t state, std::size_t left_state, auto position,
     const registers_type& registers,
     const kept_type& old_states, states_type& states,
     const std::array<packed_command, command_count>& commands,
-    std::size_t count, const char* text) {
+    std::size_t count, const char* text,
+    const told_carrier& told = told_carrier{}) {
   static constexpr auto spread = spread_of<type, format>();
   constexpr std::size_t opening = group * 2;
   constexpr std::size_t closing = group * 2 + 1;
@@ -4465,12 +4503,16 @@ constexpr void advance_scanner(
                 fold.going = std::move(fold.here);
                 fold.has_going = true;
               }
-              fold.here = {};
+              // A turn beginning is a state beginning, and a state begins
+              // with what its place was told -- the same as the first turn did.
+              fold.here = std::remove_cvref_t<decltype(fold.here)>(
+                  context_at_group<type, group>(told));
             } else {
               std::get<gathering_slot<type, format, group>>(
                   states[command.destination]) =
                   gathering_of<type, format, group>::begin(
-                      spread.parameters[group].view());
+                      spread.parameters[group].view(),
+                      context_at_group<type, group>(told));
             }
           } else if (tag == closing && slot_read(registers, command.destination) != position &&
                      command.source != packed_command::no_source &&
@@ -4720,23 +4762,26 @@ template <class type, fixed_string format, class reading_type,
 
 
 template <class root, class type, std::size_t offset, bool as_output = false,
-          class failure_type = failure_for<root>, class source_type>
+          class failure_type = failure_for<root>, class source_type,
+          class told_carrier = scan::nothing_given>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_value(
-    const source_type& source, const char* text);
+    const source_type& source, const char* text,
+    const told_carrier& given = told_carrier{});
 
 // The parts of a product, and the arguments of a call, as named functions
 // rather than as lambdas called where they stand. A lambda holding references
 // and called inside the argument of something that itself holds references is
 // more than the constant evaluator will follow.
 template <class root, class type, std::size_t offset, class failure_type,
-          class source_type, std::size_t... part>
+          class source_type, class told_carrier, std::size_t... part>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_parts(
-    const source_type& source, const char* text,
+    const source_type& source, const char* text, const told_carrier& given,
     std::index_sequence<part...>) {
   auto parts =
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
                               offset + groups_before_field<type, part>(), false,
-                              failure_type>(source, text)...};
+                              failure_type>(
+          source, text, given.template for_part<part>())...};
   if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
@@ -4744,14 +4789,15 @@ template <class root, class type, std::size_t offset, class failure_type,
 }
 
 template <class root, class type, std::size_t offset, class failure_type,
-          class source_type, std::size_t... part>
+          class source_type, class told_carrier, std::size_t... part>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_by_call(
-    const source_type& source, const char* text,
+    const source_type& source, const char* text, const told_carrier& given,
     std::index_sequence<part...>) {
   auto parts =
       std::tuple{finish_value<root, typename parts_of<type>::template at<part>,
                               offset + groups_before_field<type, part>(), false,
-                              failure_type>(source, text)...};
+                              failure_type>(
+          source, text, given.template for_part<part>())...};
   if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
     return std::unexpected(std::move(*went_wrong));
   }
@@ -4807,6 +4853,24 @@ struct gathered_pairs_of {
   std::size_t count = 0;
 };
 
+// Which tag of the machine a group of the output is written in.
+//
+// The two counts are the same only while every group gets a mark. A place whose
+// turns are told by the moves gets none -- and then every group after it stands
+// one tag earlier than its number says. The mask that decides who gets a mark is
+// the one the automaton was built from, so the mapping is that mask, counted.
+template <class type, fixed_string format, auto& automaton, std::size_t group>
+[[nodiscard]] consteval bool a_group_with_a_tag() {
+  return (groups_whose_mark_is_read<type, format, automaton>() >> group) & 1;
+}
+
+template <class type, fixed_string format, auto& automaton, std::size_t group>
+[[nodiscard]] consteval std::size_t tag_of_group() {
+  const std::uint64_t mask = groups_whose_mark_is_read<type, format, automaton>();
+  return static_cast<std::size_t>(
+      std::popcount(mask & ((std::uint64_t{1} << group) - 1)));
+}
+
 template <auto& automaton, std::size_t state, std::size_t group>
 inline constexpr auto gathered_pairs = [] consteval {
   constexpr std::size_t capacity =
@@ -4815,11 +4879,9 @@ inline constexpr auto gathered_pairs = [] consteval {
           : automaton.states[state].readings.size();
   gathered_pairs_of<capacity> said;
   const auto& packed = automaton.states[state];
-  // A group the machine does not have is a group no reading stands at. A place
-  // whose own pattern opens groups is counted among the output's groups, while
-  // the machine that walks a stream writes pairs only for the tags it has -- so
-  // asked about a further one, the answer is that nobody is at it. Asking the
-  // reading would be a read past the end of its row.
+  // Asked about a tag this machine does not have, nobody stands at it. The
+  // callers say which tag they mean rather than which group, so this is a
+  // backstop and not the mapping itself.
   if (group * 2 + 1 >= packed.readings[0].size()) return said;
   for (std::size_t reading = 0; reading < packed.reading_count; ++reading) {
     const std::uint32_t open = packed.readings[reading][group * 2];
@@ -4986,14 +5048,14 @@ constexpr void collect_elements(
 template <class type, fixed_string format, auto& automaton,
           bool hands_the_character = true, bool kept_in_the_walk = false,
           class registers_type, class states_type, std::size_t command_count,
-          std::size_t... group>
+          class told_carrier = scan::nothing_given, std::size_t... group>
 constexpr void advance_scanners(
     char symbol, std::size_t state, std::size_t left_state, auto position,
     const registers_type& registers,
     states_type& states,
     const std::array<packed_command, command_count>& commands,
     std::size_t count, std::index_sequence<group...>,
-    const char* text = nullptr) {
+    const char* text = nullptr, const told_carrier& told = told_carrier{}) {
   // The old gatherings are only needed where a command copies one, and inside a
   // field nothing is copied and nothing is written -- that is what holding the
   // tags back bought. Copying the whole set on every character to be ready for
@@ -5012,13 +5074,13 @@ constexpr void advance_scanners(
     (advance_scanner<group, type, format, automaton, hands_the_character,
                      kept_in_the_walk>(
          symbol, state, left_state, position, registers, old_states, states,
-         commands, count, text),
+         commands, count, text, told),
      ...);
   } else {
     (advance_scanner<group, type, format, automaton, hands_the_character,
                      kept_in_the_walk>(
          symbol, state, left_state, position, registers, states, states,
-         commands, count, text),
+         commands, count, text, told),
      ...);
   }
 }
@@ -5040,9 +5102,9 @@ template <class type, class state_type, std::size_t... index>
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
 template <class root, class type, std::size_t offset, bool as_output,
-          class failure_type, class source_type>
+          class failure_type, class source_type, class told_carrier>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<type, failure_type> finish_value(
-    const source_type& source, const char* text) {
+    const source_type& source, const char* text, const told_carrier& given) {
   // A shape that reads its own groups is a value where it stands in somebody
   // else's format and a product of places in its own. Where this is the whole
   // of what is being read, it is the second.
@@ -5148,7 +5210,15 @@ template <class root, class type, std::size_t offset, bool as_output,
       return std::unexpected(
           scan::as_a_failure<failure_type>(std::move(got).error()));
     } else {
-      return scan::scanner_parse<held>(piece, parameters);
+      if constexpr (std::same_as<told_carrier, scan::nothing_given>) {
+        return scan::scanner_parse<held>(piece, parameters);
+      } else {
+        auto got = parse_value_given<held, failure_type,
+                                     told_carrier::told_apart>(piece, parameters,
+                                                               given.leaf());
+        if (got) return std::move(*got);
+        return std::unexpected(std::move(got).error());
+      }
     }
   } else if constexpr (a_value) {
     const auto& gathered = source.template gathering<offset>();
@@ -5169,7 +5239,7 @@ template <class root, class type, std::size_t offset, bool as_output,
     // is written to be allowed none at all, there may not have been one.
     if (source.template took_part<offset + 1>()) {
       auto last = finish_value<root, element, offset + 1, false, failure_type>(
-          source, text);
+          source, text, given);
       if (!last) return std::unexpected(std::move(last).error());
       append_to(made, std::move(*last));
     }
@@ -5188,7 +5258,7 @@ template <class root, class type, std::size_t offset, bool as_output,
         if (made || !source.template took_part<mark>()) return;
         using alternative = branch_at<type, which>;
         auto part = finish_value<root, alternative, mark + 1, false,
-                                 failure_type>(source, text);
+                                 failure_type>(source, text, given);
         if (!part) {
           made = std::unexpected(std::move(part).error());
           return;
@@ -5205,10 +5275,10 @@ template <class root, class type, std::size_t offset, bool as_output,
     }(std::make_index_sequence<branch_count<type>()>{});
   } else if constexpr (scanned_from_values<type>) {
     return finish_by_call<root, type, offset, failure_type>(
-        source, text, std::make_index_sequence<parts_of<type>::count>{});
+        source, text, given, std::make_index_sequence<parts_of<type>::count>{});
   } else {
     return finish_parts<root, type, offset, failure_type>(
-        source, text, std::make_index_sequence<parts_of<type>::count>{});
+        source, text, given, std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
@@ -5561,9 +5631,14 @@ template <class slot_type, class told_type>
 
 template <class cold_type, class told_type>
 [[nodiscard]] constexpr cold_type made_cold(const told_type& told) {
-  return [&]<std::size_t... k>(std::index_sequence<k...>) {
-    return cold_type{made_slot<std::tuple_element_t<k, cold_type>>(told)...};
-  }(std::make_index_sequence<std::tuple_size_v<cold_type>>{});
+  if constexpr (requires { std::tuple_size<cold_type>::value; }) {
+    return [&]<std::size_t... k>(std::index_sequence<k...>) {
+      return cold_type{made_slot<std::tuple_element_t<k, cold_type>>(told)...};
+    }(std::make_index_sequence<std::tuple_size_v<cold_type>>{});
+  } else {
+    static_cast<void>(told);
+    return cold_type{};
+  }
 }
 
 // The gatherer the format reader hands to the walk: the fields' own scanners,
@@ -5669,7 +5744,12 @@ class field_gatherer {
   // there is no default constructor, and every place that makes one has to
   // say where they lie. Making that the type's rule rather than a thing to
   // remember is what keeps a gatherer from ever pointing at nothing.
-  constexpr explicit field_gatherer(cold_type& cold) : cold_(&cold) {
+  // Told at the door, because the slots and the register states are made in
+  // this body: a context that arrives after the gatherer is built arrives after
+  // every state it was meant for has already begun.
+  constexpr explicit field_gatherer(cold_type& cold,
+                                    const told_type& told = told_type{})
+      : cold_(&cold), told_(told) {
     begin_again();
   }
 
@@ -5698,7 +5778,7 @@ class field_gatherer {
       ((slot<which>() = std::get<which>(all)), ...);
     }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
     if constexpr (!nothing_at_a_register) {
-      states_ = make_register_states<type, format, automaton, mark_kind>();
+      states_ = make_register_states<type, format, automaton, mark_kind, told_type>(told_);
     }
   }
 
@@ -5951,7 +6031,8 @@ class field_gatherer {
     if constexpr (state != landed || staying_writes<automaton, state>()) {
       advance_scanners<type, format, automaton, false, true>(
           letter, landed, state, position, registers, states_, taken.commands,
-          taken.command_count, std::make_index_sequence<field_count>{}, text_);
+          taken.command_count, std::make_index_sequence<field_count>{}, text_,
+          told_);
     }
     hand_over<taken.groups_open, taken.groups_reopened,
               open_on_entry<automaton, state>(),
@@ -6047,7 +6128,7 @@ class field_gatherer {
         by_the_registers<type, format>(packed.readings[packed.accepting_slot],
                                        states_, registers, mine_kept,
                                        packed.ending_reading),
-        text_);
+        text_, told_);
     if (!got) {
       failed_ = std::move(got).error();
       made_.reset();
@@ -6189,7 +6270,9 @@ class field_gatherer {
       }
     } else {
       // The same pairs, for a run handed over whole.
-      constexpr auto& pairs = gathered_pairs<automaton, state, group>;
+      constexpr auto& pairs =
+          gathered_pairs<automaton, state,
+                         tag_of_group<type, format, automaton, group>()>;
       one_per_register<automaton.register_count> given;
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
@@ -6273,7 +6356,8 @@ class field_gatherer {
           append_to(list, scanner_finish<element>(std::move(made)));
         }
         made = gathering_of<type, format, group>::begin(
-            spread.parameters[group].view());
+            spread.parameters[group].view(),
+            context_at_group<type, group>(told_));
         turns_open_ |= mine;
       }
       if constexpr ((now & mine) != 0) {
@@ -6293,7 +6377,8 @@ class field_gatherer {
         auto& made = slot<gathering_slot<type, format, group, mark_kind, told_type>>();
         if constexpr ((again & (std::uint64_t{1} << group)) != 0) {
           made = gathering_of<type, format, group>::begin(
-              spread.parameters[group].view());
+              spread.parameters[group].view(),
+              context_at_group<type, group>(told_));
         }
         gathering_of<type, format, group>::push(made, letter);
       }
@@ -6301,7 +6386,9 @@ class field_gatherer {
       static constexpr auto spread = spread_of<type, format>();
       // The pairs this state names, worked out while compiling; a register is
       // one gathering, so one of them going on is enough.
-      constexpr auto& pairs = gathered_pairs<automaton, landed, group>;
+      constexpr auto& pairs =
+          gathered_pairs<automaton, landed,
+                         tag_of_group<type, format, automaton, group>()>;
       one_per_register<automaton.register_count> given;
       for (std::size_t which = 0; which < pairs.count; ++which) {
         const std::uint32_t opening = pairs.open[which];
@@ -6430,7 +6517,7 @@ template <class type, fixed_string format,
                       decltype(view),
                       pieces_hold<type, format>>
       into(field_gatherer<type, format, automaton, false, std::ptrdiff_t,
-                          told_type>{collected},
+                          told_type>{collected, told},
            std::move(view));
   // Nothing in hand to begin with, so the first thing the walk does is ask.
   const char* cursor = nullptr;
@@ -6504,7 +6591,8 @@ template <class type, fixed_string format,
                       automaton.register_count,
                       field_gatherer<type, format, automaton, in_a_row,
                                      mark_kind, told_type>,
-                      walk_answer<const char*>>(cursor, last, cursor, cursor);
+                      walk_answer<const char*>>(cursor, last, cursor, cursor,
+                                                {}, told);
   } else if constexpr (std::ranges::contiguous_range<range_type>) {
     // A subject in a row whose reading holds a list.
     //
@@ -6535,8 +6623,7 @@ template <class type, fixed_string format,
         field_gatherer<type, format, automaton, in_a_row, mark_kind, told_type>;
     typename gatherer_type::cold_type collected =
         made_cold<typename gatherer_type::cold_type>(told);
-    gatherer_type into{collected};
-    into.was_told(told);
+    gatherer_type into{collected, told};
     auto cursor = std::ranges::begin(input);
     mark_kind position = 0;
     constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
