@@ -1489,6 +1489,60 @@ template <class type, class failure_type,
   }
 }
 
+// The same reading, where the call handed this place a context.
+//
+// The scanner is asked in the shapes it may have written, the one that says
+// most first: parameters and context, then context alone. A scanner that takes
+// no context at all is read the way it always was -- which is what makes one
+// context for everybody mean "whoever wants it, take it", and what makes the
+// same context a mistake where the places were told apart.
+//
+// The context goes no further than this call. What the scanner does with it --
+// keeps it in the state it hands back, gives it to what it builds, forgets it
+// -- is the scanner's business; the library neither stores it nor looks inside.
+template <class type, class failure_type, bool told_apart,
+          class ending = scan::hands_a_failure_back, class context>
+[[nodiscard]] constexpr std::expected<type, failure_type> parse_value_given(
+    std::string_view text, std::string_view parameters, const context& given) {
+  using value_type = std::remove_cv_t<type>;
+  if constexpr (std::same_as<context, scan::by_default>) {
+    // A place that was given nothing reads as it did before: said here and not
+    // left to overload resolution, because a scanner whose context is a
+    // template would otherwise take this standing-in-for-nothing as a context.
+    return parse_value<type, failure_type, ending>(text, parameters);
+  } else if constexpr (requires {
+                         scan::scanner<value_type>::try_parse(text, parameters,
+                                                              given);
+                       }) {
+    auto got = scan::scanner<value_type>::try_parse(text, parameters, given);
+    if (got) return std::move(*got);
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::move(got).error()));
+  } else if constexpr (requires {
+                         scan::scanner<value_type>::try_parse(text, given);
+                       }) {
+    auto got = scan::scanner<value_type>::try_parse(text, given);
+    if (got) return std::move(*got);
+    return std::unexpected(
+        scan::as_a_failure<failure_type>(std::move(got).error()));
+  } else if constexpr (requires {
+                         scan::scanner<value_type>{}.parse(text, parameters,
+                                                           given);
+                       }) {
+    return scan::scanner<value_type>{}.parse(text, parameters, given);
+  } else if constexpr (requires {
+                         scan::scanner<value_type>{}.parse(text, given);
+                       }) {
+    return scan::scanner<value_type>{}.parse(text, given);
+  } else {
+    static_assert(!told_apart,
+                  "this place was given a context of its own and its scanner "
+                  "takes none: write parse(string_view, context) on "
+                  "scan::scanner<T>, or write scan::by_default in its place");
+    return parse_value<type, failure_type, ending>(text, parameters);
+  }
+}
+
 // Where a branch's mark stands, counting from the start of the variant: each
 // branch before it took a mark of its own and whatever its alternative reads.
 template <class type, std::size_t branch>
@@ -2202,16 +2256,14 @@ template <class type, fixed_string format, int sentinel, bool terminated,
           return std::string_view(begin, static_cast<std::size_t>(end - begin));
         };
         // Where the automaton writes every tag on every path, no group can have
-        // taken no part, and the walk over them at the end is a walk over a
-        // question already answered.
-        constexpr bool any_can_be_absent =
-            !(true && ... && (always_written[index * 2] &&
-                              always_written[index * 2 + 1]));
-        if constexpr (!any_can_be_absent) {
-          return std::array{capture.template operator()<index>()...};
-        } else {
-          return answer(std::array{capture.template operator()<index>()...});
-        }
+        // taken no part, and the question the walk at the end asks is already
+        // answered -- which is what the capture above leaves out, and not what
+        // this hands back. Said as the same kind on every road out of here: one
+        // road out of this lambda is the failure above, so a road that hands
+        // back the bare array is a return type that cannot be deduced at all.
+        // It compiled for as long as nobody tried rather than asked on a
+        // pattern whose every tag is always written.
+        return answer(std::array{capture.template operator()<index>()...});
       };
       constexpr unsigned char terminator =
           sentinel >= 0 ? static_cast<unsigned char>(sentinel) : 0;
@@ -2312,35 +2364,63 @@ template <class type, bool as_output = false>
   }
 }
 
+// The state of a leaf that is built from its own groups, told the context its
+// place was given. The same rule as everywhere: asked for with the context
+// first, and a scanner that takes none is begun the way it always was.
+template <class held, class context>
+[[nodiscard]] constexpr auto begun_groups(const context& given) {
+  if constexpr (!std::same_as<context, scan::by_default> &&
+                requires { scan::scanner<held>{}.begin_groups(given); }) {
+    return scan::scanner<held>{}.begin_groups(given);
+  } else {
+    static_cast<void>(given);
+    return scan::scanner<held>{}.begin_groups();
+  }
+}
+
 // The value itself, for a reading that cannot go wrong.
 template <class parameters, class type, std::size_t offset,
-          bool as_output = false>
+          bool as_output = false, class given_type = scan::nothing_given>
 [[nodiscard]] constexpr type built_value(
-    std::span<const std::string_view> groups) {
+    std::span<const std::string_view> groups,
+    const given_type& given = given_type{}) {
   constexpr bool a_value = scanned_as_leaf<type> && !as_output;
   if constexpr (a_value) {
-    return scanner_parse<std::remove_cv_t<type>>(groups[offset],
-                                                 parameters::at(offset));
+    if constexpr (std::same_as<given_type, scan::nothing_given>) {
+      return scanner_parse<std::remove_cv_t<type>>(groups[offset],
+                                                   parameters::at(offset));
+    } else {
+      return or_thrown(
+          parse_value_given<std::remove_cv_t<type>,
+                            failure_for<std::remove_cv_t<type>>,
+                            given_type::told_apart, scan::throws_a_failure>(
+              groups[offset], parameters::at(offset),
+              given.template at<offset>()));
+    }
   } else if constexpr (scanned_from_values<type>) {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return scan::scanner<std::remove_cv_t<type>>{}.parse(
           built_value<parameters, typename parts_of<type>::template at<index>,
-                      offset + groups_before_field<type, index>()>(groups)...);
+                      offset + groups_before_field<type, index>()>(groups,
+                                                                   given)...);
     }(std::make_index_sequence<parts_of<type>::count>{});
   } else {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return type{
           built_value<parameters, typename parts_of<type>::template at<index>,
-                      offset + groups_before_field<type, index>()>(groups)...};
+                      offset + groups_before_field<type, index>()>(groups,
+                                                                   given)...};
     }(std::make_index_sequence<parts_of<type>::count>{});
   }
 }
 
 template <class failure_type, class parameters, class type,
           std::size_t offset, bool as_output = false,
-          class ending = hands_a_failure_back>
+          class ending = hands_a_failure_back,
+          class given_type = scan::nothing_given>
 [[nodiscard]] constexpr typename ending::template result<type, failure_type>
-build_value(std::span<const std::string_view> groups) {
+build_value(std::span<const std::string_view> groups,
+            const given_type& given = given_type{}) {
   // Where this is the whole of what is being read, a shape that reads its own
   // groups is a product of places rather than a value in a place.
   constexpr bool a_value = scanned_as_leaf<type> && !as_output;
@@ -2348,7 +2428,7 @@ build_value(std::span<const std::string_view> groups) {
                 !std::same_as<ending, throws_a_failure>) {
     // Nothing here can hand a failure back, so nothing here holds one -- even
     // where the caller asked to be handed one.
-    return built_value<parameters, type, offset, as_output>(groups);
+    return built_value<parameters, type, offset, as_output>(groups, given);
   } else if constexpr (a_value && reads_its_own_groups<type>) {
     // The type's own groups are groups of this match, already found. It is
     // handed them, or told which of them each character belongs to -- the same
@@ -2374,7 +2454,7 @@ build_value(std::span<const std::string_view> groups) {
         return scan::scanner<held>{}.from_groups(given);
       }
     } else {
-      auto state = scan::scanner<held>{}.begin_groups();
+      auto state = begun_groups<held>(given.template at<offset>());
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           // A group that took no part in the match is not opened at all, which
@@ -2395,8 +2475,17 @@ build_value(std::span<const std::string_view> groups) {
       }
     }
   } else if constexpr (a_value) {
-    auto got = parse_value<std::remove_cv_t<type>, failure_type>(
-        groups[offset], parameters::at(offset));
+    auto got = [&] {
+      if constexpr (std::same_as<given_type, scan::nothing_given>) {
+        return parse_value<std::remove_cv_t<type>, failure_type>(
+            groups[offset], parameters::at(offset));
+      } else {
+        return parse_value_given<std::remove_cv_t<type>, failure_type,
+                                 given_type::told_apart>(
+            groups[offset], parameters::at(offset),
+            given.template at<offset>());
+      }
+    }();
     if (got) return std::move(*got);
     return ending::template went_wrong<type, failure_type>(
         std::move(got).error());
@@ -2411,7 +2500,7 @@ build_value(std::span<const std::string_view> groups) {
         if (made || groups[mark].data() == nullptr) return;
         using alternative = branch_at<type, which>;
         auto part = build_value<failure_type, parameters, alternative, mark + 1,
-                                false, ending>(groups);
+                                false, ending>(groups, given);
         if (!ending::read(part)) {
           made = ending::template went_wrong<type, failure_type>(
               ending::failure(std::move(part)));
@@ -2441,12 +2530,12 @@ build_value(std::span<const std::string_view> groups) {
             build_value<failure_type, parameters,
                         typename parts_of<type>::template at<index>,
                         offset + groups_before_field<type, index>(), false,
-                        ending>(groups)...);
+                        ending>(groups, given)...);
       } else {
         auto parts = std::tuple{build_value<
             failure_type, parameters, typename parts_of<type>::template at<index>,
             offset + groups_before_field<type, index>(), false, ending>(
-            groups)...};
+            groups, given)...};
         if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
           return std::unexpected(std::move(*went_wrong));
         }
@@ -2463,12 +2552,12 @@ build_value(std::span<const std::string_view> groups) {
         return type{build_value<failure_type, parameters,
                                 typename parts_of<type>::template at<index>,
                                 offset + groups_before_field<type, index>(),
-                                false, ending>(groups)...};
+                                false, ending>(groups, given)...};
       } else {
         auto parts = std::tuple{build_value<
             failure_type, parameters, typename parts_of<type>::template at<index>,
             offset + groups_before_field<type, index>(), false, ending>(
-            groups)...};
+            groups, given)...};
         if (auto went_wrong = what_went_wrong<failure_type>(parts)) {
           return std::unexpected(std::move(*went_wrong));
         }
@@ -6269,23 +6358,25 @@ struct aggregate_scanner {
   // and the type at the call, and `point` may have no scanner at all. What
   // reads it is this, asked for both: the library below hands over the groups
   // and asks nothing about what a point is made of.
-  template <class type>
+  template <class type, class given_type = scan::nothing_given>
   [[nodiscard]] static constexpr auto read(
-      std::span<const std::string_view> groups)
+      std::span<const std::string_view> groups,
+      const given_type& given = given_type{})
       -> std::expected<type, detail::failure_for<type>> {
     return detail::build_value<detail::failure_for<type>,
                                detail::format_parameters<type, format>, type, 0,
-                               true>(groups);
+                               true, scan::hands_a_failure_back>(groups, given);
   }
 
   // The same, where the caller asked for the value itself: what went wrong is
   // thrown at the asking, which is the only place anything is thrown.
-  template <class type>
+  template <class type, class given_type = scan::nothing_given>
   [[nodiscard]] static constexpr type read_or_throw(
-      std::span<const std::string_view> groups) {
+      std::span<const std::string_view> groups,
+      const given_type& given = given_type{}) {
     return detail::build_value<detail::failure_for<type>,
                                detail::format_parameters<type, format>, type, 0,
-                               true, scan::throws_a_failure>(groups);
+                               true, scan::throws_a_failure>(groups, given);
   }
 
   // Nothing here is a member the library reads and reacts to. What this class

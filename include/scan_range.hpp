@@ -38,6 +38,39 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
       fields));
 }
 
+// A reading that has been told its contexts and not yet its output type.
+//
+// The contexts cannot be told to the conversion itself -- a conversion takes no
+// arguments -- so they are told to the reading, and the conversion is the one
+// it always was. Everything here is the same reading under another spelling.
+template <class reading, class... contexts>
+class reading_with {
+ public:
+  constexpr reading_with(reading what, contexts... given)
+      : what_(std::move(what)), given_(std::move(given)...) {}
+
+  template <class type>
+    requires(std::is_aggregate_v<type> || scanned_as_variant<type>)
+  constexpr operator type() const {
+    return what_.template read_or_throw<type>(given_);
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr type of() const {
+    return what_.template read_or_throw<type>(given_);
+  }
+
+  template <class type>
+  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of()
+      const {
+    return what_.template read<type>(given_);
+  }
+
+ private:
+  reading what_;
+  scan::contexts_given<contexts...> given_;
+};
+
 template <fixed_string format, int terminator = -1, bool terminated = false,
           how_to_walk walk = how_to_walk::by_length>
 class borrowed_result {
@@ -46,13 +79,17 @@ class borrowed_result {
 
   // The reading itself, which hands back what it read or what went wrong.
   // Everything below is this, asked for in one of the two ways.
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, failure_for<type>> read() const {
+  template <class type, class given_type = scan::nothing_given>
+  [[nodiscard]] constexpr std::expected<type, failure_for<type>> read(
+      const given_type& given = given_type{}) const {
     // A list or a fold is read by the machine that gathers as it goes, even
     // where the subject lies in a row and could be pointed at: what either of
     // them is made of are the turns, and the positions left behind hold the
     // last turn and nothing before it.
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
+      static_assert(std::same_as<given_type, scan::nothing_given>,
+                    "a context does not reach a reading that gathers as it "
+                    "goes yet -- only one whose places are read from the match");
       return detail::scan_stream<type, format, walk>(input_);
     } else {
       // A group that took no part is an error, unless somewhere in this output
@@ -83,16 +120,21 @@ class borrowed_result {
       // Built by the helper that knows what a shape is made of, and not
       // here. What this layer has is groups; what a type is made of is a
       // question it does not ask.
-      return scan::aggregate_scanner<format>::template read<type>(*fields);
+      return scan::aggregate_scanner<format>::template read<type>(*fields,
+                                                                  given);
     }
   }
 
   // The same reading, asked for rather than tried for: nothing along the way
   // holds a failure, because there is nowhere to put one but a throw and the
   // throw happens where the failure is.
-  template <class type>
-  [[nodiscard]] constexpr type read_or_throw() const {
+  template <class type, class given_type = scan::nothing_given>
+  [[nodiscard]] constexpr type read_or_throw(
+      const given_type& given = given_type{}) const {
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
+      static_assert(std::same_as<given_type, scan::nothing_given>,
+                    "a context does not reach a reading that gathers as it "
+                    "goes yet -- only one whose places are read from the match");
       return or_thrown(detail::scan_stream<type, format, walk>(input_));
     } else {
       const auto fields = [&] {
@@ -105,7 +147,7 @@ class borrowed_result {
         }
       }();
       return scan::aggregate_scanner<format>::template read_or_throw<type>(
-          fields);
+          fields, given);
     }
   }
 
@@ -130,15 +172,36 @@ class borrowed_result {
   // has nowhere to put a failure but an exception. Named, it has: `of` is the
   // conversion under another spelling, and `try_of` hands back what went wrong
   // instead of throwing it.
-  template <class type>
-  [[nodiscard]] constexpr type of() const {
-    return read_or_throw<type>();
+  // Asked for with the contexts the places were given.
+  //
+  // One context is everybody's; more than one is one per place, in the order
+  // the places are read, with scan::by_default standing for a place that wants
+  // none. Each reaches the one call where its place makes its value.
+  template <class type, class... contexts>
+  [[nodiscard]] constexpr type of(contexts... given) const {
+    if constexpr (sizeof...(contexts) == 0) {
+      return read_or_throw<type>();
+    } else {
+      return read_or_throw<type>(scan::contexts_given<contexts...>(given...));
+    }
   }
 
-  template <class type>
+  template <class type, class... contexts>
   [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
-  try_of() const {
-    return read<type>();
+  try_of(contexts... given) const {
+    if constexpr (sizeof...(contexts) == 0) {
+      return read<type>();
+    } else {
+      return read<type>(scan::contexts_given<contexts...>(given...));
+    }
+  }
+
+  // The same contexts, told before the output type is named -- which is what a
+  // reading assigned to a variable needs, because the conversion that names the
+  // type has nowhere to put them.
+  template <class... contexts>
+  [[nodiscard]] constexpr auto with(contexts... given) const {
+    return reading_with<borrowed_result, contexts...>(*this, given...);
   }
 
   // The same things the reading could be told before it was handed a subject,
