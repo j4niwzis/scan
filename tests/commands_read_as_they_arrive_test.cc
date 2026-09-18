@@ -16,7 +16,7 @@ struct set_command {
 
 TEST(ReaderTest, CommandsReadAsTheyArrive) {
   static constexpr std::string_view arriving = "set speed 42\nset gain 7\n";
-  scan::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
+  scan::experimental::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
   std::array<set_command, 4> got{};
   std::size_t taken = 0;
   std::size_t echoed = 0;
@@ -37,7 +37,7 @@ TEST(ReaderTest, CommandsReadAsTheyArrive) {
 }
 
 TEST(ReaderTest, ACommandThatHasJustBecomeWhole) {
-  scan::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
+  scan::experimental::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
   for (char symbol : std::string_view("set x 1")) {
     if (!reading.offer(symbol)) break;
   }

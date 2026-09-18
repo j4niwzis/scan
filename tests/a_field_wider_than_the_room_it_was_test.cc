@@ -15,7 +15,7 @@ struct set_command {
 
 
 TEST(ReaderTest, AFieldWiderThanTheRoomItWasGiven) {
-  scan::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
+  scan::experimental::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
   for (char symbol : std::string_view("set abcdefghijklmnopqrstuvwxyz 5")) {
     if (!reading.offer(symbol)) break;
   }
@@ -25,7 +25,7 @@ TEST(ReaderTest, AFieldWiderThanTheRoomItWasGiven) {
 }
 
 TEST(ReaderTest, TheNameAsItIsBeingTyped) {
-  scan::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
+  scan::experimental::reader<set_command, "set {[a-z]+} {[0-9]+}"> reading;
   std::vector<std::string> seen;
   for (char symbol : std::string_view("set speed 42")) {
     if (!reading.offer(symbol)) break;

@@ -617,7 +617,7 @@ class each_stream_view {
 // all. And because nothing waits for the end of the input, whatever else the
 // arriving characters are supposed to cause can happen as they arrive.
 //
-//     scan::reader<command, "set {[a-z]+} {[0-9]+}"> reading;
+//     scan::experimental::reader<command, "set {[a-z]+} {[0-9]+}"> reading;
 //     for (;;) {
 //       const char symbol = next();
 //       if (reading.offer(symbol)) continue;
@@ -625,6 +625,13 @@ class each_stream_view {
 //       reading.restart();
 //       if (!reading.offer(symbol)) report(symbol);
 //     }
+//
+// Under `experimental` because it is the one reading here whose shape is not
+// settled: everything else in this library is a call that reads a subject, and
+// this is a machine the caller drives. It is not in the README for the same
+// reason.
+namespace experimental {
+
 template <class Type, fixed_string Format>
 class reader {
  public:
@@ -678,6 +685,8 @@ class reader {
  private:
   detail::stream_state<Type, Format, false> state_;
 };
+
+}  // namespace experimental
 
 // The head of a range that is read once. The range is left standing after the
 // character that ended the match, which is handed back with the values because

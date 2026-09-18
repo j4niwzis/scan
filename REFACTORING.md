@@ -32,15 +32,16 @@ with `places` and the file was cut where it could be.
 
 | module | lines | what is in it |
 | --- | --- | --- |
-| `scan.shape.places` | 3359 | `fields`, the places of a format, `spread_format`, the scanner glue, and the whole carrier layer -- `reading_of`, `context_leaf`, `resource_of` |
+| `scan.shape.places` | 2509 | `fields`, the places of a format, `spread_format`, and the glue that asks a scanner for a value |
+| `scan.shape.contexts` | 854 | the carrier layer -- `reading_of`, `reading_by`, `context_leaf`, `carrier_places`, `resource_of` -- and what a resource builds: `made_range`, `made_like` |
 | `scan.shape.gatherings` | 1063 | what one place gathers: `no_gathering`, `fold_of`, the marks and what a gathering is begun and finished with |
 | `scan.shape.walk` | 1468 | where the gatherings live while the machine runs: the slots, `make_slots`, `make_register_states`, `advance_scanner`, `collect_element` |
 | `scan.shape.values` | 1216 | `shape_turns`, `finish_value`, `field_gatherer` -- the value put together out of what was found |
 | `scan.shape` | 695 | the readings themselves and `aggregate_scanner`, re-exporting the four |
 
-What is left of the split: `places` is still three and a half thousand lines and
-wants the context layer taken out of it, which means moving declarations rather
-than moving text -- the next cut, and the first one that is not free.
+Both cuts were free in the end: the second one wanted no declaration moved
+either, once the first had been made. What is left is `places` at two and a half
+thousand lines, where the format walk and the scanner glue still share a file.
 
 Two hundred and fifty top-level declarations in one file is past what anybody
 reads; more to the point, a translation unit that wants only the context layer
@@ -113,8 +114,11 @@ struct takes_the_policies { /* sentinel, scalar, vec, sized, by_length, past_spa
 
 Three hundred lines go, and a new policy stops being a thing to remember to add
 in nine places. The same is true of the closures in `scan_regex.cc`:
-`match_closure`, `starts_with_closure`, `search_closure`, `search_all_closure`,
-`split_closure` each carry their own `into`.
+`match_closure`, `starts_with_closure`, `search_all_closure` and
+`split_closure` each carry their own `into` -- measured, and it is three lines
+apiece for four closures that each hand back a different type, so it is not
+worth a template-template parameter. The walk policies are on `match_closure`
+alone. Left as it is.
 
 ## 5. The delicate parts want tests below the surface
 

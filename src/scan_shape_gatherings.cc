@@ -11,7 +11,7 @@ import std;
 import scan.tre;
 export import scan.compiler;
 export import scan.runtime;
-export import scan.shape.places;
+export import scan.shape.contexts;
 
 #if defined(_MSC_VER)
 #define SCAN_FORCE_INLINE __forceinline
