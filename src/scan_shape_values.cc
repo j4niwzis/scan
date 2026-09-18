@@ -1159,9 +1159,9 @@ class field_gatherer {
           auto& list = slot<gathering_slot<Type, Format, list_group, MarkKind, CarrierType>>();
           append_to(list, scanner_finish<element>(std::move(made)));
         }
-        made = gathering_of<Type, Format, Group>::begin(
-            spread.parameters[Group].view(),
-            context_at_group<Type, Group>(told_));
+        begin_gathering_at(made, gathering_of<Type, Format, Group>::begin(
+                                     spread.parameters[Group].view(),
+                                     context_at_group<Type, Group>(told_)));
         turns_open_ |= mine;
       }
       if constexpr ((now & mine) != 0) {
@@ -1180,9 +1180,9 @@ class field_gatherer {
         static constexpr auto spread = spread_of<Type, Format>();
         auto& made = slot<gathering_slot<Type, Format, Group, MarkKind, CarrierType>>();
         if constexpr ((again & (std::uint64_t{1} << Group)) != 0) {
-          made = gathering_of<Type, Format, Group>::begin(
-              spread.parameters[Group].view(),
-              context_at_group<Type, Group>(told_));
+          begin_gathering_at(made, gathering_of<Type, Format, Group>::begin(
+                                       spread.parameters[Group].view(),
+                                       context_at_group<Type, Group>(told_)));
         }
         gathering_of<Type, Format, Group>::push(made, letter);
       }

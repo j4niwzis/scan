@@ -143,23 +143,24 @@ Both are in `every_subject_agrees_test.cc`, both are about a place whose type
 is read by a shape scanner of its own -- `struct deep { both left; both
 right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
 
-* **Two places of one kind shared a gathering off a subject read once.**
-  **Mended.** Reading `"1:ab 2:cd"` gave both halves the same value, with the
-  digits of both concatenated and the letters of both counted: the walk keeps a
-  gathering per *kind*, which is right for a field at a register and wrong for a
-  fold the walk keeps itself. `fold_of` now carries the place it stands at, so
-  two places of one type are two slots, and `AShapeOfShapesIsReadOffAStreamToo`
-  runs.
-* **A string gathered off a stream loses the resource its place was told
-  about.** `DISABLED_AStringGatheredKeepsTheResourceToo`: a `std::pmr::string`
-  field read in a row keeps the resource and the same field gathered a character
-  at a time comes back on the default one. Three places that used to assign a
-  gathering over an empty one now build it where it stands
-  (`begin_gathering_at`, `make_slots`, `make_register_states`, `begin_again`),
-  and the value is finished from `copied_gathering`, which keeps the resource --
-  and the answer is still on the default one, so the drop is somewhere between
-  those. Worth an afternoon with the reading instrumented: every place that
-  holds a gathering, printing `get_allocator().resource()`.
+* **Two places of one kind share a gathering off a subject read once.**
+  `DISABLED_AShapeOfShapesIsReadOffAStreamToo`: reading `"1:ab 2:cd"` gives both
+  halves the same value, with the digits of both concatenated and the letters of
+  both counted. The walk keeps a gathering per *kind* (`gathering_slot`), which
+  is right for a field at a register -- no two groups of a kind are open in one
+  register at once -- and wrong for a fold the walk keeps itself. **Tried**:
+  giving `fold_of` the place it stands at, so two places of one type are two
+  slots. The sharing goes away and the walk then does not match at all, which
+  says the slot identity is read somewhere else too -- the next attempt should
+  start by finding where, with the reading instrumented, rather than by changing
+  the type again.
+* **A string gathered off a stream lost the resource its place was told
+  about.** **Mended.** A `std::pmr::string` read in a row kept the resource and
+  the same field gathered a character at a time came back on the default one.
+  Six places begin a gathering, and two of them -- the ones the walk runs when a
+  group opens -- assigned a freshly begun one over the slot, which is exactly
+  how a container that keeps a resource loses it. All six now build where they
+  stand, through `begin_gathering_at`.
 * **A braced list of contexts does not reach into such a place.**
   `of<deep>(fast, slow)` works; `of<deep>({{fast, slow}, {slow, fast}})` does
   not compile (`scan_shape.cc:2703` and `:3167`: the carrier hands the leaf
