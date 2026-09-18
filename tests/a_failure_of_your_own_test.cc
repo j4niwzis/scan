@@ -16,23 +16,23 @@ namespace {
 
 using namespace std::string_view_literals;
 
-template <class base = scan::handed_back>
-struct too_heavy : scan::scan_error<base> {
-  using scan::scan_error<base>::scan_error;
+template <class Base = scan::handed_back>
+struct too_heavy : scan::scan_error<Base> {
+  using scan::scan_error<Base>::scan_error;
 };
 
-template <class base = scan::handed_back>
-struct not_a_weight : scan::scan_error<base> {
-  using scan::scan_error<base>::scan_error;
+template <class Base = scan::handed_back>
+struct not_a_weight : scan::scan_error<Base> {
+  using scan::scan_error<Base>::scan_error;
 };
 
 struct weight {
   int grams = 0;
 };
 
-template <class base = scan::handed_back>
-struct thrown_at_you : scan::scan_error<base> {
-  using scan::scan_error<base>::scan_error;
+template <class Base = scan::handed_back>
+struct thrown_at_you : scan::scan_error<Base> {
+  using scan::scan_error<Base>::scan_error;
 };
 
 struct label {
@@ -50,7 +50,7 @@ struct scan::scanner<weight> {
   // Written against the two ways of reading, and handing a failure back
   // either way: the template argument is a hint, and this one says the same
   // thing whichever way it is asked.
-  template <class ending = scan::hands_a_failure_back>
+  template <class Ending = scan::hands_a_failure_back>
   static std::expected<weight, std::variant<too_heavy<>, not_a_weight<>>> parse(
       std::string_view text) {
     int made = 0;

@@ -70,33 +70,33 @@ std::vector<std::string> subjects_over(std::string_view alphabet,
 }
 
 // One pattern, both readings, every subject.
-template <scan::fixed_string pattern, std::size_t groups>
+template <scan::fixed_string Pattern, std::size_t Groups>
 void agree_on(std::string_view alphabet, std::size_t longest) {
   for (const std::string& subject : subjects_over(alphabet, longest)) {
-    const auto walked = scan::match<pattern>(std::string_view(subject));
+    const auto walked = scan::match<Pattern>(std::string_view(subject));
     const auto [matched, places] =
-        interpreted(pattern.view(), subject, groups);
+        interpreted(Pattern.view(), subject, Groups);
     ASSERT_EQ(static_cast<bool>(walked), matched)
-        << "pattern " << pattern.view() << " subject \"" << subject << '"';
+        << "pattern " << Pattern.view() << " subject \"" << subject << '"';
     if (!matched) continue;
     [&]<std::size_t... group>(std::index_sequence<group...>) {
       (([&] {
          const std::string_view got = walked.template get<group + 1>().to_view();
          const bool took_part = got.data() != nullptr;
          ASSERT_EQ(took_part, places[group].took_part)
-             << "pattern " << pattern.view() << " subject \"" << subject
+             << "pattern " << Pattern.view() << " subject \"" << subject
              << "\" group " << group;
          if (!took_part) return;
          ASSERT_EQ(got.data() - subject.data(), places[group].begins)
-             << "pattern " << pattern.view() << " subject \"" << subject
+             << "pattern " << Pattern.view() << " subject \"" << subject
              << "\" group " << group;
          ASSERT_EQ(static_cast<std::ptrdiff_t>(got.size()),
                    places[group].ends - places[group].begins)
-             << "pattern " << pattern.view() << " subject \"" << subject
+             << "pattern " << Pattern.view() << " subject \"" << subject
              << "\" group " << group;
        }()),
        ...);
-    }(std::make_index_sequence<groups>{});
+    }(std::make_index_sequence<Groups>{});
   }
 }
 

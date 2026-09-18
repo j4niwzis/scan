@@ -35,10 +35,10 @@ struct counted {
 };
 
 // One of several of our own, and nothing of the standard's in it.
-template <class... parts>
+template <class... Parts>
 struct either {
   std::size_t which = 0;
-  std::tuple<parts...> all{};
+  std::tuple<Parts...> all{};
 };
 
 struct picked {
@@ -48,16 +48,16 @@ struct picked {
 
 }  // namespace
 
-template <class... parts>
-struct scan::branches<either<parts...>> {
-  static constexpr std::size_t count = sizeof...(parts);
-  template <std::size_t which>
-  using at = std::tuple_element_t<which, std::tuple<parts...>>;
-  template <std::size_t which, class value>
-  [[nodiscard]] static constexpr either<parts...> make(value&& one) {
-    either<parts...> made;
-    made.which = which;
-    std::get<which>(made.all) = std::forward<value>(one);
+template <class... Parts>
+struct scan::branches<either<Parts...>> {
+  static constexpr std::size_t count = sizeof...(Parts);
+  template <std::size_t Which>
+  using at = std::tuple_element_t<Which, std::tuple<Parts...>>;
+  template <std::size_t Which, class Value>
+  [[nodiscard]] static constexpr either<Parts...> make(Value&& one) {
+    either<Parts...> made;
+    made.which = Which;
+    std::get<Which>(made.all) = std::forward<Value>(one);
     return made;
   }
 };

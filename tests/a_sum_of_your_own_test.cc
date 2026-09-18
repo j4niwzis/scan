@@ -40,12 +40,12 @@ template <>
 struct scan::branches<either_word_or_number> {
   static constexpr std::size_t count = 2;
 
-  template <std::size_t which>
-  using at = std::conditional_t<which == 0, word, number>;
+  template <std::size_t Which>
+  using at = std::conditional_t<Which == 0, word, number>;
 
-  template <std::size_t which, class value>
-  [[nodiscard]] static constexpr either_word_or_number make(value&& one) {
-    return either_word_or_number(std::forward<value>(one));
+  template <std::size_t Which, class Value>
+  [[nodiscard]] static constexpr either_word_or_number make(Value&& one) {
+    return either_word_or_number(std::forward<Value>(one));
   }
 };
 

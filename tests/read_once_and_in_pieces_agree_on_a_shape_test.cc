@@ -74,9 +74,9 @@ struct counted {
 
 // One subject read three ways: pointed at, read once, and read in pieces small
 // enough that these subjects cross a seam.
-template <scan::fixed_string format, class type>
+template <scan::fixed_string Format, class Type>
 [[nodiscard]] auto read_three_ways(std::string_view text) {
-  constexpr auto read = scan::scan<format>.template try_of<type>();
+  constexpr auto read = scan::scan<Format>.template try_of<Type>();
   std::size_t once_at = 0;
   std::size_t pieces_at = 0;
   auto direct = read(std::string_view(text));

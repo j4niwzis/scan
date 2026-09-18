@@ -10,13 +10,13 @@ namespace {
 
 struct point { int x; int y; };
 
-template <class item, std::size_t room>
+template <class Item, std::size_t Room>
 struct small_list {
-  using value_type = item;
-  std::array<item, room> items{};
+  using value_type = Item;
+  std::array<Item, Room> items{};
   std::size_t count = 0;
-  constexpr void push_back(item value) {
-    if (count < room) items[count++] = value;
+  constexpr void push_back(Item value) {
+    if (count < Room) items[count++] = value;
   }
   [[nodiscard]] constexpr auto begin() const { return items.begin(); }
   [[nodiscard]] constexpr auto end() const { return items.begin() + count; }

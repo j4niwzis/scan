@@ -12,18 +12,18 @@ export namespace scan {
 // the match, because the subject does. Input that is walked by iterators is
 // held as the pair of them. Input that can only be read once is held as text
 // of its own: there is nothing left behind to point at.
-template <class holder>
+template <class Holder>
 class basic_submatch {
  public:
   constexpr basic_submatch() = default;
-  constexpr basic_submatch(holder held, bool matched = true)
+  constexpr basic_submatch(Holder held, bool matched = true)
       : held_(std::move(held)), matched_(matched) {}
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return matched_;
   }
 
-  [[nodiscard]] constexpr const holder& held() const noexcept { return held_; }
+  [[nodiscard]] constexpr const Holder& held() const noexcept { return held_; }
 
   [[nodiscard]] constexpr auto begin() const { return std::ranges::begin(held_); }
   [[nodiscard]] constexpr auto end() const { return std::ranges::end(held_); }
@@ -35,48 +35,48 @@ class basic_submatch {
   // Only where the characters lie in a row: a view has to point at something
   // that is already there, and a subject read once is not.
   [[nodiscard]] constexpr auto data() const
-    requires std::ranges::contiguous_range<const holder&>
+    requires std::ranges::contiguous_range<const Holder&>
   {
     return std::ranges::data(held_);
   }
 
   [[nodiscard]] constexpr std::string_view to_view() const
-    requires std::ranges::contiguous_range<const holder&>
+    requires std::ranges::contiguous_range<const Holder&>
   {
     return std::string_view(std::ranges::data(held_),
                             static_cast<std::size_t>(std::ranges::size(held_)));
   }
 
   [[nodiscard]] constexpr operator std::string_view() const
-    requires std::ranges::contiguous_range<const holder&>
+    requires std::ranges::contiguous_range<const Holder&>
   {
     return to_view();
   }
 
  private:
-  holder held_{};
+  Holder held_{};
   bool matched_ = false;
 };
 
 using regex_submatch = basic_submatch<std::string_view>;
 
-template <class holder, std::size_t capture_count>
+template <class Holder, std::size_t CaptureCount>
 class basic_result {
   struct nothing {};
   using captures_type =
-      std::conditional_t<capture_count == 0, nothing,
-                         std::array<basic_submatch<holder>, capture_count>>;
+      std::conditional_t<CaptureCount == 0, nothing,
+                         std::array<basic_submatch<Holder>, CaptureCount>>;
 
  public:
   constexpr basic_result() = default;
 
-  constexpr basic_result(basic_submatch<holder> whole, captures_type captures)
+  constexpr basic_result(basic_submatch<Holder> whole, captures_type captures)
       : whole_(std::move(whole)), captures_(std::move(captures)) {}
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return static_cast<bool>(whole_);
   }
-  [[nodiscard]] constexpr const basic_submatch<holder>& whole() const noexcept {
+  [[nodiscard]] constexpr const basic_submatch<Holder>& whole() const noexcept {
     return whole_;
   }
   [[nodiscard]] constexpr auto begin() const { return whole_.begin(); }
@@ -84,29 +84,29 @@ class basic_result {
   [[nodiscard]] constexpr std::size_t size() const { return whole_.size(); }
 
   [[nodiscard]] constexpr auto data() const
-    requires std::ranges::contiguous_range<const holder&>
+    requires std::ranges::contiguous_range<const Holder&>
   {
     return whole_.data();
   }
   [[nodiscard]] constexpr std::string_view to_view() const
-    requires std::ranges::contiguous_range<const holder&>
+    requires std::ranges::contiguous_range<const Holder&>
   {
     return whole_.to_view();
   }
   [[nodiscard]] constexpr operator std::string_view() const
-    requires std::ranges::contiguous_range<const holder&>
+    requires std::ranges::contiguous_range<const Holder&>
   {
     return to_view();
   }
 
-  template <std::size_t index>
-  [[nodiscard]] constexpr basic_submatch<holder> get() const {
-    if constexpr (index == 0) {
+  template <std::size_t Index>
+  [[nodiscard]] constexpr basic_submatch<Holder> get() const {
+    if constexpr (Index == 0) {
       return whole_;
-    } else if constexpr (index > capture_count) {
+    } else if constexpr (Index > CaptureCount) {
       return {};
     } else {
-      return captures_[index - 1];
+      return captures_[Index - 1];
     }
   }
 
@@ -118,12 +118,12 @@ class basic_result {
   // `data()` has something to point at, which here is another twenty-four
   // bytes on a result of twenty-four -- zeroed on every match that never had a
   // capture to put there.
-  basic_submatch<holder> whole_;
+  basic_submatch<Holder> whole_;
   [[no_unique_address]] captures_type captures_{};
 };
 
-template <std::size_t capture_count>
-using regex_result = basic_result<std::string_view, capture_count>;
+template <std::size_t CaptureCount>
+using regex_result = basic_result<std::string_view, CaptureCount>;
 
 namespace detail {
 
@@ -154,23 +154,23 @@ namespace detail {
 #define SCAN_REGEX_FORCE_INLINE_CALL
 #endif
 
-template <class state_type>
+template <class StateType>
 struct transition_range {
   unsigned char first = 0;
   unsigned char last = 0;
-  state_type target{};
+  StateType target{};
 };
 
-template <class state_type>
+template <class StateType>
 struct transition_ranges {
-  std::array<transition_range<state_type>, 256> values{};
+  std::array<transition_range<StateType>, 256> values{};
   std::size_t size = 0;
 };
 
 // Whether the machine standing here would have a match.
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval bool accepts_here() {
-  return regex_automaton<pattern>.states[state].accepting_slot !=
+  return regex_automaton<Pattern>.states[State].accepting_slot !=
          packed_state<0, 0, 0>::not_accepting;
 }
 
@@ -179,12 +179,12 @@ template <fixed_string pattern, std::size_t state>
 // These used to be recovered from a cell for every symbol, once for every
 // instantiation that asked. The automaton is packed as runs now, so this hands
 // them over.
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval auto make_transition_ranges() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   using state_type = std::size_t;
   transition_ranges<state_type> result;
-  const auto& packed = automaton.states[state];
+  const auto& packed = automaton.states[State];
   for (std::size_t index = 0; index < packed.range_count; ++index) {
     result.values[result.size++] = {
         .first = packed.ranges[index].first,
@@ -205,9 +205,9 @@ template <fixed_string pattern, std::size_t state>
 // It usually does: the readings of a state differ about the tags that are
 // still undecided, not about the ones behind them. Where they differ, this
 // says so instead of answering out of a gathering that did not win.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval bool accepts_where_the_first_reading_gathers() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   constexpr std::size_t group_count = automaton.tag_count / 2;
   for (const auto& state : automaton.states) {
     if (state.accepting_slot == packed_state<0, 0, 0>::not_accepting) continue;
@@ -222,9 +222,9 @@ template <fixed_string pattern>
   return true;
 }
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t minimum_match_length() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
   constexpr std::size_t unreachable =
@@ -283,17 +283,17 @@ inline constexpr std::size_t runs_worth_comparing = 2;
 // follows the move is written once for the place instead of once for the run.
 // The sentinel walk inlines what follows, so writing it per run made twelve
 // copies of the same loop of the local part of an address.
-template <class state_type>
+template <class StateType>
 struct transition_targets {
-  std::array<state_type, 256> values{};
+  std::array<StateType, 256> values{};
   std::size_t size = 0;
 };
 
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval auto make_transition_targets() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   using state_type = std::size_t;
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  constexpr auto ranges = make_transition_ranges<Pattern, State>();
   transition_targets<state_type> result;
   for (std::size_t index = 0; index < ranges.size; ++index) {
     const state_type target = ranges.values[index].target;
@@ -307,26 +307,26 @@ template <fixed_string pattern, std::size_t state>
 }
 
 // How many runs of symbols lead from this state to that one.
-template <fixed_string pattern, std::size_t state, auto target>
+template <fixed_string Pattern, std::size_t State, auto Target>
 [[nodiscard]] consteval std::size_t runs_to_target() {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  constexpr auto ranges = make_transition_ranges<Pattern, State>();
   std::size_t count = 0;
   for (std::size_t index = 0; index < ranges.size; ++index) {
-    if (ranges.values[index].target == target) ++count;
+    if (ranges.values[index].target == Target) ++count;
   }
   return count;
 }
 
 // Where each symbol takes the automaton from this state, which is what the
 // automaton was built with and is read back here rather than rebuilt.
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 inline constexpr auto transition_target_table = [] consteval {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   using state_type = std::size_t;
   std::array<state_type, 256> result{};
   std::ranges::fill(result, static_cast<state_type>(
       std::numeric_limits<state_type>::max()));
-  const auto& packed = automaton.states[state];
+  const auto& packed = automaton.states[State];
   for (std::size_t index = 0; index < packed.range_count; ++index) {
     for (std::size_t symbol = packed.ranges[index].first;
          symbol <= packed.ranges[index].last; ++symbol) {
@@ -336,31 +336,31 @@ inline constexpr auto transition_target_table = [] consteval {
   return result;
 }();
 
-template <fixed_string pattern, std::size_t state, auto target,
-          std::size_t index = 0>
+template <fixed_string Pattern, std::size_t State, auto Target,
+          std::size_t Index = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool moves_to_by_runs(
     unsigned char symbol) {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
+  constexpr auto ranges = make_transition_ranges<Pattern, State>();
+  if constexpr (Index == ranges.size) {
     return false;
   } else {
-    constexpr auto range = ranges.values[index];
-    if constexpr (range.target == target) {
+    constexpr auto range = ranges.values[Index];
+    if constexpr (range.target == Target) {
       if (symbol >= range.first && symbol <= range.last) return true;
     }
-    return moves_to_by_runs<pattern, state, target, index + 1>(symbol);
+    return moves_to_by_runs<Pattern, State, Target, Index + 1>(symbol);
   }
 }
 
 // Whether the symbol moves the automaton from this state to that one.
-template <fixed_string pattern, std::size_t state, auto target>
+template <fixed_string Pattern, std::size_t State, auto Target>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool moves_to(
     unsigned char symbol) {
-  if constexpr (runs_to_target<pattern, state, target>() >
+  if constexpr (runs_to_target<Pattern, State, Target>() >
                 runs_worth_comparing) {
-    return transition_target_table<pattern, state>[symbol] == target;
+    return transition_target_table<Pattern, State>[symbol] == Target;
   } else {
-    return moves_to_by_runs<pattern, state, target>(symbol);
+    return moves_to_by_runs<Pattern, State, Target>(symbol);
   }
 }
 
@@ -371,14 +371,14 @@ template <fixed_string pattern, std::size_t state, auto target>
 // character at a time. Nothing about it needs the tags -- a state that keeps
 // itself writes nothing while it does -- so the captureless walk asks the same
 // question of the same code.
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval staying_class staying_class_of() {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  constexpr auto ranges = make_transition_ranges<Pattern, State>();
   staying_class answer;
   answer.below_the_high_bit = true;
   for (std::size_t index = 0; index < ranges.size; ++index) {
     const auto& range = ranges.values[index];
-    if (range.target != state) continue;
+    if (range.target != State) continue;
     if (answer.count == answer.first.size()) return staying_class{};
     // Runs arrive in symbol order, so one that begins where the last ended is
     // the same run written twice and is joined here rather than tested twice.
@@ -410,33 +410,33 @@ template <fixed_string pattern, std::size_t state>
 // and not by how many states it passes -- a state with one way out writes one
 // body a step, a state that forks writes one per branch, and the number of
 // steps says nothing about the difference.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t chain_budget() {
-  return bodies_worth_writing<regex_automaton<pattern>>();
+  return bodies_worth_writing<regex_automaton<Pattern>>();
 }
 
 
 
 // How many runs of symbols keep the automaton in the state it is in. A class
 // like [a-z] is one of them; the local part of an address is twelve.
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval std::size_t self_range_count() {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
+  constexpr auto ranges = make_transition_ranges<Pattern, State>();
   std::size_t count = 0;
   for (std::size_t index = 0; index < ranges.size; ++index) {
-    if (ranges.values[index].target == state) ++count;
+    if (ranges.values[index].target == State) ++count;
   }
   return count;
 }
 
 
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 inline constexpr auto self_transition_table = [] consteval {
   std::array<unsigned char, 256> result{};
-  constexpr const auto& automaton = regex_automaton<pattern>;
-  const auto& packed = automaton.states[state];
+  constexpr const auto& automaton = regex_automaton<Pattern>;
+  const auto& packed = automaton.states[State];
   for (std::size_t index = 0; index < packed.range_count; ++index) {
-    if (packed.ranges[index].target != state) continue;
+    if (packed.ranges[index].target != State) continue;
     for (std::size_t symbol = packed.ranges[index].first;
          symbol <= packed.ranges[index].last; ++symbol) {
       result[symbol] = 1;
@@ -445,40 +445,40 @@ inline constexpr auto self_transition_table = [] consteval {
   return result;
 }();
 
-template <fixed_string pattern, std::size_t state, std::size_t index = 0>
+template <fixed_string Pattern, std::size_t State, std::size_t Index = 0>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool
 is_self_transition_by_runs(unsigned char symbol) {
-  constexpr auto ranges = make_transition_ranges<pattern, state>();
-  if constexpr (index == ranges.size) {
+  constexpr auto ranges = make_transition_ranges<Pattern, State>();
+  if constexpr (Index == ranges.size) {
     return false;
   } else {
-    constexpr auto range = ranges.values[index];
-    if constexpr (range.target == state) {
+    constexpr auto range = ranges.values[Index];
+    if constexpr (range.target == State) {
       if (symbol >= range.first && symbol <= range.last) return true;
     }
-    return is_self_transition_by_runs<pattern, state, index + 1>(symbol);
+    return is_self_transition_by_runs<Pattern, State, Index + 1>(symbol);
   }
 }
 
 // Whether the symbol keeps the automaton where it is.
-template <fixed_string pattern, std::size_t state>
+template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool is_self_transition(
     unsigned char symbol) {
-  if constexpr (self_range_count<pattern, state>() > runs_worth_comparing) {
-    return self_transition_table<pattern, state>[symbol] != 0;
+  if constexpr (self_range_count<Pattern, State>() > runs_worth_comparing) {
+    return self_transition_table<Pattern, State>[symbol] != 0;
   } else {
-    return is_self_transition_by_runs<pattern, state>(symbol);
+    return is_self_transition_by_runs<Pattern, State>(symbol);
   }
 }
 
 
-template <fixed_string pattern, unsigned char sentinel>
+template <fixed_string Pattern, unsigned char Sentinel>
 [[nodiscard]] consteval bool is_safe_sentinel() {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   for (const auto& state : automaton.states) {
     for (std::size_t index = 0; index < state.range_count; ++index) {
-      if (sentinel >= state.ranges[index].first &&
-          sentinel <= state.ranges[index].last) {
+      if (Sentinel >= state.ranges[index].first &&
+          Sentinel <= state.ranges[index].last) {
         return false;
       }
     }
@@ -509,22 +509,22 @@ template <fixed_string pattern, unsigned char sentinel>
 // What used to be five walks here -- bounded, terminated, terminated and
 // inlined, the longest head, and the walk over iterators -- is five shapes of
 // the same one.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval detail::walk_shape bounded_shape(bool in_words) {
-  return {.in_words = in_words, .budget = chain_budget<pattern>()};
+  return {.in_words = in_words, .budget = chain_budget<Pattern>()};
 }
 
-template <fixed_string pattern, unsigned char terminator>
+template <fixed_string Pattern, unsigned char Terminator>
 [[nodiscard]] consteval detail::walk_shape terminated_shape(bool in_words) {
   return {.in_words = in_words,
           .by_terminator = true,
-          .terminator = terminator,
-          .budget = chain_budget<pattern>()};
+          .terminator = Terminator,
+          .budget = chain_budget<Pattern>()};
 }
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval detail::walk_shape head_shape() {
-  return {.longest = true, .budget = chain_budget<pattern>()};
+  return {.longest = true, .budget = chain_budget<Pattern>()};
 }
 
 // Whether the subject matched, and where the longest head ended for the walks
@@ -533,22 +533,22 @@ template <fixed_string pattern>
 // The answer is filled in rather than handed back, because a reading of a
 // subject that arrives as it is read does not copy, and passing it along by
 // value would ask it to.
-template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
-          class sentinel_type>
+template <fixed_string Pattern, detail::walk_shape Shape, class CursorType,
+          class SentinelType>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool walk_over(
-    cursor_type& cursor, sentinel_type last,
-    detail::walk_answer<cursor_type>& best) {
-  constexpr const auto& automaton = detail::regex_automaton<pattern>;
+    CursorType& cursor, SentinelType last,
+    detail::walk_answer<CursorType>& best) {
+  constexpr const auto& automaton = detail::regex_automaton<Pattern>;
   using mark_type =
-      std::conditional_t<std::is_pointer_v<cursor_type>, const char*,
+      std::conditional_t<std::is_pointer_v<CursorType>, const char*,
                          std::ptrdiff_t>;
   detail::register_file<mark_type, automaton.register_count> registers{};
-  if constexpr (!std::is_pointer_v<cursor_type>) {
+  if constexpr (!std::is_pointer_v<CursorType>) {
     registers.fill(scan::tre::negative_tag);
   }
   detail::gathers_nothing nothing;
   mark_type place{};
-  if constexpr (std::is_pointer_v<cursor_type>) place = cursor;
+  if constexpr (std::is_pointer_v<CursorType>) place = cursor;
   // How many characters are known to be there: the subject was measured
   // against the shortest match before the first one was read. A walk after a
   // head was given no such promise -- the head may be shorter than the whole
@@ -560,27 +560,27 @@ template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
   // have it written out says so at their call: searching does, because it runs
   // a match for every place it tries.
   SCAN_REGEX_FORCE_INLINE_CALL
-  return detail::run_continuation<automaton, shape, automaton.initial,
-                                  shape.budget,
-                                  shape.longest
+  return detail::run_continuation<automaton, Shape, automaton.initial,
+                                  Shape.budget,
+                                  Shape.longest
                                       ? 0
-                                      : minimum_match_length<pattern>(),
+                                      : minimum_match_length<Pattern>(),
                                   mark_type>(cursor, last, place, registers,
                                              nothing, best);
 }
 
 // The same, where nobody is asking where it stopped.
-template <fixed_string pattern, detail::walk_shape shape, class cursor_type,
-          class sentinel_type>
+template <fixed_string Pattern, detail::walk_shape Shape, class CursorType,
+          class SentinelType>
 [[nodiscard]] SCAN_REGEX_FORCE_INLINE constexpr bool matched_over(
-    cursor_type cursor, sentinel_type last) {
-  detail::walk_answer<cursor_type> best;
-  return walk_over<pattern, shape>(cursor, last, best);
+    CursorType cursor, SentinelType last) {
+  detail::walk_answer<CursorType> best;
+  return walk_over<Pattern, Shape>(cursor, last, best);
 }
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 using regex_result_for =
-    regex_result<regex_automaton<pattern>.tag_count / 2>;
+    regex_result<regex_automaton<Pattern>.tag_count / 2>;
 
 // The whole of the subject, from one end to the other.
 //
@@ -589,10 +589,10 @@ using regex_result_for =
 // subject does, so the walks below a match are kept and the answer is the
 // first of them still accepting when the characters run out. `a|ab` reads
 // "ab" as `ab`, where the same pattern searching for a head reads `a`.
-template <fixed_string pattern, how_to_walk walk = how_to_walk::by_length>
-[[nodiscard]] constexpr regex_result_for<pattern.to_the_end()>
+template <fixed_string Pattern, how_to_walk Walk = how_to_walk::by_length>
+[[nodiscard]] constexpr regex_result_for<Pattern.to_the_end()>
 regex_match(std::string_view input) {
-  constexpr auto whole = pattern.to_the_end();
+  constexpr auto whole = Pattern.to_the_end();
   constexpr const auto& automaton = regex_automaton<whole>;
   if constexpr (automaton.tag_count == 0) {
     if (input.size() < minimum_match_length<whole>()) return {};
@@ -608,7 +608,7 @@ regex_match(std::string_view input) {
     // the skip is ahead however the runs fall, and by a few hundred characters
     // it is ahead by ten times.
     const bool matched = [&] {
-      if constexpr (walk == how_to_walk::by_length) {
+      if constexpr (Walk == how_to_walk::by_length) {
         constexpr std::size_t worth_a_vector = 64;
         return input.size() >= worth_a_vector
                    ? matched_over<whole, bounded_shape<whole>(true)>(cursor, end)
@@ -616,7 +616,7 @@ regex_match(std::string_view input) {
                                                                      end);
       } else {
         return matched_over<whole, bounded_shape<whole>(
-                                       walk == how_to_walk::in_words)>(cursor,
+                                       Walk == how_to_walk::in_words)>(cursor,
                                                                        end);
       }
     }();
@@ -635,7 +635,7 @@ regex_match(std::string_view input) {
     // two walks runs is decided once, on the length of the subject: a short one
     // is read a character at a time, a long one in words and vectors.
     const bool matched = [&] {
-      if constexpr (walk == how_to_walk::by_length) {
+      if constexpr (Walk == how_to_walk::by_length) {
         constexpr std::size_t worth_a_word = 32;
         return input.size() >= worth_a_word
                    ? run_from_here<automaton, true, automaton.initial>(
@@ -643,7 +643,7 @@ regex_match(std::string_view input) {
                    : run_from_here<automaton, false, automaton.initial>(
                          cursor, end, registers);
       } else {
-        return run_from_here<automaton, walk == how_to_walk::in_words,
+        return run_from_here<automaton, Walk == how_to_walk::in_words,
                              automaton.initial>(cursor, end, registers);
       }
     }();
@@ -676,30 +676,30 @@ regex_match(std::string_view input) {
 //
 // Nothing else changes. A walk that stops at a terminator never compares the
 // cursor with an end, so there is no end test to lose either way.
-template <fixed_string pattern, unsigned char sentinel,
-          how_to_walk walk = how_to_walk::by_length>
-[[nodiscard]] constexpr regex_result_for<pattern.to_the_end()>
+template <fixed_string Pattern, unsigned char Sentinel,
+          how_to_walk Walk = how_to_walk::by_length>
+[[nodiscard]] constexpr regex_result_for<Pattern.to_the_end()>
 regex_match_sentinel(std::string_view input) {
-  constexpr auto whole = pattern.to_the_end();
+  constexpr auto whole = Pattern.to_the_end();
   constexpr const auto& automaton = regex_automaton<whole>;
-  static_assert(is_safe_sentinel<whole, sentinel>(),
+  static_assert(is_safe_sentinel<whole, Sentinel>(),
                 "sentinel must be rejected in every automaton state");
   const char* const end = input.data() + input.size();
   if constexpr (automaton.tag_count == 0) {
     const bool matched = [&] {
-      if constexpr (walk == how_to_walk::by_length) {
+      if constexpr (Walk == how_to_walk::by_length) {
         if (input.size() < minimum_match_length<whole>()) return false;
         constexpr std::size_t worth_a_vector = 64;
         return input.size() >= worth_a_vector
                    ? matched_over<whole,
-                                  terminated_shape<whole, sentinel>(true)>(
+                                  terminated_shape<whole, Sentinel>(true)>(
                          input.data(), end)
                    : matched_over<whole,
-                                  terminated_shape<whole, sentinel>(false)>(
+                                  terminated_shape<whole, Sentinel>(false)>(
                          input.data(), end);
       } else {
         return matched_over<
-            whole, terminated_shape<whole, sentinel>(walk ==
+            whole, terminated_shape<whole, Sentinel>(Walk ==
                                                      how_to_walk::in_words)>(
             input.data(), end);
       }
@@ -716,19 +716,19 @@ regex_match_sentinel(std::string_view input) {
     execute_commands(automaton.initialize, automaton.initialize.size(),
                      registers, cursor);
     const bool matched = [&] {
-      if constexpr (walk == how_to_walk::by_length) {
+      if constexpr (Walk == how_to_walk::by_length) {
         if (input.size() < minimum_match_length<whole>()) return false;
         constexpr std::size_t worth_a_word = 32;
         return input.size() >= worth_a_word
-                   ? run_to_terminator<automaton, sentinel, true,
+                   ? run_to_terminator<automaton, Sentinel, true,
                                        automaton.initial>(cursor, end,
                                                           registers)
-                   : run_to_terminator<automaton, sentinel, false,
+                   : run_to_terminator<automaton, Sentinel, false,
                                        automaton.initial>(cursor, end,
                                                           registers);
       } else {
-        return run_to_terminator<automaton, sentinel,
-                                 walk == how_to_walk::in_words,
+        return run_to_terminator<automaton, Sentinel,
+                                 Walk == how_to_walk::in_words,
                                  automaton.initial>(cursor, end, registers);
       }
     }();
@@ -758,21 +758,21 @@ regex_match_sentinel(std::string_view input) {
 // The same question of whichever machine the pattern was given. A pattern that
 // captures is a tagged machine, and the runtime has read a head off one of
 // those since the format layer needed it.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] constexpr const char* longest_head(const char* cursor,
                                                  const char* end) {
   detail::walk_answer<const char*> best;
   const char* walking = cursor;
   const bool found =
-      walk_over<pattern, head_shape<pattern>()>(walking, end, best);
+      walk_over<Pattern, head_shape<Pattern>()>(walking, end, best);
   return found ? *best.at : nullptr;
 }
 
-template <fixed_string pattern>
-[[nodiscard]] constexpr regex_result_for<pattern> regex_starts_with(
+template <fixed_string Pattern>
+[[nodiscard]] constexpr regex_result_for<Pattern> regex_starts_with(
     std::string_view input) {
   const char* const begin = input.data();
-  const char* const best = longest_head<pattern>(begin, begin + input.size());
+  const char* const best = longest_head<Pattern>(begin, begin + input.size());
   if (best == nullptr) return {};
   // The head is known; the match over exactly that head is run again to fill
   // in whatever the pattern captures, which one pass cannot carry.
@@ -783,7 +783,7 @@ template <fixed_string pattern>
   // runs it once for every place it tries, and writing it out there would put
   // the whole of a match inside a loop.
   SCAN_REGEX_NEVER_INLINE_CALL
-  return regex_match<pattern>(
+  return regex_match<Pattern>(
       input.substr(0, static_cast<std::size_t>(best - begin)));
 }
 
@@ -793,16 +793,16 @@ template <fixed_string pattern>
 // character the machine will not take -- so a place that cannot begin a match
 // costs what it costs to find that out, and not a match of every length from
 // there.
-template <fixed_string pattern>
-[[nodiscard]] constexpr regex_result_for<pattern> regex_search(
+template <fixed_string Pattern>
+[[nodiscard]] constexpr regex_result_for<Pattern> regex_search(
     std::string_view input) {
   const char* const begin = input.data();
   const char* const end = begin + input.size();
   for (const char* from = begin; from <= end; ++from) {
-    const char* const best = longest_head<pattern>(from, end);
+    const char* const best = longest_head<Pattern>(from, end);
     if (best == nullptr) continue;
     SCAN_REGEX_NEVER_INLINE_CALL
-    return regex_match<pattern>(
+    return regex_match<Pattern>(
         std::string_view(from, static_cast<std::size_t>(best - from)));
   }
   return {};
@@ -814,74 +814,74 @@ namespace detail {
 
 // The three questions asked of a pattern rather than of an automaton. The
 // arithmetic itself is in the runtime, where the format layer asks it too.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t fallback_window() {
-  return detail::walk_past_a_match<regex_automaton<pattern>>();
+  return detail::walk_past_a_match<regex_automaton<Pattern>>();
 }
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t dead_end_window() {
-  return detail::walk_from_the_start<regex_automaton<pattern>>();
+  return detail::walk_from_the_start<regex_automaton<Pattern>>();
 }
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval bool falls_back_a_bounded_way() {
-  return fallback_window<pattern>() !=
+  return fallback_window<Pattern>() !=
          std::numeric_limits<std::size_t>::max();
 }
 
 // Whether a subject that can only be read once can be searched at all: both
 // ends of the reading have to name a number -- what a failed attempt swallows
 // and what is read past a match.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval bool holds_a_bounded_way() {
   constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
-  return dead_end_window<pattern>() != unbounded &&
-         fallback_window<pattern>() != unbounded;
+  return dead_end_window<Pattern>() != unbounded &&
+         fallback_window<Pattern>() != unbounded;
 }
 
 // Whether the group is being read where the machine stands now.
-template <fixed_string pattern, std::size_t group, class registers_type>
+template <fixed_string Pattern, std::size_t Group, class RegistersType>
 [[nodiscard]] constexpr bool group_is_open(std::size_t here,
-                                           const registers_type& registers) {
-  constexpr const auto& automaton = regex_automaton<pattern>;
+                                           const RegistersType& registers) {
+  constexpr const auto& automaton = regex_automaton<Pattern>;
   const auto& packed = automaton.states[here];
   if (packed.reading_count == 0) return false;
-  const std::uint32_t opening = packed.readings[0][group * 2];
-  const std::uint32_t closing = packed.readings[0][group * 2 + 1];
+  const std::uint32_t opening = packed.readings[0][Group * 2];
+  const std::uint32_t closing = packed.readings[0][Group * 2 + 1];
   return slot_read(registers, opening) >= 0 && slot_read(registers, closing) < slot_read(registers, opening);
 }
 
 
-template <class range_type>
+template <class RangeType>
 concept forward_char_range =
-    std::ranges::forward_range<range_type> &&
-    std::same_as<std::ranges::range_value_t<range_type>, char> &&
-    !contiguous_char_range<range_type>;
+    std::ranges::forward_range<RangeType> &&
+    std::same_as<std::ranges::range_value_t<RangeType>, char> &&
+    !contiguous_char_range<RangeType>;
 
-template <class range_type>
+template <class RangeType>
 concept read_once_char_range =
-    std::ranges::input_range<range_type> &&
-    std::same_as<std::ranges::range_value_t<range_type>, char> &&
-    !std::ranges::forward_range<range_type>;
+    std::ranges::input_range<RangeType> &&
+    std::same_as<std::ranges::range_value_t<RangeType>, char> &&
+    !std::ranges::forward_range<RangeType>;
 
 // A subject that can only be read once is read into text of its own, and
 // everything after that is the ordinary reading of contiguous characters --
 // with the answers owning what they stood on, because there is nothing else
 // left to point at.
-template <class held_type, class range_type>
-[[nodiscard]] constexpr held_type read_once(range_type&& input) {
-  held_type held;
+template <class HeldType, class RangeType>
+[[nodiscard]] constexpr HeldType read_once(RangeType&& input) {
+  HeldType held;
   auto cursor = std::ranges::begin(input);
   const auto last = std::ranges::end(input);
   for (; cursor != last; ++cursor) held.push_back(*cursor);
   return held;
 }
 
-template <class range_type>
+template <class RangeType>
 using walked_holder =
-    std::ranges::subrange<std::ranges::iterator_t<range_type>,
-                          std::ranges::iterator_t<range_type>>;
+    std::ranges::subrange<std::ranges::iterator_t<RangeType>,
+                          std::ranges::iterator_t<RangeType>>;
 
 }  // namespace detail
 
@@ -893,9 +893,9 @@ namespace detail {
 // after it whatever that is, a class runs to its closing bracket, and a
 // parenthesis that opens with a question mark captures nothing and is not
 // counted.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval std::string_view group_text(std::size_t wanted) {
-  const std::string_view text = pattern.view();
+  const std::string_view text = Pattern.view();
   const auto skip_class = [&](std::size_t at) {
     ++at;
     while (at < text.size() && text[at] != ']') {
@@ -954,14 +954,14 @@ template <fixed_string pattern>
 // not. So this is the one edge of a group that can be known while the pattern
 // is compiled, and the other edge follows from it -- a turn ends where the
 // next one begins, or where the match does.
-template <auto& automaton, std::size_t state, std::size_t move,
-          std::size_t group>
+template <auto& Automaton, std::size_t State, std::size_t Move,
+          std::size_t Group>
 [[nodiscard]] consteval bool opens_the_group() {
-  constexpr const auto& taken = automaton.states[state].ranges[move];
+  constexpr const auto& taken = Automaton.states[State].ranges[Move];
   for (std::size_t at = 0; at < taken.command_count; ++at) {
     const std::size_t destination = taken.commands[at].destination;
-    if (destination >= automaton.register_tag.size()) continue;
-    if (automaton.register_tag[destination] == group * 2) return true;
+    if (destination >= Automaton.register_tag.size()) continue;
+    if (Automaton.register_tag[destination] == Group * 2) return true;
   }
   return false;
 }
@@ -972,10 +972,10 @@ template <auto& automaton, std::size_t state, std::size_t move,
 // element, and the type is told when one ended -- and what a choice is made of
 // -- the branch whose group opened is the branch that ran. Both were things
 // only a format could say.
-template <class type>
+template <class Type>
 concept knows_its_edges =
-    requires(group_state_of<type>& state) {
-      scan::scanner<std::remove_cv_t<type>>{}.opened_group(state,
+    requires(group_state_of<Type>& state) {
+      scan::scanner<std::remove_cv_t<Type>>{}.opened_group(state,
                                                           std::size_t{0});
     } || requires(group_state_of<type>& state) {
       scan::scanner<std::remove_cv_t<type>>{}.opened_group(
@@ -994,11 +994,11 @@ concept knows_its_edges =
 // This one is told, as each character arrives, which of the type's own groups
 // it belongs to -- so a type with parts can be read off a subject that will
 // never be seen again, and no text is put together anywhere.
-template <class type>
+template <class Type>
 concept gathers_by_group = requires {
-  scan::scanner<std::remove_cv_t<type>>{}.begin_groups();
-  scan::scanner<std::remove_cv_t<type>>{}.finish_groups(
-      scan::scanner<std::remove_cv_t<type>>{}.begin_groups());
+  scan::scanner<std::remove_cv_t<Type>>{}.begin_groups();
+  scan::scanner<std::remove_cv_t<Type>>{}.finish_groups(
+      scan::scanner<std::remove_cv_t<Type>>{}.begin_groups());
 };
 
 // A type that would rather be handed the groups than the text.
@@ -1007,22 +1007,22 @@ concept gathers_by_group = requires {
 // big pattern has already found them -- they are groups of that match like any
 // others. This is how a type says it can be built from them, and it is handed
 // exactly its own, in the order it wrote them.
-template <class type>
+template <class Type>
 concept scanned_from_groups = requires(std::span<const std::string_view> given) {
-  scan::scanner<std::remove_cv_t<type>>{}.from_groups(given);
+  scan::scanner<std::remove_cv_t<Type>>{}.from_groups(given);
 };
 
 // Whether this group is written with the very expression the type declares.
-template <class type, fixed_string pattern, std::size_t group>
+template <class Type, fixed_string Pattern, std::size_t Group>
 [[nodiscard]] consteval bool group_is_written_as_the_types_pattern() {
-  if constexpr (!scanned_as_leaf<std::remove_cv_t<type>>) {
+  if constexpr (!scanned_as_leaf<std::remove_cv_t<Type>>) {
     return false;
   } else {
-    constexpr auto written = group_text<pattern>(group);
+    constexpr auto written = group_text<Pattern>(Group);
     if constexpr (written.empty()) {
       return false;
     } else {
-      const auto declared = declared_pattern<type>();
+      const auto declared = declared_pattern<Type>();
       std::size_t here = 0;
       tre_parser reading_the_group(written, {}, here, true);
       const auto theirs = reading_the_group.parse_regex();
@@ -1035,23 +1035,23 @@ template <class type, fixed_string pattern, std::size_t group>
 }
 
 // The two kinds of reuse, each asking that question and its own.
-template <class type, fixed_string pattern, std::size_t group>
+template <class Type, fixed_string Pattern, std::size_t Group>
 [[nodiscard]] consteval bool group_is_the_types_pattern() {
-  return scanned_from_groups<type> &&
-         group_is_written_as_the_types_pattern<type, pattern, group>();
+  return scanned_from_groups<Type> &&
+         group_is_written_as_the_types_pattern<Type, Pattern, Group>();
 }
 
-template <class type, fixed_string pattern, std::size_t group>
+template <class Type, fixed_string Pattern, std::size_t Group>
 [[nodiscard]] consteval bool group_gathers_by_group() {
-  return gathers_by_group<type> &&
-         group_is_written_as_the_types_pattern<type, pattern, group>();
+  return gathers_by_group<Type> &&
+         group_is_written_as_the_types_pattern<Type, Pattern, Group>();
 }
 
-template <class type, fixed_string pattern, std::size_t group>
+template <class Type, fixed_string Pattern, std::size_t Group>
 [[nodiscard]] consteval bool group_spells_out() {
-  if constexpr (!says_it_reads_its_groups<std::remove_cv_t<type>>) {
+  if constexpr (!says_it_reads_its_groups<std::remove_cv_t<Type>>) {
     return false;
-  } else if constexpr (groups_of_output<std::remove_cv_t<type>>() <= 1) {
+  } else if constexpr (groups_of_output<std::remove_cv_t<Type>>() <= 1) {
     return false;
   } else {
     // Both read, and the readings compared -- not the characters. `a+` and
@@ -1078,8 +1078,8 @@ template <class type, fixed_string pattern, std::size_t group>
     // The pattern the type declares, which for a shape is its places written
     // as groups -- the same groups this asks whether the big pattern already
     // has.
-    constexpr auto declared = declared_pattern<std::remove_cv_t<type>>();
-    constexpr auto written = group_text<pattern>(group);
+    constexpr auto declared = declared_pattern<std::remove_cv_t<Type>>();
+    constexpr auto written = group_text<Pattern>(Group);
     if constexpr (written.empty()) {
       return false;
     } else {
@@ -1112,12 +1112,12 @@ template <class type, fixed_string pattern, std::size_t group>
 // Arguments given here are the arguments the value is made with, so a group
 // can be collected into a string with one allocator and the next group into a
 // string with another.
-template <class type, class... arguments>
+template <class Type, class... Arguments>
 class as_collector {
  public:
-  using value_type = type;
+  using value_type = Type;
 
-  constexpr explicit as_collector(arguments... given)
+  constexpr explicit as_collector(Arguments... given)
       : arguments_(std::move(given)...) {}
 
   [[nodiscard]] constexpr value_type from_text(
@@ -1130,34 +1130,34 @@ class as_collector {
     // own would have that scanner asked instead, and the arguments would go
     // nowhere. A pool said here is said because the value has to be built with
     // it, and no scanner of that type knows about it.
-    if constexpr (sizeof...(arguments) != 0 &&
-                  requires(const arguments&... given) {
+    if constexpr (sizeof...(Arguments) != 0 &&
+                  requires(const Arguments&... given) {
                     value_type(text.begin(), text.end(), given...);
                   }) {
       return std::apply(
-          [&](const arguments&... given) {
+          [&](const Arguments&... given) {
             return value_type(text.begin(), text.end(), given...);
           },
           arguments_);
-    } else if constexpr (scan::says_what_went_wrong<type>) {
+    } else if constexpr (scan::says_what_went_wrong<Type>) {
       // A collector has to give a value, so this is the throwing way of
       // reading and the scanner is told so. One written against it throws
       // where it stands and never builds the expected that would only be
       // unwrapped and thrown again here; one that hands a failure back anyway
       // is answered the same as before.
-      return scan::as_thrown<type>(
-          scan::scanner_told_parse<type, scan::throws_a_failure>(text,
+      return scan::as_thrown<Type>(
+          scan::scanner_told_parse<Type, scan::throws_a_failure>(text,
                                                                  parameters));
     } else if constexpr (requires {
-                    std::declval<scan::scanner<type>&>().parse(text,
+                    std::declval<scan::scanner<Type>&>().parse(text,
                                                                parameters);
                   } || requires {
-                    std::declval<scan::scanner<type>&>().parse(text);
+                    std::declval<scan::scanner<Type>&>().parse(text);
                   }) {
-      return scanner_parse<type>(text, parameters);
+      return scanner_parse<Type>(text, parameters);
     } else {
       return std::apply(
-          [&](const arguments&... given) {
+          [&](const Arguments&... given) {
             return value_type(text.begin(), text.end(), given...);
           },
           arguments_);
@@ -1167,24 +1167,24 @@ class as_collector {
   // Characters as they come, for a subject that cannot be looked at twice.
   [[nodiscard]] constexpr auto begin_pushing(
       std::string_view parameters) const {
-    if constexpr (sizeof...(arguments) != 0 &&
-                  requires(const arguments&... given) {
+    if constexpr (sizeof...(Arguments) != 0 &&
+                  requires(const Arguments&... given) {
                     value_type(given...);
                   }) {
       // The same rule where the characters arrive one at a time: what the
       // value is made with is what was said here.
       return std::apply(
-          [&](const arguments&... given) { return value_type(given...); },
+          [&](const Arguments&... given) { return value_type(given...); },
           arguments_);
     } else if constexpr (requires {
-                    std::declval<scan::scanner<type>&>().begin(parameters);
+                    std::declval<scan::scanner<Type>&>().begin(parameters);
                   } || requires {
-                    std::declval<scan::scanner<type>&>().begin();
+                    std::declval<scan::scanner<Type>&>().begin();
                   }) {
-      return scanner_begin<type>(parameters);
+      return scanner_begin<Type>(parameters);
     } else {
       return std::apply(
-          [&](const arguments&... given) { return value_type(given...); },
+          [&](const Arguments&... given) { return value_type(given...); },
           arguments_);
     }
   }
@@ -1197,8 +1197,8 @@ class as_collector {
   }
 
   constexpr void push_one(auto& state, char letter) const {
-    if constexpr (requires { scanner_push<type>(state, letter); }) {
-      scanner_push<type>(state, letter);
+    if constexpr (requires { scanner_push<Type>(state, letter); }) {
+      scanner_push<Type>(state, letter);
     } else {
       state.push_back(letter);
     }
@@ -1206,21 +1206,21 @@ class as_collector {
 
   [[nodiscard]] constexpr value_type finish_pushed(auto state) const {
     if constexpr (requires {
-                    scanner_finish<type, decltype(state)>(state);
+                    scanner_finish<Type, decltype(state)>(state);
                   }) {
-      return scanner_finish<type>(std::move(state));
+      return scanner_finish<Type>(std::move(state));
     } else {
       return std::move(state);
     }
   }
  private:
-  std::tuple<arguments...> arguments_;
+  std::tuple<Arguments...> arguments_;
 };
 
-template <class type, class... arguments>
-[[nodiscard]] constexpr auto as(arguments&&... given) {
-  return as_collector<type, std::remove_cvref_t<arguments>...>(
-      std::forward<arguments>(given)...);
+template <class Type, class... Arguments>
+[[nodiscard]] constexpr auto as(Arguments&&... given) {
+  return as_collector<Type, std::remove_cvref_t<Arguments>...>(
+      std::forward<Arguments>(given)...);
 }
 
 // What stands in the answer where a group was wanted by nobody. Nothing, and
@@ -1235,18 +1235,18 @@ struct text_collector {
   // can be pointed at, something owning where they cannot. Nothing here is
   // privileged -- a collector of your own says the same three things and is
   // treated the same way.
-  template <class holder>
-  using value_for = holder;
+  template <class Holder>
+  using value_for = Holder;
 
-  template <class holder>
-  [[nodiscard]] constexpr holder from_text(std::string_view text,
+  template <class Holder>
+  [[nodiscard]] constexpr Holder from_text(std::string_view text,
                                            std::string_view) const {
-    return holder(text.begin(), text.end());
+    return Holder(text.begin(), text.end());
   }
 
-  template <class holder>
-  [[nodiscard]] constexpr holder begin_pushing(std::string_view) const {
-    return holder{};
+  template <class Holder>
+  [[nodiscard]] constexpr Holder begin_pushing(std::string_view) const {
+    return Holder{};
   }
 
   constexpr void push_one(auto& into, char letter) const {
@@ -1279,7 +1279,7 @@ struct text_collector {
 struct skip_collector {
   static constexpr bool takes_nothing = true;
 
-  template <class holder>
+  template <class Holder>
   using value_for = skipped;
 };
 
@@ -1291,18 +1291,18 @@ struct skip_collector {
 // group is handed to the call along with it. What that does is nobody else's
 // business: it can push into a string, count, hash, or throw the characters
 // away.
-template <class type, class pusher, class... arguments>
+template <class Type, class Pusher, class... Arguments>
 class collecting_collector {
  public:
-  using value_type = type;
+  using value_type = Type;
 
-  constexpr collecting_collector(pusher push, arguments... given)
+  constexpr collecting_collector(Pusher push, Arguments... given)
       : push_(std::move(push)), arguments_(std::move(given)...) {}
 
   [[nodiscard]] constexpr value_type from_text(std::string_view text,
                                                std::string_view) const {
     value_type made = std::apply(
-        [&](const arguments&... given) { return value_type(given...); },
+        [&](const Arguments&... given) { return value_type(given...); },
         arguments_);
     for (const char letter : text) push_(made, letter);
     return made;
@@ -1310,7 +1310,7 @@ class collecting_collector {
 
   [[nodiscard]] constexpr auto begin_pushing(std::string_view) const {
     return std::apply(
-        [&](const arguments&... given) { return value_type(given...); },
+        [&](const Arguments&... given) { return value_type(given...); },
         arguments_);
   }
 
@@ -1319,15 +1319,15 @@ class collecting_collector {
   }
 
  private:
-  pusher push_;
-  std::tuple<arguments...> arguments_;
+  Pusher push_;
+  std::tuple<Arguments...> arguments_;
 };
 
-template <class type, class pusher, class... arguments>
-[[nodiscard]] constexpr auto collecting(pusher&& push, arguments&&... given) {
-  return collecting_collector<type, std::remove_cvref_t<pusher>,
-                              std::remove_cvref_t<arguments>...>(
-      std::forward<pusher>(push), std::forward<arguments>(given)...);
+template <class Type, class Pusher, class... Arguments>
+[[nodiscard]] constexpr auto collecting(Pusher&& push, Arguments&&... given) {
+  return collecting_collector<Type, std::remove_cvref_t<Pusher>,
+                              std::remove_cvref_t<Arguments>...>(
+      std::forward<Pusher>(push), std::forward<Arguments>(given)...);
 }
 
 // A match whose groups were turned into values.
@@ -1336,49 +1336,49 @@ template <class type, class pusher, class... arguments>
 // affords; each group is whatever its collector made of it, and they keep the
 // order they were written in. A group nobody wanted is `skipped`, which is
 // nothing and takes no room.
-template <class whole_holder, class... values>
+template <class WholeHolder, class... Values>
 class typed_result {
  public:
   constexpr typed_result() = default;
-  constexpr typed_result(basic_submatch<whole_holder> whole,
-                         std::tuple<values...> made)
+  constexpr typed_result(basic_submatch<WholeHolder> whole,
+                         std::tuple<Values...> made)
       : whole_(std::move(whole)), values_(std::move(made)) {}
 
   [[nodiscard]] constexpr explicit operator bool() const noexcept {
     return static_cast<bool>(whole_);
   }
-  [[nodiscard]] constexpr const basic_submatch<whole_holder>& whole()
+  [[nodiscard]] constexpr const basic_submatch<WholeHolder>& whole()
       const noexcept {
     return whole_;
   }
 
   // Nought is the whole match, as it is everywhere else here; the rest are the
   // groups, in the order they were written.
-  template <std::size_t index>
+  template <std::size_t Index>
   [[nodiscard]] constexpr decltype(auto) get() const {
-    if constexpr (index == 0) {
+    if constexpr (Index == 0) {
       return (whole_);
     } else {
-      static_assert(index <= sizeof...(values), "no such group");
-      return std::get<index - 1>(values_);
+      static_assert(Index <= sizeof...(Values), "no such group");
+      return std::get<Index - 1>(values_);
     }
   }
 
-  [[nodiscard]] constexpr const std::tuple<values...>& all() const noexcept {
+  [[nodiscard]] constexpr const std::tuple<Values...>& all() const noexcept {
     return values_;
   }
 
  private:
-  basic_submatch<whole_holder> whole_;
-  [[no_unique_address]] std::tuple<values...> values_{};
+  basic_submatch<WholeHolder> whole_;
+  [[no_unique_address]] std::tuple<Values...> values_{};
 };
 
 namespace detail {
 
 // What one collector makes.
-template <class collector, class holder>
+template <class Collector, class Holder>
 struct collected {
-  using type = typename collector::value_type;
+  using type = typename Collector::value_type;
 };
 
 // What a collector makes, which may depend on what the subject affords.
@@ -1387,58 +1387,58 @@ struct collected {
 // can be pointed at and something owning where they cannot, so what it makes
 // is not one type but a type per holder. Saying `value_for` is how a collector
 // says that; saying `value_type` is how it says the one type it always makes.
-template <class collector, class holder>
+template <class Collector, class Holder>
 concept makes_by_holder = requires {
-  typename collector::template value_for<holder>;
+  typename Collector::template value_for<Holder>;
 };
 
-template <class collector, class holder>
-  requires makes_by_holder<collector, holder>
-struct collected<collector, holder> {
-  using type = typename collector::template value_for<holder>;
+template <class Collector, class Holder>
+  requires makes_by_holder<Collector, Holder>
+struct collected<Collector, Holder> {
+  using type = typename Collector::template value_for<Holder>;
 };
 
-template <class collector, class holder>
-using collected_type = typename collected<collector, holder>::type;
+template <class Collector, class Holder>
+using collected_type = typename collected<Collector, Holder>::type;
 
 // Every group of a match, as text, for the types that are built out of them.
-template <class found_type, std::size_t... group>
-[[nodiscard]] constexpr auto all_groups(const found_type& found,
-                                        std::index_sequence<group...>) {
-  return std::array<std::string_view, sizeof...(group)>{
-      found.template get<group + 1>().to_view()...};
+template <class FoundType, std::size_t... Group>
+[[nodiscard]] constexpr auto all_groups(const FoundType& found,
+                                        std::index_sequence<Group...>) {
+  return std::array<std::string_view, sizeof...(Group)>{
+      found.template get<Group + 1>().to_view()...};
 }
 
-template <fixed_string pattern, std::size_t group, class collector,
-          class holder, class found_type>
-[[nodiscard]] constexpr collected_type<collector, holder> collect_one(
-    const collector& one, const found_type& found) {
-  if constexpr (requires { collector::takes_nothing; }) {
+template <fixed_string Pattern, std::size_t Group, class Collector,
+          class Holder, class FoundType>
+[[nodiscard]] constexpr collected_type<Collector, Holder> collect_one(
+    const Collector& one, const FoundType& found) {
+  if constexpr (requires { Collector::takes_nothing; }) {
     return {};
   } else if constexpr (requires {
-                         one.template from_text<holder>(std::string_view{},
+                         one.template from_text<Holder>(std::string_view{},
                                                         std::string_view{});
                        }) {
     // A collector that makes what the subject affords is handed the holder to
     // make it as. Where the characters can be pointed at, that is a view of
     // them and nothing is copied.
-    if constexpr (std::same_as<holder, std::string_view>) {
-      return found.template get<group>().held();
+    if constexpr (std::same_as<Holder, std::string_view>) {
+      return found.template get<Group>().held();
     } else {
-      return one.template from_text<holder>(
-          found.template get<group>().to_view(), std::string_view{});
+      return one.template from_text<Holder>(
+          found.template get<Group>().to_view(), std::string_view{});
     }
   } else if constexpr (group_is_the_types_pattern<
-                           typename collector::value_type, pattern, group>()) {
+                           typename Collector::value_type, Pattern, Group>()) {
     // The type says a pattern of its own with groups in it, and this group is
     // written with that pattern -- so the groups inside it are the type's own,
     // already found, and the type asked to be handed them rather than the
     // text.
-    using held_type = std::remove_cv_t<typename collector::value_type>;
+    using held_type = std::remove_cv_t<typename Collector::value_type>;
     constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
     std::array<std::string_view, inside> theirs{};
     [&]<std::size_t... at>(std::index_sequence<at...>) {
-      ((theirs[at] = found.template get<group + 1 + at>().to_view()), ...);
+      ((theirs[at] = found.template get<Group + 1 + at>().to_view()), ...);
     }(std::make_index_sequence<inside>{});
     // A collector has to give a value: a type that hands its failure back is
     // asked the same way as one that throws, and what it handed back is thrown
@@ -1446,17 +1446,17 @@ template <fixed_string pattern, std::size_t group, class collector,
     return scan::as_thrown<held_type>(
         scan::scanner_told_from_groups<held_type, scan::throws_a_failure>(
             std::span<const std::string_view>(theirs)));
-  } else if constexpr (group_gathers_by_group<typename collector::value_type,
-                                             pattern, group>()) {
+  } else if constexpr (group_gathers_by_group<typename Collector::value_type,
+                                             Pattern, Group>()) {
     // The type is gathered by its own groups, and here they are already
     // found: the characters of each are handed to it the same way they would
     // be handed over one at a time on a subject that cannot be looked at
     // twice, so the type is read the same way wherever it is used.
-    using held_type_here = std::remove_cv_t<typename collector::value_type>;
+    using held_type_here = std::remove_cv_t<typename Collector::value_type>;
     auto state = scan::scanner<held_type_here>{}.begin_groups();
     [&]<std::size_t... inside>(std::index_sequence<inside...>) {
       ((void)[&] {
-        for (char letter : found.template get<group + 1 + inside>().to_view()) {
+        for (char letter : found.template get<Group + 1 + inside>().to_view()) {
           push_one_group<held_type_here, inside>(state, letter);
         }
       }(), ...);
@@ -1465,12 +1465,12 @@ template <fixed_string pattern, std::size_t group, class collector,
         scan::scanner_told_finish_groups<held_type_here,
                                          scan::throws_a_failure>(
             std::move(state)));
-  } else if constexpr (group_spells_out<typename collector::value_type,
-                                        pattern, group>()) {
+  } else if constexpr (group_spells_out<typename Collector::value_type,
+                                        Pattern, Group>()) {
     // The group is the type's own pattern, so the groups inside it are the
     // type's own values and the machine has already found them. Nothing is
     // read twice and no second automaton was ever built.
-    constexpr std::size_t count = regex_automaton<pattern>.tag_count / 2;
+    constexpr std::size_t count = regex_automaton<Pattern>.tag_count / 2;
     const auto groups = all_groups(found, std::make_index_sequence<count>{});
     // A collector gives a value and has nowhere to put a failure, so a reading
     // that went wrong is thrown here -- at the asking, which is the only place
@@ -1480,12 +1480,12 @@ template <fixed_string pattern, std::size_t group, class collector,
     // are the groups inside it -- which in this array, which begins at the
     // first group, are the entries from this one on. Read as a value, a shape
     // of two numbers was handed "(3,-4)" where it wanted "3".
-    using held = typename collector::value_type;
+    using held = typename Collector::value_type;
     return scan::or_thrown(
-        build_value<failure_for<held>, no_parameters, held, group, true>(
+        build_value<failure_for<held>, no_parameters, held, Group, true>(
             groups));
   } else {
-    return one.from_text(found.template get<group>().to_view(),
+    return one.from_text(found.template get<Group>().to_view(),
                          std::string_view{});
   }
 }
@@ -1493,42 +1493,42 @@ template <fixed_string pattern, std::size_t group, class collector,
 }  // namespace detail
 
 // A match whose groups are collected, each by its own collector.
-template <fixed_string pattern, class held_type, class... collectors>
+template <fixed_string Pattern, class HeldType, class... Collectors>
 struct collected_match_closure
     : std::ranges::range_adaptor_closure<
-          collected_match_closure<pattern, held_type, collectors...>> {
-  constexpr explicit collected_match_closure(collectors... given)
+          collected_match_closure<Pattern, HeldType, Collectors...>> {
+  constexpr explicit collected_match_closure(Collectors... given)
       : collectors_(std::move(given)...) {}
 
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::contiguous_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     using holder = std::string_view;
     using result_type =
-        typed_result<holder, detail::collected_type<collectors, holder>...>;
-    const auto found = detail::regex_match<pattern>(detail::characters_of(input));
+        typed_result<holder, detail::collected_type<Collectors, holder>...>;
+    const auto found = detail::regex_match<Pattern>(detail::characters_of(input));
     if (!found) return result_type{};
     return build<holder, result_type>(
-        found, std::make_index_sequence<sizeof...(collectors)>{});
+        found, std::make_index_sequence<sizeof...(Collectors)>{});
   }
 
   // Off input that arrives in pieces: each piece read in words and vectors,
   // and the collectors gathering as the walk goes through them.
-  template <detail::piecewise_char_range pieces_type>
-    requires(!detail::contiguous_char_range<pieces_type> &&
-             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
-  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+  template <detail::piecewise_char_range PiecesType>
+    requires(!detail::contiguous_char_range<PiecesType> &&
+             !std::same_as<std::ranges::range_value_t<PiecesType>, char>)
+  [[nodiscard]] constexpr auto operator()(PiecesType&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<Pattern>;
     using holder = skipped;
     using result_type =
-        typed_result<holder, detail::collected_type<collectors, held_type>...>;
+        typed_result<holder, detail::collected_type<Collectors, HeldType>...>;
 
     detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     detail::execute_commands(automaton.initialize,
                              automaton.initialize.size(), registers,
                              std::ptrdiff_t{0});
-    auto states = beginning(std::make_index_sequence<sizeof...(collectors)>{});
-    auto view = std::views::all(std::forward<pieces_type>(input));
+    auto states = beginning(std::make_index_sequence<sizeof...(Collectors)>{});
+    auto view = std::views::all(std::forward<PiecesType>(input));
     detail::gathers_from_pieces<gathering_into<decltype(states)>,
                                 decltype(view)>
         into(gathering_into<decltype(states)>(*this, states), std::move(view));
@@ -1546,7 +1546,7 @@ struct collected_match_closure
     return result_type{
         basic_submatch<holder>(skipped{}),
         finishing(std::move(states),
-                  std::make_index_sequence<sizeof...(collectors)>{})};
+                  std::make_index_sequence<sizeof...(Collectors)>{})};
   }
 
   // Walked by the same code that walks characters in a row, with the
@@ -1554,29 +1554,29 @@ struct collected_match_closure
   //
   // Nothing is kept but what is asked for: a group collected into a number is
   // a number being read, and the subject is never held anywhere.
-  template <detail::read_once_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::read_once_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     static_assert(
-        detail::accepts_where_the_first_reading_gathers<pattern>(),
+        detail::accepts_where_the_first_reading_gathers<Pattern>(),
         "this pattern accepts by a reading that holds a group in other "
         "registers than the first reading does, and a subject that arrives as "
         "it is read is gathered into one place per group: what came back "
         "would be the gathering of a reading that did not win");
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+    constexpr const auto& automaton = detail::regex_automaton<Pattern>;
     // The whole of the match is not kept: there is nothing left behind to
     // point at, and nobody asked for it -- what was asked for is what the
     // collectors say. So the type says so too, and asking for the text of the
     // whole match here does not compile rather than coming back empty.
     using holder = skipped;
     using result_type =
-        typed_result<holder, detail::collected_type<collectors, held_type>...>;
+        typed_result<holder, detail::collected_type<Collectors, HeldType>...>;
 
     detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     detail::execute_commands(automaton.initialize,
                              automaton.initialize.size(), registers,
                              std::ptrdiff_t{0});
-    auto states = beginning(std::make_index_sequence<sizeof...(collectors)>{});
+    auto states = beginning(std::make_index_sequence<sizeof...(Collectors)>{});
     gathering_into<decltype(states)> into(*this, states);
 
     auto cursor = std::ranges::begin(input);
@@ -1588,7 +1588,7 @@ struct collected_match_closure
     // of nothing it was paying a call for every state it passed through, for
     // every character.
     constexpr detail::walk_shape once{.budget =
-                                          detail::chain_budget<pattern>()};
+                                          detail::chain_budget<Pattern>()};
     if (!detail::run_continuation<automaton, once, automaton.initial,
                                   once.budget, 0, std::ptrdiff_t>(
             cursor, std::ranges::end(input), position, registers, into,
@@ -1598,7 +1598,7 @@ struct collected_match_closure
     return result_type{
         basic_submatch<holder>(skipped{}),
         finishing(std::move(states),
-                  std::make_index_sequence<sizeof...(collectors)>{})};
+                  std::make_index_sequence<sizeof...(Collectors)>{})};
   }
 
 
@@ -1609,35 +1609,35 @@ struct collected_match_closure
   // group is held in are constants here, and asking whether it is open is two
   // loads and a comparison -- not a lookup of the state, then of its readings,
   // then of the registers.
-  template <class states_type>
+  template <class StatesType>
   class gathering_into {
    public:
     using owner_type = collected_match_closure;
 
     constexpr gathering_into(const collected_match_closure& owner,
-                             states_type& states)
+                             StatesType& states)
         : owner_(owner), states_(states) {}
 
     // Nothing to do before a move writes: what happened to a group is read off
     // the positions afterwards, which is the only way that answers the same in
     // both layers.
-    template <std::size_t state, std::size_t move, class registers_type,
-              class mark>
-    constexpr void moving(const registers_type&, mark) {}
+    template <std::size_t State, std::size_t Move, class RegistersType,
+              class Mark>
+    constexpr void moving(const RegistersType&, Mark) {}
 
     // A run stepped over in vectors: whatever is open takes all of it.
-    template <std::size_t state, class registers_type, class mark>
+    template <std::size_t State, class RegistersType, class Mark>
     constexpr void took_run(const char* from, const char* to,
-                            const registers_type& registers, mark) {
+                            const RegistersType& registers, Mark) {
       // Nothing is written inside a run, so what is open at one end of it is
       // open at the other: the edges are told once and the characters go in as
       // they come.
       for (const char* letter = from; letter != to; ++letter) {
-        fold_all<state>(*letter, true, registers,
-                        std::make_index_sequence<sizeof...(collectors)>{});
+        fold_all<State>(*letter, true, registers,
+                        std::make_index_sequence<sizeof...(Collectors)>{});
       }
-      hand_run<state>(from, to, registers,
-                      std::make_index_sequence<sizeof...(collectors)>{});
+      hand_run<State>(from, to, registers,
+                      std::make_index_sequence<sizeof...(Collectors)>{});
     }
 
     // A move was made: whatever groups are open where it lands take the
@@ -1646,23 +1646,23 @@ struct collected_match_closure
     // Which registers a group is held in are constants at the state the walk
     // stands in, so this is two loads and a comparison rather than a lookup of
     // the state, then of its readings, then of the registers.
-    template <std::size_t state, std::size_t landed, std::size_t move,
-              class registers_type>
-    constexpr void moved(char letter, const registers_type& registers,
+    template <std::size_t State, std::size_t Landed, std::size_t Move,
+              class RegistersType>
+    constexpr void moved(char letter, const RegistersType& registers,
                          std::ptrdiff_t) {
-      fold_all<landed>(letter, true, registers,
-                       std::make_index_sequence<sizeof...(collectors)>{});
-      hand_all<landed>(letter, registers,
-                       std::make_index_sequence<sizeof...(collectors)>{});
+      fold_all<Landed>(letter, true, registers,
+                       std::make_index_sequence<sizeof...(Collectors)>{});
+      hand_all<Landed>(letter, registers,
+                       std::make_index_sequence<sizeof...(Collectors)>{});
     }
 
     // And the match ending ends the turn that was going. Asked with the
     // positions as they stand and no character to hand over, which is the same
     // step the characters run through.
-    template <std::size_t state, class registers_type>
-    constexpr void ended(const registers_type& registers) {
-      fold_all<state>(char{}, false, registers,
-                      std::make_index_sequence<sizeof...(collectors)>{});
+    template <std::size_t State, class RegistersType>
+    constexpr void ended(const RegistersType& registers) {
+      fold_all<State>(char{}, false, registers,
+                      std::make_index_sequence<sizeof...(Collectors)>{});
     }
 
    private:
@@ -1671,207 +1671,207 @@ struct collected_match_closure
     // They are groups of this match like any others, sitting straight after
     // the one written with the type's pattern, so the same two registers say
     // whether each is open.
-    template <std::size_t landed, std::size_t group, class registers_type,
-              std::size_t... inside>
+    template <std::size_t Landed, std::size_t Group, class RegistersType,
+              std::size_t... Inside>
     constexpr void hand_inner(char letter, bool hands_the_character,
-                              const registers_type& registers,
-                              std::index_sequence<inside...>) {
+                              const RegistersType& registers,
+                              std::index_sequence<Inside...>) {
       // Opened first and in the order they are written, then the character to
       // whatever is inside, then the closings innermost first -- the same step,
       // in the same order, as a fold read by the format layer.
-      (open_inner<landed, group, inside>(registers), ...);
+      (open_inner<Landed, Group, Inside>(registers), ...);
       if (hands_the_character) {
-        (push_inner<landed, group, inside>(letter, registers), ...);
+        (push_inner<Landed, Group, Inside>(letter, registers), ...);
       }
       [&]<std::size_t... step>(std::index_sequence<step...>) {
-        (close_inner<landed, group, sizeof...(inside) - 1 - step>(registers),
+        (close_inner<Landed, Group, sizeof...(Inside) - 1 - step>(registers),
          ...);
-      }(std::make_index_sequence<sizeof...(inside)>{});
+      }(std::make_index_sequence<sizeof...(Inside)>{});
     }
 
     // Where a group of the type stands in the groups of this match, and
     // whether the pattern has it at all.
-    template <std::size_t group, std::size_t inside>
+    template <std::size_t Group, std::size_t Inside>
     static constexpr std::size_t theirs_at =
-        owner_type::template group_of<group>() + 1 + inside;
+        owner_type::template group_of<Group>() + 1 + Inside;
 
-    template <std::size_t group, std::size_t inside>
+    template <std::size_t Group, std::size_t Inside>
     static constexpr bool inside_the_pattern =
-        theirs_at<group, inside> * 2 + 1 <
-        detail::regex_automaton<pattern>.tag_count;
+        theirs_at<Group, Inside> * 2 + 1 <
+        detail::regex_automaton<Pattern>.tag_count;
 
     // A turn is known by the position its group opened at: positions only move
     // forward, so an opening that has moved is a turn that has begun. Told once
     // per turn, however many characters the walk hands over inside it.
-    template <std::size_t landed, std::size_t group, std::size_t inside,
-              class registers_type>
-    constexpr void open_inner(const registers_type& registers) {
-      if constexpr (inside_the_pattern<group, inside>) {
-        using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+    template <std::size_t Landed, std::size_t Group, std::size_t Inside,
+              class RegistersType>
+    constexpr void open_inner(const RegistersType& registers) {
+      if constexpr (inside_the_pattern<Group, Inside>) {
+        using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
         using held = std::remove_cv_t<typename collector::value_type>;
-        constexpr std::size_t theirs = theirs_at<group, inside>;
+        constexpr std::size_t theirs = theirs_at<Group, Inside>;
         constexpr const auto& entered =
-            detail::regex_automaton<pattern>.states[landed];
+            detail::regex_automaton<Pattern>.states[Landed];
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         const auto began = slot_read(registers, opening);
         if (began < 0 || told_at_[theirs] == began) return;
-        detail::open_one_group<held, inside>(std::get<group>(states_));
+        detail::open_one_group<held, Inside>(std::get<Group>(states_));
         told_at_[theirs] = began;
         open_[theirs] = true;
       }
     }
 
-    template <std::size_t landed, std::size_t group, std::size_t inside,
-              class registers_type>
-    constexpr void push_inner(char letter, const registers_type& registers) {
-      if constexpr (inside_the_pattern<group, inside>) {
-        using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+    template <std::size_t Landed, std::size_t Group, std::size_t Inside,
+              class RegistersType>
+    constexpr void push_inner(char letter, const RegistersType& registers) {
+      if constexpr (inside_the_pattern<Group, Inside>) {
+        using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
         using held = std::remove_cv_t<typename collector::value_type>;
-        constexpr std::size_t theirs = theirs_at<group, inside>;
+        constexpr std::size_t theirs = theirs_at<Group, Inside>;
         constexpr const auto& entered =
-            detail::regex_automaton<pattern>.states[landed];
+            detail::regex_automaton<Pattern>.states[Landed];
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (!open_[theirs]) return;
         if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
-        detail::push_one_group<held, inside>(std::get<group>(states_), letter);
+        detail::push_one_group<held, Inside>(std::get<Group>(states_), letter);
       }
     }
 
-    template <std::size_t landed, std::size_t group, std::size_t inside,
-              class registers_type>
-    constexpr void close_inner(const registers_type& registers) {
-      if constexpr (inside_the_pattern<group, inside>) {
-        using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+    template <std::size_t Landed, std::size_t Group, std::size_t Inside,
+              class RegistersType>
+    constexpr void close_inner(const RegistersType& registers) {
+      if constexpr (inside_the_pattern<Group, Inside>) {
+        using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
         using held = std::remove_cv_t<typename collector::value_type>;
-        constexpr std::size_t theirs = theirs_at<group, inside>;
+        constexpr std::size_t theirs = theirs_at<Group, Inside>;
         constexpr const auto& entered =
-            detail::regex_automaton<pattern>.states[landed];
+            detail::regex_automaton<Pattern>.states[Landed];
         constexpr std::uint32_t opening = entered.readings[0][theirs * 2];
         constexpr std::uint32_t closing = entered.readings[0][theirs * 2 + 1];
         if (!open_[theirs]) return;
         if (slot_read(registers, closing) < slot_read(registers, opening)) return;
-        detail::close_one_group<held, inside>(std::get<group>(states_));
+        detail::close_one_group<held, Inside>(std::get<Group>(states_));
         open_[theirs] = false;
       }
     }
 
     // Every collector, told what this step did to the groups it reads.
-    template <std::size_t landed, class registers_type, std::size_t... group>
+    template <std::size_t Landed, class RegistersType, std::size_t... Group>
     constexpr void fold_all(char letter, bool hands_the_character,
-                            const registers_type& registers,
-                            std::index_sequence<group...>) {
-      (fold_one<landed, group>(letter, hands_the_character, registers), ...);
+                            const RegistersType& registers,
+                            std::index_sequence<Group...>) {
+      (fold_one<Landed, Group>(letter, hands_the_character, registers), ...);
     }
 
-    template <std::size_t landed, std::size_t group, class registers_type>
+    template <std::size_t Landed, std::size_t Group, class RegistersType>
     constexpr void fold_one(char letter, bool hands_the_character,
-                            const registers_type& registers) {
-      using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+                            const RegistersType& registers) {
+      using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
       if constexpr (requires { typename collector::value_type; }) {
         using held = std::remove_cv_t<typename collector::value_type>;
-        if constexpr (owner_type::template gathers_its_own_groups<group>()) {
-          hand_inner<landed, group>(
+        if constexpr (owner_type::template gathers_its_own_groups<Group>()) {
+          hand_inner<Landed, Group>(
               letter, hands_the_character, registers,
               std::make_index_sequence<detail::groups_a_leaf_opens<held>()>{});
         }
       }
     }
 
-    template <std::size_t landed, class registers_type, std::size_t... group>
+    template <std::size_t Landed, class RegistersType, std::size_t... Group>
     constexpr void hand_run(const char* from, const char* to,
-                            const registers_type& registers,
-                            std::index_sequence<group...>) {
-      (hand_run_group<landed, group>(from, to, registers), ...);
+                            const RegistersType& registers,
+                            std::index_sequence<Group...>) {
+      (hand_run_group<Landed, Group>(from, to, registers), ...);
     }
 
-    template <std::size_t landed, std::size_t group, class registers_type>
+    template <std::size_t Landed, std::size_t Group, class RegistersType>
     constexpr void hand_run_group(const char* from, const char* to,
-                                  const registers_type& registers) {
+                                  const RegistersType& registers) {
       using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
+          std::tuple_element_t<Group, std::tuple<Collectors...>>;
       if constexpr (requires { collector::takes_nothing; }) {
         return;
       } else {
         constexpr const auto& entered =
-            detail::regex_automaton<pattern>.states[landed];
+            detail::regex_automaton<Pattern>.states[Landed];
         if constexpr (entered.reading_count != 0) {
-          constexpr std::size_t where = owner_type::template group_of<group>();
+          constexpr std::size_t where = owner_type::template group_of<Group>();
           constexpr std::uint32_t opening = entered.readings[0][where * 2];
           constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
           if (slot_read(registers, opening) < 0) return;
           if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
-          if constexpr (owner_type::template gathers_its_own_groups<group>()) {
+          if constexpr (owner_type::template gathers_its_own_groups<Group>()) {
             // Told by the step above, which asks the positions rather than
             // whether the group around it happens to be open here.
             return;
           } else if constexpr (requires {
-                                 std::get<group>(owner_.collectors_)
-                                     .push_run(std::get<group>(states_),
+                                 std::get<Group>(owner_.collectors_)
+                                     .push_run(std::get<Group>(states_),
                                                std::string_view{});
                                }) {
             // The walk stepped over this run in vectors, and a collector that
             // takes a run takes it in one go rather than in as many calls as
             // there are characters.
-            std::get<group>(owner_.collectors_)
-                .push_run(std::get<group>(states_),
+            std::get<Group>(owner_.collectors_)
+                .push_run(std::get<Group>(states_),
                           std::string_view(from,
                                            static_cast<std::size_t>(to - from)));
           } else {
             for (const char* letter = from; letter != to; ++letter) {
-              std::get<group>(owner_.collectors_)
-                  .push_one(std::get<group>(states_), *letter);
+              std::get<Group>(owner_.collectors_)
+                  .push_one(std::get<Group>(states_), *letter);
             }
           }
         }
       }
     }
 
-    template <std::size_t landed, class registers_type, std::size_t... group>
-    constexpr void hand_all(char letter, const registers_type& registers,
-                            std::index_sequence<group...>) {
-      (hand_group<landed, group>(letter, registers), ...);
+    template <std::size_t Landed, class RegistersType, std::size_t... Group>
+    constexpr void hand_all(char letter, const RegistersType& registers,
+                            std::index_sequence<Group...>) {
+      (hand_group<Landed, Group>(letter, registers), ...);
     }
 
-    template <std::size_t landed, std::size_t group, class registers_type>
+    template <std::size_t Landed, std::size_t Group, class RegistersType>
     constexpr void hand_group(char letter,
-                              const registers_type& registers) {
+                              const RegistersType& registers) {
       using collector =
-          std::tuple_element_t<group, std::tuple<collectors...>>;
+          std::tuple_element_t<Group, std::tuple<Collectors...>>;
       if constexpr (requires { collector::takes_nothing; }) {
         return;
       } else {
         constexpr const auto& entered =
-            detail::regex_automaton<pattern>.states[landed];
+            detail::regex_automaton<Pattern>.states[Landed];
         if constexpr (entered.reading_count == 0) {
           return;
         } else {
-          constexpr std::size_t where = owner_type::template group_of<group>();
+          constexpr std::size_t where = owner_type::template group_of<Group>();
           constexpr std::uint32_t opening = entered.readings[0][where * 2];
           constexpr std::uint32_t closing = entered.readings[0][where * 2 + 1];
           if (slot_read(registers, opening) < 0) return;
           if (slot_read(registers, closing) >= slot_read(registers, opening)) return;
           if constexpr (owner_type::template gathers_its_own_groups<
-                            group>()) {
+                            Group>()) {
             // Told by the step above.
             return;
           } else {
-            std::get<group>(owner_.collectors_)
-                .push_one(std::get<group>(states_), letter);
+            std::get<Group>(owner_.collectors_)
+                .push_one(std::get<Group>(states_), letter);
           }
         }
       }
     }
 
     const collected_match_closure& owner_;
-    states_type& states_;
+    StatesType& states_;
     // Where each group of this match last opened, so a turn is told once, and
     // whether it is open now.
     std::array<std::ptrdiff_t,
-               detail::regex_automaton<pattern>.tag_count / 2 + 1>
+               detail::regex_automaton<Pattern>.tag_count / 2 + 1>
         told_at_ = [] {
           std::array<std::ptrdiff_t,
-                     detail::regex_automaton<pattern>.tag_count / 2 + 1>
+                     detail::regex_automaton<Pattern>.tag_count / 2 + 1>
               made{};
           for (auto& one : made) one = -1;
           return made;
@@ -1879,12 +1879,12 @@ struct collected_match_closure
     // Which of the groups of this match are open, by the number of the group.
     // A turn is ended by the opening of the next one, and the walk is what
     // sees that, so what has been opened has to be remembered here.
-    std::array<bool, detail::regex_automaton<pattern>.tag_count / 2 + 1> open_{};
+    std::array<bool, detail::regex_automaton<Pattern>.tag_count / 2 + 1> open_{};
   };
 
-  template <std::size_t... group>
-  [[nodiscard]] constexpr auto beginning(std::index_sequence<group...>) const {
-    return std::tuple{begin_one<group>()...};
+  template <std::size_t... Group>
+  [[nodiscard]] constexpr auto beginning(std::index_sequence<Group...>) const {
+    return std::tuple{begin_one<Group>()...};
   }
 
   // Which group of the match each collector reads.
@@ -1897,17 +1897,17 @@ struct collected_match_closure
   //   into(as<version>())   over   v=(([0-9]+)\.([0-9]+)\.([0-9]+))!
   //
   // is one collector over four groups.
-  template <std::size_t which, std::size_t where>
+  template <std::size_t Which, std::size_t Where>
   [[nodiscard]] static consteval std::size_t swallowed() {
-    using collector = std::tuple_element_t<which, std::tuple<collectors...>>;
+    using collector = std::tuple_element_t<Which, std::tuple<Collectors...>>;
     if constexpr (requires { typename collector::value_type; }) {
       using held = std::remove_cv_t<typename collector::value_type>;
-      if constexpr (detail::group_gathers_by_group<held, pattern, where + 1>() ||
-                    detail::group_is_the_types_pattern<held, pattern,
-                                                       where + 1>()) {
+      if constexpr (detail::group_gathers_by_group<held, Pattern, Where + 1>() ||
+                    detail::group_is_the_types_pattern<held, Pattern,
+                                                       Where + 1>()) {
         return detail::groups_a_leaf_opens<held>();
-      } else if constexpr (detail::group_spells_out<held, pattern,
-                                                    where + 1>()) {
+      } else if constexpr (detail::group_spells_out<held, Pattern,
+                                                    Where + 1>()) {
         // A type that declares a format spells its places out as groups, and
         // those are its too -- its places, and not the group they were
         // written inside, which the caller counts for itself. Counted with it,
@@ -1921,13 +1921,13 @@ struct collected_match_closure
     }
   }
 
-  template <std::size_t which>
+  template <std::size_t Which>
   [[nodiscard]] static consteval std::size_t group_of() {
-    if constexpr (which == 0) {
+    if constexpr (Which == 0) {
       return 0;
     } else {
-      constexpr std::size_t before = group_of<which - 1>();
-      return before + 1 + swallowed<which - 1, before>();
+      constexpr std::size_t before = group_of<Which - 1>();
+      return before + 1 + swallowed<Which - 1, before>();
     }
   }
 
@@ -1935,108 +1935,108 @@ struct collected_match_closure
   // groups, and whether its group is written as that type's own pattern. Both
   // have to hold: the type asks for it, and the pattern gives it something to
   // ask about.
-  template <std::size_t group>
+  template <std::size_t Group>
   [[nodiscard]] static consteval bool gathers_its_own_groups() {
-    using collector = std::tuple_element_t<group, std::tuple<collectors...>>;
+    using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
     if constexpr (requires { typename collector::value_type; }) {
       return detail::group_gathers_by_group<typename collector::value_type,
-                                            pattern, group_of<group>() + 1>();
+                                            Pattern, group_of<Group>() + 1>();
     } else {
       return false;
     }
   }
 
-  template <std::size_t group>
+  template <std::size_t Group>
   [[nodiscard]] constexpr auto begin_one() const {
     using collector =
-        std::tuple_element_t<group, std::tuple<collectors...>>;
+        std::tuple_element_t<Group, std::tuple<Collectors...>>;
     if constexpr (requires { collector::takes_nothing; }) {
-      return held_type{};
+      return HeldType{};
     } else if constexpr (requires {
                            std::declval<const collector&>()
-                               .template begin_pushing<held_type>(
+                               .template begin_pushing<HeldType>(
                                    std::string_view{});
                          }) {
-      return std::get<group>(collectors_)
-          .template begin_pushing<held_type>(std::string_view{});
-    } else if constexpr (gathers_its_own_groups<group>()) {
+      return std::get<Group>(collectors_)
+          .template begin_pushing<HeldType>(std::string_view{});
+    } else if constexpr (gathers_its_own_groups<Group>()) {
       return scan::scanner<std::remove_cv_t<
           typename collector::value_type>>{}.begin_groups();
     } else {
-      return std::get<group>(collectors_).begin_pushing(std::string_view{});
+      return std::get<Group>(collectors_).begin_pushing(std::string_view{});
     }
   }
 
-  template <class states_type, class registers_type, std::size_t... group>
-  constexpr void offer(states_type& states, std::size_t here,
-                       const registers_type& registers, char letter,
-                       std::index_sequence<group...>) const {
-    (offer_one<group>(states, here, registers, letter), ...);
+  template <class StatesType, class RegistersType, std::size_t... Group>
+  constexpr void offer(StatesType& states, std::size_t here,
+                       const RegistersType& registers, char letter,
+                       std::index_sequence<Group...>) const {
+    (offer_one<Group>(states, here, registers, letter), ...);
   }
 
-  template <std::size_t group, class states_type, class registers_type>
-  constexpr void offer_one(states_type& states, std::size_t here,
-                           const registers_type& registers,
+  template <std::size_t Group, class StatesType, class RegistersType>
+  constexpr void offer_one(StatesType& states, std::size_t here,
+                           const RegistersType& registers,
                            char letter) const {
     using collector =
-        std::tuple_element_t<group, std::tuple<collectors...>>;
+        std::tuple_element_t<Group, std::tuple<Collectors...>>;
     if constexpr (requires { collector::takes_nothing; }) {
       return;
     } else {
-      if (!detail::group_is_open<pattern, group_of<group>()>(here, registers)) {
+      if (!detail::group_is_open<Pattern, group_of<Group>()>(here, registers)) {
         return;
       }
-      std::get<group>(collectors_).push_one(std::get<group>(states), letter);
+      std::get<Group>(collectors_).push_one(std::get<Group>(states), letter);
     }
   }
 
-  template <class states_type, std::size_t... group>
-  [[nodiscard]] constexpr auto finishing(states_type states,
-                                         std::index_sequence<group...>) const {
-    return std::tuple<detail::collected_type<collectors, held_type>...>{
-        finish_one<group>(std::move(std::get<group>(states)))...};
+  template <class StatesType, std::size_t... Group>
+  [[nodiscard]] constexpr auto finishing(StatesType states,
+                                         std::index_sequence<Group...>) const {
+    return std::tuple<detail::collected_type<Collectors, HeldType>...>{
+        finish_one<Group>(std::move(std::get<Group>(states)))...};
   }
 
-  template <std::size_t group, class state_type>
-  [[nodiscard]] constexpr auto finish_one(state_type state) const {
+  template <std::size_t Group, class StateType>
+  [[nodiscard]] constexpr auto finish_one(StateType state) const {
     using collector =
-        std::tuple_element_t<group, std::tuple<collectors...>>;
+        std::tuple_element_t<Group, std::tuple<Collectors...>>;
     if constexpr (requires { collector::takes_nothing; }) {
       return skipped{};
-    } else if constexpr (gathers_its_own_groups<group>()) {
+    } else if constexpr (gathers_its_own_groups<Group>()) {
       return scan::scanner<std::remove_cv_t<
           typename collector::value_type>>{}.finish_groups(std::move(state));
     } else {
-      return std::get<group>(collectors_).finish_pushed(std::move(state));
+      return std::get<Group>(collectors_).finish_pushed(std::move(state));
     }
   }
 
  private:
-  template <class holder, class result_type, class found_type,
-            std::size_t... group>
-  [[nodiscard]] constexpr result_type build(
-      const found_type& found, std::index_sequence<group...>) const {
-    return result_type{
-        basic_submatch<holder>(found.whole()),
-        std::tuple<detail::collected_type<collectors, holder>...>{
+  template <class Holder, class ResultType, class FoundType,
+            std::size_t... Group>
+  [[nodiscard]] constexpr ResultType build(
+      const FoundType& found, std::index_sequence<Group...>) const {
+    return ResultType{
+        basic_submatch<Holder>(found.whole()),
+        std::tuple<detail::collected_type<Collectors, Holder>...>{
             detail::collect_one<
-                pattern, group_of<group>() + 1,
-                std::tuple_element_t<group, std::tuple<collectors...>>,
-                holder>(std::get<group>(collectors_), found)...}};
+                Pattern, group_of<Group>() + 1,
+                std::tuple_element_t<Group, std::tuple<Collectors...>>,
+                Holder>(std::get<Group>(collectors_), found)...}};
   }
 
-  template <class found_type, std::size_t... group>
+  template <class FoundType, std::size_t... Group>
   [[nodiscard]] constexpr auto build_values(
-      const found_type& found, std::index_sequence<group...>) const {
+      const FoundType& found, std::index_sequence<Group...>) const {
     return std::tuple<
-        detail::collected_type<collectors, held_type>...>{
+        detail::collected_type<Collectors, HeldType>...>{
         detail::collect_one<
-            pattern, group + 1,
-            std::tuple_element_t<group, std::tuple<collectors...>>, held_type>(
-            std::get<group>(collectors_), found)...};
+            Pattern, Group + 1,
+            std::tuple_element_t<Group, std::tuple<Collectors...>>, HeldType>(
+            std::get<Group>(collectors_), found)...};
   }
 
-  std::tuple<collectors...> collectors_;
+  std::tuple<Collectors...> collectors_;
 };
 
 // The whole subject, matched.
@@ -2064,15 +2064,15 @@ struct collected_match_closure
 // Each method hands back the same reading with one thing said differently, so
 // the order they are written in does not matter and nothing has to be named
 // twice.
-template <fixed_string pattern, class held_type = std::string,
-          int terminator = -1, how_to_walk walk = how_to_walk::by_length>
+template <fixed_string Pattern, class HeldType = std::string,
+          int Terminator = -1, how_to_walk Walk = how_to_walk::by_length>
 struct match_closure
     : std::ranges::range_adaptor_closure<
-          match_closure<pattern, held_type, terminator, walk>> {
+          match_closure<Pattern, HeldType, Terminator, Walk>> {
   // The subject ends where it ends, and the walk tests that as well as the
   // character. This is the reading for a `string_view` into the middle of
   // something.
-  [[nodiscard]] constexpr match_closure<pattern, held_type, -1, walk> sized()
+  [[nodiscard]] constexpr match_closure<Pattern, HeldType, -1, Walk> sized()
       const {
     return {};
   }
@@ -2081,27 +2081,27 @@ struct match_closure
   // tests only the character. Whether the terminator really is there is the
   // caller's promise -- a `std::string` always has one; whether the pattern
   // can match it is asked while it is compiled.
-  template <unsigned char byte = 0>
-  [[nodiscard]] constexpr match_closure<pattern, held_type, byte, walk>
+  template <unsigned char Byte = 0>
+  [[nodiscard]] constexpr match_closure<Pattern, HeldType, Byte, Walk>
   sentinel() const {
     return {};
   }
 
   // Which walk reads it: asked of the length, or said outright. Said outright,
   // the length is not looked at and the walk that was not named is not written.
-  [[nodiscard]] constexpr match_closure<pattern, held_type, terminator,
+  [[nodiscard]] constexpr match_closure<Pattern, HeldType, Terminator,
                                         how_to_walk::by_length>
   by_length() const {
     return {};
   }
 
-  [[nodiscard]] constexpr match_closure<pattern, held_type, terminator,
+  [[nodiscard]] constexpr match_closure<Pattern, HeldType, Terminator,
                                         how_to_walk::one_at_a_time>
   scalar() const {
     return {};
   }
 
-  [[nodiscard]] constexpr match_closure<pattern, held_type, terminator,
+  [[nodiscard]] constexpr match_closure<Pattern, HeldType, Terminator,
                                         how_to_walk::in_words>
   vec() const {
     return {};
@@ -2110,8 +2110,8 @@ struct match_closure
   // Where the answers are put, said rather than taken as it comes. What is
   // named here is what a subject read once is read into, and what its pieces
   // are handed back as.
-  template <class other>
-  [[nodiscard]] constexpr match_closure<pattern, other, terminator, walk>
+  template <class Other>
+  [[nodiscard]] constexpr match_closure<Pattern, Other, Terminator, Walk>
   into() const {
     return {};
   }
@@ -2119,33 +2119,33 @@ struct match_closure
   // A collector for each group, in the order the groups were written. What
   // each of them is made with is its own business, so one group can be a
   // string with one allocator and the next a string with another.
-  template <class... collectors>
-  [[nodiscard]] constexpr auto into(collectors... given) const {
-    return collected_match_closure<pattern, held_type, collectors...>(
+  template <class... Collectors>
+  [[nodiscard]] constexpr auto into(Collectors... given) const {
+    return collected_match_closure<Pattern, HeldType, Collectors...>(
         std::move(given)...);
   }
 
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::contiguous_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     const std::string_view text = detail::characters_of(input);
-    if constexpr (terminator < 0) {
-      return detail::regex_match<pattern, walk>(text);
+    if constexpr (Terminator < 0) {
+      return detail::regex_match<Pattern, Walk>(text);
     } else {
       return detail::regex_match_sentinel<
-          pattern, static_cast<unsigned char>(terminator), walk>(text);
+          Pattern, static_cast<unsigned char>(Terminator), Walk>(text);
     }
   }
 
-  template <detail::forward_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    static_assert(detail::regex_automaton<pattern>.tag_count == 0,
+  template <detail::forward_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    static_assert(detail::regex_automaton<Pattern>.tag_count == 0,
                   "a pattern that captures wants the subject in one piece: "
                   "read it into a string first");
-    using holder = detail::walked_holder<range_type>;
+    using holder = detail::walked_holder<RangeType>;
     const auto first = std::ranges::begin(input);
     const auto last = std::ranges::end(input);
     auto walking = first;
-    if (!detail::matched_over<pattern, detail::walk_shape{}>(walking, last)) {
+    if (!detail::matched_over<Pattern, detail::walk_shape{}>(walking, last)) {
       return basic_result<holder, 0>{};
     }
     return basic_result<holder, 0>{
@@ -2156,15 +2156,15 @@ struct match_closure
   // Off input that arrives in pieces: read in words and vectors inside a
   // piece, and the answer owns what it kept, because a piece is gone once the
   // walk has left it.
-  template <detail::piecewise_char_range pieces_type>
-    requires(!detail::contiguous_char_range<pieces_type> &&
-             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
-  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
-    held_type held;
-    auto view = std::views::all(std::forward<pieces_type>(input));
-    detail::gathers_from_pieces<detail::keeps_into<held_type>, decltype(view)>
-        into(detail::keeps_into<held_type>{held}, std::move(view));
+  template <detail::piecewise_char_range PiecesType>
+    requires(!detail::contiguous_char_range<PiecesType> &&
+             !std::same_as<std::ranges::range_value_t<PiecesType>, char>)
+  [[nodiscard]] constexpr auto operator()(PiecesType&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<Pattern>;
+    HeldType held;
+    auto view = std::views::all(std::forward<PiecesType>(input));
+    detail::gathers_from_pieces<detail::keeps_into<HeldType>, decltype(view)>
+        into(detail::keeps_into<HeldType>{held}, std::move(view));
     detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     const char* cursor = nullptr;
@@ -2175,10 +2175,10 @@ struct match_closure
     if (!detail::run_continuation<automaton, shape, automaton.initial,
                                   shape.budget, 0, std::ptrdiff_t>(
             cursor, last, place, registers, into, best)) {
-      return basic_result<held_type, 0>{};
+      return basic_result<HeldType, 0>{};
     }
-    return basic_result<held_type, 0>{
-        basic_submatch<held_type>(std::move(held)), {}};
+    return basic_result<HeldType, 0>{
+        basic_submatch<HeldType>(std::move(held)), {}};
   }
 
   // Walked by the same code that walks a list of characters, which is the
@@ -2189,11 +2189,11 @@ struct match_closure
   // by the compiler as it is everywhere else, and the state is where it stands
   // in that code rather than a number to look up. What it cannot have is the
   // vectors, which want characters in a row.
-  template <detail::read_once_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
-    held_type held;
-    detail::keeps_into<held_type> keep{held};
+  template <detail::read_once_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    constexpr const auto& automaton = detail::regex_automaton<Pattern>;
+    HeldType held;
+    detail::keeps_into<HeldType> keep{held};
     detail::register_file<std::ptrdiff_t, automaton.register_count> registers{};
     registers.fill(scan::tre::negative_tag);
     std::ptrdiff_t place = 0;
@@ -2205,45 +2205,45 @@ struct match_closure
     // of nothing it was paying a call for every state it passed through, for
     // every character.
     constexpr detail::walk_shape once{.budget =
-                                          detail::chain_budget<pattern>()};
+                                          detail::chain_budget<Pattern>()};
     if (!detail::run_continuation<automaton, once, automaton.initial,
                                   once.budget, 0, std::ptrdiff_t>(
             cursor, std::ranges::end(input), place, registers, keep, best)) {
-      return basic_result<held_type, 0>{};
+      return basic_result<HeldType, 0>{};
     }
-    return basic_result<held_type, 0>{
-        basic_submatch<held_type>(std::move(held)), {}};
+    return basic_result<HeldType, 0>{
+        basic_submatch<HeldType>(std::move(held)), {}};
   }
 };
 
-template <fixed_string pattern>
-inline constexpr match_closure<pattern> match{};
+template <fixed_string Pattern>
+inline constexpr match_closure<Pattern> match{};
 
 // The head of the subject the pattern takes.
-template <fixed_string pattern, class held_type = std::string>
+template <fixed_string Pattern, class HeldType = std::string>
 struct starts_with_closure
     : std::ranges::range_adaptor_closure<
-          starts_with_closure<pattern, held_type>> {
-  template <class other>
-  [[nodiscard]] constexpr starts_with_closure<pattern, other> into() const {
+          starts_with_closure<Pattern, HeldType>> {
+  template <class Other>
+  [[nodiscard]] constexpr starts_with_closure<Pattern, Other> into() const {
     return {};
   }
 
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_starts_with<pattern>(detail::characters_of(input));
+  template <detail::contiguous_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    return detail::regex_starts_with<Pattern>(detail::characters_of(input));
   }
 
-  template <detail::forward_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    static_assert(detail::regex_automaton<pattern>.tag_count == 0,
+  template <detail::forward_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    static_assert(detail::regex_automaton<Pattern>.tag_count == 0,
                   "a pattern that captures wants the subject in one piece: "
                   "read it into a string first");
-    using holder = detail::walked_holder<range_type>;
+    using holder = detail::walked_holder<RangeType>;
     auto walking = std::ranges::begin(input);
     const auto first = walking;
     detail::walk_answer<decltype(walking)> best;
-    const bool found = detail::walk_over<pattern, detail::head_shape<pattern>()>(
+    const bool found = detail::walk_over<Pattern, detail::head_shape<Pattern>()>(
         walking, std::ranges::end(input), best);
     if (!found) return basic_result<holder, 0>{};
     return basic_result<holder, 0>{
@@ -2258,61 +2258,61 @@ struct starts_with_closure
   // them back to here, so this is only for a pattern that cannot go on once it
   // has a match: then where it stops is where the head ends, and nothing is
   // held.
-  template <detail::read_once_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::read_once_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     static_assert(
-        detail::fallback_window<pattern>() == 0,
+        detail::fallback_window<Pattern>() == 0,
         "a subject that can only be read once has nowhere to give back the "
         "characters read past the head, and this pattern can walk away from a "
         "match without finding another one: it would have to hold them");
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
-    held_type held;
+    constexpr const auto& automaton = detail::regex_automaton<Pattern>;
+    HeldType held;
     std::size_t here = automaton.initial;
     auto cursor = std::ranges::begin(input);
     const auto last = std::ranges::end(input);
     for (; cursor != last; ++cursor) {
       const unsigned char symbol = static_cast<unsigned char>(*cursor);
-      const std::size_t run = detail::run_taken<detail::regex_automaton<pattern>>(here, symbol);
+      const std::size_t run = detail::run_taken<detail::regex_automaton<Pattern>>(here, symbol);
       if (run == detail::no_run) break;
       here = automaton.states[here].ranges[run].target;
       held.push_back(static_cast<char>(symbol));
     }
     if (automaton.states[here].accepting_slot ==
         detail::packed_state<0, 0, 0>::not_accepting) {
-      return basic_result<held_type, 0>{};
+      return basic_result<HeldType, 0>{};
     }
-    return basic_result<held_type, 0>{
-        basic_submatch<held_type>(std::move(held)), {}};
+    return basic_result<HeldType, 0>{
+        basic_submatch<HeldType>(std::move(held)), {}};
   }
 };
 
-template <fixed_string pattern>
-inline constexpr starts_with_closure<pattern> starts_with{};
+template <fixed_string Pattern>
+inline constexpr starts_with_closure<Pattern> starts_with{};
 
 // The leftmost match. Only over characters that are already all there: finding
 // it asks the subject about places it has been past, which a subject that can
 // only be read once cannot answer.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 struct search_closure
-    : std::ranges::range_adaptor_closure<search_closure<pattern>> {
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return detail::regex_search<pattern>(detail::characters_of(input));
+    : std::ranges::range_adaptor_closure<search_closure<Pattern>> {
+  template <detail::contiguous_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    return detail::regex_search<Pattern>(detail::characters_of(input));
   }
 };
 
-template <fixed_string pattern>
-inline constexpr search_closure<pattern> search{};
+template <fixed_string Pattern>
+inline constexpr search_closure<Pattern> search{};
 
 // One match after another, found as they are asked for.
 //
 // Nothing is collected: the view holds where to look next and finds the next
 // match when the loop asks for it. What was here built a vector of every match
 // in the input before the caller had looked at the first one.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 class search_view {
  public:
-  using result_type = detail::regex_result_for<pattern>;
+  using result_type = detail::regex_result_for<Pattern>;
 
   constexpr explicit search_view(std::string_view input) : input_(input) {}
 
@@ -2352,7 +2352,7 @@ class search_view {
     }
 
    private:
-    constexpr void seek() { found_ = detail::regex_search<pattern>(rest_); }
+    constexpr void seek() { found_ = detail::regex_search<Pattern>(rest_); }
 
     std::string_view rest_;
     result_type found_{};
@@ -2393,19 +2393,19 @@ class search_view {
 // the answer is. For `\s+` both numbers are zero and nothing is ever held at
 // all: every space is already a whole match, and the first character that is
 // not a space was never taken.
-template <fixed_string pattern, class range_type>
+template <fixed_string Pattern, class RangeType>
 class read_once_finder {
  public:
-  static constexpr std::size_t dead_end = detail::dead_end_window<pattern>();
-  static constexpr std::size_t past_match = detail::fallback_window<pattern>();
+  static constexpr std::size_t dead_end = detail::dead_end_window<Pattern>();
+  static constexpr std::size_t past_match = detail::fallback_window<Pattern>();
   // Where the pattern names no number the caller is told so; the size here is
   // only kept sane so that the telling is what they see.
   static constexpr std::size_t hold =
-      detail::holds_a_bounded_way<pattern>()
+      detail::holds_a_bounded_way<Pattern>()
           ? (dead_end > past_match ? dead_end : past_match) + 2
           : 2;
 
-  constexpr explicit read_once_finder(range_type input)
+  constexpr explicit read_once_finder(RangeType input)
       : input_(std::move(input)) {}
 
   read_once_finder(read_once_finder&&) = default;
@@ -2417,9 +2417,9 @@ class read_once_finder {
   // pushed into `skipped`, what it is made of into `made`. False where there
   // is no next match: whatever was left of the subject has gone into
   // `skipped` by then.
-  template <class skipped_type, class made_type>
-  constexpr bool next(skipped_type& skipped, made_type& made) {
-    constexpr const auto& automaton = detail::regex_automaton<pattern>;
+  template <class SkippedType, class MadeType>
+  constexpr bool next(SkippedType& skipped, MadeType& made) {
+    constexpr const auto& automaton = detail::regex_automaton<Pattern>;
     while (true) {
       std::size_t here = automaton.initial;
       std::size_t taken = 0;   // how much of the match is already in `made`
@@ -2503,8 +2503,8 @@ class read_once_finder {
     count_ += all;
   }
 
-  range_type input_;
-  std::optional<std::ranges::iterator_t<range_type>> cursor_;
+  RangeType input_;
+  std::optional<std::ranges::iterator_t<RangeType>> cursor_;
   std::array<char, hold + 2> queue_{};
   std::size_t count_ = 0;
 };
@@ -2514,10 +2514,10 @@ struct nowhere {
   constexpr void push_back(char) const noexcept {}
 };
 
-template <fixed_string pattern, class held_type, class range_type>
+template <fixed_string Pattern, class HeldType, class RangeType>
 class read_once_search_view {
  public:
-  constexpr explicit read_once_search_view(range_type input)
+  constexpr explicit read_once_search_view(RangeType input)
       : finder_(std::move(input)) {}
 
   read_once_search_view(read_once_search_view&&) = default;
@@ -2527,7 +2527,7 @@ class read_once_search_view {
 
   class iterator {
    public:
-    using value_type = basic_submatch<held_type>;
+    using value_type = basic_submatch<HeldType>;
     using difference_type = std::ptrdiff_t;
 
     constexpr iterator() = default;
@@ -2549,7 +2549,7 @@ class read_once_search_view {
 
    private:
     constexpr void seek() {
-      held_type made;
+      HeldType made;
       nowhere dropped;
       if (owner_->finder_.next(dropped, made)) {
         found_ = value_type(std::move(made));
@@ -2568,16 +2568,16 @@ class read_once_search_view {
  private:
   friend class iterator;
 
-  read_once_finder<pattern, range_type> finder_;
+  read_once_finder<Pattern, RangeType> finder_;
 };
 
 // The pieces between those matches, off the same kind of subject. The piece is
 // the answer and it is the caller's collector; the search that finds its end
 // holds a handful of characters and nothing more.
-template <fixed_string pattern, class held_type, class range_type>
+template <fixed_string Pattern, class HeldType, class RangeType>
 class read_once_split_view {
  public:
-  constexpr explicit read_once_split_view(range_type input)
+  constexpr explicit read_once_split_view(RangeType input)
       : finder_(std::move(input)) {}
 
   read_once_split_view(read_once_split_view&&) = default;
@@ -2587,7 +2587,7 @@ class read_once_split_view {
 
   class iterator {
    public:
-    using value_type = held_type;
+    using value_type = HeldType;
     using difference_type = std::ptrdiff_t;
 
     constexpr iterator() = default;
@@ -2596,7 +2596,7 @@ class read_once_split_view {
       seek();
     }
 
-    [[nodiscard]] constexpr const held_type& operator*() const {
+    [[nodiscard]] constexpr const HeldType& operator*() const {
       return piece_;
     }
     constexpr iterator& operator++() {
@@ -2614,15 +2614,15 @@ class read_once_split_view {
 
    private:
     constexpr void seek() {
-      piece_ = held_type{};
-      held_type gap;
+      piece_ = HeldType{};
+      HeldType gap;
       // The piece is what comes before the delimiter, so it is written
       // straight into the answer while the delimiter is being looked for.
       if (!owner_->finder_.next(piece_, gap)) last_ = true;
     }
 
     read_once_split_view* owner_ = nullptr;
-    held_type piece_{};
+    HeldType piece_{};
     bool last_ = false;
     bool done_ = true;
   };
@@ -2633,7 +2633,7 @@ class read_once_split_view {
  private:
   friend class iterator;
 
-  read_once_finder<pattern, range_type> finder_;
+  read_once_finder<Pattern, RangeType> finder_;
 };
 
 // One match after another off input that arrives in pieces.
@@ -2650,10 +2650,10 @@ class read_once_split_view {
 // So what comes back points at the piece it was found in, or at the window; it
 // is good until the next match is asked for, which is what a reading of
 // something that arrives as it is read can promise.
-template <fixed_string pattern, class held_type, class pieces_type>
+template <fixed_string Pattern, class HeldType, class PiecesType>
 class pieces_search_view {
  public:
-  constexpr explicit pieces_search_view(pieces_type input)
+  constexpr explicit pieces_search_view(PiecesType input)
       : pieces_(std::move(input)) {}
 
   pieces_search_view(pieces_search_view&&) = default;
@@ -2718,7 +2718,7 @@ class pieces_search_view {
         continue;
       }
       if (rest_.empty() && !refill()) return;
-      const auto taken = detail::regex_search<pattern>(rest_);
+      const auto taken = detail::regex_search<Pattern>(rest_);
       if (!taken) {
         // Nothing here, but what is at the end of this piece may still begin
         // something the next one finishes -- so the rest of it is held back.
@@ -2757,7 +2757,7 @@ class pieces_search_view {
   constexpr bool seek_across() {
     while (true) {
       const std::string_view sofar(held_.data(), held_.size());
-      const auto ahead = detail::regex_search<pattern>(sofar);
+      const auto ahead = detail::regex_search<Pattern>(sofar);
       const bool settled =
           ahead && static_cast<std::size_t>(ahead.data() - sofar.data()) +
                            ahead.size() <
@@ -2768,7 +2768,7 @@ class pieces_search_view {
       rest_ = std::string_view{};
     }
     const std::string_view over(held_.data(), held_.size());
-    const auto taken = detail::regex_search<pattern>(over);
+    const auto taken = detail::regex_search<Pattern>(over);
     if (!taken) {
       held_.clear();
       return false;
@@ -2784,65 +2784,65 @@ class pieces_search_view {
     return true;
   }
 
-  pieces_type pieces_;
-  std::optional<std::ranges::iterator_t<pieces_type>> at_;
+  PiecesType pieces_;
+  std::optional<std::ranges::iterator_t<PiecesType>> at_;
   std::string_view rest_;
-  held_type held_;
-  held_type kept_;
+  HeldType held_;
+  HeldType kept_;
   value_type found_{};
 };
 
-template <fixed_string pattern, class held_type = std::string>
+template <fixed_string Pattern, class HeldType = std::string>
 struct search_all_closure
     : std::ranges::range_adaptor_closure<
-          search_all_closure<pattern, held_type>> {
-  template <class other>
-  [[nodiscard]] constexpr search_all_closure<pattern, other> into() const {
+          search_all_closure<Pattern, HeldType>> {
+  template <class Other>
+  [[nodiscard]] constexpr search_all_closure<Pattern, Other> into() const {
     return {};
   }
 
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr search_view<pattern> operator()(
-      range_type&& input) const {
-    return search_view<pattern>(detail::characters_of(input));
+  template <detail::contiguous_char_range RangeType>
+  [[nodiscard]] constexpr search_view<Pattern> operator()(
+      RangeType&& input) const {
+    return search_view<Pattern>(detail::characters_of(input));
   }
 
-  template <detail::read_once_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::read_once_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     static_assert(
-        detail::holds_a_bounded_way<pattern>(),
+        detail::holds_a_bounded_way<Pattern>(),
         "a subject that can only be read once cannot be gone back over, so "
         "the characters of an attempt that comes to nothing have to be held "
         "until it does: a pattern that can swallow any number of them without "
         "matching, like `a+b`, would have to hold the whole subject");
-    auto view = std::views::all(std::forward<range_type>(input));
-    return read_once_search_view<pattern, held_type, decltype(view)>(
+    auto view = std::views::all(std::forward<RangeType>(input));
+    return read_once_search_view<Pattern, HeldType, decltype(view)>(
         std::move(view));
   }
 
   // Off input that arrives in pieces: what fits in a piece is found in it and
   // costs no copy at all, and only what crosses a boundary is put together.
-  template <detail::piecewise_char_range pieces_type>
-    requires(!detail::contiguous_char_range<pieces_type> &&
-             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
-  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    auto view = std::views::all(std::forward<pieces_type>(input));
-    return pieces_search_view<pattern, held_type, decltype(view)>(
+  template <detail::piecewise_char_range PiecesType>
+    requires(!detail::contiguous_char_range<PiecesType> &&
+             !std::same_as<std::ranges::range_value_t<PiecesType>, char>)
+  [[nodiscard]] constexpr auto operator()(PiecesType&& input) const {
+    auto view = std::views::all(std::forward<PiecesType>(input));
+    return pieces_search_view<Pattern, HeldType, decltype(view)>(
         std::move(view));
   }
 };
 
-template <fixed_string pattern>
-inline constexpr search_all_closure<pattern> search_all{};
+template <fixed_string Pattern>
+inline constexpr search_all_closure<Pattern> search_all{};
 
-template <fixed_string pattern>
-inline constexpr search_all_closure<pattern> iterator{};
+template <fixed_string Pattern>
+inline constexpr search_all_closure<Pattern> iterator{};
 
-template <fixed_string pattern>
-inline constexpr search_all_closure<pattern> tokenize{};
+template <fixed_string Pattern>
+inline constexpr search_all_closure<Pattern> tokenize{};
 
 // The pieces between the matches, found as they are asked for.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 class split_view {
  public:
   constexpr explicit split_view(std::string_view input) : input_(input) {}
@@ -2876,7 +2876,7 @@ class split_view {
 
    private:
     constexpr void seek() {
-      const auto delimiter = detail::regex_search<pattern>(rest_);
+      const auto delimiter = detail::regex_search<Pattern>(rest_);
       if (!delimiter) {
         piece_ = rest_;
         last_ = true;
@@ -2908,10 +2908,10 @@ class split_view {
 // into it, with nothing copied. One that runs across a boundary is put
 // together in a buffer the view keeps and reuses -- and that one has to be
 // put together, because it is the answer and the input's piece is gone.
-template <fixed_string pattern, class held_type, class pieces_type>
+template <fixed_string Pattern, class HeldType, class PiecesType>
 class pieces_split_view {
  public:
-  constexpr explicit pieces_split_view(pieces_type input)
+  constexpr explicit pieces_split_view(PiecesType input)
       : pieces_(std::move(input)) {}
 
   pieces_split_view(pieces_split_view&&) = default;
@@ -2987,7 +2987,7 @@ class pieces_split_view {
         return;
       }
       if (!gathering) {
-        const auto taken = detail::regex_search<pattern>(rest_);
+        const auto taken = detail::regex_search<Pattern>(rest_);
         const auto begins =
             taken ? static_cast<std::size_t>(taken.data() - rest_.data()) : 0;
         if (taken && begins + taken.size() < rest_.size()) {
@@ -3009,7 +3009,7 @@ class pieces_split_view {
       // Gathering: the delimiter is looked for in what is held, which grows a
       // piece at a time until it settles.
       const std::string_view sofar(held_.data(), held_.size());
-      const auto taken = detail::regex_search<pattern>(sofar);
+      const auto taken = detail::regex_search<Pattern>(sofar);
       if (taken) {
         const auto begins =
             static_cast<std::size_t>(taken.data() - sofar.data());
@@ -3044,66 +3044,66 @@ class pieces_split_view {
     }
   }
 
-  pieces_type pieces_;
-  std::optional<std::ranges::iterator_t<pieces_type>> at_;
+  PiecesType pieces_;
+  std::optional<std::ranges::iterator_t<PiecesType>> at_;
   std::string_view rest_;
   std::string_view piece_;
   std::string_view leftovers_;
-  held_type held_;
-  held_type crossing_;
-  held_type left_;
+  HeldType held_;
+  HeldType crossing_;
+  HeldType left_;
   bool last_ = false;
   bool done_ = false;
   bool gave_one_ = false;
 };
 
-template <fixed_string pattern, class held_type = std::string>
+template <fixed_string Pattern, class HeldType = std::string>
 struct split_closure
-    : std::ranges::range_adaptor_closure<split_closure<pattern, held_type>> {
-  template <class other>
-  [[nodiscard]] constexpr split_closure<pattern, other> into() const {
+    : std::ranges::range_adaptor_closure<split_closure<Pattern, HeldType>> {
+  template <class Other>
+  [[nodiscard]] constexpr split_closure<Pattern, Other> into() const {
     return {};
   }
 
-  template <detail::contiguous_char_range range_type>
-  [[nodiscard]] constexpr split_view<pattern> operator()(
-      range_type&& input) const {
-    return split_view<pattern>(detail::characters_of(input));
+  template <detail::contiguous_char_range RangeType>
+  [[nodiscard]] constexpr split_view<Pattern> operator()(
+      RangeType&& input) const {
+    return split_view<Pattern>(detail::characters_of(input));
   }
 
-  template <detail::read_once_char_range range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::read_once_char_range RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     static_assert(
-        detail::holds_a_bounded_way<pattern>(),
+        detail::holds_a_bounded_way<Pattern>(),
         "a subject that can only be read once cannot be gone back over, so "
         "the characters of an attempt at the delimiter that comes to nothing "
         "have to be held until it does: a delimiter that can swallow any "
         "number of them without matching, like `a+b`, would have to hold the "
         "whole subject");
-    auto view = std::views::all(std::forward<range_type>(input));
-    return read_once_split_view<pattern, held_type, decltype(view)>(
+    auto view = std::views::all(std::forward<RangeType>(input));
+    return read_once_split_view<Pattern, HeldType, decltype(view)>(
         std::move(view));
   }
 
   // Off input that arrives in pieces: a piece that lies inside one of the
   // input's own costs no copy, and only one that runs across a boundary is put
   // together.
-  template <detail::piecewise_char_range pieces_type>
-    requires(!detail::contiguous_char_range<pieces_type> &&
-             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
-  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    auto view = std::views::all(std::forward<pieces_type>(input));
-    return pieces_split_view<pattern, held_type, decltype(view)>(
+  template <detail::piecewise_char_range PiecesType>
+    requires(!detail::contiguous_char_range<PiecesType> &&
+             !std::same_as<std::ranges::range_value_t<PiecesType>, char>)
+  [[nodiscard]] constexpr auto operator()(PiecesType&& input) const {
+    auto view = std::views::all(std::forward<PiecesType>(input));
+    return pieces_split_view<Pattern, HeldType, decltype(view)>(
         std::move(view));
   }
 };
 
-template <fixed_string pattern>
-inline constexpr split_closure<pattern> split{};
+template <fixed_string Pattern>
+inline constexpr split_closure<Pattern> split{};
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[deprecated("use search_all")]]
-inline constexpr search_all_closure<pattern> range{};
+inline constexpr search_all_closure<Pattern> range{};
 
 #undef SCAN_REGEX_FORCE_INLINE
 

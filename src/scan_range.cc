@@ -5,11 +5,11 @@ export import scan.shape;
 
 export namespace scan::detail {
 
-template <class type, fixed_string format, std::size_t extent, std::size_t... index>
-[[nodiscard]] constexpr type convert(
-    const std::array<std::string_view, extent>& fields,
-    std::index_sequence<index...>) {
-  static_assert(groups_of_output<type>() == extent,
+template <class Type, fixed_string Format, std::size_t Extent, std::size_t... Index>
+[[nodiscard]] constexpr Type convert(
+    const std::array<std::string_view, Extent>& fields,
+    std::index_sequence<Index...>) {
+  static_assert(groups_of_output<Type>() == Extent,
                 "placeholder count must equal the number of values the output "
                 "type reads");
   // Built, not built empty and then written over. The aggregate used to be
@@ -19,8 +19,8 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
   // three times what initialising it once costs. It also demanded that every
   // field be default-constructible and assignable, which is more than an
   // aggregate has to be.
-  return or_thrown(build_value<failure_for<type>,
-                               format_parameters<type, format>, type, 0>(
+  return or_thrown(build_value<failure_for<Type>,
+                               format_parameters<Type, Format>, Type, 0>(
       fields));
 }
 
@@ -29,45 +29,45 @@ template <class type, fixed_string format, std::size_t extent, std::size_t... in
 // The contexts cannot be told to the conversion itself -- a conversion takes no
 // arguments -- so they are told to the reading, and the conversion is the one
 // it always was. Everything here is the same reading under another spelling.
-template <class reading, class... contexts>
+template <class Reading, class... Contexts>
 class reading_with {
  public:
-  constexpr reading_with(reading what, contexts... given)
+  constexpr reading_with(Reading what, Contexts... given)
       : what_(std::move(what)), given_(std::move(given)...) {}
 
-  template <class type>
-    requires(std::is_aggregate_v<type> || scanned_as_variant<type>)
-  constexpr operator type() const {
-    return what_.template read_or_throw<type>(given_);
+  template <class Type>
+    requires(std::is_aggregate_v<Type> || scanned_as_variant<Type>)
+  constexpr operator Type() const {
+    return what_.template read_or_throw<Type>(given_);
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of() const {
-    return what_.template read_or_throw<type>(given_);
+  template <class Type>
+  [[nodiscard]] constexpr Type of() const {
+    return what_.template read_or_throw<Type>(given_);
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of()
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of()
       const {
-    return what_.template read<type>(given_);
+    return what_.template read<Type>(given_);
   }
 
  private:
-  reading what_;
-  scan::contexts_given<contexts...> given_;
+  Reading what_;
+  scan::contexts_given<Contexts...> given_;
 };
 
-template <fixed_string format, int terminator = -1, bool terminated = false,
-          how_to_walk walk = how_to_walk::by_length>
+template <fixed_string Format, int Terminator = -1, bool Terminated = false,
+          how_to_walk Walk = how_to_walk::by_length>
 class borrowed_result {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
 
   // The reading itself, which hands back what it read or what went wrong.
   // Everything below is this, asked for in one of the two ways.
-  template <class type, class given_type = scan::nothing_given>
-  [[nodiscard]] constexpr std::expected<type, failure_for<type>> read(
-      const given_type& given = given_type{}) const {
+  template <class Type, class GivenType = scan::nothing_given>
+  [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> read(
+      const GivenType& given = GivenType{}) const {
     // A list or a fold is read by the machine that gathers as it goes, even
     // where the subject lies in a row and could be pointed at: what either of
     // them is made of are the turns, and the positions left behind hold the
@@ -81,17 +81,17 @@ class borrowed_result {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
-      return detail::scan_stream<type, format, walk, given_type>(input_, given);
+      return detail::scan_stream<type, Format, Walk, given_type>(input_, given);
     } else {
       // A group that took no part is an error, unless somewhere in this output
       // there is a variant, where exactly one branch takes part and the rest do
       // not. Which it is, is known while the pattern is compiled.
       auto fields = [&] {
         if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
-          return scan_branch_fields<type, format, terminator, terminated, walk>(
+          return scan_branch_fields<type, Format, Terminator, Terminated, Walk>(
               input_);
         } else {
-          return scan_fields<type, format, terminator, terminated, walk>(
+          return scan_fields<type, Format, Terminator, Terminated, Walk>(
               input_);
         }
       }();
@@ -111,7 +111,7 @@ class borrowed_result {
       // Built by the helper that knows what a shape is made of, and not
       // here. What this layer has is groups; what a type is made of is a
       // question it does not ask.
-      return scan::aggregate_scanner<format>::template read<type>(*fields,
+      return scan::aggregate_scanner<Format>::template read<type>(*fields,
                                                                   given);
     }
   }
@@ -119,42 +119,42 @@ class borrowed_result {
   // The same reading, asked for rather than tried for: nothing along the way
   // holds a failure, because there is nowhere to put one but a throw and the
   // throw happens where the failure is.
-  template <class type, class given_type = scan::nothing_given>
-  [[nodiscard]] constexpr type read_or_throw(
-      const given_type& given = given_type{}) const {
+  template <class Type, class GivenType = scan::nothing_given>
+  [[nodiscard]] constexpr Type read_or_throw(
+      const GivenType& given = GivenType{}) const {
     if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
       return or_thrown(
-          detail::scan_stream<type, format, walk, given_type>(input_, given));
+          detail::scan_stream<type, Format, Walk, given_type>(input_, given));
     } else {
       const auto fields = [&] {
         if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
-          return scan_branch_fields<type, format, terminator, terminated, walk,
+          return scan_branch_fields<type, Format, Terminator, Terminated, Walk,
                                     throws_a_failure>(input_);
         } else {
-          return scan_fields<type, format, terminator, terminated, walk,
+          return scan_fields<type, Format, Terminator, Terminated, Walk,
                              throws_a_failure>(input_);
         }
       }();
-      return scan::aggregate_scanner<format>::template read_or_throw<type>(
+      return scan::aggregate_scanner<Format>::template read_or_throw<type>(
           fields, given);
     }
   }
 
-  template <class type>
-    requires std::is_aggregate_v<type>
-  constexpr operator type() const {
-    return read_or_throw<type>();
+  template <class Type>
+    requires std::is_aggregate_v<Type>
+  constexpr operator Type() const {
+    return read_or_throw<Type>();
   }
 
   // The same scan, for a format that says the input may be one of several
   // shapes. Which branch ran is read from the mark each branch was given.
-  template <class type>
-    requires scanned_as_variant<type>
-  constexpr operator type() const {
-    return read_or_throw<type>();
+  template <class Type>
+    requires scanned_as_variant<Type>
+  constexpr operator Type() const {
+    return read_or_throw<Type>();
   }
 
   // The same scan, said rather than implied, and the same scan that does not
@@ -169,15 +169,15 @@ class borrowed_result {
   // One context is everybody's; more than one is one per place, in the order
   // the places are read, with scan::default_context standing for a place that
   // wants none. Each reaches the one call where its place makes its value.
-  template <class type>
-  [[nodiscard]] constexpr type of() const {
-    return read_or_throw<type>();
+  template <class Type>
+  [[nodiscard]] constexpr Type of() const {
+    return read_or_throw<Type>();
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of()
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of()
       const {
-    return read<type>();
+    return read<Type>();
   }
 
   // Contexts written as they stand, without braces: as many places as the
@@ -187,17 +187,17 @@ class borrowed_result {
   // Chosen over the braced form below whenever it can be -- its parameters take
   // what was handed over as it stands, and an exact match beats the conversion
   // the other would need.
-  template <class type, class... contexts>
-    requires(sizeof...(contexts) > 0)
-  [[nodiscard]] constexpr type of(const contexts&... given) const {
-    return read_or_throw<type>(scan::contexts_given<contexts...>(given...));
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr Type of(const Contexts&... given) const {
+    return read_or_throw<Type>(scan::contexts_given<Contexts...>(given...));
   }
 
-  template <class type, class... contexts>
-    requires(sizeof...(contexts) > 0)
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      const contexts&... given) const {
-    return read<type>(scan::contexts_given<contexts...>(given...));
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      const Contexts&... given) const {
+    return read<Type>(scan::contexts_given<Contexts...>(given...));
   }
 
   // The same, where a place is a shape and its parts want their own contexts.
@@ -209,23 +209,23 @@ class borrowed_result {
   //
   //   scan<"{} {}">(text).of<pair>(fast, slow)         -- as they stand
   //   scan<"{} {} {}">(text).of<nest>({{fast, default_context}, slow})
-  template <class type>
-  [[nodiscard]] constexpr type of(carrier_for<type> given) const {
-    return read_or_throw<type>(given);
+  template <class Type>
+  [[nodiscard]] constexpr Type of(carrier_for<Type> given) const {
+    return read_or_throw<Type>(given);
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      carrier_for<type> given) const {
-    return read<type>(given);
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      carrier_for<Type> given) const {
+    return read<Type>(given);
   }
 
   // The same contexts, told before the output type is named -- which is what a
   // reading assigned to a variable needs, because the conversion that names the
   // type has nowhere to put them.
-  template <class... contexts>
-  [[nodiscard]] constexpr auto with(contexts... given) const {
-    return reading_with<borrowed_result, contexts...>(*this, given...);
+  template <class... Contexts>
+  [[nodiscard]] constexpr auto with(Contexts... given) const {
+    return reading_with<borrowed_result, Contexts...>(*this, given...);
   }
 
   // The same things the reading could be told before it was handed a subject,
@@ -242,35 +242,35 @@ class borrowed_result {
   // The pattern layer's `match` has no such thing, and cannot: it walks where
   // it is called and hands back the answer, so by the time there is something
   // to say a method on, the walk it would have changed is over.
-  [[nodiscard]] constexpr borrowed_result<format, -1, terminated, walk> sized()
+  [[nodiscard]] constexpr borrowed_result<Format, -1, Terminated, Walk> sized()
       const {
-    return borrowed_result<format, -1, terminated, walk>(input_);
+    return borrowed_result<Format, -1, Terminated, Walk>(input_);
   }
 
-  template <unsigned char byte = 0>
-  [[nodiscard]] constexpr borrowed_result<format, byte, false, walk> sentinel()
+  template <unsigned char Byte = 0>
+  [[nodiscard]] constexpr borrowed_result<Format, Byte, false, Walk> sentinel()
       const {
-    return borrowed_result<format, byte, false, walk>(input_);
+    return borrowed_result<Format, Byte, false, Walk>(input_);
   }
 
-  [[nodiscard]] constexpr borrowed_result<format, terminator, terminated,
+  [[nodiscard]] constexpr borrowed_result<Format, Terminator, Terminated,
                                           how_to_walk::by_length>
   by_length() const {
-    return borrowed_result<format, terminator, terminated,
+    return borrowed_result<Format, Terminator, Terminated,
                            how_to_walk::by_length>(input_);
   }
 
-  [[nodiscard]] constexpr borrowed_result<format, terminator, terminated,
+  [[nodiscard]] constexpr borrowed_result<Format, Terminator, Terminated,
                                           how_to_walk::one_at_a_time>
   scalar() const {
-    return borrowed_result<format, terminator, terminated,
+    return borrowed_result<Format, Terminator, Terminated,
                            how_to_walk::one_at_a_time>(input_);
   }
 
-  [[nodiscard]] constexpr borrowed_result<format, terminator, terminated,
+  [[nodiscard]] constexpr borrowed_result<Format, Terminator, Terminated,
                                           how_to_walk::in_words>
   vec() const {
-    return borrowed_result<format, terminator, terminated,
+    return borrowed_result<Format, Terminator, Terminated,
                            how_to_walk::in_words>(input_);
   }
 
@@ -280,10 +280,10 @@ class borrowed_result {
 
 // What a scan over pieces hands back until somebody says what it is scanning
 // into.
-template <fixed_string format, class pieces_type>
+template <fixed_string Format, class PiecesType>
 class pieces_result {
  public:
-  constexpr explicit pieces_result(pieces_type input)
+  constexpr explicit pieces_result(PiecesType input)
       : input_(std::move(input)) {}
 
   pieces_result(pieces_result&&) = default;
@@ -291,70 +291,70 @@ class pieces_result {
   pieces_result(const pieces_result&) = delete;
   pieces_result& operator=(const pieces_result&) = delete;
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   read() {
-    return scan_pieces<type, format>(std::move(input_));
+    return scan_pieces<Type, Format>(std::move(input_));
   }
 
-  template <class type>
-    requires std::is_aggregate_v<type>
-  constexpr operator type() {
-    return or_thrown(read<type>());
+  template <class Type>
+    requires std::is_aggregate_v<Type>
+  constexpr operator Type() {
+    return or_thrown(read<Type>());
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of() {
-    return static_cast<type>(*this);
+  template <class Type>
+  [[nodiscard]] constexpr Type of() {
+    return static_cast<Type>(*this);
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   try_of() {
-    return read<type>();
+    return read<Type>();
   }
 
   // The same contexts a subject in a row may be told. What is below took them
   // all along -- the gatherer is told at the door and each place asks it -- so
   // saying them here is all that was missing.
-  template <class type, class told_type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> read(
-      const told_type& told) {
-    return scan_pieces<type, format, told_type>(std::move(input_), told);
+  template <class Type, class ToldType>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> read(
+      const ToldType& told) {
+    return scan_pieces<Type, Format, ToldType>(std::move(input_), told);
   }
 
-  template <class type, class... contexts>
-    requires(sizeof...(contexts) > 0)
-  [[nodiscard]] constexpr type of(const contexts&... given) {
-    return or_thrown(read<type>(scan::contexts_given<contexts...>(given...)));
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr Type of(const Contexts&... given) {
+    return or_thrown(read<Type>(scan::contexts_given<Contexts...>(given...)));
   }
 
-  template <class type, class... contexts>
-    requires(sizeof...(contexts) > 0)
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      const contexts&... given) {
-    return read<type>(scan::contexts_given<contexts...>(given...));
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      const Contexts&... given) {
+    return read<Type>(scan::contexts_given<Contexts...>(given...));
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of(carrier_for<type> given) {
-    return or_thrown(read<type>(given));
+  template <class Type>
+  [[nodiscard]] constexpr Type of(carrier_for<Type> given) {
+    return or_thrown(read<Type>(given));
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      carrier_for<type> given) {
-    return read<type>(given);
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      carrier_for<Type> given) {
+    return read<Type>(given);
   }
 
  private:
-  pieces_type input_;
+  PiecesType input_;
 };
 
-template <fixed_string format, std::ranges::input_range range_type>
+template <fixed_string Format, std::ranges::input_range RangeType>
 class streaming_result {
  public:
-  constexpr explicit streaming_result(range_type input)
+  constexpr explicit streaming_result(RangeType input)
       : input_(std::move(input)) {}
 
   streaming_result(streaming_result&&) = default;
@@ -362,65 +362,65 @@ class streaming_result {
   streaming_result(const streaming_result&) = delete;
   streaming_result& operator=(const streaming_result&) = delete;
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   read() {
-    return scan_stream<type, format>(input_);
+    return scan_stream<Type, Format>(input_);
   }
 
-  template <class type>
-    requires std::is_aggregate_v<type>
-  constexpr operator type() {
-    return or_thrown(read<type>());
+  template <class Type>
+    requires std::is_aggregate_v<Type>
+  constexpr operator Type() {
+    return or_thrown(read<Type>());
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of() {
-    return static_cast<type>(*this);
+  template <class Type>
+  [[nodiscard]] constexpr Type of() {
+    return static_cast<Type>(*this);
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   try_of() {
-    return read<type>();
+    return read<Type>();
   }
 
   // The same contexts a subject in a row may be told. What is below took them
   // all along -- the gatherer is told at the door and each place asks it -- so
   // saying them here is all that was missing.
-  template <class type, class told_type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> read(
-      const told_type& told) {
-    return scan_stream<type, format, how_to_walk::by_length, told_type>(
+  template <class Type, class ToldType>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> read(
+      const ToldType& told) {
+    return scan_stream<Type, Format, how_to_walk::by_length, ToldType>(
         input_, told);
   }
 
-  template <class type, class... contexts>
-    requires(sizeof...(contexts) > 0)
-  [[nodiscard]] constexpr type of(const contexts&... given) {
-    return or_thrown(read<type>(scan::contexts_given<contexts...>(given...)));
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr Type of(const Contexts&... given) {
+    return or_thrown(read<Type>(scan::contexts_given<Contexts...>(given...)));
   }
 
-  template <class type, class... contexts>
-    requires(sizeof...(contexts) > 0)
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      const contexts&... given) {
-    return read<type>(scan::contexts_given<contexts...>(given...));
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      const Contexts&... given) {
+    return read<Type>(scan::contexts_given<Contexts...>(given...));
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of(carrier_for<type> given) {
-    return or_thrown(read<type>(given));
+  template <class Type>
+  [[nodiscard]] constexpr Type of(carrier_for<Type> given) {
+    return or_thrown(read<Type>(given));
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>> try_of(
-      carrier_for<type> given) {
-    return read<type>(given);
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      carrier_for<Type> given) {
+    return read<Type>(given);
   }
 
  private:
-  range_type input_;
+  RangeType input_;
 };
 
 
@@ -434,22 +434,22 @@ export namespace scan {
 // are the same thing: there is a null character at `data() + size()`. A string
 // literal does. A `string_view` into the middle of something does not, and
 // neither does a vector of characters.
-template <class range_type>
+template <class RangeType>
 concept terminated_char_range =
-    detail::contiguous_char_range<range_type> &&
-    (std::same_as<std::remove_cvref_t<range_type>, std::string> ||
-     std::same_as<std::remove_cvref_t<range_type>,
+    detail::contiguous_char_range<RangeType> &&
+    (std::same_as<std::remove_cvref_t<RangeType>, std::string> ||
+     std::same_as<std::remove_cvref_t<RangeType>,
                   std::basic_string<char, std::char_traits<char>,
                                     std::allocator<char>>> ||
      // A string literal is read to the nul the compiler put there rather than
      // by counting, which is the faster of the two walks and the one nobody
      // has to ask for.
-     detail::literal_char_range<range_type>);
+     detail::literal_char_range<RangeType>);
 
 // What a scan of the head of an input hands back: the values, and what is left.
-template <class type>
+template <class Type>
 struct taken {
-  type value;
+  Type value;
   std::string_view rest;
 };
 
@@ -463,66 +463,66 @@ struct taken {
 //
 // Assigning it to something is the ordinary scan of the head, with the rest
 // thrown away; `take` hands back both.
-template <fixed_string format>
+template <fixed_string Format>
 class prefix_scan {
  public:
   constexpr explicit prefix_scan(std::string_view input) : input_(input) {}
 
   // The head and what follows it, or what went wrong instead. The reading
   // itself; `take` is this, asked for rather than tried for.
-  template <class type>
-  [[nodiscard]] constexpr std::expected<taken<type>, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
   try_take() const {
     // One walk: where the head ends and what is in it come back together, out
     // of the registers the walk was carrying anyway.
     const auto found =
-        detail::taken_prefix_fields<type, format,
-                                    detail::holds_a_variant<type>()>(input_);
+        detail::taken_prefix_fields<Type, Format,
+                                    detail::holds_a_variant<Type>()>(input_);
     if (!found.matched) {
       return std::unexpected(
-          scan::as_a_failure<detail::failure_for<type>>(
+          scan::as_a_failure<detail::failure_for<Type>>(
               no_match<>("input does not begin with the pattern")));
     }
-    auto made = detail::build_value<detail::failure_for<type>,
-                                    detail::format_parameters<type, format>,
-                                    type, 0>(found.groups);
+    auto made = detail::build_value<detail::failure_for<Type>,
+                                    detail::format_parameters<Type, Format>,
+                                    Type, 0>(found.groups);
     if (!made) return std::unexpected(std::move(made).error());
-    return taken<type>{std::move(*made), input_.substr(found.head.size())};
+    return taken<Type>{std::move(*made), input_.substr(found.head.size())};
   }
 
-  template <class type>
-  [[nodiscard]] constexpr taken<type> take() const {
+  template <class Type>
+  [[nodiscard]] constexpr taken<Type> take() const {
     // One walk, and nothing along it holds a failure: asked for a value, a
     // failure is a throw where it happens.
     const auto found =
-        detail::taken_prefix_fields<type, format,
-                                    detail::holds_a_variant<type>()>(input_);
+        detail::taken_prefix_fields<Type, Format,
+                                    detail::holds_a_variant<Type>()>(input_);
     if (!found.matched) {
       throw no_match<std::exception>(
           "input does not begin with the pattern");
     }
-    return taken<type>{
-        detail::build_value<detail::failure_for<type>,
-                            detail::format_parameters<type, format>, type, 0,
+    return taken<Type>{
+        detail::build_value<detail::failure_for<Type>,
+                            detail::format_parameters<Type, Format>, Type, 0,
                             false, scan::throws_a_failure>(found.groups),
         input_.substr(found.head.size())};
   }
 
-  template <class type>
-    requires std::is_aggregate_v<type> || detail::scanned_as_variant<type>
-  constexpr operator type() const {
-    return take<type>().value;
+  template <class Type>
+    requires std::is_aggregate_v<Type> || detail::scanned_as_variant<Type>
+  constexpr operator Type() const {
+    return take<Type>().value;
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of() const {
-    return take<type>().value;
+  template <class Type>
+  [[nodiscard]] constexpr Type of() const {
+    return take<Type>().value;
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   try_of() const {
-    auto got = try_take<type>();
+    auto got = try_take<Type>();
     if (!got) return std::unexpected(got.error());
     return std::move(got->value);
   }
@@ -536,20 +536,20 @@ class prefix_scan {
 // The reading stops where the pattern stops taking, and what it did not take is
 // still there to be looked at -- so a loop that ends early can say why. The
 // values are read as the loop asks for them and never all at once.
-template <class type, fixed_string format>
+template <class Type, fixed_string Format>
 class each_view {
  public:
   constexpr explicit each_view(std::string_view input) : rest_(input) {}
 
   class iterator {
    public:
-    using value_type = type;
+    using value_type = Type;
     using difference_type = std::ptrdiff_t;
 
     constexpr iterator() = default;
     constexpr explicit iterator(each_view& owner) : owner_(&owner) {}
 
-    [[nodiscard]] constexpr const type& operator*() const {
+    [[nodiscard]] constexpr const Type& operator*() const {
       return *owner_->value_;
     }
     constexpr iterator& operator++() {
@@ -581,12 +581,12 @@ class each_view {
     // One walk a match, not two: the walk that finds where this one ends is
     // carrying what is in it.
     const auto found =
-        detail::taken_prefix_fields<type, format,
-                                    detail::holds_a_variant<type>()>(rest_);
+        detail::taken_prefix_fields<Type, Format,
+                                    detail::holds_a_variant<Type>()>(rest_);
     if (!found.matched) return;
-    auto made = detail::build_value<detail::failure_for<type>,
-                                    detail::format_parameters<type, format>,
-                                    type, 0>(found.groups);
+    auto made = detail::build_value<detail::failure_for<Type>,
+                                    detail::format_parameters<Type, Format>,
+                                    Type, 0>(found.groups);
     // A match whose values did not read ends the reading, the same way a
     // subject that stopped matching does: the loop asked for values and there
     // are none, and there is nowhere in a loop to hand a failure to.
@@ -596,14 +596,14 @@ class each_view {
   }
 
   std::string_view rest_;
-  std::optional<type> value_;
+  std::optional<Type> value_;
 };
 
 // The same off a range that is read as it comes.
-template <class type, fixed_string format, class range_type>
+template <class Type, fixed_string Format, class RangeType>
 class each_stream_view {
  public:
-  constexpr explicit each_stream_view(range_type input)
+  constexpr explicit each_stream_view(RangeType input)
       : input_(std::move(input)),
         first_(std::ranges::begin(input_)) {}
 
@@ -614,13 +614,13 @@ class each_stream_view {
 
   class iterator {
    public:
-    using value_type = type;
+    using value_type = Type;
     using difference_type = std::ptrdiff_t;
 
     constexpr iterator() = default;
     constexpr explicit iterator(each_stream_view& owner) : owner_(&owner) {}
 
-    [[nodiscard]] constexpr const type& operator*() const {
+    [[nodiscard]] constexpr const Type& operator*() const {
       return *owner_->value_;
     }
     constexpr iterator& operator++() {
@@ -652,7 +652,7 @@ class each_stream_view {
   constexpr void advance() {
     value_.reset();
     if (carry_.empty() && first_ == std::ranges::end(input_)) return;
-    auto got = detail::scan_stream_prefix<type, format>(
+    auto got = detail::scan_stream_prefix<Type, Format>(
         first_, std::ranges::end(input_), carry_);
     if (!got) {
       value_.reset();
@@ -662,13 +662,13 @@ class each_stream_view {
     stopped_ = got->stopped;
   }
 
-  range_type input_;
-  std::ranges::iterator_t<range_type> first_;
+  RangeType input_;
+  std::ranges::iterator_t<RangeType> first_;
   // What the last match read and did not keep. A reading that can be gone back
   // over holds nothing here and the iterator goes back instead.
-  detail::stream_carry_for<type, format,
-                           std::ranges::iterator_t<range_type>> carry_;
-  std::optional<type> value_;
+  detail::stream_carry_for<Type, Format,
+                           std::ranges::iterator_t<RangeType>> carry_;
+  std::optional<Type> value_;
   std::optional<char> stopped_;
 };
 
@@ -690,7 +690,7 @@ class each_stream_view {
 //       reading.restart();
 //       if (!reading.offer(symbol)) report(symbol);
 //     }
-template <class type, fixed_string format>
+template <class Type, fixed_string Format>
 class reader {
  public:
   // False means the character was not taken and the machine has not moved:
@@ -711,27 +711,27 @@ class reader {
 
   // The values, or what went wrong instead. Reading further after this is
   // reading further into the same match, so whoever wants the next one says so.
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   try_take() const {
     return state_.finish();
   }
 
-  [[nodiscard]] constexpr type take() const {
+  [[nodiscard]] constexpr Type take() const {
     return or_thrown(try_take());
   }
 
   // What has been gathered for a field so far, while the match is still going
   // on -- for showing a command back as it is typed, for finishing it for
   // whoever is typing, for refusing it before they are done.
-  template <std::size_t field>
+  template <std::size_t Field>
   [[nodiscard]] constexpr const auto& gathering() const {
-    return state_.template gathering<field>();
+    return state_.template gathering<Field>();
   }
 
   // Whether that field is being read right now.
-  template <std::size_t field>
+  template <std::size_t Field>
   [[nodiscard]] constexpr bool reading() const {
-    return state_.template reading<field>();
+    return state_.template reading<Field>();
   }
 
   // Whether nothing can follow what has been offered: the machine is not in a
@@ -741,16 +741,16 @@ class reader {
   constexpr void restart() { state_.restart(); }
 
  private:
-  detail::stream_state<type, format, false> state_;
+  detail::stream_state<Type, Format, false> state_;
 };
 
 // The head of a range that is read once. The range is left standing after the
 // character that ended the match, which is handed back with the values because
 // it has been read and there is nowhere to put it back.
-template <fixed_string format, std::ranges::input_range range_type>
+template <fixed_string Format, std::ranges::input_range RangeType>
 class prefix_stream_scan {
  public:
-  constexpr explicit prefix_stream_scan(range_type input)
+  constexpr explicit prefix_stream_scan(RangeType input)
       : input_(std::move(input)) {}
 
   prefix_stream_scan(prefix_stream_scan&&) = default;
@@ -761,69 +761,69 @@ class prefix_stream_scan {
   // The answer says how much room it needs for what it hands back, which is a
   // question about the pattern and the reading both, so it is deduced rather
   // than named here.
-  template <class type>
+  template <class Type>
   [[nodiscard]] constexpr auto try_take() {
-    return detail::scan_stream_prefix<type, format>(input_);
+    return detail::scan_stream_prefix<Type, Format>(input_);
   }
 
-  template <class type>
+  template <class Type>
   [[nodiscard]] constexpr auto take() {
-    return or_thrown(try_take<type>());
+    return or_thrown(try_take<Type>());
   }
 
-  template <class type>
-    requires std::is_aggregate_v<type>
-  constexpr operator type() {
-    return take<type>().value;
+  template <class Type>
+    requires std::is_aggregate_v<Type>
+  constexpr operator Type() {
+    return take<Type>().value;
   }
 
-  template <class type>
-  [[nodiscard]] constexpr type of() {
-    return take<type>().value;
+  template <class Type>
+  [[nodiscard]] constexpr Type of() {
+    return take<Type>().value;
   }
 
-  template <class type>
-  [[nodiscard]] constexpr std::expected<type, detail::failure_for<type>>
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
   try_of() {
-    auto got = try_take<type>();
+    auto got = try_take<Type>();
     if (!got) return std::unexpected(got.error());
     return std::move(got->value);
   }
 
  private:
-  range_type input_;
+  RangeType input_;
 };
 
 // One match after another. The output type is named where the reading starts,
 // for the same reason the head of an input names it: until it is said there is
 // nothing to work out.
-template <fixed_string format>
+template <fixed_string Format>
 class each_scan {
  public:
   constexpr explicit each_scan(std::string_view input) : input_(input) {}
 
-  template <class type>
-  [[nodiscard]] constexpr each_view<type, format> of() const {
+  template <class Type>
+  [[nodiscard]] constexpr each_view<Type, Format> of() const {
     // Asked of the compiled automaton, which is not built at all where they
     // are built while the program runs. There the same pattern is refused by
     // the reading itself, which cannot move and says so.
     if constexpr (!detail::automata_at_runtime) {
       static_assert(!detail::matches_nothing<
-                        detail::packed_automaton<type, format>>(),
+                        detail::packed_automaton<Type, Format>>(),
                     "this pattern is happy with nothing at all, so reading one "
                     "match after another would never move");
     }
-    return each_view<type, format>(input_);
+    return each_view<Type, Format>(input_);
   }
 
  private:
   std::string_view input_;
 };
 
-template <fixed_string format, class range_type>
+template <fixed_string Format, class RangeType>
 class each_stream_scan {
  public:
-  constexpr explicit each_stream_scan(range_type input)
+  constexpr explicit each_stream_scan(RangeType input)
       : input_(std::move(input)) {}
 
   each_stream_scan(each_stream_scan&&) = default;
@@ -831,17 +831,17 @@ class each_stream_scan {
   each_stream_scan(const each_stream_scan&) = delete;
   each_stream_scan& operator=(const each_stream_scan&) = delete;
 
-  template <class type>
-  [[nodiscard]] constexpr each_stream_view<type, format, range_type> of() && {
+  template <class Type>
+  [[nodiscard]] constexpr each_stream_view<Type, Format, RangeType> of() && {
     static_assert(!detail::matches_nothing<
-                      detail::streaming_automaton<type, format>>(),
+                      detail::streaming_automaton<Type, Format>>(),
                   "this pattern is happy with nothing at all, so reading one "
                   "match after another would never move");
-    return each_stream_view<type, format, range_type>(std::move(input_));
+    return each_stream_view<Type, Format, RangeType>(std::move(input_));
   }
 
  private:
-  range_type input_;
+  RangeType input_;
 };
 
 // One match after another, off a contiguous input or off one that is read as
@@ -851,50 +851,50 @@ class each_stream_scan {
 // is the call, `text | each<f>` is the same thing said the other way round,
 // and the type each of them hands back is asked for the same way --
 // `.of<type>()`.
-template <class type, fixed_string format, class pieces_type>
+template <class Type, fixed_string Format, class PiecesType>
 class each_pieces_view;
 
-template <fixed_string format, class pieces_type>
+template <fixed_string Format, class PiecesType>
 class each_pieces_scan;
 
-template <fixed_string format>
-struct each_closure : std::ranges::range_adaptor_closure<each_closure<format>> {
+template <fixed_string Format>
+struct each_closure : std::ranges::range_adaptor_closure<each_closure<Format>> {
   // Off input that arrives in pieces: each piece read in words and vectors,
   // and the reading held between matches.
-  template <detail::piecewise_char_range pieces_type>
-    requires(!detail::contiguous_char_range<pieces_type> &&
-             !std::same_as<std::ranges::range_value_t<pieces_type>, char>)
-  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    auto view = std::views::all(std::forward<pieces_type>(input));
-    return each_pieces_scan<format, decltype(view)>(std::move(view));
+  template <detail::piecewise_char_range PiecesType>
+    requires(!detail::contiguous_char_range<PiecesType> &&
+             !std::same_as<std::ranges::range_value_t<PiecesType>, char>)
+  [[nodiscard]] constexpr auto operator()(PiecesType&& input) const {
+    auto view = std::views::all(std::forward<PiecesType>(input));
+    return each_pieces_scan<Format, decltype(view)>(std::move(view));
   }
 
-  template <detail::contiguous_char_range range_type>
-    requires(std::is_lvalue_reference_v<range_type&&> ||
-             std::ranges::borrowed_range<range_type>)
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    return each_scan<format>(detail::characters_of(input));
+  template <detail::contiguous_char_range RangeType>
+    requires(std::is_lvalue_reference_v<RangeType&&> ||
+             std::ranges::borrowed_range<RangeType>)
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    return each_scan<Format>(detail::characters_of(input));
   }
 
-  template <std::ranges::input_range range_type>
-    requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
-             (!detail::contiguous_char_range<range_type> ||
-              (!std::is_lvalue_reference_v<range_type&&> &&
-               !std::ranges::borrowed_range<range_type>))
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    auto view = std::views::all(std::forward<range_type>(input));
-    return each_stream_scan<format, decltype(view)>(std::move(view));
+  template <std::ranges::input_range RangeType>
+    requires std::same_as<std::ranges::range_value_t<RangeType>, char> &&
+             (!detail::contiguous_char_range<RangeType> ||
+              (!std::is_lvalue_reference_v<RangeType&&> &&
+               !std::ranges::borrowed_range<RangeType>))
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    auto view = std::views::all(std::forward<RangeType>(input));
+    return each_stream_scan<Format, decltype(view)>(std::move(view));
   }
 };
 
-template <fixed_string format>
-inline constexpr each_closure<format> each{};
+template <fixed_string Format>
+inline constexpr each_closure<Format> each{};
 
 // What `each` over pieces hands back until somebody says what it reads into.
-template <fixed_string format, class pieces_type>
+template <fixed_string Format, class PiecesType>
 class each_pieces_scan {
  public:
-  constexpr explicit each_pieces_scan(pieces_type input)
+  constexpr explicit each_pieces_scan(PiecesType input)
       : input_(std::move(input)) {}
 
   each_pieces_scan(each_pieces_scan&&) = default;
@@ -902,13 +902,13 @@ class each_pieces_scan {
   each_pieces_scan(const each_pieces_scan&) = delete;
   each_pieces_scan& operator=(const each_pieces_scan&) = delete;
 
-  template <class type>
-  [[nodiscard]] constexpr each_pieces_view<type, format, pieces_type> of() && {
-    return each_pieces_view<type, format, pieces_type>(std::move(input_));
+  template <class Type>
+  [[nodiscard]] constexpr each_pieces_view<Type, Format, PiecesType> of() && {
+    return each_pieces_view<Type, Format, PiecesType>(std::move(input_));
   }
 
  private:
-  pieces_type input_;
+  PiecesType input_;
 };
 
 // One match after another off input that arrives in pieces.
@@ -916,19 +916,19 @@ class each_pieces_scan {
 // The reading is held between matches: where one stopped is where the next
 // begins, in the piece the walk is holding, so nothing is put back and nothing
 // is read twice. The gathering starts again for each match; the pieces do not.
-template <class type, fixed_string format, class pieces_type>
+template <class Type, fixed_string Format, class PiecesType>
 class each_pieces_view {
  public:
   using automaton_type =
-      std::remove_cvref_t<decltype(detail::streaming_automaton<type, format>)>;
+      std::remove_cvref_t<decltype(detail::streaming_automaton<Type, Format>)>;
   using gatherer_type =
-      detail::field_gatherer<type, format,
-                             detail::streaming_automaton<type, format>>;
+      detail::field_gatherer<Type, Format,
+                             detail::streaming_automaton<Type, Format>>;
   using source_type =
-      detail::gathers_from_pieces<gatherer_type, pieces_type,
-                                  detail::pieces_hold<type, format>>;
+      detail::gathers_from_pieces<gatherer_type, PiecesType,
+                                  detail::pieces_hold<Type, Format>>;
 
-  constexpr explicit each_pieces_view(pieces_type input)
+  constexpr explicit each_pieces_view(PiecesType input)
       : source_(gatherer_type{collected_}, std::move(input)) {}
 
   each_pieces_view(each_pieces_view&&) = default;
@@ -938,7 +938,7 @@ class each_pieces_view {
 
   class iterator {
    public:
-    using value_type = type;
+    using value_type = Type;
     using difference_type = std::ptrdiff_t;
 
     constexpr iterator() = default;
@@ -946,7 +946,7 @@ class each_pieces_view {
       owner_->advance();
     }
 
-    [[nodiscard]] constexpr const type& operator*() const {
+    [[nodiscard]] constexpr const Type& operator*() const {
       return *owner_->value_;
     }
     constexpr iterator& operator++() {
@@ -976,7 +976,7 @@ class each_pieces_view {
     // holds where they lay in the view it came from.
     static_cast<gatherer_type&>(source_).lives_in(collected_);
     static_cast<gatherer_type&>(source_).begin_again();
-    auto taken = detail::take_from_pieces<type, format>(source_, cursor_, last_,
+    auto taken = detail::take_from_pieces<Type, Format>(source_, cursor_, last_,
                                                        place_);
     if (!taken.matched) return;
     value_ = std::move(taken.value);
@@ -989,26 +989,26 @@ class each_pieces_view {
   const char* cursor_ = nullptr;
   const char* last_ = nullptr;
   std::ptrdiff_t place_ = 0;
-  std::optional<type> value_;
+  std::optional<Type> value_;
 };
 
 // The head of the input that the pattern takes, and what follows it.
-template <fixed_string format, detail::contiguous_char_range range_type>
-  requires(std::is_lvalue_reference_v<range_type&&> || std::ranges::borrowed_range<range_type>)
-[[nodiscard]] constexpr auto scan_prefix(range_type&& input) {
-  return prefix_scan<format>(detail::characters_of(input));
+template <fixed_string Format, detail::contiguous_char_range RangeType>
+  requires(std::is_lvalue_reference_v<RangeType&&> || std::ranges::borrowed_range<RangeType>)
+[[nodiscard]] constexpr auto scan_prefix(RangeType&& input) {
+  return prefix_scan<Format>(detail::characters_of(input));
 }
 
 // The same, for input that has to be read as it comes. Nothing is buffered and
 // nothing is looked at twice.
-template <fixed_string format, std::ranges::input_range range_type>
-  requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
-           (!detail::contiguous_char_range<range_type> ||
-            (!std::is_lvalue_reference_v<range_type&&> &&
-             !std::ranges::borrowed_range<range_type>))
-[[nodiscard]] constexpr auto scan_prefix(range_type&& input) {
-  auto view = std::views::all(std::forward<range_type>(input));
-  return prefix_stream_scan<format, decltype(view)>(std::move(view));
+template <fixed_string Format, std::ranges::input_range RangeType>
+  requires std::same_as<std::ranges::range_value_t<RangeType>, char> &&
+           (!detail::contiguous_char_range<RangeType> ||
+            (!std::is_lvalue_reference_v<RangeType&&> &&
+             !std::ranges::borrowed_range<RangeType>))
+[[nodiscard]] constexpr auto scan_prefix(RangeType&& input) {
+  auto view = std::views::all(std::forward<RangeType>(input));
+  return prefix_stream_scan<Format, decltype(view)>(std::move(view));
 }
 
 // Everything a scan is asked to be, said in one place.
@@ -1028,8 +1028,8 @@ template <fixed_string format, std::ranges::input_range range_type>
 // where they lie, pieces are read piece by piece, and anything else is read as
 // it arrives. Saying the walk means nothing for those last two -- there is no
 // length to ask about -- so they take what they are given and ignore it.
-template <fixed_string format, class type = void, bool no_throw = false,
-          int terminator = -1, how_to_walk walk = how_to_walk::by_length>
+template <fixed_string Format, class Type = void, bool NoThrow = false,
+          int Terminator = -1, how_to_walk Walk = how_to_walk::by_length>
 struct scan_closure {
   // The output type, named before the subject rather than after it.
   //
@@ -1037,15 +1037,15 @@ struct scan_closure {
   // `scan<f>(text).of<T>()` says it after, `scan<f>.of<T>()(text)` says it
   // before. The second one is a whole reading with nothing left to say -- it
   // can be handed round, stored, or piped into.
-  template <class other>
-  [[nodiscard]] constexpr scan_closure<format, other, false, terminator, walk>
+  template <class Other>
+  [[nodiscard]] constexpr scan_closure<Format, Other, false, Terminator, Walk>
   of() const {
     return {};
   }
 
   // The same, handing back what went wrong instead of throwing it.
-  template <class other>
-  [[nodiscard]] constexpr scan_closure<format, other, true, terminator, walk>
+  template <class Other>
+  [[nodiscard]] constexpr scan_closure<Format, Other, true, Terminator, Walk>
   try_of() const {
     return {};
   }
@@ -1057,8 +1057,8 @@ struct scan_closure {
   // It is not quite what `sscanf` does: there the skipping belongs to the
   // conversion, so `%d` and `%s` skip and `%c` and `%[a-z]` do not. Here it
   // belongs to the format, and every place in it skips.
-  [[nodiscard]] constexpr scan_closure<format.past_space(), type, no_throw,
-                                       terminator, walk>
+  [[nodiscard]] constexpr scan_closure<Format.past_space(), Type, NoThrow,
+                                       Terminator, Walk>
   past_space() const {
     return {};
   }
@@ -1066,31 +1066,31 @@ struct scan_closure {
   // The subject ends where it ends, and the walk tests that as well as the
   // character -- except where the type of the subject carries a terminator of
   // its own, which is noticed without the caller having to say so.
-  [[nodiscard]] constexpr scan_closure<format, type, no_throw, -1, walk> sized() const {
+  [[nodiscard]] constexpr scan_closure<Format, Type, NoThrow, -1, Walk> sized() const {
     return {};
   }
 
   // The subject carries a character the pattern can never match. Whether it is
   // really there is the caller's promise; whether the pattern can match it is
   // asked while the pattern is compiled.
-  template <unsigned char byte = 0>
-  [[nodiscard]] constexpr scan_closure<format, type, no_throw, byte, walk> sentinel() const {
+  template <unsigned char Byte = 0>
+  [[nodiscard]] constexpr scan_closure<Format, Type, NoThrow, Byte, Walk> sentinel() const {
     return {};
   }
 
-  [[nodiscard]] constexpr scan_closure<format, type, no_throw, terminator,
+  [[nodiscard]] constexpr scan_closure<Format, Type, NoThrow, Terminator,
                                        how_to_walk::by_length>
   by_length() const {
     return {};
   }
 
-  [[nodiscard]] constexpr scan_closure<format, type, no_throw, terminator,
+  [[nodiscard]] constexpr scan_closure<Format, Type, NoThrow, Terminator,
                                        how_to_walk::one_at_a_time>
   scalar() const {
     return {};
   }
 
-  [[nodiscard]] constexpr scan_closure<format, type, no_throw, terminator,
+  [[nodiscard]] constexpr scan_closure<Format, Type, NoThrow, Terminator,
                                        how_to_walk::in_words>
   vec() const {
     return {};
@@ -1098,26 +1098,26 @@ struct scan_closure {
 
   // Characters in a row: the answers borrow the storage they were read from
   // and nothing is allocated.
-  template <detail::contiguous_char_range range_type>
-    requires(std::is_lvalue_reference_v<range_type&&> ||
-             std::ranges::borrowed_range<range_type>)
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
+  template <detail::contiguous_char_range RangeType>
+    requires(std::is_lvalue_reference_v<RangeType&&> ||
+             std::ranges::borrowed_range<RangeType>)
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
     const std::string_view text = detail::characters_of(input);
     auto reading = [&] {
-      if constexpr (terminator < 0) {
-        return detail::borrowed_result<format, -1,
-                                       terminated_char_range<range_type>,
-                                       walk>(text);
+      if constexpr (Terminator < 0) {
+        return detail::borrowed_result<Format, -1,
+                                       terminated_char_range<RangeType>,
+                                       Walk>(text);
       } else {
-        return detail::borrowed_result<format, terminator, false, walk>(text);
+        return detail::borrowed_result<Format, Terminator, false, Walk>(text);
       }
     }();
-    if constexpr (std::is_void_v<type>) {
+    if constexpr (std::is_void_v<Type>) {
       return reading;
-    } else if constexpr (no_throw) {
-      return reading.template try_of<type>();
+    } else if constexpr (NoThrow) {
+      return reading.template try_of<Type>();
     } else {
-      return reading.template of<type>();
+      return reading.template of<Type>();
     }
   }
 
@@ -1125,36 +1125,36 @@ struct scan_closure {
   // walk reads it in words and vectors; where a piece runs out it asks for the
   // next one and goes on where it stood. Nothing is buffered and no piece is
   // looked at twice, so what comes back owns whatever it holds.
-  template <detail::piecewise_char_range pieces_type>
-    requires(!detail::contiguous_char_range<pieces_type>)
-  [[nodiscard]] constexpr auto operator()(pieces_type&& input) const {
-    auto reading = detail::pieces_result<format, pieces_type>(
-        std::forward<pieces_type>(input));
-    if constexpr (std::is_void_v<type>) {
+  template <detail::piecewise_char_range PiecesType>
+    requires(!detail::contiguous_char_range<PiecesType>)
+  [[nodiscard]] constexpr auto operator()(PiecesType&& input) const {
+    auto reading = detail::pieces_result<Format, PiecesType>(
+        std::forward<PiecesType>(input));
+    if constexpr (std::is_void_v<Type>) {
       return reading;
-    } else if constexpr (no_throw) {
-      return reading.template try_of<type>();
+    } else if constexpr (NoThrow) {
+      return reading.template try_of<Type>();
     } else {
-      return reading.template of<type>();
+      return reading.template of<Type>();
     }
   }
 
   // Input that has to be read as it comes. The proxy owns the view and
   // consumes it once, after the output type is known.
-  template <std::ranges::input_range range_type>
-    requires std::same_as<std::ranges::range_value_t<range_type>, char> &&
-             (!detail::contiguous_char_range<range_type> ||
-              (!std::is_lvalue_reference_v<range_type&&> &&
-               !std::ranges::borrowed_range<range_type>))
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    auto view = std::views::all(std::forward<range_type>(input));
-    auto reading = detail::streaming_result<format, decltype(view)>(std::move(view));
-    if constexpr (std::is_void_v<type>) {
+  template <std::ranges::input_range RangeType>
+    requires std::same_as<std::ranges::range_value_t<RangeType>, char> &&
+             (!detail::contiguous_char_range<RangeType> ||
+              (!std::is_lvalue_reference_v<RangeType&&> &&
+               !std::ranges::borrowed_range<RangeType>))
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    auto view = std::views::all(std::forward<RangeType>(input));
+    auto reading = detail::streaming_result<Format, decltype(view)>(std::move(view));
+    if constexpr (std::is_void_v<Type>) {
       return reading;
-    } else if constexpr (no_throw) {
-      return reading.template try_of<type>();
+    } else if constexpr (NoThrow) {
+      return reading.template try_of<Type>();
     } else {
-      return reading.template of<type>();
+      return reading.template of<Type>();
     }
   }
 
@@ -1163,28 +1163,28 @@ struct scan_closure {
   [[nodiscard]] constexpr auto operator()(std::istream& input) const {
     auto range = std::ranges::subrange(std::istreambuf_iterator<char>(input),
                                        std::istreambuf_iterator<char>());
-    auto reading = detail::streaming_result<format, decltype(range)>(std::move(range));
-    if constexpr (std::is_void_v<type>) {
+    auto reading = detail::streaming_result<Format, decltype(range)>(std::move(range));
+    if constexpr (std::is_void_v<Type>) {
       return reading;
-    } else if constexpr (no_throw) {
-      return reading.template try_of<type>();
+    } else if constexpr (NoThrow) {
+      return reading.template try_of<Type>();
     } else {
-      return reading.template of<type>();
+      return reading.template of<Type>();
     }
   }
 };
 
-template <fixed_string format>
-inline constexpr scan_closure<format> scan{};
+template <fixed_string Format>
+inline constexpr scan_closure<Format> scan{};
 
-template <class type, fixed_string format, std::ranges::input_range range_type>
-[[nodiscard]] constexpr type scan_as(range_type&& input) {
-  return static_cast<type>(scan<format>(std::forward<range_type>(input)));
+template <class Type, fixed_string Format, std::ranges::input_range RangeType>
+[[nodiscard]] constexpr Type scan_as(RangeType&& input) {
+  return static_cast<Type>(scan<Format>(std::forward<RangeType>(input)));
 }
 
-template <class type, fixed_string format>
-[[nodiscard]] constexpr type scan_as(std::istream& input) {
-  return static_cast<type>(scan<format>(input));
+template <class Type, fixed_string Format>
+[[nodiscard]] constexpr Type scan_as(std::istream& input) {
+  return static_cast<Type>(scan<Format>(input));
 }
 
 }  // namespace scan

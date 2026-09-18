@@ -528,12 +528,12 @@ class tre_parser {
 // The pattern says which rule it is built for, so nothing here has to be told
 // twice: everything keyed by the pattern -- the automaton and every table of
 // states, runs and classes that names it -- follows the same value.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval scan::tre::tdfa build_regex_tdfa() {
   std::size_t captures = 0;
-  tre_parser parser(pattern.view(), {}, captures, true);
+  tre_parser parser(Pattern.view(), {}, captures, true);
   return minimize_tdfa(scan::tre::optimize_tdfa(scan::tre::compile_tdfa(
-      scan::tre::compile_tnfa(parser.parse_regex()), !pattern.anchored)));
+      scan::tre::compile_tnfa(parser.parse_regex()), !Pattern.anchored)));
 }
 
 // Which transition each symbol takes, or none. The symbol sets of a state's
@@ -625,7 +625,7 @@ struct packed_command {
 // the symbol against `first` and `last`, which is what the generated code
 // wanted from a cell-per-symbol table anyway -- it recovered these ranges from
 // it, once per instantiation, having paid to build the table first.
-template <std::size_t command_capacity>
+template <std::size_t CommandCapacity>
 struct packed_range {
   static constexpr std::size_t reject =
       std::numeric_limits<std::size_t>::max();
@@ -633,7 +633,7 @@ struct packed_range {
   unsigned char last = 0;
   std::size_t target = reject;
   std::size_t command_count = 0;
-  std::array<packed_command, command_capacity> commands{};
+  std::array<packed_command, CommandCapacity> commands{};
   // Which groups the character this move reads lies inside, and whether every
   // position that could read it agrees. Both are facts about the move, so a
   // walk written out as code knows them where it stands: what a character
@@ -649,25 +649,25 @@ struct packed_range {
   std::uint64_t groups_reopened = 0;
 };
 
-template <std::size_t command_capacity, std::size_t final_command_capacity,
-          std::size_t range_capacity, std::size_t tag_capacity = 0,
-          std::size_t reading_capacity = 0>
+template <std::size_t CommandCapacity, std::size_t FinalCommandCapacity,
+          std::size_t RangeCapacity, std::size_t TagCapacity = 0,
+          std::size_t ReadingCapacity = 0>
 struct packed_state {
   static constexpr std::size_t not_accepting =
       std::numeric_limits<std::size_t>::max();
-  std::array<packed_range<command_capacity>, range_capacity> ranges{};
+  std::array<packed_range<CommandCapacity>, RangeCapacity> ranges{};
   std::size_t range_count = 0;
   std::size_t accepting_slot = not_accepting;
   std::size_t final_command_count = 0;
-  std::array<packed_command, final_command_capacity> final_commands{};
+  std::array<packed_command, FinalCommandCapacity> final_commands{};
   // Which register holds which tag, in each reading this state stands in.
   // Indexed the same way the accepting slot is.
   std::size_t reading_count = 0;
-  std::array<std::array<std::uint32_t, tag_capacity>, reading_capacity>
+  std::array<std::array<std::uint32_t, TagCapacity>, ReadingCapacity>
       readings{};
   // Where each tag stands once the ending has run, which is not the number the
   // tag began as: the registers are renamed after the ending is written.
-  std::array<std::uint32_t, tag_capacity> ending_reading{};
+  std::array<std::uint32_t, TagCapacity> ending_reading{};
 };
 
 
@@ -681,9 +681,9 @@ struct packed_state {
 // runs of that state are constants.
 inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
 
-template <auto& automaton, std::size_t state>
+template <auto& Automaton, std::size_t State>
 [[nodiscard]] constexpr std::size_t run_taken_in(unsigned char symbol) {
-  constexpr const auto& packed = automaton.states[state];
+  constexpr const auto& packed = Automaton.states[State];
   for (std::size_t index = 0; index < packed.range_count; ++index) {
     if (symbol < packed.ranges[index].first) break;
     if (symbol <= packed.ranges[index].last) return index;
@@ -699,16 +699,16 @@ template <auto& automaton, std::size_t state>
 // indexes the cell. This is the table a generated scanner uses when it is told
 // to be a table, and it is only built for the machines that need it -- the
 // walks over characters in a row never ask.
-template <auto& automaton>
+template <auto& Automaton>
 inline constexpr auto step_table = [] consteval {
   constexpr std::size_t state_count =
-      std::tuple_size_v<std::remove_cvref_t<decltype(automaton.states)>>;
+      std::tuple_size_v<std::remove_cvref_t<decltype(Automaton.states)>>;
   // A run index fits in two bytes: a state holds at most as many runs as there
   // are symbols.
   std::array<std::array<std::uint16_t, 256>, state_count> made{};
   for (std::size_t state = 0; state < state_count; ++state) {
     std::ranges::fill(made[state], std::uint16_t{0xffff});
-    const auto& packed = automaton.states[state];
+    const auto& packed = Automaton.states[state];
     for (std::size_t index = 0; index < packed.range_count; ++index) {
       for (std::size_t symbol = packed.ranges[index].first;
            symbol <= packed.ranges[index].last; ++symbol) {
@@ -719,18 +719,18 @@ inline constexpr auto step_table = [] consteval {
   return made;
 }();
 
-template <auto& automaton>
+template <auto& Automaton>
 [[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
                                               unsigned char symbol) {
-  const std::uint16_t run = step_table<automaton>[here][symbol];
+  const std::uint16_t run = step_table<Automaton>[here][symbol];
   return run == 0xffff ? no_run : run;
 }
 
 // The transition a symbol takes, or nothing at all. The ranges of a state are
 // in symbol order and do not overlap, so the search stops at the first range
 // that starts past the symbol.
-template <class packed_state_type>
-[[nodiscard]] constexpr auto find_range(const packed_state_type& state,
+template <class PackedStateType>
+[[nodiscard]] constexpr auto find_range(const PackedStateType& state,
                                         unsigned char symbol)
     -> const std::remove_cvref_t<decltype(state.ranges[0])>* {
   for (std::size_t index = 0; index < state.range_count; ++index) {
@@ -741,44 +741,44 @@ template <class packed_state_type>
   return nullptr;
 }
 
-template <std::size_t state_count, std::size_t register_extent,
-          std::size_t initial_command_count, std::size_t command_count,
-          std::size_t final_command_count, std::size_t tag_extent,
-          std::size_t range_count, std::size_t reading_count = 0>
+template <std::size_t StateCount, std::size_t RegisterExtent,
+          std::size_t InitialCommandCount, std::size_t CommandCount,
+          std::size_t FinalCommandCount, std::size_t TagExtent,
+          std::size_t RangeCount, std::size_t ReadingCount = 0>
 struct packed_tdfa {
   std::size_t initial = 0;
-  std::array<packed_command, initial_command_count> initialize{};
-  std::array<packed_state<command_count, final_command_count, range_count,
-                          tag_extent, reading_count>,
-             state_count>
+  std::array<packed_command, InitialCommandCount> initialize{};
+  std::array<packed_state<CommandCount, FinalCommandCount, RangeCount,
+                          TagExtent, ReadingCount>,
+             StateCount>
       states{};
   // Which tag each register holds, said rather than worked out from the number.
-  std::array<std::uint32_t, register_extent> register_tag{};
-  static constexpr std::size_t register_count = register_extent;
-  static constexpr std::size_t tag_count = tag_extent;
+  std::array<std::uint32_t, RegisterExtent> register_tag{};
+  static constexpr std::size_t register_count = RegisterExtent;
+  static constexpr std::size_t tag_count = TagExtent;
 };
 
-template <std::size_t state_count>
+template <std::size_t StateCount>
 using packed_state_index = std::conditional_t<
-    (state_count < std::numeric_limits<std::uint8_t>::max()), std::uint8_t,
+    (StateCount < std::numeric_limits<std::uint8_t>::max()), std::uint8_t,
     std::conditional_t<
-        (state_count < std::numeric_limits<std::uint16_t>::max()),
+        (StateCount < std::numeric_limits<std::uint16_t>::max()),
         std::uint16_t,
         std::conditional_t<
-            (state_count < std::numeric_limits<std::uint32_t>::max()),
+            (StateCount < std::numeric_limits<std::uint32_t>::max()),
             std::uint32_t, std::size_t>>>;
 
-template <std::size_t state_count>
+template <std::size_t StateCount>
 struct packed_captureless_tdfa {
-  using state_type = packed_state_index<state_count>;
+  using state_type = packed_state_index<StateCount>;
   static constexpr state_type reject =
       std::numeric_limits<state_type>::max();
   static constexpr std::size_t register_count = 0;
   static constexpr std::size_t tag_count = 0;
 
   state_type initial = 0;
-  std::array<std::array<state_type, 256>, state_count> transitions{};
-  std::array<bool, state_count> accepting{};
+  std::array<std::array<state_type, 256>, StateCount> transitions{};
+  std::array<bool, StateCount> accepting{};
 };
 
 [[nodiscard]] constexpr packed_command pack_command(
@@ -793,14 +793,14 @@ struct packed_captureless_tdfa {
   return packed;
 }
 
-template <std::size_t state_count, std::size_t register_count,
-          std::size_t initial_command_count, std::size_t command_count,
-          std::size_t final_command_count, std::size_t tag_count,
-          std::size_t range_count, std::size_t reading_count = 0>
+template <std::size_t StateCount, std::size_t RegisterCount,
+          std::size_t InitialCommandCount, std::size_t CommandCount,
+          std::size_t FinalCommandCount, std::size_t TagCount,
+          std::size_t RangeCount, std::size_t ReadingCount = 0>
 [[nodiscard]] constexpr auto pack_tdfa_value(const scan::tre::tdfa& tdfa) {
-  packed_tdfa<state_count, register_count, initial_command_count,
-              command_count, final_command_count, tag_count, range_count,
-              reading_count>
+  packed_tdfa<StateCount, RegisterCount, InitialCommandCount,
+              CommandCount, FinalCommandCount, TagCount, RangeCount,
+              ReadingCount>
       packed;
   packed.initial = tdfa.initial;
   for (std::size_t reg :
@@ -813,8 +813,8 @@ template <std::size_t state_count, std::size_t register_count,
         const scan::tre::tdfa_state& source = tdfa.states[state_index];
         auto& target = packed.states[state_index];
         target.accepting_slot = source.accepting_slot.value_or(
-            packed_state<command_count, final_command_count, range_count,
-                         tag_count, reading_count>::not_accepting);
+            packed_state<CommandCount, FinalCommandCount, RangeCount,
+                         TagCount, ReadingCount>::not_accepting);
         target.reading_count = source.readings.size();
         for (std::size_t reading :
              std::views::iota(std::size_t{0}, source.readings.size())) {
@@ -912,67 +912,67 @@ inline constexpr bool automata_at_runtime = false;
 // built from that pattern and nothing else -- so the layer that turns formats
 // into patterns can ask for a machine here without this one ever hearing what
 // a format is. Two spellings that spread to the same text are one machine.
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] constexpr scan::tre::tnfa build_text_tnfa() {
   std::size_t captures = 0;
-  tre_parser parser(pattern.view(), {}, captures, true);
+  tre_parser parser(Pattern.view(), {}, captures, true);
   return scan::tre::compile_tnfa(parser.parse_regex());
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut_at_match = true,
-          std::uint64_t keep = ~std::uint64_t{0}>
+template <fixed_string Pattern, bool Allocate = true, bool CutAtMatch = true,
+          std::uint64_t Keep = ~std::uint64_t{0}>
 [[nodiscard]] constexpr scan::tre::tdfa build_text_tdfa() {
   std::size_t captures = 0;
-  tre_parser parser(pattern.view(), {}, captures, true);
+  tre_parser parser(Pattern.view(), {}, captures, true);
   scan::tre::node expression = parser.parse_regex();
   return scan::tre::optimize_tdfa(
       scan::tre::compile_tdfa(scan::tre::compile_tnfa(expression),
-                              cut_at_match, keep),
-      allocate);
+                              CutAtMatch, Keep),
+      Allocate);
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut = true,
-          std::uint64_t keep = ~std::uint64_t{0}>
+template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
+          std::uint64_t Keep = ~std::uint64_t{0}>
 [[nodiscard]] consteval packed_shape compute_text_shape() {
-  const scan::tre::tdfa tdfa = build_text_tdfa<pattern, allocate, cut, keep>();
+  const scan::tre::tdfa tdfa = build_text_tdfa<Pattern, Allocate, Cut, Keep>();
   return compute_shape(tdfa);
 }
 
-template <fixed_string pattern, bool allocate = true, bool cut = true,
-          std::uint64_t keep = ~std::uint64_t{0}>
+template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
+          std::uint64_t Keep = ~std::uint64_t{0}>
 [[nodiscard]] consteval auto pack_text_tdfa() {
   constexpr packed_shape shape =
-      compute_text_shape<pattern, allocate, cut, keep>();
+      compute_text_shape<Pattern, Allocate, Cut, Keep>();
   return pack_tdfa_value<shape.states, shape.registers, shape.initial_commands,
                          shape.maximum_commands, shape.maximum_final_commands,
                          shape.tags, shape.ranges, shape.readings>(
-      build_text_tdfa<pattern, allocate, cut, keep>());
+      build_text_tdfa<Pattern, Allocate, Cut, Keep>());
 }
 
 // Built once, on first use. The determiniser is the same one the compiled form
 // evaluates while compiling; asked at run time it answers in microseconds.
-template <fixed_string pattern, bool allocate = true>
+template <fixed_string Pattern, bool Allocate = true>
 [[nodiscard]] inline const scan::tre::tdfa& runtime_text_automaton() {
-  static const scan::tre::tdfa built = build_text_tdfa<pattern, allocate>();
+  static const scan::tre::tdfa built = build_text_tdfa<Pattern, Allocate>();
   return built;
 }
 
 // Told which groups the answer is made of, so that the marks of the rest are
 // never written and the readings that differ only in them are one reading.
-template <fixed_string pattern, bool allocate = true, bool cut = true,
-          std::uint64_t keep = ~std::uint64_t{0}>
+template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
+          std::uint64_t Keep = ~std::uint64_t{0}>
 inline constexpr auto packed_text_automaton =
-    pack_text_tdfa<pattern, allocate, cut, keep>();
+    pack_text_tdfa<Pattern, Allocate, Cut, Keep>();
 
 // Built once, on first use. The determiniser is the same one the compiled form
 // evaluates while compiling; asked at run time it answers in microseconds.
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval packed_shape compute_regex_shape() {
-  return compute_shape(build_regex_tdfa<pattern>());
+  return compute_shape(build_regex_tdfa<Pattern>());
 }
 
-template <fixed_string pattern>
+template <fixed_string Pattern>
 [[nodiscard]] consteval auto pack_regex_tdfa() {
   // One shape for every pattern, tags or none.
   //
@@ -982,16 +982,16 @@ template <fixed_string pattern>
   // both walks want and what the tagged shape already holds, so both are that
   // shape now: fewer numbers to carry through the module, and one set of
   // questions to ask of either.
-  constexpr packed_shape shape = compute_regex_shape<pattern>();
-  const scan::tre::tdfa tdfa = build_regex_tdfa<pattern>();
+  constexpr packed_shape shape = compute_regex_shape<Pattern>();
+  const scan::tre::tdfa tdfa = build_regex_tdfa<Pattern>();
   return pack_tdfa_value<shape.states, shape.registers,
                          shape.initial_commands, shape.maximum_commands,
                          shape.maximum_final_commands, shape.tags,
                          shape.ranges, shape.readings>(tdfa);
 }
 
-template <fixed_string pattern>
-inline constexpr auto regex_automaton = pack_regex_tdfa<pattern>();
+template <fixed_string Pattern>
+inline constexpr auto regex_automaton = pack_regex_tdfa<Pattern>();
 
 
 }  // namespace scan::detail
