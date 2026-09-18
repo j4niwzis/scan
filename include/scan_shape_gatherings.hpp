@@ -16,7 +16,7 @@
 #include "scan_tre.hpp"
 #include "scan_compiler.hpp"
 #include "scan_runtime.hpp"
-#include "scan_shape_places.hpp"
+#include "scan_shape_contexts.hpp"
 
 #if defined(_MSC_VER)
 #define SCAN_FORCE_INLINE __forceinline
