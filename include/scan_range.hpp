@@ -68,7 +68,7 @@ class reading_with {
 
  private:
   Reading what_;
-  scan::contexts_given<Contexts...> given_;
+  scan::contexts_at_places<Contexts...> given_;
 };
 
 template <fixed_string Format, int Terminator = -1, bool Terminated = false,
@@ -79,9 +79,9 @@ class borrowed_result {
 
   // The reading itself, which hands back what it read or what went wrong.
   // Everything below is this, asked for in one of the two ways.
-  template <class Type, class GivenType = scan::nothing_given>
+  template <class Type, class CarrierType = scan::no_contexts>
   [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> read(
-      const GivenType& given = GivenType{}) const {
+      const CarrierType& given = CarrierType{}) const {
     // A list or a fold is read by the machine that gathers as it goes, even
     // where the subject lies in a row and could be pointed at: what either of
     // them is made of are the turns, and the positions left behind hold the
@@ -95,7 +95,7 @@ class borrowed_result {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
-      return detail::scan_stream<Type, Format, Walk, GivenType>(input_, given);
+      return detail::scan_stream<Type, Format, Walk, CarrierType>(input_, given);
     } else {
       // A group that took no part is an error, unless somewhere in this output
       // there is a variant, where exactly one branch takes part and the rest do
@@ -133,15 +133,15 @@ class borrowed_result {
   // The same reading, asked for rather than tried for: nothing along the way
   // holds a failure, because there is nowhere to put one but a throw and the
   // throw happens where the failure is.
-  template <class Type, class GivenType = scan::nothing_given>
+  template <class Type, class CarrierType = scan::no_contexts>
   [[nodiscard]] constexpr Type read_or_throw(
-      const GivenType& given = GivenType{}) const {
+      const CarrierType& given = CarrierType{}) const {
     if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
       return or_thrown(
-          detail::scan_stream<Type, Format, Walk, GivenType>(input_, given));
+          detail::scan_stream<Type, Format, Walk, CarrierType>(input_, given));
     } else {
       const auto fields = [&] {
         if constexpr (holds_a_variant<Type>() || scanned_as_variant<Type>) {
@@ -204,14 +204,14 @@ class borrowed_result {
   template <class Type, class... Contexts>
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr Type of(const Contexts&... given) const {
-    return read_or_throw<Type>(scan::contexts_given<Contexts...>(given...));
+    return read_or_throw<Type>(scan::contexts_at_places<Contexts...>(given...));
   }
 
   template <class Type, class... Contexts>
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
       const Contexts&... given) const {
-    return read<Type>(scan::contexts_given<Contexts...>(given...));
+    return read<Type>(scan::contexts_at_places<Contexts...>(given...));
   }
 
   // The same, where a place is a shape and its parts want their own contexts.
@@ -331,23 +331,23 @@ class pieces_result {
   // The same contexts a subject in a row may be told. What is below took them
   // all along -- the gatherer is told at the door and each place asks it -- so
   // saying them here is all that was missing.
-  template <class Type, class ToldType>
+  template <class Type, class CarrierType>
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> read(
-      const ToldType& told) {
-    return scan_pieces<Type, Format, ToldType>(std::move(input_), told);
+      const CarrierType& told) {
+    return scan_pieces<Type, Format, CarrierType>(std::move(input_), told);
   }
 
   template <class Type, class... Contexts>
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr Type of(const Contexts&... given) {
-    return or_thrown(read<Type>(scan::contexts_given<Contexts...>(given...)));
+    return or_thrown(read<Type>(scan::contexts_at_places<Contexts...>(given...)));
   }
 
   template <class Type, class... Contexts>
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
       const Contexts&... given) {
-    return read<Type>(scan::contexts_given<Contexts...>(given...));
+    return read<Type>(scan::contexts_at_places<Contexts...>(given...));
   }
 
   template <class Type>
@@ -402,24 +402,24 @@ class streaming_result {
   // The same contexts a subject in a row may be told. What is below took them
   // all along -- the gatherer is told at the door and each place asks it -- so
   // saying them here is all that was missing.
-  template <class Type, class ToldType>
+  template <class Type, class CarrierType>
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> read(
-      const ToldType& told) {
-    return scan_stream<Type, Format, how_to_walk::by_length, ToldType>(
+      const CarrierType& told) {
+    return scan_stream<Type, Format, how_to_walk::by_length, CarrierType>(
         input_, told);
   }
 
   template <class Type, class... Contexts>
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr Type of(const Contexts&... given) {
-    return or_thrown(read<Type>(scan::contexts_given<Contexts...>(given...)));
+    return or_thrown(read<Type>(scan::contexts_at_places<Contexts...>(given...)));
   }
 
   template <class Type, class... Contexts>
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
       const Contexts&... given) {
-    return read<Type>(scan::contexts_given<Contexts...>(given...));
+    return read<Type>(scan::contexts_at_places<Contexts...>(given...));
   }
 
   template <class Type>

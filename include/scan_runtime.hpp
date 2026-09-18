@@ -2676,11 +2676,11 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
           bool PointsAtSubject, class CursorType, class SentinelType,
           std::size_t RegisterCount, class Gatherer, class AnswerType,
           class MakeType = taken_from_gatherer,
-          class ToldCarrier = scan::nothing_given>
+          class CarrierType = scan::no_contexts>
 [[nodiscard]] auto run_threaded_owning(CursorType cursor, SentinelType last,
                                        const char* text, Mark start,
                                        MakeType make = {},
-                                       const ToldCarrier& told = ToldCarrier{}) {
+                                       const CarrierType& told = CarrierType{}) {
   static_assert(states_in<Automaton> <= SCAN_LADDER,
                 "this machine has more states than the ladder has rungs: "
                 "build with -DSCAN_LADDER=4096");
@@ -2738,12 +2738,12 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry,
           bool PointsAtSubject, class CursorType, class SentinelType,
           std::size_t RegisterCount, class Gatherer, class AnswerType,
           class MakeType = taken_from_gatherer,
-          class ToldCarrier = scan::nothing_given>
+          class CarrierType = scan::no_contexts>
 [[nodiscard]] constexpr auto run_owning(CursorType cursor, SentinelType last,
                                         const char* text, Mark start,
                                         MakeType make = {},
-                                        const ToldCarrier& told =
-                                            ToldCarrier{}) {
+                                        const CarrierType& told =
+                                            CarrierType{}) {
   if consteval {
     register_file<Mark, RegisterCount> registers{};
     if constexpr (std::is_pointer_v<Mark>) {
@@ -2783,7 +2783,7 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry,
     return run_threaded_owning<Automaton, Shape, Entry, Mark,
                                PointsAtSubject, CursorType, SentinelType,
                                RegisterCount, Gatherer, AnswerType, MakeType,
-                               ToldCarrier>(cursor, last, text, start, make,
+                               CarrierType>(cursor, last, text, start, make,
                                              told);
   }
 }

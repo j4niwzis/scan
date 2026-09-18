@@ -95,27 +95,27 @@ template <class Type, fixed_string Format, class SourceType>
 // field gathers, it gathers as the characters go by, and a piece is not looked
 // at again once the walk has left it.
 template <class Type, fixed_string Format,
-          class ToldType = scan::default_context_t,
+          class CarrierType = scan::default_context_t,
           piecewise_char_range PiecesType>
 [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> scan_pieces(
-    PiecesType&& pieces, const ToldType& told = ToldType{}) {
+    PiecesType&& pieces, const CarrierType& told = CarrierType{}) {
   constexpr const auto& automaton = streaming_automaton<Type, Format>;
   register_file<std::ptrdiff_t, automaton.register_count> registers{};
   registers.fill(scan::tre::negative_tag);
   execute_initial<automaton>(registers, std::ptrdiff_t{0});
   auto view = std::views::all(std::forward<PiecesType>(pieces));
   typename field_gatherer<Type, Format, automaton, false, std::ptrdiff_t,
-                          ToldType>::cold_type collected =
+                          CarrierType>::cold_type collected =
       made_cold_at_places<
           Type, Format, std::ptrdiff_t,
           typename field_gatherer<Type, Format, automaton, false,
-                                  std::ptrdiff_t, ToldType>::cold_type>(told);
+                                  std::ptrdiff_t, CarrierType>::cold_type>(told);
   gathers_from_pieces<field_gatherer<Type, Format, automaton, false,
-                                     std::ptrdiff_t, ToldType>,
+                                     std::ptrdiff_t, CarrierType>,
                       decltype(view),
                       pieces_hold<Type, Format>>
       into(field_gatherer<Type, Format, automaton, false, std::ptrdiff_t,
-                          ToldType>{collected, told},
+                          CarrierType>{collected, told},
            std::move(view));
   // Nothing in hand to begin with, so the first thing the walk does is ask.
   const char* cursor = nullptr;
@@ -135,10 +135,10 @@ template <class Type, fixed_string Format,
 
 template <class Type, fixed_string Format,
           how_to_walk Walk = how_to_walk::by_length,
-          class ToldType = scan::default_context_t,
+          class CarrierType = scan::default_context_t,
           std::ranges::input_range RangeType>
 [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> scan_stream(
-    RangeType&& input, const ToldType& told = ToldType{}) {
+    RangeType&& input, const CarrierType& told = CarrierType{}) {
   // The whole of the reading, so the walks below a match are kept.
   constexpr const auto& automaton = streaming_automaton<Type, Format, false>;
   // Positions as addresses where the subject lies in a row.
@@ -199,7 +199,7 @@ template <class Type, fixed_string Format,
                       const char*, points_at_it, const char*, const char*,
                       automaton.register_count,
                       field_gatherer<Type, Format, automaton, in_a_row,
-                                     mark_kind, ToldType>,
+                                     mark_kind, CarrierType>,
                       walk_answer<const char*>>(
         cursor, last, points_at_it ? cursor : nullptr,
         points_at_it ? cursor : mark_kind{}, {}, told);
@@ -213,7 +213,7 @@ template <class Type, fixed_string Format,
       execute_initial<automaton>(registers, std::ptrdiff_t{0});
     }
     using gatherer_type =
-        field_gatherer<Type, Format, automaton, in_a_row, mark_kind, ToldType>;
+        field_gatherer<Type, Format, automaton, in_a_row, mark_kind, CarrierType>;
     typename gatherer_type::cold_type collected =
         made_cold_at_places<Type, Format, mark_kind,
                             typename gatherer_type::cold_type>(told);
@@ -486,10 +486,10 @@ struct aggregate_scanner {
   // and the type at the call, and `point` may have no scanner at all. What
   // reads it is this, asked for both: the library below hands over the groups
   // and asks nothing about what a point is made of.
-  template <class Type, class GivenType = scan::nothing_given>
+  template <class Type, class CarrierType = scan::no_contexts>
   [[nodiscard]] static constexpr auto read(
       std::span<const std::string_view> groups,
-      const GivenType& given = GivenType{})
+      const CarrierType& given = CarrierType{})
       -> std::expected<Type, detail::failure_for<Type>> {
     return detail::build_value<detail::failure_for<Type>,
                                detail::format_parameters<Type, Format>, Type, 0,
@@ -498,10 +498,10 @@ struct aggregate_scanner {
 
   // The same, where the caller asked for the value itself: what went wrong is
   // thrown at the asking, which is the only place anything is thrown.
-  template <class Type, class GivenType = scan::nothing_given>
+  template <class Type, class CarrierType = scan::no_contexts>
   [[nodiscard]] static constexpr Type read_or_throw(
       std::span<const std::string_view> groups,
-      const GivenType& given = GivenType{}) {
+      const CarrierType& given = CarrierType{}) {
     return detail::build_value<detail::failure_for<Type>,
                                detail::format_parameters<Type, Format>, Type, 0,
                                true, scan::throws_a_failure>(groups, given);
@@ -562,11 +562,11 @@ struct aggregate_scanner {
   // The same, told what the place this shape stands at was told. A shape
   // standing inside another shape is read by the same builder, so what reaches
   // it here reaches its places the way it reaches everything else.
-  template <class SelfType, class ToldType>
+  template <class SelfType, class CarrierType>
     requires(!detail::says_a_list_inside<scanner_target_t<SelfType>>())
   [[nodiscard]] constexpr auto from_groups(
       this const SelfType& self, std::span<const std::string_view> groups,
-      const ToldType& told)
+      const CarrierType& told)
       -> std::expected<scanner_target_t<SelfType>,
                        detail::shape_failure<scanner_target_t<SelfType>>> {
     using type = scanner_target_t<SelfType>;
