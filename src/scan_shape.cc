@@ -4682,6 +4682,22 @@ template <class TupleType>
 using cold_slots_of = decltype(pick_cold<TupleType>(
     std::make_index_sequence<std::tuple_size_v<TupleType>>{}));
 
+// A gathering begun again, keeping the resource it was begun with.
+//
+// Beginning one and assigning it into a slot loses what it was begun with: a
+// container that keeps a resource keeps its own when it is assigned to, and the
+// slot was made on the default resource before anybody said otherwise. So the
+// slot is ended and begun where it stands, which is what "made with" means.
+template <class Slot, class Made>
+constexpr void begin_gathering_at(Slot& into, Made&& made) {
+  if constexpr (requires { typename Slot::allocator_type; }) {
+    std::destroy_at(&into);
+    std::construct_at(&into, std::forward<Made>(made));
+  } else {
+    into = std::forward<Made>(made);
+  }
+}
+
 // One gathering of every kind, each begun as the first group of that kind
 // would begin it. Where two groups of a kind ask for different parameters, the
 // one that is not first is begun again when its group opens, which is where
@@ -4827,22 +4843,6 @@ template <class Kind>
     return Kind(one, one.get_allocator());
   } else {
     return one;
-  }
-}
-
-// A gathering begun again, keeping the resource it was begun with.
-//
-// Beginning one and assigning it into a slot loses what it was begun with: a
-// container that keeps a resource keeps its own when it is assigned to, and the
-// slot was made on the default resource before anybody said otherwise. So the
-// slot is ended and begun where it stands, which is what "made with" means.
-template <class Slot, class Made>
-constexpr void begin_gathering_at(Slot& into, Made&& made) {
-  if constexpr (requires { typename Slot::allocator_type; }) {
-    std::destroy_at(&into);
-    std::construct_at(&into, std::forward<Made>(made));
-  } else {
-    into = std::forward<Made>(made);
   }
 }
 
