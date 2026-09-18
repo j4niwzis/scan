@@ -662,6 +662,7 @@ enable_testing()
 # being compiled, so two patterns in one file is two waits in a row, and
 # separate files are two waits at once.
 set(scan_tests
+  a_resource_told_to_a_gathering_test
   a_context_of_your_own_test
   a_context_for_each_branch_test
   a_context_off_a_stream_test
