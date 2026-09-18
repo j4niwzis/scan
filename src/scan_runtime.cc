@@ -2668,47 +2668,47 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
 [[nodiscard]] auto run_threaded_owning(CursorType cursor, SentinelType last,
                                        const char* text, Mark start,
                                        MakeType make = {},
-                                       const told_carrier& told = told_carrier{}) {
-  static_assert(states_in<automaton> <= SCAN_LADDER,
+                                       const ToldCarrier& told = ToldCarrier{}) {
+  static_assert(states_in<Automaton> <= SCAN_LADDER,
                 "this machine has more states than the ladder has rungs: "
                 "build with -DSCAN_LADDER=4096");
   static void* const rungs[] = {SCAN_EVERY_RUNG(SCAN_RUNG_NAME)};
-  register_file<mark, register_count> registers{};
-  if constexpr (std::is_pointer_v<mark>) {
+  register_file<Mark, RegisterCount> registers{};
+  if constexpr (std::is_pointer_v<Mark>) {
     registers.fill(nullptr);
-    execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
+    execute_initial<Automaton>(registers, static_cast<const char*>(nullptr));
   } else {
     registers.fill(scan::tre::negative_tag);
-    execute_initial<automaton>(registers, mark{});
+    execute_initial<Automaton>(registers, Mark{});
   }
-  typename gatherer::cold_type collected = [&] {
-    if constexpr (requires { gatherer::cold_for(told); }) {
-      return gatherer::cold_for(told);
+  typename Gatherer::cold_type collected = [&] {
+    if constexpr (requires { Gatherer::cold_for(told); }) {
+      return Gatherer::cold_for(told);
     } else {
-      return typename gatherer::cold_type{};
+      return typename Gatherer::cold_type{};
     }
   }();
-  gatherer into = [&] {
-    if constexpr (requires { gatherer{collected, told}; }) {
-      return gatherer{collected, told};
+  Gatherer into = [&] {
+    if constexpr (requires { Gatherer{collected, told}; }) {
+      return Gatherer{collected, told};
     } else {
-      return gatherer{collected};
+      return Gatherer{collected};
     }
   }();
   // Only where there is something to point at, and said while compiling: a
   // reading that holds a list is handed nothing, and asking at every reading
   // whether it was is a branch on the way in for a question the type answers.
-  if constexpr (points_at_subject) into.points_at(text);
-  answer_type best;
-  cursor_type here = cursor;
-  mark spot = start;
-  sentinel_type last_here = last;
+  if constexpr (PointsAtSubject) into.points_at(text);
+  AnswerType best;
+  CursorType here = cursor;
+  Mark spot = start;
+  SentinelType last_here = last;
   unsigned char symbol = 0;
   SCAN_EVERY_RUNG(SCAN_RUNG_ENTRY)
   goto scan_over;
   SCAN_EVERY_RUNG(SCAN_RUNG_BODY)
 scan_over:
-  if constexpr (std::same_as<make_type, taken_from_gatherer>) {
+  if constexpr (std::same_as<MakeType, taken_from_gatherer>) {
     return into.taken();
   } else {
     return make(registers, best.matched);
@@ -2730,48 +2730,48 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry,
 [[nodiscard]] constexpr auto run_owning(CursorType cursor, SentinelType last,
                                         const char* text, Mark start,
                                         MakeType make = {},
-                                        const told_carrier& told =
-                                            told_carrier{}) {
+                                        const ToldCarrier& told =
+                                            ToldCarrier{}) {
   if consteval {
-    register_file<mark, register_count> registers{};
-    if constexpr (std::is_pointer_v<mark>) {
+    register_file<Mark, RegisterCount> registers{};
+    if constexpr (std::is_pointer_v<Mark>) {
       registers.fill(nullptr);
-      execute_initial<automaton>(registers, static_cast<const char*>(nullptr));
+      execute_initial<Automaton>(registers, static_cast<const char*>(nullptr));
     } else {
       registers.fill(scan::tre::negative_tag);
-      execute_initial<automaton>(registers, mark{});
+      execute_initial<Automaton>(registers, Mark{});
     }
-    typename gatherer::cold_type collected = [&] {
-    if constexpr (requires { gatherer::cold_for(told); }) {
-      return gatherer::cold_for(told);
+    typename Gatherer::cold_type collected = [&] {
+    if constexpr (requires { Gatherer::cold_for(told); }) {
+      return Gatherer::cold_for(told);
     } else {
-      return typename gatherer::cold_type{};
+      return typename Gatherer::cold_type{};
     }
   }();
-  gatherer into = [&] {
-    if constexpr (requires { gatherer{collected, told}; }) {
-      return gatherer{collected, told};
+  Gatherer into = [&] {
+    if constexpr (requires { Gatherer{collected, told}; }) {
+      return Gatherer{collected, told};
     } else {
-      return gatherer{collected};
+      return Gatherer{collected};
     }
   }();
-    if constexpr (points_at_subject) into.points_at(text);
-    answer_type best;
-    cursor_type here = cursor;
-    mark spot = start;
-    (void)run_body<automaton, shape, entry, budget, certain, mark, cursor_type,
-                   sentinel_type, register_count, gatherer, answer_type>(
+    if constexpr (PointsAtSubject) into.points_at(text);
+    AnswerType best;
+    CursorType here = cursor;
+    Mark spot = start;
+    (void)run_body<Automaton, Shape, Entry, Budget, Certain, Mark, CursorType,
+                   SentinelType, RegisterCount, Gatherer, AnswerType>(
         here, last, spot, registers, into, best);
-    if constexpr (std::same_as<make_type, taken_from_gatherer>) {
+    if constexpr (std::same_as<MakeType, taken_from_gatherer>) {
       return into.taken();
     } else {
       return make(registers, best.matched);
     }
   } else {
-    return run_threaded_owning<automaton, shape, entry, mark,
-                               points_at_subject, cursor_type, sentinel_type,
-                               register_count, gatherer, answer_type, make_type,
-                               told_carrier>(cursor, last, text, start, make,
+    return run_threaded_owning<Automaton, Shape, Entry, Mark,
+                               PointsAtSubject, CursorType, SentinelType,
+                               RegisterCount, Gatherer, AnswerType, MakeType,
+                               ToldCarrier>(cursor, last, text, start, make,
                                              told);
   }
 }

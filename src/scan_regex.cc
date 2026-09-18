@@ -977,14 +977,14 @@ concept knows_its_edges =
     requires(group_state_of<Type>& state) {
       scan::scanner<std::remove_cv_t<Type>>{}.opened_group(state,
                                                           std::size_t{0});
-    } || requires(group_state_of<type>& state) {
-      scan::scanner<std::remove_cv_t<type>>{}.opened_group(
+    } || requires(group_state_of<Type>& state) {
+      scan::scanner<std::remove_cv_t<Type>>{}.opened_group(
           state, scan::group_at<std::size_t{0}>{});
-    } || (names_its_groups<type> && requires(group_state_of<type>& state) {
-      scan::scanner<std::remove_cv_t<type>>{}.opened_group(
+    } || (names_its_groups<Type> && requires(group_state_of<Type>& state) {
+      scan::scanner<std::remove_cv_t<Type>>{}.opened_group(
           state,
           std::variant_alternative_t<
-              0, typename scan::scanner<std::remove_cv_t<type>>::group>{});
+              0, typename scan::scanner<std::remove_cv_t<Type>>::group>{});
     });
 
 // A type gathered by its own groups, a character at a time.

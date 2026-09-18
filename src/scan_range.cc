@@ -72,7 +72,7 @@ class borrowed_result {
     // where the subject lies in a row and could be pointed at: what either of
     // them is made of are the turns, and the positions left behind hold the
     // last turn and nothing before it.
-    if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
+    if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
       // A reading that gathers as it goes keeps its fields' states for the
       // whole walk, so the type of a state has to be known -- and it is,
       // wherever the contexts were written as they stand. In braces the type of
@@ -81,23 +81,23 @@ class borrowed_result {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
-      return detail::scan_stream<type, Format, Walk, given_type>(input_, given);
+      return detail::scan_stream<Type, Format, Walk, GivenType>(input_, given);
     } else {
       // A group that took no part is an error, unless somewhere in this output
       // there is a variant, where exactly one branch takes part and the rest do
       // not. Which it is, is known while the pattern is compiled.
       auto fields = [&] {
-        if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
-          return scan_branch_fields<type, Format, Terminator, Terminated, Walk>(
+        if constexpr (holds_a_variant<Type>() || scanned_as_variant<Type>) {
+          return scan_branch_fields<Type, Format, Terminator, Terminated, Walk>(
               input_);
         } else {
-          return scan_fields<type, Format, Terminator, Terminated, Walk>(
+          return scan_fields<Type, Format, Terminator, Terminated, Walk>(
               input_);
         }
       }();
       if (!fields) {
         return std::unexpected(
-            scan::as_a_failure<failure_for<type>>(std::move(fields).error()));
+            scan::as_a_failure<failure_for<Type>>(std::move(fields).error()));
       }
       // The whole of what is read, and not a value standing in a place.
       //
@@ -111,7 +111,7 @@ class borrowed_result {
       // Built by the helper that knows what a shape is made of, and not
       // here. What this layer has is groups; what a type is made of is a
       // question it does not ask.
-      return scan::aggregate_scanner<Format>::template read<type>(*fields,
+      return scan::aggregate_scanner<Format>::template read<Type>(*fields,
                                                                   given);
     }
   }
@@ -122,23 +122,23 @@ class borrowed_result {
   template <class Type, class GivenType = scan::nothing_given>
   [[nodiscard]] constexpr Type read_or_throw(
       const GivenType& given = GivenType{}) const {
-    if constexpr (holds_a_range<type>() || holds_a_fold<type>()) {
+    if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
       static_assert(!requires { given.leaf().told(); },
                     "a fold or a list is told its context without braces: "
                     "scan<f>(text).of<T>(context), not .of<T>({context})");
       return or_thrown(
-          detail::scan_stream<type, Format, Walk, given_type>(input_, given));
+          detail::scan_stream<Type, Format, Walk, GivenType>(input_, given));
     } else {
       const auto fields = [&] {
-        if constexpr (holds_a_variant<type>() || scanned_as_variant<type>) {
-          return scan_branch_fields<type, Format, Terminator, Terminated, Walk,
+        if constexpr (holds_a_variant<Type>() || scanned_as_variant<Type>) {
+          return scan_branch_fields<Type, Format, Terminator, Terminated, Walk,
                                     throws_a_failure>(input_);
         } else {
-          return scan_fields<type, Format, Terminator, Terminated, Walk,
+          return scan_fields<Type, Format, Terminator, Terminated, Walk,
                              throws_a_failure>(input_);
         }
       }();
-      return scan::aggregate_scanner<Format>::template read_or_throw<type>(
+      return scan::aggregate_scanner<Format>::template read_or_throw<Type>(
           fields, given);
     }
   }

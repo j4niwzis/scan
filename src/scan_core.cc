@@ -647,8 +647,8 @@ concept can_be_told_to_finish =
     requires(StateType state) {
       scanner<std::remove_cv_t<Type>>::template finish<Ending>(
           std::move(state));
-    } || requires(state_type state) {
-      scanner<std::remove_cv_t<type>>::finish(std::move(state));
+    } || requires(StateType state) {
+      scanner<std::remove_cv_t<Type>>::finish(std::move(state));
     };
 
 template <class Type, class Ending = hands_a_failure_back, class StateType>
@@ -669,7 +669,7 @@ concept can_be_told_from_groups =
     requires(std::span<const std::string_view> given) {
       scanner<std::remove_cv_t<Type>>{}.template from_groups<Ending>(given);
     } || requires(std::span<const std::string_view> given) {
-      scanner<std::remove_cv_t<type>>{}.from_groups(given);
+      scanner<std::remove_cv_t<Type>>{}.from_groups(given);
     };
 
 template <class Type, class Ending = hands_a_failure_back>
@@ -718,8 +718,8 @@ concept can_be_told_to_finish_groups =
     requires(StateType state) {
       scanner<std::remove_cv_t<Type>>{}.template finish_groups<Ending>(
           std::move(state));
-    } || requires(state_type state) {
-      scanner<std::remove_cv_t<type>>{}.finish_groups(std::move(state));
+    } || requires(StateType state) {
+      scanner<std::remove_cv_t<Type>>{}.finish_groups(std::move(state));
     };
 
 template <class Type, class Ending = hands_a_failure_back, class StateType>
@@ -745,11 +745,11 @@ concept can_be_told_to_parse =
     requires(std::string_view text, std::string_view parameters) {
       scanner<std::remove_cv_t<Type>>::template parse<Ending>(text, parameters);
     } || requires(std::string_view text) {
-      scanner<std::remove_cv_t<type>>::template parse<ending>(text);
+      scanner<std::remove_cv_t<Type>>::template parse<Ending>(text);
     } || requires(std::string_view text, std::string_view parameters) {
-      scanner<std::remove_cv_t<type>>{}.parse(text, parameters);
+      scanner<std::remove_cv_t<Type>>{}.parse(text, parameters);
     } || requires(std::string_view text) {
-      scanner<std::remove_cv_t<type>>{}.parse(text);
+      scanner<std::remove_cv_t<Type>>{}.parse(text);
     };
 
 // A scanner asked to read, told which way the caller is reading.
@@ -969,7 +969,7 @@ template <class Type>
 concept gathers_as_it_reads = requires {
   scanner<std::remove_cv_t<Type>>{}.begin();
 } || requires(std::string_view parameters) {
-  scanner<std::remove_cv_t<type>>{}.begin(parameters);
+  scanner<std::remove_cv_t<Type>>{}.begin(parameters);
 };
 
 template <class Type>
@@ -998,8 +998,8 @@ concept says_what_went_wrong_folding =
         Type, decltype(scanner<std::remove_cv_t<Type>>{}.begin_groups()),
         hands_a_failure_back> && requires {
   typename std::remove_cvref_t<decltype(
-      scanner_told_finish_groups<type, hands_a_failure_back>(
-          scanner<std::remove_cv_t<type>>{}.begin_groups()))>::error_type;
+      scanner_told_finish_groups<Type, hands_a_failure_back>(
+          scanner<std::remove_cv_t<Type>>{}.begin_groups()))>::error_type;
 };
 
 template <class Type>
@@ -1018,7 +1018,7 @@ using went_wrong_from_groups =
 template <class Type>
 using went_wrong_folding =
     typename decltype(scanner<std::remove_cv_t<Type>>{}.finish_groups(
-        scanner<std::remove_cv_t<type>>{}.begin_groups()))::error_type;
+        scanner<std::remove_cv_t<Type>>{}.begin_groups()))::error_type;
 
 template <std::size_t Capacity = 8192>
 struct pattern_buffer {
