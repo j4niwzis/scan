@@ -411,16 +411,15 @@ TEST_F(every_subject, AShapeOfShapesTellsItsPartsWhatItWasTold) {
   EXPECT_EQ(in_pieces.right.word.mark, 10);
 }
 
-// And in braces, as deep as the shape goes: four places, four contexts, and no
-// number written anywhere.
-TEST_F(every_subject, EachPartOfAShapeOfShapesHasItsOwn) {
+// One context a place, where every place is a shape: what a place is told is
+// told to all of it, however deep the shape goes.
+TEST_F(every_subject, EachPlaceOfAShapeOfShapesHasItsOwn) {
   room slow{2};
-  const auto got =
-      scan::scan<"{} {}">(nested).of<deep>({{fast, slow}, {slow, fast}});
+  const auto got = scan::scan<"{} {}">(nested).of<deep>(fast, slow);
   EXPECT_EQ(got.left.number.value, 11);
-  EXPECT_EQ(got.left.word.mark, 2);
+  EXPECT_EQ(got.left.word.mark, 10);
   EXPECT_EQ(got.right.number.value, 4);
-  EXPECT_EQ(got.right.word.mark, 10);
+  EXPECT_EQ(got.right.word.mark, 2);
 }
 
 // Room said in advance is filled the same way off every subject.
@@ -525,12 +524,10 @@ TEST_F(every_subject, CollectorsAgreeWhereverTheyAreRead) {
 
 TEST_F(every_subject, AGroupNobodyWantedAndOneFoldedByHand) {
   constexpr auto reading = scan::match<"([0-9]+)-([a-z]+)">.into(
-      scan::skip(),
-      scan::collecting(
-          [](std::size_t& sum, char letter) {
-            sum += static_cast<unsigned char>(letter);
-          },
-          std::size_t{0}));
+      scan::skip(), scan::collecting<std::size_t>(
+                        [](std::size_t& sum, char letter) {
+                          sum += static_cast<unsigned char>(letter);
+                        }));
   constexpr std::size_t letters_of_abc = 'a' + 'b' + 'c';
 
   const auto in_a_row = reading(marked);

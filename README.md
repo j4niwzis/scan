@@ -290,7 +290,7 @@ scan::match<"([0-9]+)-([a-z]+)-([a-z]+)">.into(
 | `scan::text()` | the characters, held as the subject affords -- the default |
 | `scan::as<T>(args…)` | a `T`: built as `T(first, last, args…)` where the arguments allow it, otherwise parsed by `scan::scanner<T>` |
 | `scan::skip()` | nothing at all; `scan::skipped` stands in the answer and the group takes no room |
-| `scan::collecting(push, args…)` | a value of any type, made from `args…`, with every character handed to `push` |
+| `scan::collecting<T>(push, args…)` | a `T`, made from `args…`, with every character handed to `push` |
 
 One collector to a group -- until one of them reads a type that has groups of
 its own. Those groups are that type's, so the collector after it starts past
@@ -306,9 +306,8 @@ scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))-([a-z]+)!">.into(
 count, a hash, a checksum:
 
 ```cpp
-scan::match<"([a-z]+)">.into(scan::collecting(
-    [](std::size_t& sum, char letter) { sum += static_cast<unsigned char>(letter); },
-    std::size_t{0}));
+scan::match<"([a-z]+)">.into(scan::collecting<std::size_t>(
+    [](std::size_t& sum, char letter) { sum += static_cast<unsigned char>(letter); }));
 ```
 
 ## The format layer

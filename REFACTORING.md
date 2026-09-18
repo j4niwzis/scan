@@ -123,6 +123,14 @@ walk, and both were only visible end to end.
 * **Contexts reaching places.** One table: (output shape) × (carrier form) →
   which place is told what. It exists as `every_subject_agrees_test.cc` for the
   subject axis; the carrier axis wants the same treatment.
+* **A hole the table found.** A braced list of contexts does not reach into a
+  place whose type is read by a shape scanner of its own -- `struct deep { both
+  left; both right; };` with `scanner<both> : aggregate_scanner<"{}:{}">` takes
+  `of<deep>(fast, slow)` and refuses `of<deep>({{fast, slow}, {slow, fast}})`
+  (`scan_shape.cc:2703` and `:3167`: the carrier hands the leaf itself where a
+  carrier was wanted). A plain aggregate place takes both forms. Either the
+  braced form learns to descend through `carrier_places` into a scanner-shape,
+  or it says so where it is compiled instead of failing inside the library.
 
 ## 6. Compile time is the scarce resource
 
