@@ -137,21 +137,19 @@ walk, and both were only visible end to end.
 * **Contexts reaching places.** One table: (output shape) × (carrier form) →
   which place is told what. It exists as `every_subject_agrees_test.cc` for the
   subject axis; the carrier axis wants the same treatment.
-### Three holes the table found
+### Three holes the table found, one of them mended
 
 Both are in `every_subject_agrees_test.cc`, both are about a place whose type
 is read by a shape scanner of its own -- `struct deep { both left; both
 right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
 
-* **Two places of one kind share a gathering off a subject read once.**
-  `DISABLED_AShapeOfShapesIsReadOffAStreamToo`: reading `"1:ab 2:cd"` gives both
-  halves the same value, with the digits of both concatenated and the letters of
-  both counted. The walk keeps a gathering per *kind* and not per *place*
-  (`gathering_slot`, `scan_shape.cc:4546`, and the guard at `:4891` that hands a
-  non-repeating fold place to the walk itself). Two places of the same kind are
-  two values; the slot has to be told them apart -- either by keying a fold
-  place's slot on its group, or by beginning it again where its place opens, the
-  way a place kept at a register already is.
+* **Two places of one kind shared a gathering off a subject read once.**
+  **Mended.** Reading `"1:ab 2:cd"` gave both halves the same value, with the
+  digits of both concatenated and the letters of both counted: the walk keeps a
+  gathering per *kind*, which is right for a field at a register and wrong for a
+  fold the walk keeps itself. `fold_of` now carries the place it stands at, so
+  two places of one type are two slots, and `AShapeOfShapesIsReadOffAStreamToo`
+  runs.
 * **A string gathered off a stream loses the resource its place was told
   about.** `DISABLED_AStringGatheredKeepsTheResourceToo`: a `std::pmr::string`
   field read in a row keeps the resource and the same field gathered a character

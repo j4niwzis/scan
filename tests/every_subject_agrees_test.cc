@@ -389,12 +389,12 @@ TEST_F(every_subject, AShapeOfShapesTellsItsPartsWhatItWasTold) {
   EXPECT_EQ(in_a_row.right.word.mark, 10);
 }
 
-// Two places of one kind, read off a subject that arrives as it is read: both
-// are folds, both are kept by the walk itself, and the walk keeps one gathering
-// per kind -- so the second place goes on adding to what the first gathered and
-// the two come back the same. Written down where it can be run rather than in
-// prose; see REFACTORING.md, "a hole the table found".
-TEST_F(every_subject, DISABLED_AShapeOfShapesIsReadOffAStreamToo) {
+// Two places of one kind, read off a subject that arrives as it is read. Both
+// are folds and both are kept by the walk itself, where there is one gathering
+// of every kind -- so until a fold was told which place it stands at, the second
+// place went on adding to what the first had gathered and the two came back the
+// same.
+TEST_F(every_subject, AShapeOfShapesIsReadOffAStreamToo) {
   const auto once = scan::scan<"{} {}">(read_once(nested, &at)).of<deep>();
   EXPECT_EQ(once.left.number.value, 1);
   EXPECT_EQ(once.right.number.value, 2);
