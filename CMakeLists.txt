@@ -318,6 +318,10 @@ target_sources(
     src/scan_compiler.cc
     src/scan_regex.cc
     src/scan_runtime.cc
+    src/scan_shape_places.cc
+    src/scan_shape_gatherings.cc
+    src/scan_shape_walk.cc
+    src/scan_shape_values.cc
     src/scan_shape.cc
     src/scan_range.cc
     src/scan_scanners.cc

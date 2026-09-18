@@ -25,13 +25,22 @@ src/scan_shape.cc   7780      the format layer: places, shapes, contexts, gather
 
 It is five things, and only the last of them is what anybody imports:
 
-| what | roughly | why it is its own thing |
+**Done**, along the cuts the text allowed rather than the ones drawn here first:
+a cut is clean only where nothing above it names anything below it, and the
+context layer turned out to be entangled with the glue above it -- so it went
+with `places` and the file was cut where it could be.
+
+| module | lines | what is in it |
 | --- | --- | --- |
-| `scan.shape.fields` | `fields`, `spread_format`, places, `turns_of`, the format walk over a type | pure compile-time description; no walk, no contexts |
-| `scan.shape.contexts` | `reading_of`, `reading_by`, `context_leaf`, `context_shape`, `carrier_places`, `readings_for`, `wire`, `resource_of`, `told_for_part` | the type-erasure layer; changes for reasons nothing else shares |
-| `scan.shape.values` | `made_range`, `made_like`, `copied_gathering`, the glue calling `parse`/`from_groups`/`begin_groups`/`begin` | where a scanner is actually asked for a value |
-| `scan.shape.walk` | `run_owning`, the gathering slots, the turn boundaries, the list and fold state | the delicate part, and the expensive one to compile |
-| `scan.shape` | `aggregate_scanner`, `shape_turns`, what the entry points call | the public face |
+| `scan.shape.places` | 3359 | `fields`, the places of a format, `spread_format`, the scanner glue, and the whole carrier layer -- `reading_of`, `context_leaf`, `resource_of` |
+| `scan.shape.gatherings` | 1063 | what one place gathers: `no_gathering`, `fold_of`, the marks and what a gathering is begun and finished with |
+| `scan.shape.walk` | 1468 | where the gatherings live while the machine runs: the slots, `make_slots`, `make_register_states`, `advance_scanner`, `collect_element` |
+| `scan.shape.values` | 1216 | `shape_turns`, `finish_value`, `field_gatherer` -- the value put together out of what was found |
+| `scan.shape` | 695 | the readings themselves and `aggregate_scanner`, re-exporting the four |
+
+What is left of the split: `places` is still three and a half thousand lines and
+wants the context layer taken out of it, which means moving declarations rather
+than moving text -- the next cut, and the first one that is not free.
 
 Two hundred and fifty top-level declarations in one file is past what anybody
 reads; more to the point, a translation unit that wants only the context layer
