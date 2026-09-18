@@ -5792,14 +5792,20 @@ template <class Root, class Type, std::size_t Offset, bool AsOutput,
       }
     }
   } else if constexpr (a_value) {
+    // Finished from a copy that keeps what the gathering was made with. A
+    // scanner takes its state by value, and a container that keeps a resource
+    // does not hand it on when it is copied -- so handing the gathering over as
+    // it stands would finish a value on the default resource, however the place
+    // was told to gather it.
     const auto& gathered = source.template gathering<Offset>();
     if constexpr (scan::says_what_went_wrong_finishing<Type>) {
-      auto got = scan::scanner_told_finish<std::remove_cv_t<Type>>(gathered);
+      auto got = scan::scanner_told_finish<std::remove_cv_t<Type>>(
+          copied_gathering(gathered));
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<FailureType>(std::move(got).error()));
     } else {
-      return scanner_finish<Type>(gathered);
+      return scanner_finish<Type>(copied_gathering(gathered));
     }
   } else if constexpr (scanned_as_range<Type>) {
     // What has been put in as each element ended, and then the one that was

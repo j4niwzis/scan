@@ -195,6 +195,9 @@ test pins.
 
 ## 9. Smaller things, worth doing while passing
 
+* `finish_scanners` (`scan_shape.cc:5648`) has no callers. Dead, and it fills an
+  output by assigning to each field, which is the very thing that loses a
+  resource -- so it would be wrong if it were called.
 * Diagnostic texts are written where they are used, and two of them are
   duplicated word for word (`scan_range.cc:82` and `:127`). Collect the
   messages in one place, one constant a message.
