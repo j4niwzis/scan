@@ -1802,7 +1802,7 @@ struct kinds_in<Type, 2> {
   template <std::size_t... Part>
   static auto over(std::index_sequence<Part...>) -> typename joined_all<
       typename kinds_in<typename parts_of<Type>::template at<Part>>::list...>::
-      Type;
+      type;
   using list = decltype(over(std::make_index_sequence<parts_of<Type>::count>{}));
 };
 template <class Type>
@@ -1835,14 +1835,14 @@ using shape_failure = typename scan::as_a_variant<typename scan::without_repeats
         typename kinds_of_fields<
             Type, std::make_index_sequence<shape_parts<std::remove_cv_t<Type>>::
                                                count>>::list>::type>::type>::
-    Type;
+    type;
 
 // This library's kinds, and the ones this output's own scanners declare.
 template <class Type>
 using failure_for = typename scan::as_a_variant<typename scan::without_repeats<
     typename scan::joined_lists<scan::our_kinds,
                                 typename kinds_in<Type>::list>::type>::type>::
-    Type;
+    type;
 
 // Whether a fold stands anywhere inside this output.
 //
