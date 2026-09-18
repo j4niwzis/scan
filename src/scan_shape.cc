@@ -6444,9 +6444,13 @@ class field_gatherer {
     made_.reset();
     failed_.reset();
     text_ = nullptr;
-    const auto all = make_slots<Type, Format, MarkKind, ToldType>(told_);
+    auto all = make_slots<Type, Format, MarkKind, ToldType>(told_);
     [&]<std::size_t... which>(std::index_sequence<which...>) {
-      ((slot<which>() = std::get<which>(all)), ...);
+      // Begun where they stand rather than assigned over: a slot that keeps a
+      // resource keeps its own when it is assigned to, and these were made on
+      // whatever their places were told about.
+      ((begin_gathering_at(slot<which>(), std::move(std::get<which>(all)))),
+       ...);
     }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
     if constexpr (!nothing_at_a_register) {
       // Built where it stands, for the same reason: assigning these would
