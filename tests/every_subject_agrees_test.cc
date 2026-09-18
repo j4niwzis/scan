@@ -214,10 +214,42 @@ struct scan::scanner<both> : scan::aggregate_scanner<"{}:{}"> {};
 
 namespace {
 
+// A shape whose places are themselves shapes, read by their own scanner: what
+// a place is told is told to its parts, and a braced list goes as deep as the
+// shape does.
+struct deep {
+  both left;
+  both right;
+};
+
+// Room said in advance -- a field that holds characters with no allocator
+// anywhere, and says so where they did not fit.
+struct named {
+  scan::held<8> name;
+  counted value;
+};
+
+// And the other way a field holds characters: a string built with the resource
+// its place was told about.
+struct kept {
+  std::pmr::string name;
+  counted value;
+};
+
+// A list built with that resource too, which is the same question asked of a
+// container rather than of a leaf.
+struct pooled {
+  std::pmr::vector<int> values;
+};
+
 constexpr auto subject = "1,2,3"sv;
 constexpr auto pairs = "1:ab 2:cd 3:ef"sv;
 constexpr auto digits = "42"sv;
 constexpr auto letters = "abc"sv;
+constexpr auto nested = "1:ab 2:cd"sv;
+constexpr auto worded = "abc 42"sv;
+constexpr auto wider = "abcdefghij 42"sv;
+constexpr auto marked = "42-abc"sv;
 
 void expect_read(const row& got, int base) {
   ASSERT_EQ(got.values.size(), 3u);
@@ -337,6 +369,184 @@ TEST_F(every_subject, AFoldToldNothingIsToldNothing) {
                 .of<folded>()
                 .list.mark,
             0);
+}
+
+// A shape of shapes, every way a subject can arrive.
+TEST_F(every_subject, AShapeOfShapesIsReadEveryWay) {
+  const auto in_a_row = scan::scan<"{} {}">(nested).of<deep>();
+  EXPECT_EQ(in_a_row.left.number.value, 1);
+  EXPECT_EQ(in_a_row.left.word.letters, 2);
+  EXPECT_EQ(in_a_row.right.number.value, 2);
+  EXPECT_EQ(in_a_row.right.word.letters, 2);
+
+  const auto once = scan::scan<"{} {}">(read_once(nested, &at)).of<deep>();
+  EXPECT_EQ(once.left.number.value, 1);
+  EXPECT_EQ(once.right.number.value, 2);
+  EXPECT_EQ(once.right.word.letters, 2);
+
+  std::size_t pieces = 0;
+  const auto in_pieces =
+      scan::scan<"{} {}">(read_once(nested, &pieces) | scan::in_pieces<2>)
+          .of<deep>();
+  EXPECT_EQ(in_pieces.left.number.value, 1);
+  EXPECT_EQ(in_pieces.right.word.letters, 2);
+}
+
+// One context is everybody's, and everybody here is two places down.
+TEST_F(every_subject, AShapeOfShapesTellsItsPartsWhatItWasTold) {
+  const auto in_a_row = scan::scan<"{} {}">(nested).of<deep>(fast);
+  EXPECT_EQ(in_a_row.left.number.value, 11);
+  EXPECT_EQ(in_a_row.left.word.mark, 10);
+  EXPECT_EQ(in_a_row.right.number.value, 12);
+  EXPECT_EQ(in_a_row.right.word.mark, 10);
+
+  const auto once = scan::scan<"{} {}">(read_once(nested, &at)).of<deep>(fast);
+  EXPECT_EQ(once.left.word.mark, 10);
+  EXPECT_EQ(once.right.number.value, 12);
+
+  std::size_t pieces = 0;
+  const auto in_pieces =
+      scan::scan<"{} {}">(read_once(nested, &pieces) | scan::in_pieces<2>)
+          .of<deep>(fast);
+  EXPECT_EQ(in_pieces.right.word.mark, 10);
+}
+
+// And in braces, as deep as the shape goes: four places, four contexts, and no
+// number written anywhere.
+TEST_F(every_subject, EachPartOfAShapeOfShapesHasItsOwn) {
+  room slow{2};
+  const auto got =
+      scan::scan<"{} {}">(nested).of<deep>({{fast, slow}, {slow, fast}});
+  EXPECT_EQ(got.left.number.value, 11);
+  EXPECT_EQ(got.left.word.mark, 2);
+  EXPECT_EQ(got.right.number.value, 4);
+  EXPECT_EQ(got.right.word.mark, 10);
+}
+
+// Room said in advance is filled the same way off every subject.
+TEST_F(every_subject, RoomSaidInAdvanceIsFilledEveryWay) {
+  const auto in_a_row = scan::scan<"{[a-z]+} {}">(worded).of<named>();
+  EXPECT_EQ(in_a_row.name.view(), "abc");
+  EXPECT_FALSE(in_a_row.name.overflowed);
+  EXPECT_EQ(in_a_row.value.value, 42);
+
+  const auto once = scan::scan<"{[a-z]+} {}">(read_once(worded, &at)).of<named>();
+  EXPECT_EQ(once.name.view(), "abc");
+  EXPECT_EQ(once.value.value, 42);
+
+  std::size_t pieces = 0;
+  const auto in_pieces =
+      scan::scan<"{[a-z]+} {}">(read_once(worded, &pieces) | scan::in_pieces<2>)
+          .of<named>();
+  EXPECT_EQ(in_pieces.name.view(), "abc");
+  EXPECT_EQ(in_pieces.value.value, 42);
+
+  // Told one context, and a scanner that takes none is read as it always was.
+  const auto told = scan::scan<"{[a-z]+} {}">(worded).of<named>(fast);
+  EXPECT_EQ(told.name.view(), "abc");
+  EXPECT_EQ(told.value.value, 52);
+}
+
+// What did not fit is dropped and said, rather than allocated for.
+TEST_F(every_subject, WhatDoesNotFitSaysSo) {
+  const auto in_a_row = scan::scan<"{[a-z]+} {}">(wider).of<named>();
+  EXPECT_TRUE(in_a_row.name.overflowed);
+  EXPECT_EQ(in_a_row.name.view().size(), 8u);
+  EXPECT_EQ(in_a_row.value.value, 42);
+
+  const auto once = scan::scan<"{[a-z]+} {}">(read_once(wider, &at)).of<named>();
+  EXPECT_TRUE(once.name.overflowed);
+  EXPECT_EQ(once.name.view().size(), 8u);
+  EXPECT_EQ(once.value.value, 42);
+}
+
+// A context that keeps memory is what the value is built with, wherever the
+// characters came from -- and the place beside it, whose scanner knows nothing
+// about allocators, is read as it always was.
+TEST_F(every_subject, AStringKeepsTheResourceItsPlaceWasTold) {
+  std::pmr::monotonic_buffer_resource bytes;
+  const std::pmr::polymorphic_allocator<> mine(&bytes);
+
+  const auto in_a_row = scan::scan<"{[a-z]+} {}">(worded).of<kept>(mine);
+  EXPECT_EQ(in_a_row.name, "abc");
+  EXPECT_EQ(in_a_row.name.get_allocator().resource(), &bytes);
+  EXPECT_EQ(in_a_row.value.value, 42);
+
+  const auto once = scan::scan<"{[a-z]+} {}">(read_once(worded, &at)).of<kept>(mine);
+  EXPECT_EQ(once.name, "abc");
+  EXPECT_EQ(once.name.get_allocator().resource(), &bytes);
+
+  std::size_t pieces = 0;
+  const auto in_pieces =
+      scan::scan<"{[a-z]+} {}">(read_once(worded, &pieces) | scan::in_pieces<2>)
+          .of<kept>(mine);
+  EXPECT_EQ(in_pieces.name, "abc");
+  EXPECT_EQ(in_pieces.name.get_allocator().resource(), &bytes);
+}
+
+TEST_F(every_subject, AListIsBuiltWithTheResourceItWasTold) {
+  std::pmr::monotonic_buffer_resource bytes;
+  const std::pmr::polymorphic_allocator<> mine(&bytes);
+
+  const auto in_a_row = scan::scan<"{{}{*,?}}">(subject).of<pooled>(mine);
+  ASSERT_EQ(in_a_row.values.size(), 3u);
+  EXPECT_EQ(in_a_row.values[0], 1);
+  EXPECT_EQ(in_a_row.values[2], 3);
+  EXPECT_EQ(in_a_row.values.get_allocator().resource(), &bytes);
+
+  const auto once = scan::scan<"{{}{*,?}}">(read_once(subject, &at)).of<pooled>(mine);
+  ASSERT_EQ(once.values.size(), 3u);
+  EXPECT_EQ(once.values[1], 2);
+  EXPECT_EQ(once.values.get_allocator().resource(), &bytes);
+}
+
+// The other layer, on the same three subjects: a collector a group, and what
+// they make differs only where the subject gives them no choice.
+TEST_F(every_subject, CollectorsAgreeWhereverTheyAreRead) {
+  constexpr auto reading = scan::match<"([0-9]+)-([a-z]+)">.into(
+      scan::as<int>(), scan::text());
+
+  const auto in_a_row = reading(marked);
+  ASSERT_TRUE(in_a_row);
+  EXPECT_EQ(in_a_row.get<1>(), 42);
+  EXPECT_EQ(in_a_row.get<2>(), "abc");
+
+  const auto once = reading(read_once(marked, &at));
+  ASSERT_TRUE(once);
+  EXPECT_EQ(once.get<1>(), 42);
+  EXPECT_EQ(once.get<2>(), "abc");
+
+  std::size_t pieces = 0;
+  const auto in_pieces = reading(read_once(marked, &pieces) | scan::in_pieces<2>);
+  ASSERT_TRUE(in_pieces);
+  EXPECT_EQ(in_pieces.get<1>(), 42);
+  EXPECT_EQ(in_pieces.get<2>(), "abc");
+}
+
+TEST_F(every_subject, AGroupNobodyWantedAndOneFoldedByHand) {
+  constexpr auto reading = scan::match<"([0-9]+)-([a-z]+)">.into(
+      scan::skip(),
+      scan::collecting(
+          [](std::size_t& sum, char letter) {
+            sum += static_cast<unsigned char>(letter);
+          },
+          std::size_t{0}));
+  constexpr std::size_t letters_of_abc = 'a' + 'b' + 'c';
+
+  const auto in_a_row = reading(marked);
+  ASSERT_TRUE(in_a_row);
+  static_assert(std::same_as<std::remove_cvref_t<decltype(in_a_row.get<1>())>,
+                             scan::skipped>);
+  EXPECT_EQ(in_a_row.get<2>(), letters_of_abc);
+
+  const auto once = reading(read_once(marked, &at));
+  ASSERT_TRUE(once);
+  EXPECT_EQ(once.get<2>(), letters_of_abc);
+
+  std::size_t pieces = 0;
+  const auto in_pieces = reading(read_once(marked, &pieces) | scan::in_pieces<2>);
+  ASSERT_TRUE(in_pieces);
+  EXPECT_EQ(in_pieces.get<2>(), letters_of_abc);
 }
 
 }  // namespace
