@@ -1,12 +1,10 @@
 // Where a resource said at a place stops on its way to a gathering.
 //
 // A field read whole keeps the resource its place was told about; the same
-// field gathered a character at a time does not, and six places that begin a
-// gathering have been made to build where they stand rather than assign over an
-// empty one without mending it. So this asks the question directly: the scanner
-// below writes down what it was told, at every hook it has, and the test says
-// what arrived where. Nothing here can fail -- what it is for is the record it
-// prints.
+// field gathered a character at a time does not. The scanner below writes down
+// what it was told at every hook it has, so what fails here says which half of
+// the road is broken: the context on its way to `begin`, or the gathering on
+// its way from `begin` to the value.
 import std;
 import scan;
 import gtest;
@@ -111,36 +109,37 @@ class read_once {
   std::size_t* at_ = nullptr;
 };
 
-void say(std::string_view what, std::pmr::memory_resource* got,
-         std::pmr::memory_resource* wanted) {
-  std::println("  {:<28} told {}  (the pool is {}, the default is {})", what,
-               static_cast<const void*>(got), static_cast<const void*>(wanted),
-               static_cast<const void*>(std::pmr::get_default_resource()));
-}
-
 TEST(AResourceToldToAGathering, WhereItArrives) {
   std::pmr::monotonic_buffer_resource bytes;
   const std::pmr::polymorphic_allocator<> mine(&bytes);
 
   seen = {};
   const auto in_a_row = scan::scan<"{}">("abc"sv).of<one_word>(mine);
-  std::println("in a row:  parse {}  begin {}", seen.parsed, seen.begun);
-  say("parse was told", seen.at_parse, &bytes);
-  say("the value came back on", in_a_row.word.text.get_allocator().resource(),
-      &bytes);
+  EXPECT_EQ(in_a_row.word.text, "abc");
+  EXPECT_TRUE(seen.parsed) << "in a row: the whole piece is what a place is "
+                              "read from, so parse is what should be called";
+  EXPECT_EQ(seen.at_parse, &bytes) << "in a row: parse was told no resource";
+  EXPECT_EQ(in_a_row.word.text.get_allocator().resource(), &bytes)
+      << "in a row: the value came back on another resource than it was made "
+         "with";
 
   seen = {};
   std::size_t at = 0;
   const auto once =
       scan::scan<"{}">(read_once("abc"sv, &at)).of<one_word>(mine);
-  std::println("read once: parse {}  begin {}", seen.parsed, seen.begun);
-  say("begin was told", seen.at_begin, &bytes);
-  say("the value came back on", once.word.text.get_allocator().resource(),
-      &bytes);
-
-  // The record is the point; the reading itself is the same either way.
-  EXPECT_EQ(in_a_row.word.text, "abc");
   EXPECT_EQ(once.word.text, "abc");
+  EXPECT_TRUE(seen.begun) << "read once: nothing can be pointed at, so the "
+                             "gathering hooks are what should be called";
+  EXPECT_FALSE(seen.parsed) << "read once: parse cannot be called, there is "
+                               "nothing to hand it";
+  // The two halves of the question: was the place told, and did what it was
+  // told reach the value.
+  EXPECT_EQ(seen.at_begin, &bytes)
+      << "read once: begin was told no resource -- the context stops before "
+         "the gathering is begun";
+  EXPECT_EQ(once.word.text.get_allocator().resource(), &bytes)
+      << "read once: begin was told the pool and the value still came back "
+         "elsewhere -- the gathering is dropped between begin and finish";
 }
 
 }  // namespace
