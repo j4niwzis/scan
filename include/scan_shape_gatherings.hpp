@@ -227,7 +227,7 @@ struct one_per_register {
 struct no_turn {};
 
 template <class Held, class MarkType = std::ptrdiff_t, bool Repeats = true,
-          class CarrierType = scan::default_context_t>
+          class CarrierType = scan::default_context_t, std::size_t Place = 0>
 struct fold_of {
   using held_type = std::remove_cv_t<Held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
@@ -679,7 +679,7 @@ struct gathering_of {
     if constexpr (the_place && folds) {
       static_cast<void>(parameters);
       return fold_of<std::remove_cv_t<held_type>, MarkType, place_repeats,
-                     CarrierType>(told);
+                     CarrierType, Group>(told);
     } else if constexpr (inside && folds) {
       static_cast<void>(parameters);
       static_cast<void>(told);
@@ -697,8 +697,8 @@ struct gathering_of {
     if constexpr (the_place && folds) {
       // The type's own state, and the walk's note of what it has been told.
       static_cast<void>(parameters);
-      return fold_of<std::remove_cv_t<held_type>, MarkType,
-                     place_repeats>{};
+      return fold_of<std::remove_cv_t<held_type>, MarkType, place_repeats,
+                     scan::default_context_t, Group>{};
     } else if constexpr (inside && folds) {
       // Nothing: the characters and the edges of this group go to the fold,
       // which is kept at the place the group is inside of.
