@@ -15,43 +15,43 @@
 
 namespace views {
 
-template <class type, std::size_t extent>
+template <class Type, std::size_t Extent>
 struct static_chunk_value {
-  std::array<type, extent> values{};
+  std::array<Type, Extent> values{};
   std::size_t size = 0;
 
-  template <std::size_t... index>
-  [[nodiscard]] constexpr auto as_ptr_tuple(std::index_sequence<index...>) const {
-    return std::tuple{(index < size ? std::addressof(values[index]) : nullptr)...};
+  template <std::size_t... Index>
+  [[nodiscard]] constexpr auto as_ptr_tuple(std::index_sequence<Index...>) const {
+    return std::tuple{(Index < size ? std::addressof(values[Index]) : nullptr)...};
   }
 
   [[nodiscard]] constexpr auto as_ptr_tuple() const {
-    return as_ptr_tuple(std::make_index_sequence<extent>{});
+    return as_ptr_tuple(std::make_index_sequence<Extent>{});
   }
 };
 
-template <std::size_t extent>
+template <std::size_t Extent>
 struct static_chunk_adaptor
-    : std::ranges::range_adaptor_closure<static_chunk_adaptor<extent>> {
+    : std::ranges::range_adaptor_closure<static_chunk_adaptor<Extent>> {
   // Groups of `extent`, without std::views::chunk: a group is the source
   // dropped by as many elements as the groups before it and taken up to
   // `extent`, and the groups themselves are the iota of how many there are.
   // Nothing is materialised until the group is asked for, and the source is
   // walked once per group -- which is what a forward range is for, and what
   // the two-element splits this adapts are small enough not to care about.
-  template <std::ranges::viewable_range range_type>
-    requires std::ranges::forward_range<range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& range) const {
-    using value_type = std::ranges::range_value_t<range_type>;
-    auto view = std::views::all(std::forward<range_type>(range));
+  template <std::ranges::viewable_range RangeType>
+    requires std::ranges::forward_range<RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& range) const {
+    using value_type = std::ranges::range_value_t<RangeType>;
+    auto view = std::views::all(std::forward<RangeType>(range));
     const auto count = static_cast<std::size_t>(std::ranges::distance(view));
-    return std::views::iota(std::size_t{0}, (count + extent - 1) / extent) |
+    return std::views::iota(std::size_t{0}, (count + Extent - 1) / Extent) |
            std::views::transform([view](std::size_t group) mutable {
              auto part = view |
                          std::views::drop(static_cast<std::ptrdiff_t>(
-                             group * extent)) |
-                         std::views::take(static_cast<std::ptrdiff_t>(extent));
-             static_chunk_value<value_type, extent> result;
+                             group * Extent)) |
+                         std::views::take(static_cast<std::ptrdiff_t>(Extent));
+             static_chunk_value<value_type, Extent> result;
              result.size =
                  static_cast<std::size_t>(std::ranges::distance(part));
              std::ranges::copy(part, result.values.begin());
@@ -61,27 +61,27 @@ struct static_chunk_adaptor
 
 };
 
-template <std::size_t extent>
-inline constexpr static_chunk_adaptor<extent> static_chunk;
+template <std::size_t Extent>
+inline constexpr static_chunk_adaptor<Extent> static_chunk;
 
-template <std::size_t extent>
+template <std::size_t Extent>
 struct to_array_adaptor
-    : std::ranges::range_adaptor_closure<to_array_adaptor<extent>> {
-  template <std::ranges::viewable_range range_type>
-    requires std::ranges::forward_range<range_type>
-  [[nodiscard]] constexpr auto operator()(range_type&& range) const {
-    using value_type = std::ranges::range_value_t<range_type>;
-    if (std::ranges::distance(range) != static_cast<std::ptrdiff_t>(extent)) {
+    : std::ranges::range_adaptor_closure<to_array_adaptor<Extent>> {
+  template <std::ranges::viewable_range RangeType>
+    requires std::ranges::forward_range<RangeType>
+  [[nodiscard]] constexpr auto operator()(RangeType&& range) const {
+    using value_type = std::ranges::range_value_t<RangeType>;
+    if (std::ranges::distance(range) != static_cast<std::ptrdiff_t>(Extent)) {
       throw "range size does not match std::array extent";
     }
-    std::array<value_type, extent> result{};
+    std::array<value_type, Extent> result{};
     std::ranges::copy(range, result.begin());
     return result;
   }
 };
 
-template <std::size_t extent>
-inline constexpr to_array_adaptor<extent> to_array;
+template <std::size_t Extent>
+inline constexpr to_array_adaptor<Extent> to_array;
 
 }  // namespace views
 
@@ -104,13 +104,13 @@ inline constexpr to_array_adaptor<extent> to_array;
 // asks for the next piece before it is done with that. So the piece handed
 // over before this one is still where it was, and only the one before that is
 // written over.
-template <std::size_t room, class range_type>
+template <std::size_t Room, class RangeType>
 class piece_view : public std::ranges::view_interface<
-                       piece_view<room, range_type>> {
+                       piece_view<Room, RangeType>> {
  public:
-  static_assert(room != 0, "a piece has to have room for something");
+  static_assert(Room != 0, "a piece has to have room for something");
 
-  constexpr explicit piece_view(range_type input) : input_(std::move(input)) {}
+  constexpr explicit piece_view(RangeType input) : input_(std::move(input)) {}
 
   piece_view(piece_view&&) = default;
   piece_view& operator=(piece_view&&) = default;
@@ -154,35 +154,35 @@ class piece_view : public std::ranges::view_interface<
     which_ = 1 - which_;
     auto& into = rooms_[which_];
     std::size_t taken = 0;
-    while (taken < room && *cursor_ != std::ranges::end(input_)) {
+    while (taken < Room && *cursor_ != std::ranges::end(input_)) {
       into[taken++] = **cursor_;
       ++*cursor_;
     }
     piece_ = std::string_view(into.data(), taken);
   }
 
-  range_type input_;
-  std::optional<std::ranges::iterator_t<range_type>> cursor_;
-  std::array<std::array<char, room>, 2> rooms_{};
+  RangeType input_;
+  std::optional<std::ranges::iterator_t<RangeType>> cursor_;
+  std::array<std::array<char, Room>, 2> rooms_{};
   std::size_t which_ = 0;
   std::string_view piece_;
 };
 
-template <std::size_t room>
+template <std::size_t Room>
 struct in_pieces_adaptor
-    : std::ranges::range_adaptor_closure<in_pieces_adaptor<room>> {
-  template <std::ranges::input_range range_type>
-    requires std::same_as<std::ranges::range_value_t<range_type>, char>
-  [[nodiscard]] constexpr auto operator()(range_type&& input) const {
-    auto view = std::views::all(std::forward<range_type>(input));
-    return piece_view<room, decltype(view)>(std::move(view));
+    : std::ranges::range_adaptor_closure<in_pieces_adaptor<Room>> {
+  template <std::ranges::input_range RangeType>
+    requires std::same_as<std::ranges::range_value_t<RangeType>, char>
+  [[nodiscard]] constexpr auto operator()(RangeType&& input) const {
+    auto view = std::views::all(std::forward<RangeType>(input));
+    return piece_view<Room, decltype(view)>(std::move(view));
   }
 };
 
 // `source | scan::in_pieces<512>` -- the same characters, handed over in
 // pieces of that size.
-template <std::size_t room = 512>
-inline constexpr in_pieces_adaptor<room> in_pieces{};
+template <std::size_t Room = 512>
+inline constexpr in_pieces_adaptor<Room> in_pieces{};
 
 struct format_details {
   std::string_view name;

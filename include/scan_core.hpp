@@ -20,28 +20,28 @@
 // Input that arrives in pieces: a reading of readings, each of them
 // characters in a row. A block of a file, a datagram, a page -- the shape
 // almost every real subject has.
-template <class range_type>
+template <class RangeType>
 concept piecewise_char_range =
-    std::ranges::input_range<range_type> &&
-    requires(std::ranges::range_reference_t<range_type> piece) {
+    std::ranges::input_range<RangeType> &&
+    requires(std::ranges::range_reference_t<RangeType> piece) {
       { std::ranges::data(piece) } -> std::convertible_to<const char*>;
       { std::ranges::size(piece) } -> std::convertible_to<std::size_t>;
     };
 
-template <class range_type>
+template <class RangeType>
 concept contiguous_char_range =
-    std::ranges::contiguous_range<range_type> &&
-    std::ranges::sized_range<range_type> &&
-    std::same_as<std::ranges::range_value_t<range_type>, char>;
+    std::ranges::contiguous_range<RangeType> &&
+    std::ranges::sized_range<RangeType> &&
+    std::same_as<std::ranges::range_value_t<RangeType>, char>;
 
 // A subject that is a string literal: an array of characters that cannot be
 // written to, and so an array the compiler put a nul at the end of. A buffer
 // somebody reads into is an array too, and a mutable one -- how much of it was
 // filled is a thing only its owner knows.
-template <class range_type>
+template <class RangeType>
 concept literal_char_range =
-    std::is_array_v<std::remove_reference_t<range_type>> &&
-    std::is_const_v<std::remove_extent_t<std::remove_reference_t<range_type>>>;
+    std::is_array_v<std::remove_reference_t<RangeType>> &&
+    std::is_const_v<std::remove_extent_t<std::remove_reference_t<RangeType>>>;
 
 // A subject that lies in a row, as the characters it stands for.
 //
@@ -49,15 +49,15 @@ concept literal_char_range =
 // one means that character to be part of the subject: `scan<"{}">("450")` would
 // be a scan of four characters otherwise, and would say the pattern does not
 // match rather than what is wrong. So a trailing nul is left out of it.
-template <class range_type>
-[[nodiscard]] constexpr std::string_view characters_of(range_type&& input) {
+template <class RangeType>
+[[nodiscard]] constexpr std::string_view characters_of(RangeType&& input) {
   const char* const from = std::ranges::data(input);
   std::size_t many = std::ranges::size(input);
   // Only an array that cannot be written to, which is what a literal is. A
   // buffer somebody reads into is as long as it says it is: how much of it was
   // filled is a thing only its owner knows, and guessing at it here would
   // quietly read a different subject than the one handed over.
-  if constexpr (literal_char_range<range_type>) {
+  if constexpr (literal_char_range<RangeType>) {
     if (many != 0 && from[many - 1] == '\0') --many;
   }
   return std::string_view(from, many);
@@ -67,9 +67,9 @@ template <class range_type>
 
  namespace scan {
 
-template <std::size_t extent>
+template <std::size_t Extent>
 struct fixed_string {
-  char value[extent]{};
+  char value[Extent]{};
   // Whether the reading this pattern is built for is anchored to the end of
   // the subject.
   //
@@ -97,8 +97,8 @@ struct fixed_string {
   bool space_before_places = false;
 
   fixed_string() = default;
-  consteval fixed_string(const char (&text)[extent]) {
-    std::copy_n(text, extent, value);
+  consteval fixed_string(const char (&text)[Extent]) {
+    std::copy_n(text, Extent, value);
   }
 
   [[nodiscard]] constexpr fixed_string to_the_end() const {
@@ -113,7 +113,7 @@ struct fixed_string {
     return made;
   }
 
-  [[nodiscard]] static consteval std::size_t size() { return extent - 1; }
+  [[nodiscard]] static consteval std::size_t size() { return Extent - 1; }
   [[nodiscard]] constexpr char operator[](std::size_t index) const {
     return value[index];
   }
@@ -135,7 +135,7 @@ enum class how_to_walk {
   in_words,       // in words and vectors, whatever the length
 };
 
-template <class type>
+template <class Type>
 struct scanner;
 
 // A type that is one of several, and which one is what the reading says.
@@ -168,24 +168,24 @@ struct scanner;
 //
 // Where a container says it and the format could ask for more, the reading is
 // refused where it is compiled. Where it says nothing, nothing is checked.
-template <class list>
+template <class List>
 struct room_for;
 
-template <class type>
+template <class Type>
 struct branches;
 
-template <class... alternatives>
-struct branches<std::variant<alternatives...>> {
-  static constexpr std::size_t count = sizeof...(alternatives);
+template <class... Alternatives>
+struct branches<std::variant<Alternatives...>> {
+  static constexpr std::size_t count = sizeof...(Alternatives);
 
-  template <std::size_t which>
-  using at = std::variant_alternative_t<which, std::variant<alternatives...>>;
+  template <std::size_t Which>
+  using at = std::variant_alternative_t<Which, std::variant<Alternatives...>>;
 
-  template <std::size_t which, class value>
-  [[nodiscard]] static constexpr std::variant<alternatives...> make(
-      value&& one) {
-    return std::variant<alternatives...>(std::in_place_index<which>,
-                                         std::forward<value>(one));
+  template <std::size_t Which, class Value>
+  [[nodiscard]] static constexpr std::variant<Alternatives...> make(
+      Value&& one) {
+    return std::variant<Alternatives...>(std::in_place_index<Which>,
+                                         std::forward<Value>(one));
   }
 };
 
@@ -206,21 +206,21 @@ struct scanner<detail::branch_mark> {
   static constexpr detail::branch_mark finish(int) { return {}; }
 };
 
-template <class customization>
+template <class Customization>
 struct scanner_target;
 
-template <class type>
-struct scanner_target<scanner<type>> {
-  using type_t = type;
+template <class Type>
+struct scanner_target<scanner<Type>> {
+  using type_t = Type;
 };
 
-template <class customization>
+template <class Customization>
 using scanner_target_t = typename scanner_target<
-    std::remove_cvref_t<customization>>::type_t;
+    std::remove_cvref_t<Customization>>::type_t;
 
-template <class type>
+template <class Type>
 inline constexpr auto scanner_pattern_value = [] {
-  constexpr scanner<type> customization;
+  constexpr scanner<Type> customization;
   if constexpr (requires { customization.pattern(); }) {
     return customization.pattern();
   } else {
@@ -228,19 +228,19 @@ inline constexpr auto scanner_pattern_value = [] {
   }
 }();
 
-template <class type>
+template <class Type>
 [[nodiscard]] constexpr const auto& scanner_pattern() {
-  return scanner_pattern_value<type>;
+  return scanner_pattern_value<Type>;
 }
 
-template <class type>
+template <class Type>
 [[nodiscard]] constexpr auto scanner_pattern(std::string_view parameters) {
-  constexpr scanner<type> customization;
+  constexpr scanner<Type> customization;
   if constexpr (requires { customization.pattern(parameters); }) {
     return customization.pattern(parameters);
   } else {
     if (!parameters.empty()) throw "scanner does not accept parameters";
-    return scanner_pattern<type>();
+    return scanner_pattern<Type>();
   }
 }
 
@@ -272,8 +272,8 @@ struct handed_back {};
 // they stand on std::exception and are caught the way anything else is; the
 // two are different types, and the throw below turns the one into the other,
 // which is a pointer copied.
-template <class base = handed_back>
-class scan_error : public base {
+template <class Base = handed_back>
+class scan_error : public Base {
  public:
   constexpr explicit scan_error(const char* said) noexcept
       : said_(said) {}
@@ -288,53 +288,53 @@ class scan_error : public base {
 
 // The subject is not what the pattern says it is: nothing matched, or nothing
 // matched at the head, or no branch of a format took it.
-template <class base = handed_back>
-class no_match : public scan_error<base> {
+template <class Base = handed_back>
+class no_match : public scan_error<Base> {
  public:
-  using scan_error<base>::scan_error;
+  using scan_error<Base>::scan_error;
 };
 
 // A value was asked for out of a group that took no part in the match. The
 // match was fine; this group of it was not there.
-template <class base = handed_back>
-class no_group : public scan_error<base> {
+template <class Base = handed_back>
+class no_group : public scan_error<Base> {
  public:
-  using scan_error<base>::scan_error;
+  using scan_error<Base>::scan_error;
 };
 
 // Something about a field, and never thrown itself: the two below are what is
 // thrown, and this is the name for catching either.
-template <class base = handed_back>
-class field_error : public scan_error<base> {
+template <class Base = handed_back>
+class field_error : public scan_error<Base> {
  public:
-  using scan_error<base>::scan_error;
+  using scan_error<Base>::scan_error;
 };
 
 // A place matched, and what stood there is not that type: `abc` where an
 // integer was written, an empty field where one character was.
-template <class base = handed_back>
-class bad_field : public field_error<base> {
+template <class Base = handed_back>
+class bad_field : public field_error<Base> {
  public:
-  using field_error<base>::field_error;
+  using field_error<Base>::field_error;
 };
 
 // It is that type, and it does not fit in it. A different question from the one
 // above, and usually a different answer: the input is well formed and the
 // output type is too small for it.
-template <class base = handed_back>
-class out_of_range : public field_error<base> {
+template <class Base = handed_back>
+class out_of_range : public field_error<Base> {
  public:
-  using field_error<base>::field_error;
+  using field_error<Base>::field_error;
 };
 
 // The reading that was asked for cannot be had off this kind of subject -- a
 // fold that takes its groups whole, asked to read a stream, where there is
 // nothing to point at and holding the characters would be a hold with no
 // bound.
-template <class base = handed_back>
-class wrong_subject : public scan_error<base> {
+template <class Base = handed_back>
+class wrong_subject : public scan_error<Base> {
  public:
-  using scan_error<base>::scan_error;
+  using scan_error<Base>::scan_error;
 };
 
 // The thrown kind that goes with a kind that was handed back.
@@ -343,36 +343,36 @@ class wrong_subject : public scan_error<base> {
 // is the same template standing on std::exception -- which holds for a failure
 // of somebody's own as much as for the ones here, so long as it is written the
 // same way. A kind that is not a template at all is thrown as what it says.
-template <class kind>
+template <class Kind>
 struct thrown_kind {
   using type = scan_error<std::exception>;
 };
-template <template <class> class kind, class base>
-struct thrown_kind<kind<base>> {
-  using type = kind<std::exception>;
+template <template <class> class Kind, class Base>
+struct thrown_kind<Kind<Base>> {
+  using type = Kind<std::exception>;
 };
-template <class kind>
-using thrown_kind_t = typename thrown_kind<std::remove_cvref_t<kind>>::type;
+template <class Kind>
+using thrown_kind_t = typename thrown_kind<std::remove_cvref_t<Kind>>::type;
 
 // Whether a type is a choice between several. Asked outright rather than by
 // whether `variant_size` says anything about it: that one is a template with
 // no definition for anything else, and asking it about a plain type is not a
 // question that comes back false.
-template <class type>
+template <class Type>
 inline constexpr bool a_choice_of_kinds = false;
-template <class... kinds>
-inline constexpr bool a_choice_of_kinds<std::variant<kinds...>> = true;
+template <class... Kinds>
+inline constexpr bool a_choice_of_kinds<std::variant<Kinds...>> = true;
 
 // A list of types, and the two things ever done to one: put another list on the
 // end of it, and drop what is already in it.
-template <class... kinds>
+template <class... Kinds>
 struct kind_list {};
 
-template <class left, class right>
+template <class Left, class Right>
 struct joined_lists;
-template <class... left, class... right>
-struct joined_lists<kind_list<left...>, kind_list<right...>> {
-  using type = kind_list<left..., right...>;
+template <class... Left, class... Right>
+struct joined_lists<kind_list<Left...>, kind_list<Right...>> {
+  using type = kind_list<Left..., Right...>;
 };
 
 // Dropping what is already in a list, by asking the compiler instead of by
@@ -387,18 +387,18 @@ struct nothing_seen_yet {
   static consteval void seen();
 };
 
-template <class first = nothing_seen_yet, class rest = nothing_seen_yet>
-struct seen_before : rest {
-  using rest::seen;
-  static consteval void seen(kind_list<first>)
+template <class First = nothing_seen_yet, class Rest = nothing_seen_yet>
+struct seen_before : Rest {
+  using Rest::seen;
+  static consteval void seen(kind_list<First>)
     requires true;
-  static consteval void seen(kind_list<first>)
-    requires(requires { rest::seen(kind_list<first>{}); });
+  static consteval void seen(kind_list<First>)
+    requires(requires { Rest::seen(kind_list<First>{}); });
 
-  template <class next>
-  constexpr auto operator|(kind_list<next>) const {
-    constexpr auto with = seen_before<next, seen_before>{};
-    if constexpr (requires { with.seen(kind_list<next>{}); }) {
+  template <class Next>
+  constexpr auto operator|(kind_list<Next>) const {
+    constexpr auto with = seen_before<Next, seen_before>{};
+    if constexpr (requires { with.seen(kind_list<Next>{}); }) {
       return with;
     } else {
       return *this;
@@ -406,31 +406,31 @@ struct seen_before : rest {
   }
 };
 
-template <class chain>
+template <class Chain>
 struct chain_as_a_list;
-template <class first, class rest>
-struct chain_as_a_list<seen_before<first, rest>> {
-  using type = typename joined_lists<kind_list<first>,
-                                     typename chain_as_a_list<rest>::type>::type;
+template <class First, class Rest>
+struct chain_as_a_list<seen_before<First, Rest>> {
+  using type = typename joined_lists<kind_list<First>,
+                                     typename chain_as_a_list<Rest>::type>::type;
 };
 template <>
 struct chain_as_a_list<seen_before<nothing_seen_yet, nothing_seen_yet>> {
   using type = kind_list<>;
 };
 
-template <class list>
+template <class List>
 struct without_repeats;
-template <class... kinds>
-struct without_repeats<kind_list<kinds...>> {
+template <class... Kinds>
+struct without_repeats<kind_list<Kinds...>> {
   using type = typename chain_as_a_list<
-      decltype((seen_before<>{} | ... | kind_list<kinds>{}))>::type;
+      decltype((seen_before<>{} | ... | kind_list<Kinds>{}))>::type;
 };
 
-template <class list>
+template <class List>
 struct as_a_variant;
-template <class... kinds>
-struct as_a_variant<kind_list<kinds...>> {
-  using type = std::variant<kinds...>;
+template <class... Kinds>
+struct as_a_variant<kind_list<Kinds...>> {
+  using type = std::variant<Kinds...>;
 };
 
 // The number of a group, said as a type.
@@ -439,29 +439,29 @@ struct as_a_variant<kind_list<kinds...>> {
 // on. This is that number said so that you can: write one `push_group` per
 // group and let the compiler pick, instead of switching on a value inside one.
 // The number is still there for whoever wants it.
-template <std::size_t which>
+template <std::size_t Which>
 struct group_at {
-  static constexpr std::size_t value = which;
+  static constexpr std::size_t value = Which;
 };
 
-template <class type>
+template <class Type>
 [[nodiscard]] constexpr auto scanner_begin() {
   // Nothing written after the colon is empty parameters, and a scanner that
   // only takes them says the same thing when handed nothing.
-  if constexpr (requires { scanner<type>{}.begin(); }) {
-    return scanner<type>{}.begin();
+  if constexpr (requires { scanner<Type>{}.begin(); }) {
+    return scanner<Type>{}.begin();
   } else {
-    return scanner<type>{}.begin(std::string_view{});
+    return scanner<Type>{}.begin(std::string_view{});
   }
 }
 
-template <class type>
+template <class Type>
 [[nodiscard]] constexpr auto scanner_begin(std::string_view parameters) {
-  if constexpr (requires { scanner<type>{}.begin(parameters); }) {
-    return scanner<type>{}.begin(parameters);
+  if constexpr (requires { scanner<Type>{}.begin(parameters); }) {
+    return scanner<Type>{}.begin(parameters);
   } else {
     if (!parameters.empty()) throw "scanner does not accept parameters";
-    return scanner_begin<type>();
+    return scanner_begin<Type>();
   }
 }
 
@@ -483,28 +483,28 @@ template <class type>
 // happily as anything else, so a scanner that only changes what it is given
 // would answer yes to "can I call this with a state" either way. What tells
 // them apart is what comes back -- a state, or nothing.
-template <class type, class state_type>
-concept hands_the_state_back = requires(state_type held, char value) {
-  { scanner<type>{}.push(std::move(held), value) } -> std::same_as<state_type>;
+template <class Type, class StateType>
+concept hands_the_state_back = requires(StateType held, char value) {
+  { scanner<Type>{}.push(std::move(held), value) } -> std::same_as<StateType>;
 };
 
-template <class type, class state_type>
+template <class Type, class StateType>
 concept changes_the_state_it_was_given =
-    requires(state_type& held, char value) {
-      { scanner<type>{}.push(held, value) } -> std::same_as<void>;
+    requires(StateType& held, char value) {
+      { scanner<Type>{}.push(held, value) } -> std::same_as<void>;
     };
 
-template <class type, class state_type>
-constexpr void scanner_push(state_type& state, char value) {
-  static_assert(!(hands_the_state_back<type, state_type> &&
-                  changes_the_state_it_was_given<type, state_type>),
+template <class Type, class StateType>
+constexpr void scanner_push(StateType& state, char value) {
+  static_assert(!(hands_the_state_back<Type, StateType> &&
+                  changes_the_state_it_was_given<Type, StateType>),
                 "a scanner says how it takes a character once: either "
                 "`state push(state, char)` or `void push(state&, char)`, "
                 "and not both");
-  if constexpr (hands_the_state_back<type, state_type>) {
-    state = scanner<type>{}.push(std::move(state), value);
+  if constexpr (hands_the_state_back<Type, StateType>) {
+    state = scanner<Type>{}.push(std::move(state), value);
   } else {
-    scanner<type>{}.push(state, value);
+    scanner<Type>{}.push(state, value);
   }
 }
 
@@ -517,35 +517,35 @@ constexpr void scanner_push(state_type& state, char value) {
 // scanner may say it takes a run, by taking a view of one, and the whole of it
 // arrives in a single call. One that says nothing is handed the characters one
 // at a time, exactly as before.
-template <class type, class state_type>
-constexpr void scanner_push_run(state_type& state, const char* from,
+template <class Type, class StateType>
+constexpr void scanner_push_run(StateType& state, const char* from,
                                 const char* to) {
-  if constexpr (requires(state_type held) {
+  if constexpr (requires(StateType held) {
                   {
-                    scanner<type>{}.push(std::move(held), std::string_view{})
-                  } -> std::same_as<state_type>;
+                    scanner<Type>{}.push(std::move(held), std::string_view{})
+                  } -> std::same_as<StateType>;
                 }) {
-    state = scanner<type>{}.push(
+    state = scanner<Type>{}.push(
         std::move(state),
         std::string_view(from, static_cast<std::size_t>(to - from)));
   } else if constexpr (requires {
                          {
-                           scanner<type>{}.push(state, std::string_view{})
+                           scanner<Type>{}.push(state, std::string_view{})
                          } -> std::same_as<void>;
                        }) {
-    scanner<type>{}.push(
+    scanner<Type>{}.push(
         state, std::string_view(from, static_cast<std::size_t>(to - from)));
   } else {
     for (const char* letter = from; letter != to; ++letter) {
-      scanner_push<type>(state, *letter);
+      scanner_push<Type>(state, *letter);
     }
   }
 }
 
 // Said below, and used here: what a scanner handed back, thrown where somebody
 // asked for the value itself.
-template <class error_type>
-[[noreturn]] void throw_what_went_wrong(error_type&& said);
+template <class ErrorType>
+[[noreturn]] void throw_what_went_wrong(ErrorType&& said);
 
 // What a scanner handed back, made into what the caller asked for.
 //
@@ -553,44 +553,44 @@ template <class error_type>
 // ignore that, and either of the two answers is a good answer. So the making
 // is done here, where what was asked for is known, and a scanner that already
 // said it the right way is not made to say it twice.
-template <class type, class failure_type, class got_type>
-[[nodiscard]] constexpr std::expected<type, failure_type> as_handed_back(
-    got_type&& got) {
+template <class Type, class FailureType, class GotType>
+[[nodiscard]] constexpr std::expected<Type, FailureType> as_handed_back(
+    GotType&& got) {
   if constexpr (requires { got.error(); }) {
-    if (got) return std::expected<type, failure_type>(std::move(*got));
-    return std::unexpected(as_a_failure<failure_type>(std::move(got).error()));
+    if (got) return std::expected<Type, FailureType>(std::move(*got));
+    return std::unexpected(as_a_failure<FailureType>(std::move(got).error()));
   } else {
-    return std::expected<type, failure_type>(std::forward<got_type>(got));
+    return std::expected<Type, FailureType>(std::forward<GotType>(got));
   }
 }
 
-template <class type, class got_type>
-[[nodiscard]] constexpr type as_thrown(got_type&& got) {
+template <class Type, class GotType>
+[[nodiscard]] constexpr Type as_thrown(GotType&& got) {
   if constexpr (requires { got.error(); }) {
     if (!got) throw_what_went_wrong(std::move(got).error());
     return std::move(*got);
   } else {
-    return std::forward<got_type>(got);
+    return std::forward<GotType>(got);
   }
 }
 
-template <class type, class state_type>
-[[nodiscard]] constexpr type scanner_finish(state_type state) {
+template <class Type, class StateType>
+[[nodiscard]] constexpr Type scanner_finish(StateType state) {
   // Asked for the value where the scanner hands failures back: what it handed
   // back is thrown, here at the asking, and caught nowhere. Whoever wants it
   // handed back asks the reading to try rather than to say.
   if constexpr (requires {
-                  scanner<type>{}.finish(std::move(state));
+                  scanner<Type>{}.finish(std::move(state));
                 }) {
-    return as_thrown<type>(scanner<type>{}.finish(std::move(state)));
+    return as_thrown<Type>(scanner<Type>{}.finish(std::move(state)));
   } else {
-    return as_thrown<type>(scanner<type>::finish(std::move(state)));
+    return as_thrown<Type>(scanner<Type>::finish(std::move(state)));
   }
 }
 
 // The failure a reading hands back, made out of whatever a scanner said.
-template <class failure_type, class error_type>
-[[nodiscard]] constexpr failure_type as_a_failure(error_type&& said);
+template <class FailureType, class ErrorType>
+[[nodiscard]] constexpr FailureType as_a_failure(ErrorType&& said);
 
 // Which way the caller is reading: handed a failure back, or thrown one.
 //
@@ -599,53 +599,53 @@ template <class failure_type, class error_type>
 // back or throw it where it stands -- and the one that throws never builds the
 // expected that would only be unwrapped and thrown again.
 struct hands_a_failure_back {
-  template <class type, class failure_type>
-  using result = std::expected<type, failure_type>;
+  template <class Type, class FailureType>
+  using result = std::expected<Type, FailureType>;
 
-  template <class type, class failure_type, class error_type>
-  [[nodiscard]] static constexpr result<type, failure_type> went_wrong(
-      error_type&& said) {
+  template <class Type, class FailureType, class ErrorType>
+  [[nodiscard]] static constexpr result<Type, FailureType> went_wrong(
+      ErrorType&& said) {
     return std::unexpected(
-        scan::as_a_failure<failure_type>(std::forward<error_type>(said)));
+        scan::as_a_failure<FailureType>(std::forward<ErrorType>(said)));
   }
 
-  template <class step_type>
-  [[nodiscard]] static constexpr bool read(const step_type& step) {
+  template <class StepType>
+  [[nodiscard]] static constexpr bool read(const StepType& step) {
     return step.has_value();
   }
 
-  template <class step_type>
-  [[nodiscard]] static constexpr decltype(auto) value(step_type&& step) {
-    return *std::forward<step_type>(step);
+  template <class StepType>
+  [[nodiscard]] static constexpr decltype(auto) value(StepType&& step) {
+    return *std::forward<StepType>(step);
   }
 
-  template <class step_type>
-  [[nodiscard]] static constexpr decltype(auto) failure(step_type&& step) {
-    return std::forward<step_type>(step).error();
+  template <class StepType>
+  [[nodiscard]] static constexpr decltype(auto) failure(StepType&& step) {
+    return std::forward<StepType>(step).error();
   }
 };
 
 struct throws_a_failure {
-  template <class type, class failure_type>
-  using result = type;
+  template <class Type, class FailureType>
+  using result = Type;
 
-  template <class type, class failure_type, class error_type>
-  [[noreturn]] static constexpr type went_wrong(error_type&& said) {
-    scan::throw_what_went_wrong(std::forward<error_type>(said));
+  template <class Type, class FailureType, class ErrorType>
+  [[noreturn]] static constexpr Type went_wrong(ErrorType&& said) {
+    scan::throw_what_went_wrong(std::forward<ErrorType>(said));
   }
 
-  template <class step_type>
-  [[nodiscard]] static constexpr bool read(const step_type&) {
+  template <class StepType>
+  [[nodiscard]] static constexpr bool read(const StepType&) {
     return true;
   }
 
-  template <class step_type>
-  [[nodiscard]] static constexpr decltype(auto) value(step_type&& step) {
-    return std::forward<step_type>(step);
+  template <class StepType>
+  [[nodiscard]] static constexpr decltype(auto) value(StepType&& step) {
+    return std::forward<StepType>(step);
   }
 
-  template <class step_type>
-  [[nodiscard]] static constexpr scan::scan_error<> failure(step_type&&) {
+  template <class StepType>
+  [[nodiscard]] static constexpr scan::scan_error<> failure(StepType&&) {
     return scan::scan_error<>("a reading that throws has nothing to hand back");
   }
 };
@@ -653,45 +653,45 @@ struct throws_a_failure {
 // The same for the hooks that gather rather than read a field: one name, and
 // the template argument says which way the caller is reading. A hook written
 // without it is asked the way it always was.
-template <class type, class state_type, class ending>
+template <class Type, class StateType, class Ending>
 concept can_be_told_to_finish =
-    requires(state_type state) {
-      scanner<std::remove_cv_t<type>>::template finish<ending>(
+    requires(StateType state) {
+      scanner<std::remove_cv_t<Type>>::template finish<Ending>(
           std::move(state));
-    } || requires(state_type state) {
-      scanner<std::remove_cv_t<type>>::finish(std::move(state));
+    } || requires(StateType state) {
+      scanner<std::remove_cv_t<Type>>::finish(std::move(state));
     };
 
-template <class type, class ending = hands_a_failure_back, class state_type>
-  requires can_be_told_to_finish<type, state_type, ending>
-[[nodiscard]] constexpr decltype(auto) scanner_told_finish(state_type state) {
-  using held = std::remove_cv_t<type>;
+template <class Type, class Ending = hands_a_failure_back, class StateType>
+  requires can_be_told_to_finish<Type, StateType, Ending>
+[[nodiscard]] constexpr decltype(auto) scanner_told_finish(StateType state) {
+  using held = std::remove_cv_t<Type>;
   if constexpr (requires {
-                  scanner<held>::template finish<ending>(std::move(state));
+                  scanner<held>::template finish<Ending>(std::move(state));
                 }) {
-    return scanner<held>::template finish<ending>(std::move(state));
+    return scanner<held>::template finish<Ending>(std::move(state));
   } else {
     return scanner<held>::finish(std::move(state));
   }
 }
 
-template <class type, class ending>
+template <class Type, class Ending>
 concept can_be_told_from_groups =
     requires(std::span<const std::string_view> given) {
-      scanner<std::remove_cv_t<type>>{}.template from_groups<ending>(given);
+      scanner<std::remove_cv_t<Type>>{}.template from_groups<Ending>(given);
     } || requires(std::span<const std::string_view> given) {
-      scanner<std::remove_cv_t<type>>{}.from_groups(given);
+      scanner<std::remove_cv_t<Type>>{}.from_groups(given);
     };
 
-template <class type, class ending = hands_a_failure_back>
-  requires can_be_told_from_groups<type, ending>
+template <class Type, class Ending = hands_a_failure_back>
+  requires can_be_told_from_groups<Type, Ending>
 [[nodiscard]] constexpr decltype(auto) scanner_told_from_groups(
     std::span<const std::string_view> given) {
-  using held = std::remove_cv_t<type>;
+  using held = std::remove_cv_t<Type>;
   if constexpr (requires {
-                  scanner<held>{}.template from_groups<ending>(given);
+                  scanner<held>{}.template from_groups<Ending>(given);
                 }) {
-    return scanner<held>{}.template from_groups<ending>(given);
+    return scanner<held>{}.template from_groups<Ending>(given);
   } else {
     return scanner<held>{}.from_groups(given);
   }
@@ -700,49 +700,49 @@ template <class type, class ending = hands_a_failure_back>
 // The same, where the place this shape stands at was told a context. A shape
 // that reads its own groups is a reading like any other inside, and what its
 // places were told reaches them through here.
-template <class type, class ending = hands_a_failure_back, class told_type>
+template <class Type, class Ending = hands_a_failure_back, class ToldType>
 [[nodiscard]] constexpr decltype(auto) scanner_told_from_groups(
-    std::span<const std::string_view> given, const told_type& told) {
-  using held = std::remove_cv_t<type>;
+    std::span<const std::string_view> given, const ToldType& told) {
+  using held = std::remove_cv_t<Type>;
   if constexpr (requires {
-                  scanner<held>{}.template from_groups<ending>(given, told);
+                  scanner<held>{}.template from_groups<Ending>(given, told);
                 }) {
-    return scanner<held>{}.template from_groups<ending>(given, told);
+    return scanner<held>{}.template from_groups<Ending>(given, told);
   } else if constexpr (requires { scanner<held>{}.from_groups(given, told); }) {
     return scanner<held>{}.from_groups(given, told);
   } else if constexpr (requires {
-                         scanner<held>{}.template from_groups<ending>(given);
+                         scanner<held>{}.template from_groups<Ending>(given);
                        }) {
     // Said here rather than by calling the shape without a context: that one
     // is constrained, and a body that names it is a body that cannot be
     // compiled for a type which says no from_groups at all -- and a return
     // type deduced from a body that cannot be compiled takes this overload out
     // of the set, which reads at the call as no such function.
-    return scanner<held>{}.template from_groups<ending>(given);
+    return scanner<held>{}.template from_groups<Ending>(given);
   } else {
     return scanner<held>{}.from_groups(given);
   }
 }
 
-template <class type, class state_type, class ending>
+template <class Type, class StateType, class Ending>
 concept can_be_told_to_finish_groups =
-    requires(state_type state) {
-      scanner<std::remove_cv_t<type>>{}.template finish_groups<ending>(
+    requires(StateType state) {
+      scanner<std::remove_cv_t<Type>>{}.template finish_groups<Ending>(
           std::move(state));
-    } || requires(state_type state) {
-      scanner<std::remove_cv_t<type>>{}.finish_groups(std::move(state));
+    } || requires(StateType state) {
+      scanner<std::remove_cv_t<Type>>{}.finish_groups(std::move(state));
     };
 
-template <class type, class ending = hands_a_failure_back, class state_type>
-  requires can_be_told_to_finish_groups<type, state_type, ending>
+template <class Type, class Ending = hands_a_failure_back, class StateType>
+  requires can_be_told_to_finish_groups<Type, StateType, Ending>
 [[nodiscard]] constexpr decltype(auto) scanner_told_finish_groups(
-    state_type state) {
-  using held = std::remove_cv_t<type>;
+    StateType state) {
+  using held = std::remove_cv_t<Type>;
   if constexpr (requires {
-                  scanner<held>{}.template finish_groups<ending>(
+                  scanner<held>{}.template finish_groups<Ending>(
                       std::move(state));
                 }) {
-    return scanner<held>{}.template finish_groups<ending>(std::move(state));
+    return scanner<held>{}.template finish_groups<Ending>(std::move(state));
   } else {
     return scanner<held>{}.finish_groups(std::move(state));
   }
@@ -751,16 +751,16 @@ template <class type, class ending = hands_a_failure_back, class state_type>
 // Whether there is a reading to ask for at all. Asked first, so that a type
 // whose scanner reads by groups and not by fields answers no rather than
 // failing in a body nobody can see into.
-template <class type, class ending>
+template <class Type, class Ending>
 concept can_be_told_to_parse =
     requires(std::string_view text, std::string_view parameters) {
-      scanner<std::remove_cv_t<type>>::template parse<ending>(text, parameters);
+      scanner<std::remove_cv_t<Type>>::template parse<Ending>(text, parameters);
     } || requires(std::string_view text) {
-      scanner<std::remove_cv_t<type>>::template parse<ending>(text);
+      scanner<std::remove_cv_t<Type>>::template parse<Ending>(text);
     } || requires(std::string_view text, std::string_view parameters) {
-      scanner<std::remove_cv_t<type>>{}.parse(text, parameters);
+      scanner<std::remove_cv_t<Type>>{}.parse(text, parameters);
     } || requires(std::string_view text) {
-      scanner<std::remove_cv_t<type>>{}.parse(text);
+      scanner<std::remove_cv_t<Type>>{}.parse(text);
     };
 
 // A scanner asked to read, told which way the caller is reading.
@@ -770,20 +770,20 @@ concept can_be_told_to_parse =
 // may still hand a failure back even where the caller said it would throw.
 // What comes back is whatever the scanner said; making that into what the
 // caller asked for is done where the asking was.
-template <class type, class ending = hands_a_failure_back>
-  requires can_be_told_to_parse<type, ending>
+template <class Type, class Ending = hands_a_failure_back>
+  requires can_be_told_to_parse<Type, Ending>
 [[nodiscard]] constexpr decltype(auto) scanner_told_parse(
     std::string_view input, std::string_view parameters) {
-  using held = std::remove_cv_t<type>;
+  using held = std::remove_cv_t<Type>;
   if constexpr (requires {
-                  scanner<held>::template parse<ending>(input, parameters);
+                  scanner<held>::template parse<Ending>(input, parameters);
                 }) {
-    return scanner<held>::template parse<ending>(input, parameters);
+    return scanner<held>::template parse<Ending>(input, parameters);
   } else if constexpr (requires {
-                         scanner<held>::template parse<ending>(input);
+                         scanner<held>::template parse<Ending>(input);
                        }) {
     if (!parameters.empty()) throw "scanner does not accept parameters";
-    return scanner<held>::template parse<ending>(input);
+    return scanner<held>::template parse<Ending>(input);
   } else if constexpr (requires { scanner<held>{}.parse(input, parameters); }) {
     return scanner<held>{}.parse(input, parameters);
   } else {
@@ -797,35 +797,35 @@ template <class type, class ending = hands_a_failure_back>
 // Asked of what comes back and not of how it is written: a scanner that takes
 // the template argument and one that does not are both answered the same way,
 // by whether the thing they return names the failure it can hold.
-template <class type>
+template <class Type>
 concept says_what_went_wrong =
-    can_be_told_to_parse<type, hands_a_failure_back> && requires {
+    can_be_told_to_parse<Type, hands_a_failure_back> && requires {
       typename std::remove_cvref_t<
-          decltype(scanner_told_parse<type, hands_a_failure_back>(
+          decltype(scanner_told_parse<Type, hands_a_failure_back>(
               std::string_view{}, std::string_view{}))>::error_type;
     };
 
 
-template <class type>
-[[nodiscard]] constexpr type scanner_parse(std::string_view input) {
-  return as_thrown<type>(
-      scanner_told_parse<type, throws_a_failure>(input, {}));
+template <class Type>
+[[nodiscard]] constexpr Type scanner_parse(std::string_view input) {
+  return as_thrown<Type>(
+      scanner_told_parse<Type, throws_a_failure>(input, {}));
 }
 
-template <class type>
-[[nodiscard]] constexpr type scanner_parse(std::string_view input,
+template <class Type>
+[[nodiscard]] constexpr Type scanner_parse(std::string_view input,
                                            std::string_view parameters) {
-  if constexpr (requires { scanner<type>{}.parse(input, parameters); }) {
-    return scanner<type>{}.parse(input, parameters);
+  if constexpr (requires { scanner<Type>{}.parse(input, parameters); }) {
+    return scanner<Type>{}.parse(input, parameters);
   } else if constexpr (requires {
-                         scanner<type>::try_parse(input, parameters);
+                         scanner<Type>::try_parse(input, parameters);
                        }) {
-    auto got = scanner<type>::try_parse(input, parameters);
+    auto got = scanner<Type>::try_parse(input, parameters);
     if (got) return std::move(*got);
     throw_what_went_wrong(std::move(got).error());
   } else {
     if (!parameters.empty()) throw "scanner does not accept parameters";
-    return scanner_parse<type>(input);
+    return scanner_parse<Type>(input);
   }
 }
 
@@ -869,15 +869,15 @@ struct nothing_given {
 //
 // A place that is a shape hands the same one to each of its parts, which is
 // what "a value at a place is that place's and all of its parts'" means.
-template <class it, bool apart>
+template <class It, bool Apart>
 struct one_given {
-  static constexpr bool told_apart = apart;
-  it thing;
+  static constexpr bool told_apart = Apart;
+  It thing;
   template <std::size_t>
   [[nodiscard]] constexpr one_given for_part() const {
     return *this;
   }
-  [[nodiscard]] constexpr const it& leaf() const { return thing; }
+  [[nodiscard]] constexpr const It& leaf() const { return thing; }
 };
 
 // The contexts a call was given, in the order the places are read.
@@ -892,26 +892,26 @@ struct one_given {
 // Held by value: a reading may be carried away from the call that made it, and
 // a context is a handle -- an allocator, a pool, a pointer to the caller's
 // world -- so the copy costs a word and cannot dangle.
-template <class... contexts>
+template <class... Contexts>
 struct contexts_given {
-  static constexpr bool for_everyone = sizeof...(contexts) == 1;
+  static constexpr bool for_everyone = sizeof...(Contexts) == 1;
   static constexpr bool told_apart = !for_everyone;
-  static constexpr std::size_t count = sizeof...(contexts);
+  static constexpr std::size_t count = sizeof...(Contexts);
 
   constexpr contexts_given() = default;
-  constexpr explicit contexts_given(contexts... given)
+  constexpr explicit contexts_given(Contexts... given)
       : all(std::move(given)...) {}
 
-  template <std::size_t place>
+  template <std::size_t Place>
   [[nodiscard]] constexpr auto for_part() const {
     if constexpr (for_everyone) {
-      using first = std::tuple_element_t<0, std::tuple<contexts...>>;
+      using first = std::tuple_element_t<0, std::tuple<Contexts...>>;
       return one_given<first, false>{std::get<0>(all)};
-    } else if constexpr (place < sizeof...(contexts)) {
-      using here = std::tuple_element_t<place, std::tuple<contexts...>>;
-      return one_given<here, true>{std::get<place>(all)};
+    } else if constexpr (Place < sizeof...(Contexts)) {
+      using here = std::tuple_element_t<Place, std::tuple<Contexts...>>;
+      return one_given<here, true>{std::get<Place>(all)};
     } else {
-      static_assert(place < sizeof...(contexts),
+      static_assert(Place < sizeof...(Contexts),
                     "this reading has more places than it was given contexts: "
                     "give one for every place, one for all of them, or write "
                     "scan::default_context where a place wants none");
@@ -921,7 +921,7 @@ struct contexts_given {
 
   [[nodiscard]] constexpr decltype(auto) leaf() const { return std::get<0>(all); }
 
-  std::tuple<contexts...> all;
+  std::tuple<Contexts...> all;
 };
 
 
@@ -944,30 +944,30 @@ struct contexts_given {
 
 
 // The kind of failure such a scanner hands back.
-template <class type>
+template <class Type>
 using went_wrong_with = typename decltype(scanner_told_parse<
-    type, hands_a_failure_back>(std::string_view{},
+    Type, hands_a_failure_back>(std::string_view{},
                                 std::string_view{}))::error_type;
 
 // What is thrown for a scanner that handed a failure back, where somebody
 // asked for the value itself. Where it said one kind, that kind; where it said
 // several -- an `expected` over a variant of them -- whichever one it is.
-template <class error_type>
-[[noreturn]] void throw_what_went_wrong(error_type&& said) {
-  if constexpr (a_choice_of_kinds<std::remove_cvref_t<error_type>>) {
+template <class ErrorType>
+[[noreturn]] void throw_what_went_wrong(ErrorType&& said) {
+  if constexpr (a_choice_of_kinds<std::remove_cvref_t<ErrorType>>) {
     std::visit(
         [](auto&& one) -> void {
           throw thrown_kind_t<decltype(one)>(one.what());
         },
-        std::forward<error_type>(said));
+        std::forward<ErrorType>(said));
     throw scan_error<std::exception>("a failure that said it was nothing");
   } else {
-    throw thrown_kind_t<error_type>(said.what());
+    throw thrown_kind_t<ErrorType>(said.what());
   }
 }
 
-template <class type>
-using scanner_state_t = decltype(scanner_begin<type>());
+template <class Type>
+using scanner_state_t = decltype(scanner_begin<Type>());
 
 // The rest of the user's functions, each in the same two shapes: the one that
 // hands a failure back and the one that does not. Where both are there the
@@ -976,68 +976,68 @@ using scanner_state_t = decltype(scanner_begin<type>());
 // Whether the type gathers a character at a time at all. Asked first, because
 // what it gathers into is what the question below is about, and a type with no
 // gathering has no such thing to name.
-template <class type>
+template <class Type>
 concept gathers_as_it_reads = requires {
-  scanner<std::remove_cv_t<type>>{}.begin();
+  scanner<std::remove_cv_t<Type>>{}.begin();
 } || requires(std::string_view parameters) {
-  scanner<std::remove_cv_t<type>>{}.begin(parameters);
+  scanner<std::remove_cv_t<Type>>{}.begin(parameters);
 };
 
-template <class type>
+template <class Type>
 concept says_what_went_wrong_finishing =
-    gathers_as_it_reads<type> &&
-    can_be_told_to_finish<type, scanner_state_t<type>,
+    gathers_as_it_reads<Type> &&
+    can_be_told_to_finish<Type, scanner_state_t<Type>,
                           hands_a_failure_back> &&
-    requires(scanner_state_t<type> state) {
+    requires(scanner_state_t<Type> state) {
       typename std::remove_cvref_t<decltype(
-          scanner_told_finish<type, hands_a_failure_back>(
+          scanner_told_finish<Type, hands_a_failure_back>(
               std::move(state)))>::error_type;
     };
 
-template <class type>
+template <class Type>
 concept says_what_went_wrong_from_groups =
-    can_be_told_from_groups<type, hands_a_failure_back> &&
+    can_be_told_from_groups<Type, hands_a_failure_back> &&
     requires(std::span<const std::string_view> given) {
       typename std::remove_cvref_t<decltype(
-          scanner_told_from_groups<type, hands_a_failure_back>(
+          scanner_told_from_groups<Type, hands_a_failure_back>(
               given))>::error_type;
     };
 
-template <class type>
+template <class Type>
 concept says_what_went_wrong_folding =
     can_be_told_to_finish_groups<
-        type, decltype(scanner<std::remove_cv_t<type>>{}.begin_groups()),
+        Type, decltype(scanner<std::remove_cv_t<Type>>{}.begin_groups()),
         hands_a_failure_back> && requires {
   typename std::remove_cvref_t<decltype(
-      scanner_told_finish_groups<type, hands_a_failure_back>(
-          scanner<std::remove_cv_t<type>>{}.begin_groups()))>::error_type;
+      scanner_told_finish_groups<Type, hands_a_failure_back>(
+          scanner<std::remove_cv_t<Type>>{}.begin_groups()))>::error_type;
 };
 
-template <class type>
-using went_wrong_finishing = typename decltype(scanner<std::remove_cv_t<type>>::
+template <class Type>
+using went_wrong_finishing = typename decltype(scanner<std::remove_cv_t<Type>>::
                                                    finish(
                                                        std::declval<
                                                            scanner_state_t<
-                                                               type>>()))::
+                                                               Type>>()))::
     error_type;
 
-template <class type>
+template <class Type>
 using went_wrong_from_groups =
-    typename decltype(scanner<std::remove_cv_t<type>>{}.from_groups(
+    typename decltype(scanner<std::remove_cv_t<Type>>{}.from_groups(
         std::declval<std::span<const std::string_view>>()))::error_type;
 
-template <class type>
+template <class Type>
 using went_wrong_folding =
-    typename decltype(scanner<std::remove_cv_t<type>>{}.finish_groups(
-        scanner<std::remove_cv_t<type>>{}.begin_groups()))::error_type;
+    typename decltype(scanner<std::remove_cv_t<Type>>{}.finish_groups(
+        scanner<std::remove_cv_t<Type>>{}.begin_groups()))::error_type;
 
-template <std::size_t capacity = 8192>
+template <std::size_t Capacity = 8192>
 struct pattern_buffer {
-  std::array<char, capacity> storage{};
+  std::array<char, Capacity> storage{};
   std::size_t length = 0;
 
   constexpr void push_back(char value) {
-    if (length == capacity) throw "scanner pattern is too large";
+    if (length == Capacity) throw "scanner pattern is too large";
     storage[length++] = value;
   }
 
@@ -1072,8 +1072,8 @@ using our_kinds =
 using failure = typename as_a_variant<our_kinds>::type;
 
 // What it said, whichever kind it is.
-template <class... kinds>
-[[nodiscard]] const char* what(const std::variant<kinds...>& said) {
+template <class... Kinds>
+[[nodiscard]] const char* what(const std::variant<Kinds...>& said) {
   return std::visit([](const scan_error<>& one) { return one.what(); }, said);
 }
 
@@ -1082,8 +1082,8 @@ template <class... kinds>
 // The only place in this library where a reading that went wrong becomes a
 // throw, and nothing anywhere catches it. Asking for a value has nowhere to
 // put a failure; trying for one does, and then nothing is thrown at all.
-template <class type, class failure_type>
-[[nodiscard]] constexpr type or_thrown(std::expected<type, failure_type> got) {
+template <class Type, class FailureType>
+[[nodiscard]] constexpr Type or_thrown(std::expected<Type, FailureType> got) {
   if (got) return std::move(*got);
   throw_what_went_wrong(std::move(got).error());
 }
@@ -1096,14 +1096,14 @@ template <class type, class failure_type>
 // Nothing here catches anything. A reading that is tried rather than asked for
 // hands its failure back the whole way up, and a scanner that throws instead
 // throws past all of this, to whoever called.
-template <class failure_type, class error_type>
-[[nodiscard]] constexpr failure_type as_a_failure(error_type&& said) {
-  if constexpr (a_choice_of_kinds<std::remove_cvref_t<error_type>>) {
+template <class FailureType, class ErrorType>
+[[nodiscard]] constexpr FailureType as_a_failure(ErrorType&& said) {
+  if constexpr (a_choice_of_kinds<std::remove_cvref_t<ErrorType>>) {
     return std::visit(
-        [](auto&& one) -> failure_type { return failure_type(std::move(one)); },
-        std::forward<error_type>(said));
+        [](auto&& one) -> FailureType { return FailureType(std::move(one)); },
+        std::forward<ErrorType>(said));
   } else {
-    return failure_type(std::forward<error_type>(said));
+    return FailureType(std::forward<ErrorType>(said));
   }
 }
 

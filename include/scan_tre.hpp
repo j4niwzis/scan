@@ -358,15 +358,15 @@ struct match {
 };
 
 // Runs an anchored, whole-input match with leftmost-greedy disambiguation.
-template <std::ranges::input_range range_type>
-  requires std::same_as<std::ranges::range_value_t<range_type>, char>
+template <std::ranges::input_range RangeType>
+  requires std::same_as<std::ranges::range_value_t<RangeType>, char>
 [[nodiscard]] constexpr match simulate(const tnfa& automaton,
-                                       range_type&& input);
+                                       RangeType&& input);
 
-template <std::size_t extent>
+template <std::size_t Extent>
 [[nodiscard]] constexpr match simulate(const tnfa& automaton,
-                                       const char (&input)[extent]) {
-  return simulate(automaton, std::string_view(input, extent - 1));
+                                       const char (&input)[Extent]) {
+  return simulate(automaton, std::string_view(input, Extent - 1));
 }
 
 // The values a command appends, and there are a handful of them at most: a bit
@@ -912,9 +912,9 @@ constexpr tnfa compile_tnfa(const node& expression) {
   return without_empty_links(tnfa_builder{}.build(expression));
 }
 
-template <std::ranges::input_range range_type>
-  requires std::same_as<std::ranges::range_value_t<range_type>, char>
-constexpr match simulate(const tnfa& automaton, range_type&& input) {
+template <std::ranges::input_range RangeType>
+  requires std::same_as<std::ranges::range_value_t<RangeType>, char>
+constexpr match simulate(const tnfa& automaton, RangeType&& input) {
   struct configuration {
     state_id state = 0;
     std::vector<tag_history> tags;
