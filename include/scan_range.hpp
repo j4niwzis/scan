@@ -71,9 +71,74 @@ class reading_with {
   scan::contexts_at_places<Contexts...> given_;
 };
 
+// Naming what a reading is for, written once for every kind of subject.
+//
+// A reading is a description of one until its output type is named, and naming
+// it is what runs it. What differs between a subject in a row, one in pieces and
+// one read once is the call below this -- how that subject is walked. What does
+// not differ is this: the type said after the subject, the contexts said as they
+// stand, and the contexts said in braces. Written out three times, as it was,
+// the three roads drifted apart from each other; written here, a place that can
+// be told a context can be told one off any subject.
+//
+// A reading that can hand the value over without building an expected first is
+// asked that way, and one that cannot is asked for what it has and told to
+// throw at the asking.
+struct names_its_output {
+  template <class Type, class Self, class... Contexts>
+  [[nodiscard]] constexpr Type of(this Self&& self, const Contexts&... given) {
+    if constexpr (sizeof...(Contexts) == 0) {
+      if constexpr (requires { self.template read_or_throw<Type>(); }) {
+        return std::forward<Self>(self).template read_or_throw<Type>();
+      } else {
+        return or_thrown(std::forward<Self>(self).template read<Type>());
+      }
+    } else {
+      return std::forward<Self>(self).template asked_for<Type>(
+          scan::contexts_at_places<Contexts...>(given...));
+    }
+  }
+
+  // The same, where a place is a shape and its parts want their own contexts.
+  // A braced list deduces nothing, so this is the whole list at once.
+  template <class Type, class Self>
+  [[nodiscard]] constexpr Type of(this Self&& self, carrier_for<Type> given) {
+    return std::forward<Self>(self).template asked_for<Type>(given);
+  }
+
+  template <class Type, class Self, class... Contexts>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      this Self&& self, const Contexts&... given) {
+    if constexpr (sizeof...(Contexts) == 0) {
+      return std::forward<Self>(self).template read<Type>();
+    } else {
+      return std::forward<Self>(self).template read<Type>(
+          scan::contexts_at_places<Contexts...>(given...));
+    }
+  }
+
+  template <class Type, class Self>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
+      this Self&& self, carrier_for<Type> given) {
+    return std::forward<Self>(self).template read<Type>(given);
+  }
+
+  // Asked for the value rather than for what went wrong, which is the one place
+  // a failure becomes a throw.
+  template <class Type, class Self, class Carrier>
+  [[nodiscard]] constexpr Type asked_for(this Self&& self,
+                                         const Carrier& carrier) {
+    if constexpr (requires { self.template read_or_throw<Type>(carrier); }) {
+      return std::forward<Self>(self).template read_or_throw<Type>(carrier);
+    } else {
+      return or_thrown(std::forward<Self>(self).template read<Type>(carrier));
+    }
+  }
+};
+
 template <fixed_string Format, int Terminator = -1, bool Terminated = false,
           how_to_walk Walk = how_to_walk::by_length>
-class borrowed_result {
+class borrowed_result : public names_its_output {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
 
@@ -171,68 +236,8 @@ class borrowed_result {
     return read_or_throw<Type>();
   }
 
-  // The same scan, said rather than implied, and the same scan that does not
-  // throw.
-  //
-  // Assigning the result of a scan to something converts it, and a conversion
-  // has nowhere to put a failure but an exception. Named, it has: `of` is the
-  // conversion under another spelling, and `try_of` hands back what went wrong
-  // instead of throwing it.
-  // Asked for with the contexts the places were given.
-  //
-  // One context is everybody's; more than one is one per place, in the order
-  // the places are read, with scan::default_context standing for a place that
-  // wants none. Each reaches the one call where its place makes its value.
-  template <class Type>
-  [[nodiscard]] constexpr Type of() const {
-    return read_or_throw<Type>();
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of()
-      const {
-    return read<Type>();
-  }
-
-  // Contexts written as they stand, without braces: as many places as the
-  // output has, because nothing here is written out place by place. One is
-  // everybody's; more are one per place.
-  //
-  // Chosen over the braced form below whenever it can be -- its parameters take
-  // what was handed over as it stands, and an exact match beats the conversion
-  // the other would need.
-  template <class Type, class... Contexts>
-    requires(sizeof...(Contexts) > 0)
-  [[nodiscard]] constexpr Type of(const Contexts&... given) const {
-    return read_or_throw<Type>(scan::contexts_at_places<Contexts...>(given...));
-  }
-
-  template <class Type, class... Contexts>
-    requires(sizeof...(Contexts) > 0)
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      const Contexts&... given) const {
-    return read<Type>(scan::contexts_at_places<Contexts...>(given...));
-  }
-
-  // The same, where a place is a shape and its parts want their own contexts.
-  //
-  // A braced list deduces nothing, so it cannot be a pack -- it is the whole
-  // list at once, in braces, and inside it braces go as deep as the shape does.
-  // That is the price of writing any braces at all here, and what it buys is
-  // that no number is written anywhere: as many places as the output has.
-  //
-  //   scan<"{} {}">(text).of<pair>(fast, slow)         -- as they stand
-  //   scan<"{} {} {}">(text).of<nest>({{fast, default_context}, slow})
-  template <class Type>
-  [[nodiscard]] constexpr Type of(carrier_for<Type> given) const {
-    return read_or_throw<Type>(given);
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      carrier_for<Type> given) const {
-    return read<Type>(given);
-  }
+  // What a reading is for is named by `names_its_output` above: `of`, `try_of`,
+  // and the contexts said either way.
 
   // The same contexts, told before the output type is named -- which is what a
   // reading assigned to a variable needs, because the conversion that names the
@@ -295,7 +300,7 @@ class borrowed_result {
 // What a scan over pieces hands back until somebody says what it is scanning
 // into.
 template <fixed_string Format, class PiecesType>
-class pieces_result {
+class pieces_result : public names_its_output {
  public:
   constexpr explicit pieces_result(PiecesType input)
       : input_(std::move(input)) {}
@@ -317,17 +322,6 @@ class pieces_result {
     return or_thrown(read<Type>());
   }
 
-  template <class Type>
-  [[nodiscard]] constexpr Type of() {
-    return static_cast<Type>(*this);
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
-  try_of() {
-    return read<Type>();
-  }
-
   // The same contexts a subject in a row may be told. What is below took them
   // all along -- the gatherer is told at the door and each place asks it -- so
   // saying them here is all that was missing.
@@ -337,36 +331,12 @@ class pieces_result {
     return scan_pieces<Type, Format, CarrierType>(std::move(input_), told);
   }
 
-  template <class Type, class... Contexts>
-    requires(sizeof...(Contexts) > 0)
-  [[nodiscard]] constexpr Type of(const Contexts&... given) {
-    return or_thrown(read<Type>(scan::contexts_at_places<Contexts...>(given...)));
-  }
-
-  template <class Type, class... Contexts>
-    requires(sizeof...(Contexts) > 0)
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      const Contexts&... given) {
-    return read<Type>(scan::contexts_at_places<Contexts...>(given...));
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr Type of(carrier_for<Type> given) {
-    return or_thrown(read<Type>(given));
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      carrier_for<Type> given) {
-    return read<Type>(given);
-  }
-
  private:
   PiecesType input_;
 };
 
 template <fixed_string Format, std::ranges::input_range RangeType>
-class streaming_result {
+class streaming_result : public names_its_output {
  public:
   constexpr explicit streaming_result(RangeType input)
       : input_(std::move(input)) {}
@@ -388,17 +358,6 @@ class streaming_result {
     return or_thrown(read<Type>());
   }
 
-  template <class Type>
-  [[nodiscard]] constexpr Type of() {
-    return static_cast<Type>(*this);
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
-  try_of() {
-    return read<Type>();
-  }
-
   // The same contexts a subject in a row may be told. What is below took them
   // all along -- the gatherer is told at the door and each place asks it -- so
   // saying them here is all that was missing.
@@ -407,30 +366,6 @@ class streaming_result {
       const CarrierType& told) {
     return scan_stream<Type, Format, how_to_walk::by_length, CarrierType>(
         input_, told);
-  }
-
-  template <class Type, class... Contexts>
-    requires(sizeof...(Contexts) > 0)
-  [[nodiscard]] constexpr Type of(const Contexts&... given) {
-    return or_thrown(read<Type>(scan::contexts_at_places<Contexts...>(given...)));
-  }
-
-  template <class Type, class... Contexts>
-    requires(sizeof...(Contexts) > 0)
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      const Contexts&... given) {
-    return read<Type>(scan::contexts_at_places<Contexts...>(given...));
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr Type of(carrier_for<Type> given) {
-    return or_thrown(read<Type>(given));
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      carrier_for<Type> given) {
-    return read<Type>(given);
   }
 
  private:
