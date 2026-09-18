@@ -1318,6 +1318,14 @@ class collecting_collector {
     push_(into, letter);
   }
 
+  // The value is filled as the characters arrive, so what is begun is already
+  // what comes back: this is here because a subject read once asks for it, and
+  // a collector that cannot answer it is one that only reads what it can point
+  // at.
+  [[nodiscard]] constexpr value_type finish_pushed(value_type state) const {
+    return state;
+  }
+
  private:
   Pusher push_;
   std::tuple<Arguments...> arguments_;
