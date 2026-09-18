@@ -19,6 +19,8 @@ using namespace std::string_view_literals;
 struct what_arrived {
   std::pmr::memory_resource* at_parse = nullptr;
   std::pmr::memory_resource* at_begin = nullptr;
+  std::pmr::memory_resource* at_first_push = nullptr;
+  std::pmr::memory_resource* at_finish = nullptr;
   std::pmr::memory_resource* untold_parse = 0;
   std::pmr::memory_resource* untold_begin = 0;
   bool parsed = false;
@@ -54,8 +56,14 @@ struct scan::scanner<kept_word> {
     seen.at_begin = where.resource();
     return state_type(where);
   }
-  static void push(state_type& state, char value) { state.push_back(value); }
+  static void push(state_type& state, char value) {
+    if (seen.at_first_push == nullptr) {
+      seen.at_first_push = state.get_allocator().resource();
+    }
+    state.push_back(value);
+  }
   [[nodiscard]] static kept_word finish(state_type state) {
+    seen.at_finish = state.get_allocator().resource();
     return kept_word{std::move(state)};
   }
 
@@ -137,6 +145,12 @@ TEST(AResourceToldToAGathering, WhereItArrives) {
   EXPECT_EQ(seen.at_begin, &bytes)
       << "read once: begin was told no resource -- the context stops before "
          "the gathering is begun";
+  EXPECT_EQ(seen.at_first_push, &bytes)
+      << "read once: the gathering that takes the characters is not the one "
+         "that was begun";
+  EXPECT_EQ(seen.at_finish, &bytes)
+      << "read once: the gathering handed to finish is not the one that took "
+         "the characters";
   EXPECT_EQ(once.word.text.get_allocator().resource(), &bytes)
       << "read once: begin was told the pool and the value still came back "
          "elsewhere -- the gathering is dropped between begin and finish";

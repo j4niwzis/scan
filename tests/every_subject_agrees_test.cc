@@ -475,12 +475,11 @@ TEST_F(every_subject, AStringKeepsTheResourceItsPlaceWasTold) {
 
 }
 
-// The same string, gathered a character at a time rather than pointed at. Six
-// places that begin a gathering now build it where they stand instead of
-// assigning over an empty one, and the resource still does not arrive -- so the
-// question is where it stops, which `a_resource_told_to_a_gathering_test` asks
-// directly.
-TEST_F(every_subject, DISABLED_AStringGatheredKeepsTheResourceToo) {
+// The same string, gathered a character at a time rather than pointed at. What
+// dropped the resource was the set of gatherings handed to the ending: made
+// empty and filled in by assignment, which is how a container that keeps a
+// resource keeps its own instead.
+TEST_F(every_subject, AStringGatheredKeepsTheResourceToo) {
   std::pmr::monotonic_buffer_resource bytes;
   const std::pmr::polymorphic_allocator<> mine(&bytes);
 
