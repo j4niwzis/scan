@@ -123,7 +123,7 @@ walk, and both were only visible end to end.
 * **Contexts reaching places.** One table: (output shape) × (carrier form) →
   which place is told what. It exists as `every_subject_agrees_test.cc` for the
   subject axis; the carrier axis wants the same treatment.
-### Two holes the table found
+### Three holes the table found
 
 Both are in `every_subject_agrees_test.cc`, both are about a place whose type
 is read by a shape scanner of its own -- `struct deep { both left; both
@@ -138,6 +138,16 @@ right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
   two values; the slot has to be told them apart -- either by keying a fold
   place's slot on its group, or by beginning it again where its place opens, the
   way a place kept at a register already is.
+* **A string gathered off a stream loses the resource its place was told
+  about.** `DISABLED_AStringGatheredKeepsTheResourceToo`: a `std::pmr::string`
+  field read in a row keeps the resource and the same field gathered a character
+  at a time comes back on the default one. Three places that used to assign a
+  gathering over an empty one now build it where it stands
+  (`begin_gathering_at`, `make_slots`, `make_register_states`, `begin_again`),
+  and the value is finished from `copied_gathering`, which keeps the resource --
+  and the answer is still on the default one, so the drop is somewhere between
+  those. Worth an afternoon with the reading instrumented: every place that
+  holds a gathering, printing `get_allocator().resource()`.
 * **A braced list of contexts does not reach into such a place.**
   `of<deep>(fast, slow)` works; `of<deep>({{fast, slow}, {slow, fast}})` does
   not compile (`scan_shape.cc:2703` and `:3167`: the carrier hands the leaf
