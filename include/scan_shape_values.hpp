@@ -526,13 +526,16 @@ class field_gatherer {
     if constexpr (keeps_characters<kind>) return std::get<kind>(*cold_);
     else return std::get<kind>(warm_);
   }
-  // Все слоты вместе -- для того одного места в конце, где нужен целый набор.
+  // Every slot at once, for the one place at the end that wants the whole set.
+  //
+  // Built from copies rather than assigned into an empty set: a gathering that
+  // keeps a resource does not hand it on when it is assigned to, so a set made
+  // empty and filled in would hand the ending a row of gatherings on the
+  // default resource -- with the characters right and the resource wrong.
   [[nodiscard]] constexpr plain_folds_type all_slots() const {
-    plain_folds_type made{};
-    [&]<std::size_t... which>(std::index_sequence<which...>) {
-      ((std::get<which>(made) = slot<which>()), ...);
+    return [&]<std::size_t... Which>(std::index_sequence<Which...>) {
+      return plain_folds_type{copied_gathering(slot<Which>())...};
     }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
-    return made;
   }
 
   // The gathering slots lie outside, so there is no gatherer without them:
