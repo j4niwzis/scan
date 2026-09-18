@@ -137,30 +137,30 @@ walk, and both were only visible end to end.
 * **Contexts reaching places.** One table: (output shape) × (carrier form) →
   which place is told what. It exists as `every_subject_agrees_test.cc` for the
   subject axis; the carrier axis wants the same treatment.
-### Three holes the table found, one of them mended
+### Three holes the table found, two of them mended
 
 Both are in `every_subject_agrees_test.cc`, both are about a place whose type
 is read by a shape scanner of its own -- `struct deep { both left; both
 right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
 
-* **Two places of one kind share a gathering off a subject read once.**
-  `DISABLED_AShapeOfShapesIsReadOffAStreamToo`: reading `"1:ab 2:cd"` gives both
-  halves the same value, with the digits of both concatenated and the letters of
-  both counted. The walk keeps a gathering per *kind* (`gathering_slot`), which
-  is right for a field at a register -- no two groups of a kind are open in one
-  register at once -- and wrong for a fold the walk keeps itself. **Tried**:
-  giving `fold_of` the place it stands at, so two places of one type are two
-  slots. The sharing goes away and the walk then does not match at all, which
-  says the slot identity is read somewhere else too -- the next attempt should
-  start by finding where, with the reading instrumented, rather than by changing
-  the type again.
+* **Two places of one kind shared a gathering off a subject read once.**
+  **Mended.** Reading `"1:ab 2:cd"` gave both halves the same value, with the
+  digits of both concatenated and the letters of both counted: the walk keeps a
+  gathering per *kind*, which is right for a field at a register -- no two
+  groups of a kind are open in one register at once -- and wrong for a fold the
+  walk keeps itself. `fold_of` now carries the place it stands at, so two places
+  of one type are two slots. (The first attempt at this looked as though it
+  broke the walk; what it broke was the test, which read a second time from a
+  stream it had already read to the end.)
 * **A string gathered off a stream lost the resource its place was told
   about.** **Mended.** A `std::pmr::string` read in a row kept the resource and
   the same field gathered a character at a time came back on the default one.
-  Six places begin a gathering, and two of them -- the ones the walk runs when a
-  group opens -- assigned a freshly begun one over the slot, which is exactly
-  how a container that keeps a resource loses it. All six now build where they
-  stand, through `begin_gathering_at`.
+  Asked at every hook (`a_resource_told_to_a_gathering_test`), the answer was
+  that `begin` was told the pool, the characters went into a gathering that had
+  it, and `finish` was handed another one: the set of gatherings passed to the
+  ending was made empty and filled in by assignment. It is built from copies
+  now, and the places that begin a gathering build where they stand rather than
+  assign over an empty one.
 * **A braced list of contexts does not reach into such a place.**
   `of<deep>(fast, slow)` works; `of<deep>({{fast, slow}, {slow, fast}})` does
   not compile (`scan_shape.cc:2703` and `:3167`: the carrier hands the leaf

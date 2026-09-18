@@ -391,11 +391,10 @@ TEST_F(every_subject, AShapeOfShapesTellsItsPartsWhatItWasTold) {
 
 // Two places of one kind, read off a subject that arrives as it is read. Both
 // are folds and both are kept by the walk itself, where there is one gathering
-// of every kind -- so the second place goes on adding to what the first
-// gathered and the two come back the same. Giving each place a slot of its own
-// (a place number in `fold_of`) makes the walk stop matching at all, so the
-// sharing is not the whole of it. See REFACTORING.md.
-TEST_F(every_subject, DISABLED_AShapeOfShapesIsReadOffAStreamToo) {
+// of every kind -- so until a fold was told which place it stands at, the
+// second place went on adding to what the first had gathered and the two came
+// back the same.
+TEST_F(every_subject, AShapeOfShapesIsReadOffAStreamToo) {
   const auto once = scan::scan<"{} {}">(read_once(nested, &at)).of<deep>();
   EXPECT_EQ(once.left.number.value, 1);
   EXPECT_EQ(once.right.number.value, 2);
@@ -408,7 +407,9 @@ TEST_F(every_subject, DISABLED_AShapeOfShapesIsReadOffAStreamToo) {
   EXPECT_EQ(in_pieces.left.number.value, 1);
   EXPECT_EQ(in_pieces.right.word.letters, 2);
 
-  const auto told = scan::scan<"{} {}">(read_once(nested, &at)).of<deep>(fast);
+  std::size_t again = 0;
+  const auto told =
+      scan::scan<"{} {}">(read_once(nested, &again)).of<deep>(fast);
   EXPECT_EQ(told.left.number.value, 11);
   EXPECT_EQ(told.right.number.value, 12);
 }
