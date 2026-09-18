@@ -123,14 +123,28 @@ walk, and both were only visible end to end.
 * **Contexts reaching places.** One table: (output shape) × (carrier form) →
   which place is told what. It exists as `every_subject_agrees_test.cc` for the
   subject axis; the carrier axis wants the same treatment.
-* **A hole the table found.** A braced list of contexts does not reach into a
-  place whose type is read by a shape scanner of its own -- `struct deep { both
-  left; both right; };` with `scanner<both> : aggregate_scanner<"{}:{}">` takes
-  `of<deep>(fast, slow)` and refuses `of<deep>({{fast, slow}, {slow, fast}})`
-  (`scan_shape.cc:2703` and `:3167`: the carrier hands the leaf itself where a
-  carrier was wanted). A plain aggregate place takes both forms. Either the
-  braced form learns to descend through `carrier_places` into a scanner-shape,
-  or it says so where it is compiled instead of failing inside the library.
+### Two holes the table found
+
+Both are in `every_subject_agrees_test.cc`, both are about a place whose type
+is read by a shape scanner of its own -- `struct deep { both left; both
+right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
+
+* **Two places of one kind share a gathering off a subject read once.**
+  `DISABLED_AShapeOfShapesIsReadOffAStreamToo`: reading `"1:ab 2:cd"` gives both
+  halves the same value, with the digits of both concatenated and the letters of
+  both counted. The walk keeps a gathering per *kind* and not per *place*
+  (`gathering_slot`, `scan_shape.cc:4546`, and the guard at `:4891` that hands a
+  non-repeating fold place to the walk itself). Two places of the same kind are
+  two values; the slot has to be told them apart -- either by keying a fold
+  place's slot on its group, or by beginning it again where its place opens, the
+  way a place kept at a register already is.
+* **A braced list of contexts does not reach into such a place.**
+  `of<deep>(fast, slow)` works; `of<deep>({{fast, slow}, {slow, fast}})` does
+  not compile (`scan_shape.cc:2703` and `:3167`: the carrier hands the leaf
+  itself where a carrier was wanted). A plain aggregate place takes both forms.
+  Either the braced form learns to descend through `carrier_places` into a
+  scanner-shape, or it says so where it is compiled instead of failing inside
+  the library.
 
 ## 6. Compile time is the scarce resource
 

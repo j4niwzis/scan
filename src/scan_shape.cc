@@ -4701,10 +4701,12 @@ template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
                 context_at_group<Type, which>(told));
       } else {
         static constexpr auto spread = spread_of<Type, Format>();
-        std::get<gathering_slot<Type, Format, which, MarkType, ToldType>>(
-            made) = gathering_of<Type, Format, which, MarkType>::begin(
-            spread.parameters[which].view(),
-            context_at_group<Type, which>(told));
+        begin_gathering_at(
+            std::get<gathering_slot<Type, Format, which, MarkType, ToldType>>(
+                made),
+            gathering_of<Type, Format, which, MarkType>::begin(
+                spread.parameters[which].view(),
+                context_at_group<Type, which>(told)));
       }
     };
     (one.template operator()<groups_of_output<Type>() - 1 - group>(), ...);
@@ -4747,10 +4749,12 @@ template <class Type, fixed_string Format, auto& Automaton,
                   context_at_group<Type, group>(told));
         } else {
           static constexpr auto spread = spread_of<Type, Format>();
-          std::get<gathering_slot<Type, Format, group, MarkType, ToldType>>(
-              states[at]) = gathering_of<Type, Format, group, MarkType>::begin(
-              spread.parameters[group].view(),
-              context_at_group<Type, group>(told));
+          begin_gathering_at(
+              std::get<gathering_slot<Type, Format, group, MarkType, ToldType>>(
+                  states[at]),
+              gathering_of<Type, Format, group, MarkType>::begin(
+                  spread.parameters[group].view(),
+                  context_at_group<Type, group>(told)));
         }
       }
     }(), ...);
@@ -4823,6 +4827,22 @@ template <class Kind>
     return Kind(one, one.get_allocator());
   } else {
     return one;
+  }
+}
+
+// A gathering begun again, keeping the resource it was begun with.
+//
+// Beginning one and assigning it into a slot loses what it was begun with: a
+// container that keeps a resource keeps its own when it is assigned to, and the
+// slot was made on the default resource before anybody said otherwise. So the
+// slot is ended and begun where it stands, which is what "made with" means.
+template <class Slot, class Made>
+constexpr void begin_gathering_at(Slot& into, Made&& made) {
+  if constexpr (requires { typename Slot::allocator_type; }) {
+    std::destroy_at(&into);
+    std::construct_at(&into, std::forward<Made>(made));
+  } else {
+    into = std::forward<Made>(made);
   }
 }
 
@@ -5040,11 +5060,12 @@ constexpr void advance_scanner(
               fold.here = std::remove_cvref_t<decltype(fold.here)>(
                   context_at_group<Type, Group>(told));
             } else {
-              std::get<gathering_slot<Type, Format, Group>>(
-                  states[command.destination]) =
+              begin_gathering_at(
+                  std::get<gathering_slot<Type, Format, Group>>(
+                      states[command.destination]),
                   gathering_of<Type, Format, Group>::begin(
                       spread.parameters[Group].view(),
-                      context_at_group<Type, Group>(told));
+                      context_at_group<Type, Group>(told)));
             }
           } else if (tag == closing && slot_read(registers, command.destination) != position &&
                      command.source != packed_command::no_source &&
