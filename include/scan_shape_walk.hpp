@@ -328,9 +328,10 @@ template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
       using held_type = leaf_kind_of_output<Type, which>;
       if constexpr (scanned_as_range<held_type>) {
         static constexpr auto spread = spread_of<Type, Format>();
-        std::get<gathering_slot<Type, Format, which, MarkType>>(made) =
+        begin_gathering_at(
+            std::get<gathering_slot<Type, Format, which, MarkType>>(made),
             made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
-                context_at_group<Type, which>(told));
+                context_at_group<Type, which>(told)));
       } else {
         static constexpr auto spread = spread_of<Type, Format>();
         begin_gathering_at(
@@ -376,9 +377,10 @@ template <class Type, fixed_string Format, auto& Automaton,
         if (at >= Automaton.register_count) continue;
         if constexpr (scanned_as_range<held_type>) {
           static constexpr auto spread = spread_of<Type, Format>();
-          std::get<gathering_slot<Type, Format, group, MarkType>>(states[at]) =
+          begin_gathering_at(
+              std::get<gathering_slot<Type, Format, group, MarkType>>(states[at]),
               made_range<std::remove_cv_t<held_type>, spread.turns_most[group]>(
-                  context_at_group<Type, group>(told));
+                  context_at_group<Type, group>(told)));
         } else {
           static constexpr auto spread = spread_of<Type, Format>();
           begin_gathering_at(
