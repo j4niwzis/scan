@@ -93,7 +93,7 @@ template <class Type, fixed_string Format, std::size_t... Group>
     using held_type = leaf_kind_of_output<Type, which>;
     if constexpr (scanned_as_range<held_type>) {
       return made_range<std::remove_cv_t<held_type>, spread.turns_most[which]>(
-          scan::nothing_given{});
+          scan::no_contexts{});
     } else {
       return gathering_of<Type, Format, which>::begin(
           spread.parameters[which].view());
@@ -111,9 +111,9 @@ template <class Type, fixed_string Format>
 // The same, told what the place this shape stands at was told. Every place
 // inside begins with what it was told, which is what a place told a context
 // means one level down as much as it does at the call.
-template <class Type, fixed_string Format, class ToldType, std::size_t... Group>
+template <class Type, fixed_string Format, class CarrierType, std::size_t... Group>
 [[nodiscard]] constexpr auto make_scanner_state_told(
-    const ToldType& told, std::index_sequence<Group...>) {
+    const CarrierType& told, std::index_sequence<Group...>) {
   static constexpr auto spread = spread_of<Type, Format>();
   const auto one = [&]<std::size_t which>() {
     using held_type = leaf_kind_of_output<Type, which>;
@@ -128,8 +128,8 @@ template <class Type, fixed_string Format, class ToldType, std::size_t... Group>
   return std::tuple{one.template operator()<Group>()...};
 }
 
-template <class Type, fixed_string Format, class ToldType>
-[[nodiscard]] constexpr auto make_scanner_state_told(const ToldType& told) {
+template <class Type, fixed_string Format, class CarrierType>
+[[nodiscard]] constexpr auto make_scanner_state_told(const CarrierType& told) {
   return make_scanner_state_told<Type, Format>(
       told, std::make_index_sequence<groups_of_output<Type>()>{});
 }
@@ -180,58 +180,58 @@ struct where_kind<gathering_kinds<First, Rest...>, Kind> {
 // What one group is gathered in, asked without asking for the others.
 template <class Type, fixed_string Format, std::size_t Group,
           class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t,
+          class CarrierType = scan::default_context_t,
           bool AList = scanned_as_range<leaf_kind_of_output<Type, Group>>>
 struct gathering_state {
   using result = decltype(gathering_of<Type, Format, Group, MarkType>::begin(
       std::string_view{},
-      context_at_group<Type, Group>(std::declval<const ToldType&>())));
+      context_at_group<Type, Group>(std::declval<const CarrierType&>())));
 };
 
 template <class Type, fixed_string Format, std::size_t Group, class MarkType,
-          class ToldType>
-struct gathering_state<Type, Format, Group, MarkType, ToldType, true> {
+          class CarrierType>
+struct gathering_state<Type, Format, Group, MarkType, CarrierType, true> {
   using result = std::remove_cv_t<leaf_kind_of_output<Type, Group>>;
 };
 
 template <class Type, fixed_string Format, class MarkType, class List,
           std::size_t Group, std::size_t Count,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 struct kinds_from {
   using result = typename kinds_from<
       Type, Format, MarkType,
       typename with_kind<
           List, typename gathering_state<Type, Format, Group, MarkType,
-                                         ToldType>::result>::result,
-      Group + 1, Count, ToldType>::result;
+                                         CarrierType>::result>::result,
+      Group + 1, Count, CarrierType>::result;
 };
 
 template <class Type, fixed_string Format, class MarkType, class List,
-          std::size_t Count, class ToldType>
-struct kinds_from<Type, Format, MarkType, List, Count, Count, ToldType> {
+          std::size_t Count, class CarrierType>
+struct kinds_from<Type, Format, MarkType, List, Count, Count, CarrierType> {
   using result = List;
 };
 
 template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 using gathering_kinds_of =
     typename kinds_from<Type, Format, MarkType, gathering_kinds<>, 0,
-                        groups_of_output<Type>(), ToldType>::result;
+                        groups_of_output<Type>(), CarrierType>::result;
 
 // What one register holds.
 template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 using register_state =
-    typename gathering_kinds_of<Type, Format, MarkType, ToldType>::as_a_tuple;
+    typename gathering_kinds_of<Type, Format, MarkType, CarrierType>::as_a_tuple;
 
 // Which slot of it a group is gathered in.
 template <class Type, fixed_string Format, std::size_t Group,
           class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 inline constexpr std::size_t gathering_slot =
-    where_kind<gathering_kinds_of<Type, Format, MarkType, ToldType>,
+    where_kind<gathering_kinds_of<Type, Format, MarkType, CarrierType>,
                typename gathering_state<Type, Format, Group, MarkType,
-                                        ToldType>::result>::at;
+                                        CarrierType>::result>::at;
 
 // The default is said once, where the name is first declared above; saying it
 // again here is ill-formed and only a module unit lets it pass.
@@ -306,9 +306,9 @@ constexpr void begin_gathering_at(Slot& into, Made&& made) {
 // one that is not first is begun again when its group opens, which is where
 // every group but one begins in any case.
 template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t>
-[[nodiscard]] constexpr auto make_slots(const ToldType& told = ToldType{}) {
-  register_state<Type, Format, MarkType, ToldType> made{};
+          class CarrierType = scan::default_context_t>
+[[nodiscard]] constexpr auto make_slots(const CarrierType& told = CarrierType{}) {
+  register_state<Type, Format, MarkType, CarrierType> made{};
   [&]<std::size_t... group>(std::index_sequence<group...>) {
     // Backwards, so that the first group of a kind is the one that is left.
     const auto one = [&]<std::size_t which>() {
@@ -321,7 +321,7 @@ template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
       } else {
         static constexpr auto spread = spread_of<Type, Format>();
         begin_gathering_at(
-            std::get<gathering_slot<Type, Format, which, MarkType, ToldType>>(
+            std::get<gathering_slot<Type, Format, which, MarkType, CarrierType>>(
                 made),
             gathering_of<Type, Format, which, MarkType>::begin(
                 spread.parameters[which].view(),
@@ -341,15 +341,15 @@ template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
 // before there was a character to move on.
 template <class Type, fixed_string Format, auto& Automaton,
           class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 [[nodiscard]] constexpr auto make_register_states(
-    const ToldType& told = ToldType{}) {
+    const CarrierType& told = CarrierType{}) {
   // Made one by one rather than made once and filled in. A container that
   // keeps a resource takes it when it is constructed and keeps its own when it
   // is assigned or copied, so filling an array of default-made states with a
   // well-made one leaves every register on the default resource.
   auto states = [&]<std::size_t... at>(std::index_sequence<at...>) {
-    return std::array<register_state<Type, Format, MarkType, ToldType>,
+    return std::array<register_state<Type, Format, MarkType, CarrierType>,
                       Automaton.register_count>{
         ((void)at, make_slots<Type, Format, MarkType>(told))...};
   }(std::make_index_sequence<Automaton.register_count>{});
@@ -369,7 +369,7 @@ template <class Type, fixed_string Format, auto& Automaton,
         } else {
           static constexpr auto spread = spread_of<Type, Format>();
           begin_gathering_at(
-              std::get<gathering_slot<Type, Format, group, MarkType, ToldType>>(
+              std::get<gathering_slot<Type, Format, group, MarkType, CarrierType>>(
                   states[at]),
               gathering_of<Type, Format, group, MarkType>::begin(
                   spread.parameters[group].view(),
@@ -489,14 +489,14 @@ template <std::size_t Group, class Type, fixed_string Format, auto& Automaton,
           bool HandsTheCharacter = true, bool KeptInTheWalk = false,
           class StatesType, class KeptType, class RegistersType,
           std::size_t CommandCount,
-          class ToldCarrier = scan::nothing_given>
+          class CarrierType = scan::no_contexts>
 constexpr void advance_scanner(
     char symbol, std::size_t state, std::size_t left_state, auto position,
     const RegistersType& registers,
     const KeptType& old_states, StatesType& states,
     const std::array<packed_command, CommandCount>& commands,
     std::size_t count, const char* text,
-    const ToldCarrier& told = ToldCarrier{}) {
+    const CarrierType& told = CarrierType{}) {
   static constexpr auto spread = spread_of<Type, Format>();
   constexpr std::size_t opening = Group * 2;
   constexpr std::size_t closing = Group * 2 + 1;
@@ -919,10 +919,10 @@ template <class Type, fixed_string Format, class ReadingType,
 
 template <class Root, class Type, std::size_t Offset, bool AsOutput = false,
           class FailureType = failure_for<Root>, class SourceType,
-          class ToldCarrier = scan::nothing_given>
+          class CarrierType = scan::no_contexts>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType> finish_value(
     const SourceType& source, const char* text,
-    const ToldCarrier& given = ToldCarrier{});
+    const CarrierType& given = CarrierType{});
 
 // The parts of a product, and the arguments of a call, as named functions
 // rather than as lambdas called where they stand. A lambda holding references
@@ -930,9 +930,9 @@ template <class Root, class Type, std::size_t Offset, bool AsOutput = false,
 // more than the constant evaluator will follow.
 
 template <class Root, class Type, std::size_t Offset, class FailureType,
-          class SourceType, class ToldCarrier, std::size_t... Part>
+          class SourceType, class CarrierType, std::size_t... Part>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType> finish_parts(
-    const SourceType& source, const char* text, const ToldCarrier& given,
+    const SourceType& source, const char* text, const CarrierType& given,
     std::index_sequence<Part...>) {
   auto parts =
       std::tuple{finish_value<Root, typename parts_of<Type>::template at<Part>,
@@ -946,9 +946,9 @@ template <class Root, class Type, std::size_t Offset, class FailureType,
 }
 
 template <class Root, class Type, std::size_t Offset, class FailureType,
-          class SourceType, class ToldCarrier, std::size_t... Part>
+          class SourceType, class CarrierType, std::size_t... Part>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType> finish_by_call(
-    const SourceType& source, const char* text, const ToldCarrier& given,
+    const SourceType& source, const char* text, const CarrierType& given,
     std::index_sequence<Part...>) {
   auto parts =
       std::tuple{finish_value<Root, typename parts_of<Type>::template at<Part>,
@@ -1058,12 +1058,12 @@ inline constexpr auto gathered_pairs = [] consteval {
 template <std::size_t Group, class Type, fixed_string Format, auto& Automaton,
           class FailureType, class StatesType, class RegistersType,
           std::size_t CommandCount,
-          class ToldCarrier = scan::nothing_given>
+          class CarrierType = scan::no_contexts>
 constexpr void collect_element(
     std::size_t state, const RegistersType& registers, StatesType& states,
     const std::array<packed_command, CommandCount>& commands,
     std::size_t count, const char* text, std::optional<FailureType>& failed,
-    const ToldCarrier& told = ToldCarrier{}) {
+    const CarrierType& told = CarrierType{}) {
   if constexpr (Group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind_of_output<Type, Group - 1>>) {
@@ -1195,13 +1195,13 @@ constexpr void collect_turns_that_ended(
 
 template <class Type, fixed_string Format, auto& Automaton, class FailureType,
           class RegistersType, class StatesType, std::size_t CommandCount,
-          class ToldCarrier = scan::nothing_given, std::size_t... Group>
+          class CarrierType = scan::no_contexts, std::size_t... Group>
 constexpr void collect_elements(
     std::size_t state, const RegistersType& registers, StatesType& states,
     const std::array<packed_command, CommandCount>& commands,
     std::size_t count, std::index_sequence<Group...>, const char* text,
     std::optional<FailureType>& failed,
-    const ToldCarrier& told = ToldCarrier{}) {
+    const CarrierType& told = CarrierType{}) {
   (collect_element<Group, Type, Format, Automaton, FailureType>(
        state, registers, states, commands, count, text, failed, told),
    ...);
@@ -1210,14 +1210,14 @@ constexpr void collect_elements(
 template <class Type, fixed_string Format, auto& Automaton,
           bool HandsTheCharacter = true, bool KeptInTheWalk = false,
           class RegistersType, class StatesType, std::size_t CommandCount,
-          class ToldCarrier = scan::nothing_given, std::size_t... Group>
+          class CarrierType = scan::no_contexts, std::size_t... Group>
 constexpr void advance_scanners(
     char symbol, std::size_t state, std::size_t left_state, auto position,
     const RegistersType& registers,
     StatesType& states,
     const std::array<packed_command, CommandCount>& commands,
     std::size_t count, std::index_sequence<Group...>,
-    const char* text = nullptr, const ToldCarrier& told = ToldCarrier{}) {
+    const char* text = nullptr, const CarrierType& told = CarrierType{}) {
   // The old gatherings are only needed where a command copies one, and inside a
   // field nothing is copied and nothing is written -- that is what holding the
   // tags back bought. Copying the whole set on every character to be ready for
@@ -1253,9 +1253,9 @@ constexpr void advance_scanners(
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
 template <class Root, class Type, std::size_t Offset, bool AsOutput,
-          class FailureType, class SourceType, class ToldCarrier>
+          class FailureType, class SourceType, class CarrierType>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType> finish_value(
-    const SourceType& source, const char* text, const ToldCarrier& given) {
+    const SourceType& source, const char* text, const CarrierType& given) {
   // A shape that reads its own groups is a value where it stands in somebody
   // else's format and a product of places in its own. Where this is the whole
   // of what is being read, it is the second.
@@ -1373,11 +1373,11 @@ template <class Root, class Type, std::size_t Offset, bool AsOutput,
       return std::unexpected(
           scan::as_a_failure<FailureType>(std::move(got).error()));
     } else {
-      if constexpr (std::same_as<ToldCarrier, scan::nothing_given>) {
+      if constexpr (std::same_as<CarrierType, scan::no_contexts>) {
         return scan::scanner_parse<held>(piece, parameters);
       } else {
         auto got = parse_value_given<held, FailureType,
-                                     ToldCarrier::told_apart>(piece, parameters,
+                                     CarrierType::told_apart>(piece, parameters,
                                                                given.leaf());
         if (got) return std::move(*got);
         return std::unexpected(std::move(got).error());

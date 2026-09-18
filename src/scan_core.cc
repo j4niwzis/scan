@@ -689,9 +689,9 @@ template <class Type, class Ending = hands_a_failure_back>
 // The same, where the place this shape stands at was told a context. A shape
 // that reads its own groups is a reading like any other inside, and what its
 // places were told reaches them through here.
-template <class Type, class Ending = hands_a_failure_back, class ToldType>
+template <class Type, class Ending = hands_a_failure_back, class CarrierType>
 [[nodiscard]] constexpr decltype(auto) scanner_told_from_groups(
-    std::span<const std::string_view> given, const ToldType& told) {
+    std::span<const std::string_view> given, const CarrierType& told) {
   using held = std::remove_cv_t<Type>;
   if constexpr (requires {
                   scanner<held>{}.template from_groups<Ending>(given, told);
@@ -830,12 +830,12 @@ struct default_context_t {};
 inline constexpr default_context_t default_context{};
 
 // No contexts at all, which is what every call said before there were any.
-struct nothing_given {
+struct no_contexts {
   static constexpr bool for_everyone = false;
   static constexpr bool told_apart = false;
   static constexpr std::size_t count = 0;
   template <std::size_t>
-  [[nodiscard]] constexpr nothing_given for_part() const {
+  [[nodiscard]] constexpr no_contexts for_part() const {
     return {};
   }
   [[nodiscard]] constexpr default_context_t leaf() const { return {}; }
@@ -846,11 +846,11 @@ struct nothing_given {
 // A place that is a shape hands the same one to each of its parts, which is
 // what "a value at a place is that place's and all of its parts'" means.
 template <class It, bool Apart>
-struct one_given {
+struct one_context {
   static constexpr bool told_apart = Apart;
   It thing;
   template <std::size_t>
-  [[nodiscard]] constexpr one_given for_part() const {
+  [[nodiscard]] constexpr one_context for_part() const {
     return *this;
   }
   [[nodiscard]] constexpr const It& leaf() const { return thing; }
@@ -869,29 +869,29 @@ struct one_given {
 // a context is a handle -- an allocator, a pool, a pointer to the caller's
 // world -- so the copy costs a word and cannot dangle.
 template <class... Contexts>
-struct contexts_given {
+struct contexts_at_places {
   static constexpr bool for_everyone = sizeof...(Contexts) == 1;
   static constexpr bool told_apart = !for_everyone;
   static constexpr std::size_t count = sizeof...(Contexts);
 
-  constexpr contexts_given() = default;
-  constexpr explicit contexts_given(Contexts... given)
+  constexpr contexts_at_places() = default;
+  constexpr explicit contexts_at_places(Contexts... given)
       : all(std::move(given)...) {}
 
   template <std::size_t Place>
   [[nodiscard]] constexpr auto for_part() const {
     if constexpr (for_everyone) {
       using first = std::tuple_element_t<0, std::tuple<Contexts...>>;
-      return one_given<first, false>{std::get<0>(all)};
+      return one_context<first, false>{std::get<0>(all)};
     } else if constexpr (Place < sizeof...(Contexts)) {
       using here = std::tuple_element_t<Place, std::tuple<Contexts...>>;
-      return one_given<here, true>{std::get<Place>(all)};
+      return one_context<here, true>{std::get<Place>(all)};
     } else {
       static_assert(Place < sizeof...(Contexts),
                     "this reading has more places than it was given contexts: "
                     "give one for every place, one for all of them, or write "
                     "scan::default_context where a place wants none");
-      return nothing_given{};
+      return no_contexts{};
     }
   }
 

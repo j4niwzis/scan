@@ -2474,7 +2474,7 @@ struct no_place {
     return {};
   }
   template <std::size_t>
-  [[nodiscard]] constexpr scan::nothing_given for_part() const {
+  [[nodiscard]] constexpr scan::no_contexts for_part() const {
     return {};
   }
   [[nodiscard]] constexpr scan::default_context_t leaf() const { return {}; }
@@ -2520,8 +2520,8 @@ template <class Type, std::size_t Group>
 // What a part of a place was told. A carrier knows its parts; a place told
 // nothing has no parts to ask about and says the same nothing to each of them,
 // which is what the whole-place forms do one level up.
-template <std::size_t Part, class ToldCarrier>
-[[nodiscard]] constexpr auto told_for_part(const ToldCarrier& given) {
+template <std::size_t Part, class CarrierType>
+[[nodiscard]] constexpr auto told_for_part(const CarrierType& given) {
   if constexpr (requires { given.template for_part<Part>(); }) {
     return given.template for_part<Part>();
   } else {
@@ -2602,7 +2602,7 @@ using gather_state_for = decltype([] {
                        }) {
     return scan::scanner<std::remove_cv_t<Held>>{}.begin();
   } else {
-    return scan::nothing_given{};
+    return scan::no_contexts{};
   }
 }());
 
@@ -2611,7 +2611,7 @@ using fold_state_for = decltype([] {
   if constexpr (requires { scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(); }) {
     return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
   } else {
-    return scan::nothing_given{};
+    return scan::no_contexts{};
   }
 }());
 
@@ -2694,7 +2694,7 @@ struct reading_by final : reading_of<FieldType> {
     } else if constexpr (requires { scan::scanner<held>{}.begin(); }) {
       return scan::scanner<held>{}.begin();
     } else {
-      return scan::nothing_given{};
+      return scan::no_contexts{};
     }
   }
 
@@ -2704,7 +2704,7 @@ struct reading_by final : reading_of<FieldType> {
     } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
       return scan::scanner<held>{}.begin_groups();
     } else {
-      return scan::nothing_given{};
+      return scan::no_contexts{};
     }
   }
 
@@ -2796,7 +2796,7 @@ class context_leaf {
   // A leaf's inside is the leaf's own business: a context said at this place was
   // said about the value here, not about what this value is built from.
   template <std::size_t>
-  [[nodiscard]] constexpr scan::nothing_given for_part() const {
+  [[nodiscard]] constexpr scan::no_contexts for_part() const {
     return {};
   }
   [[nodiscard]] constexpr const context_leaf& leaf() const { return *this; }
@@ -2860,7 +2860,7 @@ class context_shape {
     if constexpr (K < sizeof...(Parts)) {
       return std::get<K>(parts_);
     } else {
-      return scan::nothing_given{};
+      return scan::no_contexts{};
     }
   }
 
@@ -2887,7 +2887,7 @@ struct readings_for<context_shape<Parts...>, It> {
 
 template <class It>
 struct readings_for<no_place, It> {
-  using type = scan::nothing_given;
+  using type = scan::no_contexts;
 };
 
 // How many places a context may be said at, for one field. A shape opens up
@@ -3041,9 +3041,9 @@ template <class Held>
 // A scanner begun with the context its place was given, asked for in the shapes
 // it may have been written in, and begun the way it always was where it takes
 // none.
-template <class Held, class ToldType>
+template <class Held, class CarrierType>
 [[nodiscard]] constexpr auto scanner_begin_given(std::string_view parameters,
-                                                 const ToldType& told) {
+                                                 const CarrierType& told) {
   // Only where what the carrier begins is the very thing this call hands back:
   // a scanner with no gathering of its own begins nothing, and the branches
   // below must all agree on one return type.
@@ -3057,10 +3057,10 @@ template <class Held, class ToldType>
     // field, and beginning is part of that interface.
     if (told.told()) return told.begin_gather(parameters);
     return scanner_begin<Held>(parameters);
-  } else if constexpr (!std::same_as<ToldType, scan::default_context_t> &&
+  } else if constexpr (!std::same_as<CarrierType, scan::default_context_t> &&
                 requires { scan::scanner<Held>{}.begin(parameters, told); }) {
     return scan::scanner<Held>{}.begin(parameters, told);
-  } else if constexpr (!std::same_as<ToldType, scan::default_context_t> &&
+  } else if constexpr (!std::same_as<CarrierType, scan::default_context_t> &&
                        requires { scan::scanner<Held>{}.begin(told); }) {
     return scan::scanner<Held>{}.begin(told);
   } else if constexpr (requires {
@@ -3136,20 +3136,20 @@ template <class Held, bool ToldApart, class ContextType>
 
 // The value itself, for a reading that cannot go wrong.
 template <class Parameters, class Type, std::size_t Offset,
-          bool AsOutput = false, class GivenType = scan::nothing_given>
+          bool AsOutput = false, class CarrierType = scan::no_contexts>
 [[nodiscard]] constexpr Type built_value(
     std::span<const std::string_view> groups,
-    const GivenType& given = GivenType{}) {
+    const CarrierType& given = CarrierType{}) {
   constexpr bool a_value = scanned_as_leaf<Type> && !AsOutput;
   if constexpr (a_value) {
-    if constexpr (std::same_as<GivenType, scan::nothing_given>) {
+    if constexpr (std::same_as<CarrierType, scan::no_contexts>) {
       return scanner_parse<std::remove_cv_t<Type>>(groups[Offset],
                                                    Parameters::at(Offset));
     } else {
       return or_thrown(
           parse_value_given<std::remove_cv_t<Type>,
                             failure_for<std::remove_cv_t<Type>>,
-                            GivenType::told_apart, scan::throws_a_failure>(
+                            CarrierType::told_apart, scan::throws_a_failure>(
               groups[Offset], Parameters::at(Offset), given.leaf()));
     }
   } else if constexpr (scanned_from_values<Type>) {
@@ -3172,10 +3172,10 @@ template <class Parameters, class Type, std::size_t Offset,
 template <class FailureType, class Parameters, class Type,
           std::size_t Offset, bool AsOutput = false,
           class Ending = hands_a_failure_back,
-          class GivenType = scan::nothing_given>
+          class CarrierType = scan::no_contexts>
 [[nodiscard]] constexpr typename Ending::template result<Type, FailureType>
 build_value(std::span<const std::string_view> groups,
-            const GivenType& given = GivenType{}) {
+            const CarrierType& given = CarrierType{}) {
   // Where this is the whole of what is being read, a shape that reads its own
   // groups is a product of places rather than a value in a place.
   constexpr bool a_value = scanned_as_leaf<Type> && !AsOutput;
@@ -3265,12 +3265,12 @@ build_value(std::span<const std::string_view> groups,
     }
   } else if constexpr (a_value) {
     auto got = [&] {
-      if constexpr (std::same_as<GivenType, scan::nothing_given>) {
+      if constexpr (std::same_as<CarrierType, scan::no_contexts>) {
         return parse_value<std::remove_cv_t<Type>, FailureType>(
             groups[Offset], Parameters::at(Offset));
       } else {
         return parse_value_given<std::remove_cv_t<Type>, FailureType,
-                                 GivenType::told_apart>(
+                                 CarrierType::told_apart>(
             groups[Offset], Parameters::at(Offset), given.leaf());
       }
     }();

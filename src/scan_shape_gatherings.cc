@@ -62,17 +62,17 @@ template <class Mark>
 // forward, so a group whose opening has moved is a new turn and is announced;
 // one whose opening stands still is the same turn going on.
 template <class Held, class MarkType = std::ptrdiff_t,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 struct fold_turn {
   using held_type = std::remove_cv_t<Held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   using state_type =
-      decltype(begun_groups<held_type>(std::declval<const ToldType&>()));
+      decltype(begun_groups<held_type>(std::declval<const CarrierType&>()));
 
   constexpr fold_turn()
-    requires std::default_initializable<ToldType>
-      : state(begun_groups<held_type>(ToldType{})) {}
-  constexpr explicit fold_turn(const ToldType& told)
+    requires std::default_initializable<CarrierType>
+      : state(begun_groups<held_type>(CarrierType{})) {}
+  constexpr explicit fold_turn(const CarrierType& told)
       : state(begun_groups<held_type>(told)) {}
 
   state_type state;
@@ -222,30 +222,30 @@ struct one_per_register {
 struct no_turn {};
 
 template <class Held, class MarkType = std::ptrdiff_t, bool Repeats = true,
-          class ToldType = scan::default_context_t>
+          class CarrierType = scan::default_context_t>
 struct fold_of {
   using held_type = std::remove_cv_t<Held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
   using state_type = typename fold_turn<Held, MarkType>::state_type;
 
   constexpr fold_of()
-    requires std::default_initializable<ToldType>
+    requires std::default_initializable<CarrierType>
   = default;
-  constexpr explicit fold_of(const ToldType& told)
+  constexpr explicit fold_of(const CarrierType& told)
       : here(told), going(going_of(told)) {}
 
-  [[nodiscard]] static constexpr auto going_of(const ToldType& told) {
+  [[nodiscard]] static constexpr auto going_of(const CarrierType& told) {
     if constexpr (Repeats) {
-      return fold_turn<Held, MarkType, ToldType>(told);
+      return fold_turn<Held, MarkType, CarrierType>(told);
     } else {
       static_cast<void>(told);
       return no_turn{};
     }
   }
 
-  fold_turn<Held, MarkType, ToldType> here{};
+  fold_turn<Held, MarkType, CarrierType> here{};
   [[no_unique_address]]
-  std::conditional_t<Repeats, fold_turn<Held, MarkType, ToldType>, no_turn>
+  std::conditional_t<Repeats, fold_turn<Held, MarkType, CarrierType>, no_turn>
       going{};
   [[no_unique_address]] std::conditional_t<Repeats, bool, no_turn> has_going{};
 };
@@ -668,13 +668,13 @@ struct gathering_of {
   static constexpr bool only_a_piece =
       reads_a_whole_piece_only<std::remove_cv_t<held_type>>;
 
-  template <class ToldType>
+  template <class CarrierType>
   [[nodiscard]] static constexpr auto begin(std::string_view parameters,
-                                            const ToldType& told) {
+                                            const CarrierType& told) {
     if constexpr (the_place && folds) {
       static_cast<void>(parameters);
       return fold_of<std::remove_cv_t<held_type>, MarkType, place_repeats,
-                     ToldType>(told);
+                     CarrierType>(told);
     } else if constexpr (inside && folds) {
       static_cast<void>(parameters);
       static_cast<void>(told);

@@ -56,13 +56,14 @@ a bisect over a CI failure lands on something readable.
 The context work left four words for three ideas:
 
 * **context** -- what the caller hands over. Keep.
-* **told** (`told_type`, `told_for_part`, `told_resource`, `state.told`) --
-  sometimes the carrier, sometimes the context inside it. Pick one: a *carrier*
-  is what routes contexts to places, and a *reading* is the type-erased thing
-  that makes a value with one.
+* **told** (`told_for_part`, `told_resource`, `state.told`) -- sometimes the
+  carrier, sometimes the context inside it. The type names are fixed; what is
+  left is the members and the variables, which still say `told` where they hold
+  a carrier.
 * **given** (`nothing_given`, `one_given`, `contexts_given`, `given_type`) --
-  the same carrier again, in a different word. Fold into *carrier*:
-  `no_contexts`, `one_context`, `contexts_for_places`.
+  the same carrier again, in a different word. **Done**: they are
+  `no_contexts`, `one_context`, `contexts_at_places`, and every template
+  parameter that held one of them is `CarrierType`.
 * `scan::context` (`scan_core.cc:839`) is a marker nothing requires any more --
   nothing in `src/` and nothing in `tests/` names it. **Delete it**; a context
   inherits nothing, which is what the tests already say.
