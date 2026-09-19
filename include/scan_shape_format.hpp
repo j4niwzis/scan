@@ -615,7 +615,8 @@ template <class Type, class FailureType,
 // -- is the scanner's business; the library neither stores it nor looks inside.
 template <class Type, class FailureType, bool ToldApart,
           class Ending = scan::hands_a_failure_back, class Context>
-[[nodiscard]] constexpr std::expected<Type, FailureType> parse_value_given(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType>
+parse_value_given(
     std::string_view text, std::string_view parameters, Context&& given) {
   using value_type = std::remove_cv_t<Type>;
   if constexpr (requires {

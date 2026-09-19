@@ -84,6 +84,11 @@ template <class CarrierType>
   }
 }
 
+// Said before it is asked for: how many places a context may be said at for one
+// field, which is worked out further down with the carriers.
+template <class FieldType>
+[[nodiscard]] consteval std::size_t carrier_places();
+
 // The context said at the place a group belongs to.
 //
 // The walk knows groups; the caller said places. This walks down the shape the
@@ -111,6 +116,27 @@ template <class Type, std::size_t Group, class Carrier>
     // to be mistaken for a context here, which is how a context said in
     // braces stopped at the door of a place that gathers.
     return given;
+  } else if constexpr (carrier_places<std::remove_cv_t<Type>>() > 0 &&
+                       requires { given.template for_part<0>(); }) {
+    // A shape opens up into its parts, and so does a type whose places are a
+    // format of its own: the carrier for such a place has a part for each of
+    // them, and the group belongs to one of those.
+    constexpr std::size_t which = field_holding_group<Type, Group>();
+    using part = std::remove_cv_t<typename parts_of<Type>::template at<which>>;
+    if constexpr (reads_its_own_groups<part> && carrier_places<part>() > 0) {
+      // And there it stops: a place whose type says a format of its own is told
+      // the carrier for that place, and what reaches the places inside is that
+      // type's own business -- it is told them through the state it keeps, not
+      // through this walk down.
+      return given.template for_part<which>();
+    } else if constexpr (reads_its_own_groups<part>) {
+      // A type that folds its own groups has no places for a context to be
+      // said at: what is inside is its own, and it is told the context whole.
+      return leaf_of(given.template for_part<which>());
+    } else {
+      return context_at_group<part, Group - groups_before_field<Type, which>()>(
+          given.template for_part<which>());
+    }
   } else if constexpr (parts_under<std::remove_cv_t<Type>>() == 0) {
     return given.leaf();
   } else {
@@ -132,8 +158,8 @@ template <class Type, std::size_t Group, class Carrier>
 // context, and both are pointers to something whose type is known again on the
 // other side.
 template <class Held, bool ToldApart, class ContextType>
-[[nodiscard]] constexpr std::expected<Held, failure_for<Held>> groups_value(
-    std::span<const std::string_view> groups, ContextType&& given);
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Held, failure_for<Held>>
+groups_value(std::span<const std::string_view> groups, ContextType&& given);
 
 template <class Told>
 [[nodiscard]] constexpr std::pmr::memory_resource* resource_of(const Told& given);
@@ -663,7 +689,8 @@ template <class Held>
 // it may have been written in, and begun the way it always was where it takes
 // none.
 template <class Held, class CarrierType>
-[[nodiscard]] constexpr auto scanner_begin_given(std::string_view parameters,
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto scanner_begin_given(
+    std::string_view parameters,
                                                  const CarrierType& told) {
   // Only where what the carrier begins is the very thing this call hands back:
   // a scanner with no gathering of its own begins nothing, and the branches
@@ -705,7 +732,7 @@ template <class Held, class CarrierType>
 // place was given. The same rule as everywhere: asked for with the context
 // first, and a scanner that takes none is begun the way it always was.
 template <class Held, class Context>
-[[nodiscard]] constexpr auto begun_groups(Context&& given) {
+[[nodiscard]] SCAN_FORCE_INLINE constexpr auto begun_groups(Context&& given) {
   // A place told in braces carries its context behind an interface that knows
   // the field. The type of the context does not cross the door, but the
   // beginning of a fold does: the carrier begins it where the type is still
@@ -715,7 +742,17 @@ template <class Held, class Context>
                   given.begin_fold();
                 }) {
     if (given.told()) return given.begin_fold();
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
+    // Told nothing is the same carrier with nothing in it, so that both ways
+    // out of here hand back the one type the interface says.
+    if constexpr (requires {
+                    scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+                        carrier_for<std::remove_cv_t<Held>>{});
+                  }) {
+      return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+          carrier_for<std::remove_cv_t<Held>>{});
+    } else {
+      return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
+    }
   } else if constexpr (!std::same_as<std::remove_cvref_t<Context>,
                               scan::default_context_t> &&
                 !requires { given.told(); } &&
@@ -733,8 +770,8 @@ template <class Held, class Context>
 // so nothing of it crosses the door: the state is made, told and finished
 // inside this one call, where the context still has its type.
 template <class Held, bool ToldApart, class ContextType>
-[[nodiscard]] constexpr std::expected<Held, failure_for<Held>> groups_value(
-    std::span<const std::string_view> groups, ContextType&& given) {
+[[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Held, failure_for<Held>>
+groups_value(std::span<const std::string_view> groups, ContextType&& given) {
   constexpr std::size_t inside = groups_a_leaf_opens<Held>();
   if constexpr (requires {
                   scan::scanner<Held>{}.from_groups(groups, given);

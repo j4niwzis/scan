@@ -676,7 +676,14 @@ struct gathering_of {
   template <class CarrierType>
   [[nodiscard]] static constexpr auto begin(std::string_view parameters,
                                             const CarrierType& told) {
-    if constexpr (the_place && folds) {
+    // Told nothing is told nothing, however it is spelt: a carrier that says it
+    // holds nothing and a place that was given none begin the same gathering,
+    // and beginning two kinds of it would be two slots for one thing.
+    if constexpr (std::same_as<std::remove_cvref_t<CarrierType>,
+                               scan::no_contexts>) {
+      static_cast<void>(told);
+      return begin(parameters);
+    } else if constexpr (the_place && folds) {
       static_cast<void>(parameters);
       return fold_of<std::remove_cv_t<held_type>, MarkType, place_repeats,
                      CarrierType, Group>(told);
