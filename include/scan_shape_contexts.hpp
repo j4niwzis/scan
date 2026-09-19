@@ -138,184 +138,14 @@ template <class Held, bool ToldApart, class ContextType>
 template <class Told>
 [[nodiscard]] constexpr std::pmr::memory_resource* resource_of(const Told& given);
 
-// The state a scanner that gathers begins with. A scanner told a context and a
-// scanner told none begin the same kind of state -- that is what lets a place
-// hand the context over without the type of it crossing the door.
-// The state a scanner that is handed pieces begins with -- the other gathering
-// protocol, and the same rule: told a context or told none, what it begins is
-// the same kind of thing, so a place can hand the context over without the type
-// of it crossing the door.
-template <class Held>
-using gather_state_for = decltype([] {
-  if constexpr (requires {
-                  scan::scanner<std::remove_cv_t<Held>>{}.begin(
-                      std::string_view{});
-                }) {
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin(std::string_view{});
-  } else if constexpr (requires {
-                         scan::scanner<std::remove_cv_t<Held>>{}.begin();
-                       }) {
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin();
-  } else {
-    return scan::no_contexts{};
-  }
-}());
-
-template <class Held>
-using fold_state_for = decltype([] {
-  if constexpr (requires { scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(); }) {
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
-  } else {
-    return scan::no_contexts{};
-  }
-}());
-
+// Said before what is below names them: a leaf carrier keeps a pointer to a
+// reading and makes one as a default argument, and both of those are written
+// out further down, where the context still has its type.
 template <class FieldType>
-struct reading_of {
-  using held = std::remove_cv_t<FieldType>;
-  using answer = std::expected<held, failure_for<held>>;
+struct reading_of;
 
-  constexpr virtual ~reading_of() = default;
-  // The resource the context keeps, where it keeps one. Answered rather than
-  // named: a resource is already a thing asked at runtime.
-  [[nodiscard]] constexpr virtual std::pmr::memory_resource* told_resource()
-      const = 0;
-  // The same, for a scanner handed its pieces rather than its groups.
-  [[nodiscard]] constexpr virtual gather_state_for<held> begin_gather(
-      std::string_view parameters) = 0;
-  // Begun where the context still has its type, handed back as the state the
-  // scanner would have begun anyway.
-  [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
-  [[nodiscard]] constexpr virtual answer read(std::string_view text,
-                                              std::string_view parameters) = 0;
-  [[nodiscard]] constexpr virtual answer read_groups(
-      std::span<const std::string_view> groups) = 0;
-};
-
-// The implementation is written where the context still has its type, so it
-// holds the caller's own thing -- not a copy of it, and not a const picture of
-// it either: a context is a place to keep things while a reading runs, and a
-// scanner that is told one may write in it. It is made at the place the context
-// is said, as a default argument, so it lives exactly as long as the call.
 template <class FieldType, class ContextType, bool ToldApart>
-struct reading_by final : reading_of<FieldType> {
-  using held = std::remove_cv_t<FieldType>;
-  using answer = std::expected<held, failure_for<held>>;
-
-  ContextType* kept = nullptr;
-
-  static constexpr bool by_groups =
-      requires { scan::scanner<held>{}.begin_groups(); } ||
-      requires(std::span<const std::string_view> some) {
-        scan::scanner<held>{}.from_groups(some);
-      };
-
-  // Both of these are written out with the table whether anybody calls them or
-  // not, so each has to say what it does for a leaf that is read the other way
-  // -- and saying it is an answer, not a failure to compile.
-  static constexpr bool takes_a_context =
-      requires(std::string_view text, std::string_view parameters,
-               ContextType& told) {
-        scan::scanner<held>{}.parse(text, told);
-      } || requires(std::string_view text, std::string_view parameters,
-                    ContextType& told) {
-        scan::scanner<held>{}.parse(text, parameters, told);
-      } || requires(std::string_view text, ContextType& told) {
-        scan::scanner<held>::try_parse(text, told);
-      } || requires(std::string_view text, std::string_view parameters,
-                    ContextType& told) {
-        scan::scanner<held>::try_parse(text, parameters, told);
-      };
-
-  static constexpr bool reads_a_piece =
-      requires(std::string_view text) { scan::scanner<held>{}.parse(text); } ||
-      requires(std::string_view text) { scan::scanner<held>::try_parse(text); };
-
-  [[nodiscard]] constexpr std::pmr::memory_resource* told_resource()
-      const override {
-    return resource_of(*kept);
-  }
-
-  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
-      std::string_view parameters) override {
-    if constexpr (requires {
-                    scan::scanner<held>{}.begin(parameters, *kept);
-                  }) {
-      return scan::scanner<held>{}.begin(parameters, *kept);
-    } else if constexpr (requires { scan::scanner<held>{}.begin(*kept); }) {
-      return scan::scanner<held>{}.begin(*kept);
-    } else if constexpr (requires { scan::scanner<held>{}.begin(parameters); }) {
-      return scan::scanner<held>{}.begin(parameters);
-    } else if constexpr (requires { scan::scanner<held>{}.begin(); }) {
-      return scan::scanner<held>{}.begin();
-    } else {
-      return scan::no_contexts{};
-    }
-  }
-
-  [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
-    // Told or untold, what a fold begins has to be the one type this interface
-    // hands back -- that is what lets a context cross the door without its own
-    // type crossing with it. A type that says a format of its own breaks that:
-    // what its places are told is part of what its state is, so a told state
-    // and an untold one are two types, and only the caller knows which.
-    constexpr bool told_begins_the_same =
-        requires {
-          scan::scanner<held>{}.begin_groups(*kept);
-          requires std::same_as<
-              decltype(scan::scanner<held>{}.begin_groups(*kept)),
-              fold_state_for<held>>;
-        };
-    if constexpr (told_begins_the_same) {
-      return scan::scanner<held>{}.begin_groups(*kept);
-    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(*kept); }) {
-      static_assert(told_begins_the_same,
-                    "a place whose type says a format of its own is told its "
-                    "context without braces: scan<f>(text).of<T>(context), not "
-                    ".of<T>({context})");
-      return scan::scanner<held>{}.begin_groups();
-    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
-      return scan::scanner<held>{}.begin_groups();
-    } else {
-      return scan::no_contexts{};
-    }
-  }
-
-  [[nodiscard]] constexpr answer read(std::string_view text,
-                                      std::string_view parameters) override {
-    if constexpr (takes_a_context) {
-      return parse_value_given<held, failure_for<held>, ToldApart>(
-          text, parameters, *kept);
-    } else if constexpr (reads_a_piece) {
-      static_assert(!ToldApart || by_groups,
-                    "this place was given a context of its own and its scanner "
-                    "takes none: write parse(string_view, context) on "
-                    "scan::scanner<T>, or write scan::default_context in its "
-                    "place");
-      return parse_value<held, failure_for<held>>(text, parameters);
-    } else {
-      static_cast<void>(text);
-      static_cast<void>(parameters);
-      return std::unexpected(scan::as_a_failure<failure_for<held>>(
-          scan::no_group<>("this place is not read from a piece")));
-    }
-  }
-
-  // A virtual is written out with the table, whether anybody calls it or not,
-  // so a leaf that is not read from its groups must still have something here
-  // -- and what it has says so rather than failing to compile.
-  [[nodiscard]] constexpr answer read_groups(
-      std::span<const std::string_view> groups) override {
-    if constexpr (by_groups) {
-      return groups_value<held, ToldApart>(groups, *kept);
-    } else {
-      static_cast<void>(groups);
-      return std::unexpected(scan::as_a_failure<failure_for<held>>(
-          scan::no_group<>("this place is not read from its groups")));
-    }
-  }
-};
-
+struct reading_by;
 // One context said for a whole shape needs one reading per leaf under it, and
 // those readings have to outlive the call that says it. They are made as a
 // default argument -- in the caller's own full expression -- and wired to the
@@ -375,11 +205,10 @@ class context_leaf {
   [[nodiscard]] constexpr const context_leaf& leaf() const { return *this; }
 
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
-  [[nodiscard]] constexpr fold_state_for<held> begin_fold() const {
-    return how_->begin_fold();
-  }
-  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
-      std::string_view parameters) const {
+  // Whatever the interface hands back, which is said where the interface is --
+  // further down, after what a carrier is has been worked out.
+  [[nodiscard]] constexpr auto begin_fold() const { return how_->begin_fold(); }
+  [[nodiscard]] constexpr auto begin_gather(std::string_view parameters) const {
     return how_->begin_gather(parameters);
   }
   [[nodiscard]] constexpr std::pmr::memory_resource* told_resource() const {
@@ -471,6 +300,15 @@ template <class FieldType>
 [[nodiscard]] consteval std::size_t carrier_places() {
   if constexpr (scanned_as_variant<FieldType>) {
     return branch_count<FieldType>();
+  } else if constexpr (requires { scan::scanner<FieldType>::says_a_format; }) {
+    // A type whose places are a format of its own opens up the same way a
+    // record does: the places inside it are where a context can be said.
+    if constexpr (std::is_aggregate_v<FieldType> &&
+                  requires { parts_of<FieldType>::count; }) {
+      return parts_of<FieldType>::count;
+    } else {
+      return parts_under<FieldType>();
+    }
   } else {
     return parts_under<FieldType>();
   }
@@ -529,6 +367,216 @@ template <class Type, std::size_t Place>
 
 template <class Type, std::size_t Place>
 using context_place_of = typename decltype(context_place_kind<Type, Place>())::type;
+
+
+// The state a scanner that gathers begins with. A scanner told a context and a
+// scanner told none begin the same kind of state -- that is what lets a place
+// hand the context over without the type of it crossing the door.
+// The state a scanner that is handed pieces begins with -- the other gathering
+// protocol, and the same rule: told a context or told none, what it begins is
+// the same kind of thing, so a place can hand the context over without the type
+// of it crossing the door.
+template <class Held>
+using gather_state_for = decltype([] {
+  if constexpr (requires {
+                  scan::scanner<std::remove_cv_t<Held>>{}.begin(
+                      std::string_view{});
+                }) {
+    return scan::scanner<std::remove_cv_t<Held>>{}.begin(std::string_view{});
+  } else if constexpr (requires {
+                         scan::scanner<std::remove_cv_t<Held>>{}.begin();
+                       }) {
+    return scan::scanner<std::remove_cv_t<Held>>{}.begin();
+  } else {
+    return scan::no_contexts{};
+  }
+}());
+
+// What a fold begins with, said once for told and untold alike.
+//
+// A type that says a format of its own keeps what its places were told inside
+// its state, so a state told something and a state told nothing would be two
+// types -- and an interface hands back one. So the one it hands back is the
+// state told the carrier written for that shape: a carrier knows nothing of the
+// caller's types, and a shape told nothing is that same carrier with nothing in
+// it.
+template <class Held>
+using fold_state_for = decltype([] {
+  if constexpr (requires {
+                  scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+                      std::declval<const carrier_for<Held>&>());
+                }) {
+    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+        std::declval<const carrier_for<Held>&>());
+  } else if constexpr (requires {
+                         scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
+                       }) {
+    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
+  } else {
+    return scan::no_contexts{};
+  }
+}());
+
+// What a reading has to keep for the places under it: readings for them, where
+// the field is a shape, and nothing at all where it is read whole. Said in two
+// pieces rather than one conditional, because a leaf's own carrier is a reading
+// of that leaf -- naming it inside itself is a circle.
+template <class Held, class ContextType,
+          bool AShape = (carrier_places<std::remove_cv_t<Held>>() > 0)>
+struct readings_under {
+  using type = scan::no_contexts;
+};
+
+template <class Held, class ContextType>
+struct readings_under<Held, ContextType, true> {
+  using type = typename readings_for<carrier_for<std::remove_cv_t<Held>>,
+                                     ContextType>::type;
+};
+
+template <class FieldType>
+struct reading_of {
+  using held = std::remove_cv_t<FieldType>;
+  using answer = std::expected<held, failure_for<held>>;
+
+  constexpr virtual ~reading_of() = default;
+  // The resource the context keeps, where it keeps one. Answered rather than
+  // named: a resource is already a thing asked at runtime.
+  [[nodiscard]] constexpr virtual std::pmr::memory_resource* told_resource()
+      const = 0;
+  // The same, for a scanner handed its pieces rather than its groups.
+  [[nodiscard]] constexpr virtual gather_state_for<held> begin_gather(
+      std::string_view parameters) = 0;
+  // Begun where the context still has its type, handed back as the state the
+  // scanner would have begun anyway.
+  [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
+  [[nodiscard]] constexpr virtual answer read(std::string_view text,
+                                              std::string_view parameters) = 0;
+  [[nodiscard]] constexpr virtual answer read_groups(
+      std::span<const std::string_view> groups) = 0;
+};
+
+// The implementation is written where the context still has its type, so it
+// holds the caller's own thing -- not a copy of it, and not a const picture of
+// it either: a context is a place to keep things while a reading runs, and a
+// scanner that is told one may write in it. It is made at the place the context
+// is said, as a default argument, so it lives exactly as long as the call.
+template <class FieldType, class ContextType, bool ToldApart>
+struct reading_by final : reading_of<FieldType> {
+  using held = std::remove_cv_t<FieldType>;
+  using answer = std::expected<held, failure_for<held>>;
+
+  ContextType* kept = nullptr;
+  // The readings for the places under this one, where this is a shape. They
+  // live here because they have to outlive what they are wired into, and what
+  // they are wired into is a state the walk carries about.
+  [[no_unique_address]] typename readings_under<held, ContextType>::type under_{};
+
+  static constexpr bool by_groups =
+      requires { scan::scanner<held>{}.begin_groups(); } ||
+      requires(std::span<const std::string_view> some) {
+        scan::scanner<held>{}.from_groups(some);
+      };
+
+  // Both of these are written out with the table whether anybody calls them or
+  // not, so each has to say what it does for a leaf that is read the other way
+  // -- and saying it is an answer, not a failure to compile.
+  static constexpr bool takes_a_context =
+      requires(std::string_view text, std::string_view parameters,
+               ContextType& told) {
+        scan::scanner<held>{}.parse(text, told);
+      } || requires(std::string_view text, std::string_view parameters,
+                    ContextType& told) {
+        scan::scanner<held>{}.parse(text, parameters, told);
+      } || requires(std::string_view text, ContextType& told) {
+        scan::scanner<held>::try_parse(text, told);
+      } || requires(std::string_view text, std::string_view parameters,
+                    ContextType& told) {
+        scan::scanner<held>::try_parse(text, parameters, told);
+      };
+
+  static constexpr bool reads_a_piece =
+      requires(std::string_view text) { scan::scanner<held>{}.parse(text); } ||
+      requires(std::string_view text) { scan::scanner<held>::try_parse(text); };
+
+  [[nodiscard]] constexpr std::pmr::memory_resource* told_resource()
+      const override {
+    return resource_of(*kept);
+  }
+
+  [[nodiscard]] constexpr gather_state_for<held> begin_gather(
+      std::string_view parameters) override {
+    if constexpr (requires {
+                    scan::scanner<held>{}.begin(parameters, *kept);
+                  }) {
+      return scan::scanner<held>{}.begin(parameters, *kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(*kept); }) {
+      return scan::scanner<held>{}.begin(*kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(parameters); }) {
+      return scan::scanner<held>{}.begin(parameters);
+    } else if constexpr (requires { scan::scanner<held>{}.begin(); }) {
+      return scan::scanner<held>{}.begin();
+    } else {
+      return scan::no_contexts{};
+    }
+  }
+
+  // A shape is begun with a carrier of its own, wired here: what this reading
+  // was told is said to every place under it, through readings that live in
+  // this very object and so last exactly as long as it does. That is what lets
+  // a context said in braces reach a place whose type says a format of its own
+  // -- the state such a place keeps names the carrier and never the context.
+  [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
+    if constexpr (requires {
+                    scan::scanner<held>{}.begin_groups(
+                        std::declval<const carrier_for<held>&>());
+                  }) {
+      return scan::scanner<held>{}.begin_groups(
+          carrier_for<held>::wire(under_, *kept));
+    } else if constexpr (requires {
+                           scan::scanner<held>{}.begin_groups(*kept);
+                         }) {
+      return scan::scanner<held>{}.begin_groups(*kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
+      return scan::scanner<held>{}.begin_groups();
+    } else {
+      return scan::no_contexts{};
+    }
+  }
+
+  [[nodiscard]] constexpr answer read(std::string_view text,
+                                      std::string_view parameters) override {
+    if constexpr (takes_a_context) {
+      return parse_value_given<held, failure_for<held>, ToldApart>(
+          text, parameters, *kept);
+    } else if constexpr (reads_a_piece) {
+      static_assert(!ToldApart || by_groups,
+                    "this place was given a context of its own and its scanner "
+                    "takes none: write parse(string_view, context) on "
+                    "scan::scanner<T>, or write scan::default_context in its "
+                    "place");
+      return parse_value<held, failure_for<held>>(text, parameters);
+    } else {
+      static_cast<void>(text);
+      static_cast<void>(parameters);
+      return std::unexpected(scan::as_a_failure<failure_for<held>>(
+          scan::no_group<>("this place is not read from a piece")));
+    }
+  }
+
+  // A virtual is written out with the table, whether anybody calls it or not,
+  // so a leaf that is not read from its groups must still have something here
+  // -- and what it has says so rather than failing to compile.
+  [[nodiscard]] constexpr answer read_groups(
+      std::span<const std::string_view> groups) override {
+    if constexpr (by_groups) {
+      return groups_value<held, ToldApart>(groups, *kept);
+    } else {
+      static_cast<void>(groups);
+      return std::unexpected(scan::as_a_failure<failure_for<held>>(
+          scan::no_group<>("this place is not read from its groups")));
+    }
+  }
+};
 
 // The memory resource a context keeps, where it keeps one.
 //
