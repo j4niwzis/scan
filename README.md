@@ -715,8 +715,9 @@ specialised for a type that is not an aggregate.
 
 ### A collector of your own
 
-A collector is any type with the parts below, and none of them is virtual or
-inherited. Write the ones it needs and leave the rest out.
+A collector speaks the same four hooks a scanner does -- `parse`, `begin`,
+`push`, `finish` -- and says one thing more: what it makes. Nothing is virtual
+and nothing is inherited; write the ones it needs and leave the rest out.
 
 ```cpp
 struct hex_bytes {
@@ -728,31 +729,39 @@ struct hex_bytes {
   template <class Holder> using value_for = Holder;
 
   // From the whole group at once, where the subject can be pointed at. The
-  // second argument is whatever was written after the colon in the format.
-  value_type from_text(std::string_view text, std::string_view parameters) const;
+  // second argument is whatever was written after the colon.
+  value_type parse(std::string_view text, std::string_view parameters) const;
   template <class Holder>
-  Holder from_text(std::string_view text, std::string_view parameters) const;
+  Holder parse(std::string_view text, std::string_view parameters) const;
 
-  // A character at a time, where it cannot: this makes the value…
-  value_type begin_pushing(std::string_view parameters) const;
-  // …this is handed every character of the group as it arrives…
-  void push_one(value_type& into, char letter) const;
+  // A character at a time, where it cannot: this makes the state…
+  value_type begin(std::string_view parameters) const;
+  // …this is handed every character of the group as it arrives, and a run the
+  // walk stepped over in vectors in one go where it can…
+  void push(value_type& into, char letter) const;
+  void push(value_type& into, std::string_view run) const;
   // …and this turns it into the answer.
-  value_type finish_pushed(value_type state) const;
+  value_type finish(value_type state) const;
 
-  // Optional: a run the walk stepped over in vectors, in one go rather than a
-  // call a character.
-  void push_run(value_type& into, std::string_view run) const;
   // Optional: nothing at all from this group. `scan::skipped` stands in the
   // answer, and this is what `scan::skip()` is.
   static constexpr bool takes_nothing = true;
 };
 ```
 
-Write both halves and the collector works everywhere; write only `from_text`
-and it works wherever the characters can be pointed at. The collector that
-keeps the characters -- the default one -- is written in exactly these terms
-and has no privileges of its own.
+Write both halves and the collector works everywhere; write only `parse` and it
+works wherever the characters can be pointed at.
+
+**So a `scan::scanner<T>` is a collector of `T`**, and can be handed straight to
+`into` -- the hooks are the same ones, and what it makes is the type it is the
+scanner of:
+
+```cpp
+text | scan::match<"([0-9]+)g-([a-z]+)">.into(scan::scanner<weight>{}, scan::text())
+```
+
+`scan::as<T>(args…)` is that with arguments: it is what to write when the value
+is built from something the scanner has never heard of, a pool or a limit.
 
 ## The pattern syntax
 

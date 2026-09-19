@@ -1120,7 +1120,7 @@ class as_collector {
   constexpr explicit as_collector(Arguments... given)
       : arguments_(std::move(given)...) {}
 
-  [[nodiscard]] constexpr value_type from_text(
+  [[nodiscard]] constexpr value_type parse(
       std::string_view text, std::string_view parameters) const {
     // Asked of the scanner itself, not of the helper: the helper is a template
     // whose body is what fails for a type that has no scanner, and a body
@@ -1165,7 +1165,7 @@ class as_collector {
   }
 
   // Characters as they come, for a subject that cannot be looked at twice.
-  [[nodiscard]] constexpr auto begin_pushing(
+  [[nodiscard]] constexpr auto begin(
       std::string_view parameters) const {
     if constexpr (sizeof...(Arguments) != 0 &&
                   requires(const Arguments&... given) {
@@ -1190,13 +1190,7 @@ class as_collector {
   }
 
 
-  // The characters of the group as they arrive, for a subject read once.
-  [[nodiscard]] constexpr auto begin_pushing_state(
-      std::string_view parameters) const {
-    return begin_pushing(parameters);
-  }
-
-  constexpr void push_one(auto& state, char letter) const {
+  constexpr void push(auto& state, char letter) const {
     if constexpr (requires { scanner_push<Type>(state, letter); }) {
       scanner_push<Type>(state, letter);
     } else {
@@ -1204,7 +1198,7 @@ class as_collector {
     }
   }
 
-  [[nodiscard]] constexpr value_type finish_pushed(auto state) const {
+  [[nodiscard]] constexpr value_type finish(auto state) const {
     if constexpr (requires {
                     scanner_finish<Type, decltype(state)>(state);
                   }) {
@@ -1239,28 +1233,28 @@ struct text_collector {
   using value_for = Holder;
 
   template <class Holder>
-  [[nodiscard]] constexpr Holder from_text(std::string_view text,
+  [[nodiscard]] constexpr Holder parse(std::string_view text,
                                            std::string_view) const {
     return Holder(text.begin(), text.end());
   }
 
   template <class Holder>
-  [[nodiscard]] constexpr Holder begin_pushing(std::string_view) const {
+  [[nodiscard]] constexpr Holder begin(std::string_view) const {
     return Holder{};
   }
 
-  constexpr void push_one(auto& into, char letter) const {
+  constexpr void push(auto& into, char letter) const {
     into.push_back(letter);
   }
 
   // A run the walk stepped over in vectors, handed over as a run rather than
   // one character at a time. Optional: a collector without it is handed the
   // characters one by one, as everything was before.
-  constexpr void push_run(auto& into, std::string_view run) const {
+  constexpr void push(auto& into, std::string_view run) const {
     into.append(run.begin(), run.end());
   }
 
-  [[nodiscard]] constexpr auto finish_pushed(auto state) const {
+  [[nodiscard]] constexpr auto finish(auto state) const {
     return state;
   }
 };
@@ -1299,7 +1293,7 @@ class collecting_collector {
   constexpr collecting_collector(Pusher push, Arguments... given)
       : push_(std::move(push)), arguments_(std::move(given)...) {}
 
-  [[nodiscard]] constexpr value_type from_text(std::string_view text,
+  [[nodiscard]] constexpr value_type parse(std::string_view text,
                                                std::string_view) const {
     value_type made = std::apply(
         [&](const Arguments&... given) { return value_type(given...); },
@@ -1308,13 +1302,13 @@ class collecting_collector {
     return made;
   }
 
-  [[nodiscard]] constexpr auto begin_pushing(std::string_view) const {
+  [[nodiscard]] constexpr auto begin(std::string_view) const {
     return std::apply(
         [&](const Arguments&... given) { return value_type(given...); },
         arguments_);
   }
 
-  constexpr void push_one(value_type& into, char letter) const {
+  constexpr void push(value_type& into, char letter) const {
     push_(into, letter);
   }
 
@@ -1322,7 +1316,7 @@ class collecting_collector {
   // what comes back: this is here because a subject read once asks for it, and
   // a collector that cannot answer it is one that only reads what it can point
   // at.
-  [[nodiscard]] constexpr value_type finish_pushed(value_type state) const {
+  [[nodiscard]] constexpr value_type finish(value_type state) const {
     return state;
   }
 
@@ -1384,8 +1378,20 @@ class typed_result {
 namespace detail {
 
 // What one collector makes.
+//
+// A collector says it with `value_type`; a scanner says it by being the scanner
+// of a type, and `scan::scanner<T>` handed over where a collector is wanted is
+// a collector of `T`. The two speak the same hooks -- `parse`, `begin`, `push`,
+// `finish` -- so the only thing a scanner is missing here is the name of what
+// it makes, and it is written on the scanner itself.
 template <class Collector, class Holder>
 struct collected {
+  using type = scan::scanner_target_t<Collector>;
+};
+
+template <class Collector, class Holder>
+  requires requires { typename Collector::value_type; }
+struct collected<Collector, Holder> {
   using type = typename Collector::value_type;
 };
 
@@ -1409,6 +1415,28 @@ struct collected<Collector, Holder> {
 template <class Collector, class Holder>
 using collected_type = typename collected<Collector, Holder>::type;
 
+// The same question asked without a holder, for the places that want to know
+// what a collector is for rather than what it will make this time: a collector
+// says it with `value_type`, a scanner by being the scanner of a type.
+template <class Collector>
+struct collector_value;
+
+template <class Collector>
+  requires requires { typename Collector::value_type; }
+struct collector_value<Collector> {
+  using type = typename Collector::value_type;
+};
+
+template <class Collector>
+  requires(!requires { typename Collector::value_type; } &&
+           requires { typename scan::scanner_target<Collector>::type_t; })
+struct collector_value<Collector> {
+  using type = typename scan::scanner_target<Collector>::type_t;
+};
+
+template <class Collector>
+using collector_value_t = typename collector_value<Collector>::type;
+
 // Every group of a match, as text, for the types that are built out of them.
 template <class FoundType, std::size_t... Group>
 [[nodiscard]] constexpr auto all_groups(const FoundType& found,
@@ -1424,7 +1452,7 @@ template <fixed_string Pattern, std::size_t Group, class Collector,
   if constexpr (requires { Collector::takes_nothing; }) {
     return {};
   } else if constexpr (requires {
-                         one.template from_text<Holder>(std::string_view{},
+                         one.template parse<Holder>(std::string_view{},
                                                         std::string_view{});
                        }) {
     // A collector that makes what the subject affords is handed the holder to
@@ -1433,16 +1461,16 @@ template <fixed_string Pattern, std::size_t Group, class Collector,
     if constexpr (std::same_as<Holder, std::string_view>) {
       return found.template get<Group>().held();
     } else {
-      return one.template from_text<Holder>(
+      return one.template parse<Holder>(
           found.template get<Group>().to_view(), std::string_view{});
     }
   } else if constexpr (group_is_the_types_pattern<
-                           typename Collector::value_type, Pattern, Group>()) {
+                           collector_value_t<Collector>, Pattern, Group>()) {
     // The type says a pattern of its own with groups in it, and this group is
     // written with that pattern -- so the groups inside it are the type's own,
     // already found, and the type asked to be handed them rather than the
     // text.
-    using held_type = std::remove_cv_t<typename Collector::value_type>;
+    using held_type = std::remove_cv_t<collector_value_t<Collector>>;
     constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
     std::array<std::string_view, inside> theirs{};
     [&]<std::size_t... at>(std::index_sequence<at...>) {
@@ -1454,13 +1482,13 @@ template <fixed_string Pattern, std::size_t Group, class Collector,
     return scan::as_thrown<held_type>(
         scan::scanner_told_from_groups<held_type, scan::throws_a_failure>(
             std::span<const std::string_view>(theirs)));
-  } else if constexpr (group_gathers_by_group<typename Collector::value_type,
+  } else if constexpr (group_gathers_by_group<collector_value_t<Collector>,
                                              Pattern, Group>()) {
     // The type is gathered by its own groups, and here they are already
     // found: the characters of each are handed to it the same way they would
     // be handed over one at a time on a subject that cannot be looked at
     // twice, so the type is read the same way wherever it is used.
-    using held_type_here = std::remove_cv_t<typename Collector::value_type>;
+    using held_type_here = std::remove_cv_t<collector_value_t<Collector>>;
     auto state = scan::scanner<held_type_here>{}.begin_groups();
     [&]<std::size_t... inside>(std::index_sequence<inside...>) {
       ((void)[&] {
@@ -1473,7 +1501,7 @@ template <fixed_string Pattern, std::size_t Group, class Collector,
         scan::scanner_told_finish_groups<held_type_here,
                                          scan::throws_a_failure>(
             std::move(state)));
-  } else if constexpr (group_spells_out<typename Collector::value_type,
+  } else if constexpr (group_spells_out<collector_value_t<Collector>,
                                         Pattern, Group>()) {
     // The group is the type's own pattern, so the groups inside it are the
     // type's own values and the machine has already found them. Nothing is
@@ -1488,12 +1516,12 @@ template <fixed_string Pattern, std::size_t Group, class Collector,
     // are the groups inside it -- which in this array, which begins at the
     // first group, are the entries from this one on. Read as a value, a shape
     // of two numbers was handed "(3,-4)" where it wanted "3".
-    using held = typename Collector::value_type;
+    using held = collector_value_t<Collector>;
     return scan::or_thrown(
         build_value<failure_for<held>, no_parameters, held, Group, true>(
             groups));
   } else {
-    return one.from_text(found.template get<Group>().to_view(),
+    return one.parse(found.template get<Group>().to_view(),
                          std::string_view{});
   }
 }
@@ -1716,7 +1744,7 @@ struct collected_match_closure
     constexpr void open_inner(const RegistersType& registers) {
       if constexpr (inside_the_pattern<Group, Inside>) {
         using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
-        using held = std::remove_cv_t<typename collector::value_type>;
+        using held = std::remove_cv_t<detail::collector_value_t<collector>>;
         constexpr std::size_t theirs = theirs_at<Group, Inside>;
         constexpr const auto& entered =
             detail::regex_automaton<Pattern>.states[Landed];
@@ -1734,7 +1762,7 @@ struct collected_match_closure
     constexpr void push_inner(char letter, const RegistersType& registers) {
       if constexpr (inside_the_pattern<Group, Inside>) {
         using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
-        using held = std::remove_cv_t<typename collector::value_type>;
+        using held = std::remove_cv_t<detail::collector_value_t<collector>>;
         constexpr std::size_t theirs = theirs_at<Group, Inside>;
         constexpr const auto& entered =
             detail::regex_automaton<Pattern>.states[Landed];
@@ -1751,7 +1779,7 @@ struct collected_match_closure
     constexpr void close_inner(const RegistersType& registers) {
       if constexpr (inside_the_pattern<Group, Inside>) {
         using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
-        using held = std::remove_cv_t<typename collector::value_type>;
+        using held = std::remove_cv_t<detail::collector_value_t<collector>>;
         constexpr std::size_t theirs = theirs_at<Group, Inside>;
         constexpr const auto& entered =
             detail::regex_automaton<Pattern>.states[Landed];
@@ -1777,7 +1805,7 @@ struct collected_match_closure
                             const RegistersType& registers) {
       using collector = std::tuple_element_t<Group, std::tuple<Collectors...>>;
       if constexpr (requires { typename collector::value_type; }) {
-        using held = std::remove_cv_t<typename collector::value_type>;
+        using held = std::remove_cv_t<detail::collector_value_t<collector>>;
         if constexpr (owner_type::template gathers_its_own_groups<Group>()) {
           hand_inner<Landed, Group>(
               letter, hands_the_character, registers,
@@ -1815,20 +1843,20 @@ struct collected_match_closure
             return;
           } else if constexpr (requires {
                                  std::get<Group>(owner_.collectors_)
-                                     .push_run(std::get<Group>(states_),
+                                     .push(std::get<Group>(states_),
                                                std::string_view{});
                                }) {
             // The walk stepped over this run in vectors, and a collector that
             // takes a run takes it in one go rather than in as many calls as
             // there are characters.
             std::get<Group>(owner_.collectors_)
-                .push_run(std::get<Group>(states_),
+                .push(std::get<Group>(states_),
                           std::string_view(from,
                                            static_cast<std::size_t>(to - from)));
           } else {
             for (const char* letter = from; letter != to; ++letter) {
               std::get<Group>(owner_.collectors_)
-                  .push_one(std::get<Group>(states_), *letter);
+                  .push(std::get<Group>(states_), *letter);
             }
           }
         }
@@ -1865,7 +1893,7 @@ struct collected_match_closure
             return;
           } else {
             std::get<Group>(owner_.collectors_)
-                .push_one(std::get<Group>(states_), letter);
+                .push(std::get<Group>(states_), letter);
           }
         }
       }
@@ -1909,7 +1937,7 @@ struct collected_match_closure
   [[nodiscard]] static consteval std::size_t swallowed() {
     using collector = std::tuple_element_t<Which, std::tuple<Collectors...>>;
     if constexpr (requires { typename collector::value_type; }) {
-      using held = std::remove_cv_t<typename collector::value_type>;
+      using held = std::remove_cv_t<detail::collector_value_t<collector>>;
       if constexpr (detail::group_gathers_by_group<held, Pattern, Where + 1>() ||
                     detail::group_is_the_types_pattern<held, Pattern,
                                                        Where + 1>()) {
@@ -1962,16 +1990,16 @@ struct collected_match_closure
       return HeldType{};
     } else if constexpr (requires {
                            std::declval<const collector&>()
-                               .template begin_pushing<HeldType>(
+                               .template begin<HeldType>(
                                    std::string_view{});
                          }) {
       return std::get<Group>(collectors_)
-          .template begin_pushing<HeldType>(std::string_view{});
+          .template begin<HeldType>(std::string_view{});
     } else if constexpr (gathers_its_own_groups<Group>()) {
       return scan::scanner<std::remove_cv_t<
           typename collector::value_type>>{}.begin_groups();
     } else {
-      return std::get<Group>(collectors_).begin_pushing(std::string_view{});
+      return std::get<Group>(collectors_).begin(std::string_view{});
     }
   }
 
@@ -1994,7 +2022,7 @@ struct collected_match_closure
       if (!detail::group_is_open<Pattern, group_of<Group>()>(here, registers)) {
         return;
       }
-      std::get<Group>(collectors_).push_one(std::get<Group>(states), letter);
+      std::get<Group>(collectors_).push(std::get<Group>(states), letter);
     }
   }
 
@@ -2015,7 +2043,7 @@ struct collected_match_closure
       return scan::scanner<std::remove_cv_t<
           typename collector::value_type>>{}.finish_groups(std::move(state));
     } else {
-      return std::get<Group>(collectors_).finish_pushed(std::move(state));
+      return std::get<Group>(collectors_).finish(std::move(state));
     }
   }
 

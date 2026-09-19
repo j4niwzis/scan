@@ -238,6 +238,25 @@ the input closes the group and the end of the input is not a move. The gatherer
 now runs that step itself, closing what the accepting state says is open --
 innermost first, which is the step that never came.
 
+## 4a. One protocol for collectors and scanners
+
+**Done.** The two said the same thing in different words: a scanner made a value
+with `parse`, `begin`, `push`, `finish`; a collector made one with `from_text`,
+`begin_pushing`, `push_one`, `push_run`, `finish_pushed`. They are one set of
+names now -- the scanner's -- and `push` takes a character or a run as an
+overload, the way a scanner's always did.
+
+What that buys is not fewer lines but one thing fewer to learn: a
+`scan::scanner<T>` handed where a collector is wanted **is** a collector of `T`,
+because the only thing it was missing was the name of what it makes, and that is
+written on the scanner itself (`scanner_target_t`). `scan::as<T>(args…)` stays
+as what to write when the value wants arguments the scanner knows nothing about.
+
+What is left of this item: a collector is still an object and a scanner is still
+a specialisation, so a collector cannot be a type's scanner. Making that work
+would mean a place being able to take a collector at the call -- which is what a
+context already is, and probably how it should be spelt.
+
 ## 6. Compile time is the scarce resource
 
 * **The ladder** (`scan_runtime.cc:1766-2540`) lays out 256 labelled rungs with
