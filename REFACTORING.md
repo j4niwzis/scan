@@ -32,16 +32,16 @@ with `places` and the file was cut where it could be.
 
 | module | lines | what is in it |
 | --- | --- | --- |
-| `scan.shape.places` | 2509 | `fields`, the places of a format, `spread_format`, and the glue that asks a scanner for a value |
+| `scan.shape.places` | 994 | `fields`, what a type is made of, and what each place of it is read as |
+| `scan.shape.format` | 1520 | `spread_format` -- a format read against the type it scans into -- and the glue that asks a scanner for a value |
 | `scan.shape.contexts` | 854 | the carrier layer -- `reading_of`, `reading_by`, `context_leaf`, `carrier_places`, `resource_of` -- and what a resource builds: `made_range`, `made_like` |
 | `scan.shape.gatherings` | 1063 | what one place gathers: `no_gathering`, `fold_of`, the marks and what a gathering is begun and finished with |
 | `scan.shape.walk` | 1468 | where the gatherings live while the machine runs: the slots, `make_slots`, `make_register_states`, `advance_scanner`, `collect_element` |
 | `scan.shape.values` | 1216 | `shape_turns`, `finish_value`, `field_gatherer` -- the value put together out of what was found |
 | `scan.shape` | 695 | the readings themselves and `aggregate_scanner`, re-exporting the four |
 
-Both cuts were free in the end: the second one wanted no declaration moved
-either, once the first had been made. What is left is `places` at two and a half
-thousand lines, where the format walk and the scanner glue still share a file.
+All three cuts were free: none wanted a declaration moved, once the one before
+it had been made. The largest file left is `format` at fifteen hundred lines.
 
 Two hundred and fifty top-level declarations in one file is past what anybody
 reads; more to the point, a translation unit that wants only the context layer

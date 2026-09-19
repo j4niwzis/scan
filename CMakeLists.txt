@@ -319,6 +319,7 @@ target_sources(
     src/scan_regex.cc
     src/scan_runtime.cc
     src/scan_shape_places.cc
+    src/scan_shape_format.cc
     src/scan_shape_contexts.cc
     src/scan_shape_gatherings.cc
     src/scan_shape_walk.cc
