@@ -559,4 +559,17 @@ TEST_F(every_subject, AGroupNobodyWantedAndOneFoldedByHand) {
   EXPECT_EQ(in_pieces.get<2>(), letters_of_abc);
 }
 
+// In braces, as deep as the shape goes -- including into a place whose type
+// says a format of its own. What crosses the door there is a reading, and the
+// readings for the places under it live with it.
+TEST_F(every_subject, EachPartOfAShapeOfShapesHasItsOwn) {
+  room slow{2};
+  const auto got =
+      scan::scan<"{} {}">(nested).of<deep>({{fast, slow}, {slow, fast}});
+  EXPECT_EQ(got.left.number.value, 11);
+  EXPECT_EQ(got.left.word.mark, 2);
+  EXPECT_EQ(got.right.number.value, 4);
+  EXPECT_EQ(got.right.word.mark, 10);
+}
+
 }  // namespace

@@ -469,6 +469,13 @@ export namespace scan {
 
 template <fixed_string Format>
 struct aggregate_scanner {
+  // Said outright: the places of this type are a format of its own, so a
+  // context said at a place of this type can be said to its places one by one.
+  // Nothing else in the library answers this, and a scanner that folds its own
+  // groups does not -- its groups are its own business and a context said at it
+  // is said to it whole.
+  static constexpr bool says_a_format = true;
+
   // The shape read out of groups that this format made, for a type that was
   // named rather than inherited from.
   //

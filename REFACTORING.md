@@ -137,7 +137,7 @@ walk, and both were only visible end to end.
 * **Contexts reaching places.** One table: (output shape) × (carrier form) →
   which place is told what. It exists as `every_subject_agrees_test.cc` for the
   subject axis; the carrier axis wants the same treatment.
-### Three holes the table found, two of them mended
+### Three holes the table found, all three mended
 
 Both are in `every_subject_agrees_test.cc`, both are about a place whose type
 is read by a shape scanner of its own -- `struct deep { both left; both
@@ -161,16 +161,15 @@ right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
   ending was made empty and filled in by assignment. It is built from copies
   now, and the places that begin a gathering build where they stand rather than
   assign over an empty one.
-* **A braced list of contexts does not reach into such a place.** **Said
-  outright now, rather than failing inside the library.** What stops it is real
-  and not an oversight: a braced context crosses the door as a pointer to an
-  interface written for the field, and that interface hands back one type --
-  while a type that says a format of its own has the context in the type of its
-  state, so a told state and an untold one are two types. So the braced form
-  refuses with one sentence, and the two places that used to ask a raw context
-  the questions of a carrier now ask through `told_apart_of` and `leaf_of` and
-  take either. Making it work would mean the shape's own state carrying its
-  context erased as well -- worth doing when something needs it.
+* **A braced list of contexts did not reach into such a place.** **Mended.**
+  What stopped it was that a type saying a format of its own keeps what its
+  places were told inside its state, so a told state and an untold one were two
+  types -- while an interface hands back one. Now the one it hands back is the
+  state told the *carrier* written for that shape, which knows nothing of the
+  caller's types; the reading behind the interface keeps the context and, beside
+  it, the readings for the places under it, so they last exactly as long as it
+  does. `aggregate_scanner` says `says_a_format`, and a carrier opens such a
+  place up into its places the way it opens a record.
 
 ## 6. Compile time is the scarce resource
 
