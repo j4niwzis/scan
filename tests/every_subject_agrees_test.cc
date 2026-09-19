@@ -572,4 +572,23 @@ TEST_F(every_subject, EachPartOfAShapeOfShapesHasItsOwn) {
   EXPECT_EQ(got.right.word.mark, 10);
 }
 
+// The same braces, off a subject that arrives as it is read: the other road
+// through the same carrier, where the value is gathered rather than pointed at.
+TEST_F(every_subject, EachPartOfAShapeOfShapesHasItsOwnOffAStream) {
+  room slow{2};
+  const auto got = scan::scan<"{} {}">(read_once(nested, &at))
+                       .of<deep>({{fast, slow}, {slow, fast}});
+  EXPECT_EQ(got.left.number.value, 11);
+  EXPECT_EQ(got.left.word.mark, 2);
+  EXPECT_EQ(got.right.number.value, 4);
+  EXPECT_EQ(got.right.word.mark, 10);
+
+  std::size_t pieces = 0;
+  const auto in_pieces =
+      scan::scan<"{} {}">(read_once(nested, &pieces) | scan::in_pieces<2>)
+          .of<deep>({{fast, slow}, {slow, fast}});
+  EXPECT_EQ(in_pieces.left.number.value, 11);
+  EXPECT_EQ(in_pieces.right.word.mark, 10);
+}
+
 }  // namespace

@@ -174,40 +174,53 @@ right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
 ## 5a. What the interface costs, read off the IR
 
 Measured, not guessed: one translation unit, `-O3`, automata compiled (the
-configuration a consumer gets), three readings of the same record -- told
-nothing, told one context as it stands, and told four in braces, where two of
-the four go into places whose type says a format of its own.
+configuration a consumer gets), six readings -- told nothing, told one context,
+told four in braces, the same braces off a subject read once, and a list told,
+in a row and off a stream.
 
-| | indirect calls | vptr loads | vptr stores | instructions |
+| reading | indirect calls | vptr | allocations | instructions |
 | --- | --- | --- | --- | --- |
 | told nothing | 0 | 0 | 0 | 240 |
 | told one context | 0 | 0 | 0 | 253 |
 | told four in braces | 0 | 0 | 0 | 253 |
+| the same, off a stream | 0 | 0 | 0 | 726 |
+| a list told, in a row | 0 | 0 | 0 | 169 |
+| a list told, off a stream | 0 | 0 | 0 | 315 |
 
-Nothing is dispatched: the braced reading costs what the plain one costs, and
-the readings it would have crossed the door through are not there at all -- the
-compiler proved they are unread and removed them, vptr stores and all.
+Nothing is dispatched anywhere: the braced reading costs what the plain one
+costs, and the readings it would have crossed the door through are not there at
+all -- the compiler proved them unread and removed them, vptr stores and all.
+The one indirect call left in the module is `std::visit` inside
+`throw_what_went_wrong`, which runs where something has already gone wrong.
 
 It was not so at first. The road that crosses the interface is a chain of short
-forwarding bodies -- `scanner_told_from_groups`, `aggregate_scanner::from_groups`,
-`build_value`, `built_value` -- and every one left out of line hides from the
-optimiser which reading is being held, so each place cost a call through the
-interface. They are all written into their callers now, and the two packs inside
-`built_value` are named functions (`built_of_parts`, `made_of_parts`) rather
-than lambdas, because an attribute on a lambda is quietly taken as a word about
-its type. **The user writes nothing for this**: it is the library's own road
-that is inlined, not anybody's scanner.
+forwarding bodies, and every one left out of line hides from the optimiser which
+reading is being held, so each place cost a call through the interface. They are
+all written into their callers now -- `scanner_told_from_groups`,
+`aggregate_scanner::from_groups`, `build_value`, `built_value`,
+`parse_value_given`, `groups_value`, `begun_groups`, `scanner_begin_given` --
+and the two packs inside `built_value` are named functions (`built_of_parts`,
+`made_of_parts`) rather than lambdas, because an attribute on a lambda is
+quietly taken as a word about its type. **The user writes nothing for this**: it
+is the library's own road that is inlined, not anybody's scanner.
 
-What it cost to do: nothing measurable. The same translation unit compiles in
-15.3 seconds against 15.4 before, and the module *shrank* -- 2900 lines of IR
-against 3588, eight functions against forty-three, because what used to be
-emitted out of line is now folded into the three readings.
+What it cost: nothing measurable. The same translation unit compiles in 15.3
+seconds against 15.4 before, and the module *shrank* -- 2900 lines of IR against
+3588 -- because what used to be emitted out of line is now folded into the
+readings.
+
+Widening the probe to a stream found a hole while it was at it: a braced context
+into a place whose type says a format of its own did not compile off a subject
+read once, because the walk down to a group went one level too far and handed
+the place the reading of what is inside it. It stops at such a place now, and
+`every_subject_agrees_test` reads that case in a row, off a stream and in
+pieces.
 
 One thing the same run says about the test build: with
 `SCAN_AUTOMATA_AT_RUNTIME` on -- which is how this repository builds its own
 tests -- a reading allocates four times and keeps a `std::vector` of registers.
 That is the runtime-automaton road and not the library a consumer gets, where
-the same three readings allocate nothing.
+the same six readings allocate nothing.
 
 ## 6. Compile time is the scarce resource
 
