@@ -171,6 +171,36 @@ right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
   does. `aggregate_scanner` says `says_a_format`, and a carrier opens such a
   place up into its places the way it opens a record.
 
+## 5a. What the interface costs, read off the IR
+
+Measured, not guessed: one translation unit, `-O3`, automata compiled (the
+configuration a consumer gets), three readings of the same record -- told
+nothing, told one context as it stands, and told four in braces.
+
+| | indirect calls at the call site | vptr loads | allocations |
+| --- | --- | --- | --- |
+| told nothing | 0 | 0 | 0 |
+| told one context | 0 | 0 | 0 |
+| told four in braces | 0 | 0 | 0 |
+
+The braced reading keeps four `reading_by` objects on the stack and stores a
+vptr into each; nothing ever loads one. What is left is four indirect calls
+*inside* the value builder, one per place of the two nested shapes, made once
+where the record is put together and never on a character. They survive because
+the builder chain stays out of line: marking it `always_inline` pushes them one
+level down at a time -- `scanner_told_from_groups`, then
+`aggregate_scanner::from_groups`, then `build_value`, then `built_value`, then
+the lambda inside it -- so removing them means writing the whole builder into
+every caller, which is a cost paid by every reading and not only by the braced
+ones. Left as it is; under whole-program optimisation the inliner has the
+better view anyway.
+
+One thing the same run says about the test build: with
+`SCAN_AUTOMATA_AT_RUNTIME` on -- which is how this repository builds its own
+tests -- a reading allocates four times and keeps a `std::vector` of registers.
+That is the runtime-automaton road and not the library a consumer gets, where
+the same three readings allocate nothing.
+
 ## 6. Compile time is the scarce resource
 
 * **The ladder** (`scan_runtime.cc:1766-2540`) lays out 256 labelled rungs with
