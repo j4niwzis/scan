@@ -263,11 +263,11 @@ template <class Type, fixed_string Format, std::size_t Group, class MarkType>
   }(std::make_index_sequence<groups_of_output<Type>()>{});
 }
 
-// Слот, который принимает символы, держит внутри буфер с индексом времени
-// выполнения -- и такой буфер не даёт поднять в регистры ничего, что лежит с
-// ним в одном объекте. Поэтому слоты делятся надвое: те, что меняются на
-// каждом символе, остаются значением сборщика, а собирающие обход держит
-// своей переменной и даёт по ссылке.
+// A slot that takes characters holds a buffer indexed while the program runs,
+// and a buffer like that keeps everything living in the same object out of the
+// registers. So the slots are split in two: the ones that change on every
+// character stay a value of the gatherer, and the ones that collect are held by
+// the walk in a variable of its own and handed over by reference.
 template <class Kind>
 concept keeps_characters = requires(Kind& one, char letter) {
   one.push_back(letter);
@@ -894,10 +894,27 @@ struct gathered_by_the_registers {
 
   // A fold at this place, with the last step run into the copy: the end of the
   // input is not a character, so what it left open is closed here.
+  //
+  // Through a reading that has the ending's closings in it, for the same reason
+  // `span` reads one: a group still open where the reading stopped is closed by
+  // the commands that end the walk, and those write registers of their own. Read
+  // through the reading alone, the last turn of a fold standing at the end of a
+  // format looked like a turn that never closed, and was dropped.
   template <std::size_t Place, class Held>
   [[nodiscard]] SCAN_FORCE_INLINE constexpr auto fold_at() const {
     auto fold = gathering<Place>();
-    fold_one_step<fold_phase::whole, Place, Held>(fold.here, reading, registers,
+    constexpr std::size_t inside = groups_a_leaf_opens<std::remove_cv_t<Held>>();
+    std::array<std::uint32_t, (Place + 1 + inside) * 2> through{};
+    for (std::size_t which = 0; which < through.size(); ++which) {
+      through[which] = reading[which];
+    }
+    for (std::size_t which = 0; which < inside; ++which) {
+      const std::size_t opened = (Place + 1 + which) * 2;
+      const auto began = slot_read(registers, through[opened]);
+      const auto walked = slot_read(registers, through[opened + 1]);
+      if (!closed_since(walked, began)) through[opened + 1] = ending[opened + 1];
+    }
+    fold_one_step<fold_phase::whole, Place, Held>(fold.here, through, registers,
                                                   '\0', false);
     return fold;
   }

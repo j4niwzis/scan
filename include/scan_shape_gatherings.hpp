@@ -467,12 +467,12 @@ template <class Held, std::size_t Which, class StateType>
 
 // One step of a fold, told by the shape of the machine rather than by the
 // positions it wrote.
-// Что открыто на входе в состояние.
+// What is open on the way into a state.
 //
-// Где каждый ход умеет сказать о своих группах, все входящие ходы согласны --
-// значит набор открытых групп есть величина времени компиляции, и слово,
-// которое несло его между символами, нужно было лишь чтобы прочитать уже
-// известное.
+// Where every move can say what its groups are, every move arriving here
+// agrees -- so what is open is a thing known while the machine is compiled, and
+// the word that used to carry it between characters was only ever a way of
+// reading back what was already known.
 template <auto& Automaton, std::size_t State>
 [[nodiscard]] consteval std::uint64_t open_on_entry() {
   for (std::size_t f = 0; f < Automaton.states.size(); ++f)
@@ -482,13 +482,13 @@ template <auto& Automaton, std::size_t State>
   return 0;
 }
 
-// Ключ -- пара масок, а не ребро.
+// Keyed by the pair of masks and not by the move.
 //
-// Внутри от ребра нужны только они: что открыто и что начато заново. Рёбер в
-// машине много, а разных пар мало, и пока ключом стояло ребро, компилятор
-// порождал тело на каждое ребро там, где по существу их несколько -- а каждое
-// порождение он потом отдельно прогоняет через оптимизатор и отдельно решает
-// про встраивание, по несвёрнутому размеру.
+// Only the two are wanted from a move: what is open, and what has begun again.
+// A machine has many moves and few distinct pairs, and while the move was the
+// key the compiler wrote a body for every one of them where a handful would do
+// -- and each of those it then optimises on its own and decides about inlining
+// on its own, by its unfolded size.
 template <std::size_t Place, class Held, std::uint64_t NowMask,
           std::uint64_t AgainMask, std::uint64_t WasMask,
           bool EdgesCanMove = true, class FoldType>
@@ -547,7 +547,8 @@ constexpr void fold_by_the_step(FoldType& fold, char symbol,
           } else {
             close_one_group<held_type, which>(fold.here.state);
           }
-          // Слово, которое несло это между символами, больше не читается.
+          // The word that used to carry this between characters is read by
+          // nobody now.
         }
       }
     }(), ...);
@@ -557,9 +558,10 @@ constexpr void fold_by_the_step(FoldType& fold, char symbol,
       if constexpr (takes_the_group_edges<
                         held_type, which, typename FoldType::state_type>() &&
                     holds(now, which)) {
-        // Открывается там, где не было открыто -- или было, но этот ход
-        // начал группу заново: проход закрытия выше уже погасил её, и слово,
-        // которое раньше несло это между двумя проходами, здесь не нужно.
+        // Opened where it was not open -- or was, and this move began the
+        // group again: the closing pass above has already put it out, and the
+        // word that used to carry this between the two passes is not wanted
+        // here.
         if constexpr (!holds(WasMask, which) || holds(AgainMask, which)) {
           open_one_group<held_type, which>(fold.here.state);
           if constexpr (takes_the_group_whole<

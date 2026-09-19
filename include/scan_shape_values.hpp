@@ -856,6 +856,11 @@ class field_gatherer {
               taken.target == State && taken.groups_reopened == 0, Landed>(
         letter, registers, position,
         std::make_index_sequence<field_count>{});
+    // Where the last move stood, kept for the ending: the end of the input is
+    // not a character and no move arrives at it, so what is still open there
+    // has to be closed by hand -- and a group that is handed what it stood on
+    // wants to know where it ends.
+    where_ = position;
     collect_turns_that_ended<Type, Format, Automaton, failure_for<Type>>(
         Landed, registers, states_, std::make_index_sequence<field_count>{},
         failed_);
@@ -890,10 +895,31 @@ class field_gatherer {
           constexpr std::size_t inside = groups_a_leaf_opens<held>();
           const auto& reading = packed.readings[packed.accepting_slot];
           for (std::size_t which = 0; which < inside; ++which) {
-            one.here.told_at[which] =
+            const auto began =
                 slot_read(registers, reading[(group + 1 + which) * 2]);
-            one.here.ended_at[which] =
+            auto shut =
                 slot_read(registers, reading[(group + 1 + which) * 2 + 1]);
+            // A group still open where the reading stopped was closed by the
+            // commands that end the walk, and those write registers of their
+            // own. Read through the reading alone, the last turn of a fold
+            // standing at the end of a format looked like a turn that never
+            // closed -- and was dropped.
+            if (!closed_since(shut, began)) {
+              shut = slot_read(
+                  registers, packed.ending_reading[(group + 1 + which) * 2 + 1]);
+            }
+            one.here.told_at[which] = began;
+            one.here.ended_at[which] = shut;
+          }
+          // Where the fold is told by the moves, the registers hold nothing to
+          // close it with: the machine said every edge as it was taken and the
+          // end of the input is no move at all. So what the accepting state has
+          // open is closed here, innermost first, which is the step that never
+          // came.
+          if constexpr (every_move_says_the_groups<Automaton>()) {
+            fold_by_the_step<group, held, 0, 0,
+                             open_on_entry<Automaton, State>()>(one, '\0',
+                                                                false, where_);
           }
         }
       }(), ...);
@@ -1235,6 +1261,7 @@ class field_gatherer {
   // close -- so being open is remembered rather than guessed at.
   std::uint64_t turns_open_ = 0;
   [[no_unique_address]] warm_type warm_{};
+  MarkKind where_{};
   cold_type* cold_ = nullptr;
   // What the places were told, kept for the slots that are made as the
   // walk goes. Empty where nothing was told, so it costs nothing there.
