@@ -222,6 +222,22 @@ tests -- a reading allocates four times and keeps a `std::vector` of registers.
 That is the runtime-automaton road and not the library a consumer gets, where
 the same six readings allocate nothing.
 
+## 5b. Tests under the walk
+
+`where_a_gathering_lives_test` asks the machinery what it decided before
+anything was read: which slot a place gathers in, which place a context ends up
+at, and how many turns a place may take. Every one of those is settled while the
+program is compiled, so every one is a `static_assert` -- and every fault it
+pins was found the long way first, by reading a value that came back wrong.
+
+It earned its place on the first run. A fold standing at the end of a format
+lost its last turn: reading `"1,2,3"` into a type that folds its own groups gave
+`[1, 2]`. Every fold test in the suite had a place after the fold, so the last
+group always closed on a move and was told; with nothing after it, the end of
+the input closes the group and the end of the input is not a move. The gatherer
+now runs that step itself, closing what the accepting state says is open --
+innermost first, which is the step that never came.
+
 ## 6. Compile time is the scarce resource
 
 * **The ladder** (`scan_runtime.cc:1766-2540`) lays out 256 labelled rungs with
