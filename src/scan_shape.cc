@@ -561,7 +561,7 @@ struct aggregate_scanner {
   // it here reaches its places the way it reaches everything else.
   template <class SelfType, class CarrierType>
     requires(!detail::says_a_list_inside<scanner_target_t<SelfType>>())
-  [[nodiscard]] constexpr auto from_groups(
+  [[nodiscard]] SCAN_FORCE_INLINE constexpr auto from_groups(
       this const SelfType& self, std::span<const std::string_view> groups,
       const CarrierType& told)
       -> std::expected<scanner_target_t<SelfType>,

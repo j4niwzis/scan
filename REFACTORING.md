@@ -175,25 +175,33 @@ right; };` with `scanner<both> : aggregate_scanner<"{}:{}">`.
 
 Measured, not guessed: one translation unit, `-O3`, automata compiled (the
 configuration a consumer gets), three readings of the same record -- told
-nothing, told one context as it stands, and told four in braces.
+nothing, told one context as it stands, and told four in braces, where two of
+the four go into places whose type says a format of its own.
 
-| | indirect calls at the call site | vptr loads | allocations |
-| --- | --- | --- | --- |
-| told nothing | 0 | 0 | 0 |
-| told one context | 0 | 0 | 0 |
-| told four in braces | 0 | 0 | 0 |
+| | indirect calls | vptr loads | vptr stores | instructions |
+| --- | --- | --- | --- | --- |
+| told nothing | 0 | 0 | 0 | 240 |
+| told one context | 0 | 0 | 0 | 253 |
+| told four in braces | 0 | 0 | 0 | 253 |
 
-The braced reading keeps four `reading_by` objects on the stack and stores a
-vptr into each; nothing ever loads one. What is left is four indirect calls
-*inside* the value builder, one per place of the two nested shapes, made once
-where the record is put together and never on a character. They survive because
-the builder chain stays out of line: marking it `always_inline` pushes them one
-level down at a time -- `scanner_told_from_groups`, then
-`aggregate_scanner::from_groups`, then `build_value`, then `built_value`, then
-the lambda inside it -- so removing them means writing the whole builder into
-every caller, which is a cost paid by every reading and not only by the braced
-ones. Left as it is; under whole-program optimisation the inliner has the
-better view anyway.
+Nothing is dispatched: the braced reading costs what the plain one costs, and
+the readings it would have crossed the door through are not there at all -- the
+compiler proved they are unread and removed them, vptr stores and all.
+
+It was not so at first. The road that crosses the interface is a chain of short
+forwarding bodies -- `scanner_told_from_groups`, `aggregate_scanner::from_groups`,
+`build_value`, `built_value` -- and every one left out of line hides from the
+optimiser which reading is being held, so each place cost a call through the
+interface. They are all written into their callers now, and the two packs inside
+`built_value` are named functions (`built_of_parts`, `made_of_parts`) rather
+than lambdas, because an attribute on a lambda is quietly taken as a word about
+its type. **The user writes nothing for this**: it is the library's own road
+that is inlined, not anybody's scanner.
+
+What it cost to do: nothing measurable. The same translation unit compiles in
+15.3 seconds against 15.4 before, and the module *shrank* -- 2900 lines of IR
+against 3588, eight functions against forty-three, because what used to be
+emitted out of line is now folded into the three readings.
 
 One thing the same run says about the test build: with
 `SCAN_AUTOMATA_AT_RUNTIME` on -- which is how this repository builds its own
