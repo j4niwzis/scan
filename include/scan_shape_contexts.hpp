@@ -755,10 +755,30 @@ template <class Held, bool ToldApart, class ContextType>
   }
 }
 
+// The parts of a value, each built and handed over where the value is made.
+//
+// Named rather than written as a lambda where they are used, and written into
+// whoever asks: a context said in braces crosses the door as a reading, and a
+// body left out of line cannot see which reading it holds -- so every place
+// would cost a call through the interface. Inlined, the caller still holds the
+// readings and every one of those calls is direct. Nothing is asked of the
+// caller for that; it is the library's own road that is written out.
+template <class Parameters, class Type, std::size_t Offset, class CarrierType,
+          std::size_t... Index>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr Type built_of_parts(
+    std::span<const std::string_view> groups, const CarrierType& given,
+    std::index_sequence<Index...>);
+
+template <class Parameters, class Type, std::size_t Offset, class CarrierType,
+          std::size_t... Index>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr Type made_of_parts(
+    std::span<const std::string_view> groups, const CarrierType& given,
+    std::index_sequence<Index...>);
+
 // The value itself, for a reading that cannot go wrong.
 template <class Parameters, class Type, std::size_t Offset,
           bool AsOutput = false, class CarrierType = scan::no_contexts>
-[[nodiscard]] constexpr Type built_value(
+[[nodiscard]] SCAN_FORCE_INLINE constexpr Type built_value(
     std::span<const std::string_view> groups,
     const CarrierType& given = CarrierType{}) {
   constexpr bool a_value = scanned_as_leaf<Type> && !AsOutput;
@@ -775,28 +795,42 @@ template <class Parameters, class Type, std::size_t Offset,
               groups[Offset], Parameters::at(Offset), leaf_of(given)));
     }
   } else if constexpr (scanned_from_values<Type>) {
-    return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return scan::scanner<std::remove_cv_t<Type>>{}.parse(
-          built_value<Parameters, typename parts_of<Type>::template at<index>,
-                      Offset + groups_before_field<Type, index>()>(
-              groups, told_for_part<index>(given))...);
-    }(std::make_index_sequence<parts_of<Type>::count>{});
+    return made_of_parts<Parameters, Type, Offset>(
+        groups, given, std::make_index_sequence<parts_of<Type>::count>{});
   } else {
-    return [&]<std::size_t... index>(std::index_sequence<index...>) {
-      return Type{
-          built_value<Parameters, typename parts_of<Type>::template at<index>,
-                      Offset + groups_before_field<Type, index>()>(
-              groups, told_for_part<index>(given))...};
-    }(std::make_index_sequence<parts_of<Type>::count>{});
+    return built_of_parts<Parameters, Type, Offset>(
+        groups, given, std::make_index_sequence<parts_of<Type>::count>{});
   }
+}
+
+template <class Parameters, class Type, std::size_t Offset, class CarrierType,
+          std::size_t... Index>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr Type built_of_parts(
+    std::span<const std::string_view> groups, const CarrierType& given,
+    std::index_sequence<Index...>) {
+  return Type{built_value<Parameters, typename parts_of<Type>::template at<Index>,
+                          Offset + groups_before_field<Type, Index>()>(
+      groups, told_for_part<Index>(given))...};
+}
+
+template <class Parameters, class Type, std::size_t Offset, class CarrierType,
+          std::size_t... Index>
+[[nodiscard]] SCAN_FORCE_INLINE constexpr Type made_of_parts(
+    std::span<const std::string_view> groups, const CarrierType& given,
+    std::index_sequence<Index...>) {
+  return scan::scanner<std::remove_cv_t<Type>>{}.parse(
+      built_value<Parameters, typename parts_of<Type>::template at<Index>,
+                  Offset + groups_before_field<Type, Index>()>(
+          groups, told_for_part<Index>(given))...);
 }
 
 template <class FailureType, class Parameters, class Type,
           std::size_t Offset, bool AsOutput = false,
           class Ending = hands_a_failure_back,
           class CarrierType = scan::no_contexts>
-[[nodiscard]] constexpr typename Ending::template result<Type, FailureType>
-build_value(std::span<const std::string_view> groups,
+[[nodiscard]] SCAN_FORCE_INLINE constexpr
+    typename Ending::template result<Type, FailureType>
+    build_value(std::span<const std::string_view> groups,
             const CarrierType& given = CarrierType{}) {
   // Where this is the whole of what is being read, a shape that reads its own
   // groups is a product of places rather than a value in a place.

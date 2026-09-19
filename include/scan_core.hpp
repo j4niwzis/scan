@@ -701,7 +701,8 @@ template <class Type, class Ending = hands_a_failure_back>
 // that reads its own groups is a reading like any other inside, and what its
 // places were told reaches them through here.
 template <class Type, class Ending = hands_a_failure_back, class CarrierType>
-[[nodiscard]] constexpr decltype(auto) scanner_told_from_groups(
+[[nodiscard]] [[gnu::always_inline]] inline constexpr decltype(auto)
+scanner_told_from_groups(
     std::span<const std::string_view> given, const CarrierType& told) {
   using held = std::remove_cv_t<Type>;
   if constexpr (requires {
