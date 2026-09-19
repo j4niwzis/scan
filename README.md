@@ -486,7 +486,10 @@ const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is na
   rather than quietly dropped.
 * **In braces**, the list goes as deep as the shape does, so the parts of a
   place can each have their own -- including the branches of a sum. A value at
-  a place is that place's and all of its parts'.
+  a place is that place's and all of its parts'. A place whose *type* says a
+  format of its own is the one exception: what its places are told is part of
+  what its reading is, and braces forget the type of what they carry, so such a
+  place takes its context without braces. Said that way at compile time.
 * A fold or a list is told its context **without** braces: it is one value made
   of many turns, not a shape of parts.
 * `with(…)` says the same thing before the output type is named, which is what

@@ -48,6 +48,31 @@ template <std::size_t Part, class CarrierType>
   }
 }
 
+// The two questions a carrier answers, asked so that a context answers them
+// too.
+//
+// A place that is a shape hands what it was told to each of its parts, and what
+// it was told may be a carrier or may be the context itself -- a braced list is
+// the first, a context said for the whole place is the second. Everything below
+// asks through these, so neither has to be turned into the other.
+template <class CarrierType>
+[[nodiscard]] constexpr bool told_apart_of() {
+  if constexpr (requires { CarrierType::told_apart; }) {
+    return CarrierType::told_apart;
+  } else {
+    return false;
+  }
+}
+
+template <class CarrierType>
+[[nodiscard]] constexpr decltype(auto) leaf_of(const CarrierType& given) {
+  if constexpr (requires { given.leaf(); }) {
+    return given.leaf();
+  } else {
+    return (given);
+  }
+}
+
 // The context said at the place a group belongs to.
 //
 // The walk knows groups; the caller said places. This walks down the shape the
@@ -218,8 +243,26 @@ struct reading_by final : reading_of<FieldType> {
   }
 
   [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
-    if constexpr (requires { scan::scanner<held>{}.begin_groups(*kept); }) {
+    // Told or untold, what a fold begins has to be the one type this interface
+    // hands back -- that is what lets a context cross the door without its own
+    // type crossing with it. A type that says a format of its own breaks that:
+    // what its places are told is part of what its state is, so a told state
+    // and an untold one are two types, and only the caller knows which.
+    constexpr bool told_begins_the_same =
+        requires {
+          scan::scanner<held>{}.begin_groups(*kept);
+          requires std::same_as<
+              decltype(scan::scanner<held>{}.begin_groups(*kept)),
+              fold_state_for<held>>;
+        };
+    if constexpr (told_begins_the_same) {
       return scan::scanner<held>{}.begin_groups(*kept);
+    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(*kept); }) {
+      static_assert(told_begins_the_same,
+                    "a place whose type says a format of its own is told its "
+                    "context without braces: scan<f>(text).of<T>(context), not "
+                    ".of<T>({context})");
+      return scan::scanner<held>{}.begin_groups();
     } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
       return scan::scanner<held>{}.begin_groups();
     } else {
@@ -668,22 +711,23 @@ template <class Parameters, class Type, std::size_t Offset,
       return or_thrown(
           parse_value_given<std::remove_cv_t<Type>,
                             failure_for<std::remove_cv_t<Type>>,
-                            CarrierType::told_apart, scan::throws_a_failure>(
-              groups[Offset], Parameters::at(Offset), given.leaf()));
+                            told_apart_of<CarrierType>(),
+                            scan::throws_a_failure>(
+              groups[Offset], Parameters::at(Offset), leaf_of(given)));
     }
   } else if constexpr (scanned_from_values<Type>) {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return scan::scanner<std::remove_cv_t<Type>>{}.parse(
           built_value<Parameters, typename parts_of<Type>::template at<index>,
                       Offset + groups_before_field<Type, index>()>(
-              groups, given.template for_part<index>())...);
+              groups, told_for_part<index>(given))...);
     }(std::make_index_sequence<parts_of<Type>::count>{});
   } else {
     return [&]<std::size_t... index>(std::index_sequence<index...>) {
       return Type{
           built_value<Parameters, typename parts_of<Type>::template at<index>,
                       Offset + groups_before_field<Type, index>()>(
-              groups, given.template for_part<index>())...};
+              groups, told_for_part<index>(given))...};
     }(std::make_index_sequence<parts_of<Type>::count>{});
   }
 }
@@ -713,11 +757,11 @@ build_value(std::span<const std::string_view> groups,
     // Where this place was told a context, the whole of this reading is that
     // context's: the groups are cut out here and handed over in one call.
     if constexpr (requires {
-                    given.leaf().told();
-                    given.leaf().read_groups(
+                    leaf_of(given).told();
+                    leaf_of(given).read_groups(
                         std::span<const std::string_view>{});
                   }) {
-      const auto told_here = given.leaf();
+      const auto& told_here = leaf_of(given);
       if (told_here.told()) {
         std::array<std::string_view, inside> mine{};
         [&]<std::size_t... at>(std::index_sequence<at...>) {
@@ -762,7 +806,7 @@ build_value(std::span<const std::string_view> groups,
         return scan::scanner<held>{}.from_groups(pieces);
       }
     } else {
-      auto state = begun_groups<held>(given.leaf());
+      auto state = begun_groups<held>(leaf_of(given));
       [&]<std::size_t... at>(std::index_sequence<at...>) {
         ((void)[&] {
           // A group that took no part in the match is not opened at all, which
@@ -789,8 +833,8 @@ build_value(std::span<const std::string_view> groups,
             groups[Offset], Parameters::at(Offset));
       } else {
         return parse_value_given<std::remove_cv_t<Type>, FailureType,
-                                 CarrierType::told_apart>(
-            groups[Offset], Parameters::at(Offset), given.leaf());
+                                 told_apart_of<CarrierType>()>(
+            groups[Offset], Parameters::at(Offset), leaf_of(given));
       }
     }();
     if (got) return std::move(*got);
@@ -838,12 +882,12 @@ build_value(std::span<const std::string_view> groups,
             build_value<FailureType, Parameters,
                         typename parts_of<Type>::template at<index>,
                         Offset + groups_before_field<Type, index>(), false,
-                        Ending>(groups, given.template for_part<index>())...);
+                        Ending>(groups, told_for_part<index>(given))...);
       } else {
         auto parts = std::tuple{build_value<
             FailureType, Parameters, typename parts_of<Type>::template at<index>,
             Offset + groups_before_field<Type, index>(), false, Ending>(
-            groups, given.template for_part<index>())...};
+            groups, told_for_part<index>(given))...};
         if (auto went_wrong = what_went_wrong<FailureType>(parts)) {
           return std::unexpected(std::move(*went_wrong));
         }
@@ -861,12 +905,12 @@ build_value(std::span<const std::string_view> groups,
                                 typename parts_of<Type>::template at<index>,
                                 Offset + groups_before_field<Type, index>(),
                                 false, Ending>(
-            groups, given.template for_part<index>())...};
+            groups, told_for_part<index>(given))...};
       } else {
         auto parts = std::tuple{build_value<
             FailureType, Parameters, typename parts_of<Type>::template at<index>,
             Offset + groups_before_field<Type, index>(), false, Ending>(
-            groups, given.template for_part<index>())...};
+            groups, told_for_part<index>(given))...};
         if (auto went_wrong = what_went_wrong<FailureType>(parts)) {
           return std::unexpected(std::move(*went_wrong));
         }
