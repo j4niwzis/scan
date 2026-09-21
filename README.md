@@ -1043,9 +1043,11 @@ The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
 
 A project that cannot take modules reads the same library as headers. They are
 generated from these very interface units by
-[demodulizer](https://github.com/j4niwzis/demodulizer), checked in the same run
-that builds the library, and carried in the tree of a release; a checkout of
-`main` does not have them and says so rather than failing later.
+[demodulizer](https://github.com/j4niwzis/demodulizer) and live in `include/`.
+Nobody writes them: every push to `main` regenerates them from that commit's
+interface units, builds them, links them from two translation units, and
+commits them back -- so what is in the tree is what the tree generates, and a
+checkout has them already.
 
 There is one set of them and it answers to both switches: a generated header
 keeps the condition around the import it came from. Through `cmake-everywhere`
