@@ -266,8 +266,12 @@ class borrowed_result : public names_its_output<Format> {
   // type has nowhere to put them.
   template <class... Contexts>
   [[nodiscard]] constexpr auto with(Contexts&&... given) const {
-    return reading_with<borrowed_result, std::remove_reference_t<Contexts>...>(
-        *this, given...);
+    // The same kinds `of<T>(...)` deduces, and for the same reasons: what the
+    // caller owns is held as its address, what was made at the call is held
+    // here. Stripping the reference made every context the second kind, which
+    // moved from an lvalue the caller still owned and would not compile at all
+    // for a const one.
+    return reading_with<borrowed_result, Contexts...>(*this, given...);
   }
 
   // The same things the reading could be told before it was handed a subject,
