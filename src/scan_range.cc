@@ -72,12 +72,19 @@ class reading_with {
 // throw at the asking.
 // How many readings of one field the walk stands in at once.
 //
+// Not the machine's registers. There are three hundred and seventy-nine of
+// those for a row of three places with a fold in it, and a match reads none of
+// them but the ones its own reading names -- two for every group and for every
+// group inside it, which is what `by_the_registers` looks at and nothing more.
+// Sized by the registers the machine has, anything kept per reading would be
+// ninety kilobytes of it; sized by what a reading names, it is a handful.
+//
 // A variable template, because it is a fact about the pair and nothing else:
 // the compiler works it out once for a type and a format and remembers it,
 // where a function would work it out again at every place that asked.
 template <class Type, fixed_string Format>
 inline constexpr std::size_t copies_of_a_reading =
-    streaming_automaton<Type, Format>.register_count;
+    4 * detail::groups_of_output<Type>() + 8;
 
 // Told the format, so that a place written in braces can be handed the number
 // of readings the walk will stand in. The output type is named at the call and
