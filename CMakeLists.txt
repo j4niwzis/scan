@@ -403,7 +403,13 @@ else()
   target_link_libraries(scan ${scan_reaches} $<BUILD_INTERFACE:Boost::pfr>)
 endif()
 if(SCAN_MODULES)
-  target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic)
+  # And not warned about the dialect that was asked for. `-Wpedantic` in clang
+  # says its piece about a GNU extension even where the dialect is `gnu++`, and
+  # the two this library uses -- a label's address and a goto through it, which
+  # is what the walk is -- are written on purpose and said in the target above.
+  # GCC, asked for the same dialect, says nothing.
+  target_compile_options(scan PRIVATE -Wall -Wextra -Wpedantic
+    $<$<CXX_COMPILER_ID:Clang>:-Wno-gnu-label-as-value>)
 endif()
 target_compile_options(scan ${scan_reaches}
   $<$<CXX_COMPILER_ID:Clang>:-fconstexpr-steps=300000000>
