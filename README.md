@@ -519,6 +519,48 @@ const two got = scan::scan<"{[a-z]+} {[a-z]+}">(text).of<two>(
     std::pmr::polymorphic_allocator<>(&bytes));
 ```
 
+### What braces cost
+
+A context said **as it stands** is handed to the scanner as itself. Its type is
+a template parameter the whole way down, nothing is erased, and the call the
+library makes is the call you wrote.
+
+A context said **in braces** cannot be. A braced list says the parts of a place
+one by one, and how deep it goes is a fact about the shape rather than about
+any one context -- so what the places under it are handed has to be one type
+per field, whatever the caller wrote there. The list is held behind an
+interface that knows the field and not the context, and two things come with
+that:
+
+* Each leaf of the list gets a small reading made for it, **as a default
+  argument of the call**. That is what makes it live long enough -- a default
+  argument lives to the end of the full expression, which is after the reading
+  has run.
+* Calls into your scanner from behind that interface are **virtual**:
+  `parse`, `from_groups`, `begin_groups` and the rest. Clang devirtualises
+  them -- the implementation is `final` and is built in the same full
+  expression as the call -- but whether it then inlines them is its own
+  decision, and no attribute makes it.
+
+Two things follow.
+
+**A reading that runs inside the call it was written in can take braces.**
+`scan<f>(text).of<T>({a, b})` and `scan_prefix<f>(r).of<T>({a, b})` both make
+their value before the full expression ends, so the readings the braces made
+are still alive when they are used.
+
+**A reading that is lazy cannot.** `each<f>(r).of<T>(...)` hands back a view
+and reads a record when it is asked for one -- which is after the call that
+named the output has ended, and after a braced list's readings have died with
+it. So `each` takes its contexts as they stand and nothing else. It binds them
+by reference, so a temporary handed to it is refused while it compiles rather
+than read after it is gone.
+
+Where a place wants a context and the reading is the hot path, say it as it
+stands. Braces are for saying what the parts of a shape are told, which is a
+thing the other spelling cannot say at all -- and that is what the virtual
+call is for.
+
 ## Extension points
 
 Everything a type can say about how it is read is a specialisation or a member.
