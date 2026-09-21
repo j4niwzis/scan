@@ -3,7 +3,7 @@ export module scan.scanners;
 import std;
 export import scan.range;
 
-export namespace scan {
+namespace scan {
 
 namespace detail {
 
@@ -109,7 +109,7 @@ struct scanner<std::string> {
 //
 // What overflows is dropped and remembered as having overflowed, because the
 // alternative is either an allocation or a lie.
-template <std::size_t Capacity>
+export template <std::size_t Capacity>
 struct held {
   std::array<char, Capacity> storage{};
   std::size_t length = 0;

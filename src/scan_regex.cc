@@ -4,7 +4,7 @@ import std;
 import scan.tre;
 export import scan.shape;
 
-export namespace scan {
+namespace scan {
 
 // A piece of the subject a match stood on, however the subject is held.
 //
@@ -168,7 +168,7 @@ struct transition_ranges {
 };
 
 // Whether the machine standing here would have a match.
-template <fixed_string Pattern, std::size_t State>
+export template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval bool accepts_here() {
   return regex_automaton<Pattern>.states[State].accepting_slot !=
          packed_state<0, 0, 0>::not_accepting;
@@ -179,7 +179,7 @@ template <fixed_string Pattern, std::size_t State>
 // These used to be recovered from a cell for every symbol, once for every
 // instantiation that asked. The automaton is packed as runs now, so this hands
 // them over.
-template <fixed_string Pattern, std::size_t State>
+export template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval auto make_transition_ranges() {
   constexpr const auto& automaton = regex_automaton<Pattern>;
   using state_type = std::size_t;
@@ -222,7 +222,7 @@ template <fixed_string Pattern>
   return true;
 }
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t minimum_match_length() {
   constexpr const auto& automaton = regex_automaton<Pattern>;
   constexpr std::size_t state_count =
@@ -289,7 +289,7 @@ struct transition_targets {
   std::size_t size = 0;
 };
 
-template <fixed_string Pattern, std::size_t State>
+export template <fixed_string Pattern, std::size_t State>
 [[nodiscard]] consteval auto make_transition_targets() {
   constexpr const auto& automaton = regex_automaton<Pattern>;
   using state_type = std::size_t;
@@ -319,7 +319,7 @@ template <fixed_string Pattern, std::size_t State, auto Target>
 
 // Where each symbol takes the automaton from this state, which is what the
 // automaton was built with and is read back here rather than rebuilt.
-template <fixed_string Pattern, std::size_t State>
+export template <fixed_string Pattern, std::size_t State>
 inline constexpr auto transition_target_table = [] consteval {
   constexpr const auto& automaton = regex_automaton<Pattern>;
   using state_type = std::size_t;
@@ -410,7 +410,7 @@ template <fixed_string Pattern, std::size_t State>
 }
 
 
-template <fixed_string Pattern, std::size_t State>
+export template <fixed_string Pattern, std::size_t State>
 inline constexpr auto self_transition_table = [] consteval {
   std::array<unsigned char, 256> result{};
   constexpr const auto& automaton = regex_automaton<Pattern>;
@@ -564,7 +564,7 @@ using regex_result_for =
 // subject does, so the walks below a match are kept and the answer is the
 // first of them still accepting when the characters run out. `a|ab` reads
 // "ab" as `ab`, where the same pattern searching for a head reads `a`.
-template <fixed_string Pattern, how_to_walk Walk = how_to_walk::by_length>
+export template <fixed_string Pattern, how_to_walk Walk = how_to_walk::by_length>
 [[nodiscard]] constexpr regex_result_for<Pattern.to_the_end()>
 regex_match(std::string_view input) {
   constexpr auto whole = Pattern.to_the_end();
@@ -651,7 +651,7 @@ regex_match(std::string_view input) {
 //
 // Nothing else changes. A walk that stops at a terminator never compares the
 // cursor with an end, so there is no end test to lose either way.
-template <fixed_string Pattern, unsigned char Sentinel,
+export template <fixed_string Pattern, unsigned char Sentinel,
           how_to_walk Walk = how_to_walk::by_length>
 [[nodiscard]] constexpr regex_result_for<Pattern.to_the_end()>
 regex_match_sentinel(std::string_view input) {
@@ -789,12 +789,12 @@ namespace detail {
 
 // The three questions asked of a pattern rather than of an automaton. The
 // arithmetic itself is in the runtime, where the format layer asks it too.
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t fallback_window() {
   return detail::walk_past_a_match<regex_automaton<Pattern>>();
 }
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[nodiscard]] consteval std::size_t dead_end_window() {
   return detail::walk_from_the_start<regex_automaton<Pattern>>();
 }
@@ -808,7 +808,7 @@ template <fixed_string Pattern>
 // Whether a subject that can only be read once can be searched at all: both
 // ends of the reading have to name a number -- what a failed attempt swallows
 // and what is read past a match.
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[nodiscard]] consteval bool holds_a_bounded_way() {
   constexpr std::size_t unbounded = std::numeric_limits<std::size_t>::max();
   return dead_end_window<Pattern>() != unbounded &&
@@ -834,7 +834,7 @@ concept forward_char_range =
     std::same_as<std::ranges::range_value_t<RangeType>, char> &&
     !contiguous_char_range<RangeType>;
 
-template <class RangeType>
+export template <class RangeType>
 concept read_once_char_range =
     std::ranges::input_range<RangeType> &&
     std::same_as<std::ranges::range_value_t<RangeType>, char> &&
@@ -844,7 +844,7 @@ concept read_once_char_range =
 // everything after that is the ordinary reading of contiguous characters --
 // with the answers owning what they stood on, because there is nothing else
 // left to point at.
-template <class HeldType, class RangeType>
+export template <class HeldType, class RangeType>
 [[nodiscard]] constexpr HeldType read_once(RangeType&& input) {
   HeldType held;
   auto cursor = std::ranges::begin(input);
@@ -868,7 +868,7 @@ namespace detail {
 // after it whatever that is, a class runs to its closing bracket, and a
 // parenthesis that opens with a question mark captures nothing and is not
 // counted.
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[nodiscard]] consteval std::string_view group_text(std::size_t wanted) {
   const std::string_view text = Pattern.view();
   const auto skip_class = [&](std::size_t at) {
@@ -1022,7 +1022,7 @@ template <class Type, fixed_string Pattern, std::size_t Group>
          group_is_written_as_the_types_pattern<Type, Pattern, Group>();
 }
 
-template <class Type, fixed_string Pattern, std::size_t Group>
+export template <class Type, fixed_string Pattern, std::size_t Group>
 [[nodiscard]] consteval bool group_spells_out() {
   if constexpr (!says_it_reads_its_groups<std::remove_cv_t<Type>>) {
     return false;
@@ -1186,7 +1186,7 @@ class as_collector {
   std::tuple<Arguments...> arguments_;
 };
 
-template <class Type, class... Arguments>
+export template <class Type, class... Arguments>
 [[nodiscard]] constexpr auto as(Arguments&&... given) {
   return as_collector<Type, std::remove_cvref_t<Arguments>...>(
       std::forward<Arguments>(given)...);
@@ -1194,7 +1194,7 @@ template <class Type, class... Arguments>
 
 // What stands in the answer where a group was wanted by nobody. Nothing, and
 // it takes no room.
-struct skipped {};
+export struct skipped {};
 
 // The characters themselves, held however the subject affords: pointed at,
 // walked between, or owned. This is what every group is collected into when
@@ -1234,7 +1234,7 @@ struct text_collector {
   }
 };
 
-[[nodiscard]] constexpr text_collector text() { return {}; }
+export [[nodiscard]] constexpr text_collector text() { return {}; }
 
 // Nothing from this group.
 //
@@ -1252,7 +1252,7 @@ struct skip_collector {
   using value_for = skipped;
 };
 
-[[nodiscard]] constexpr skip_collector skip() { return {}; }
+export [[nodiscard]] constexpr skip_collector skip() { return {}; }
 
 // A value of any type at all, filled by a call of your own.
 //
@@ -1300,7 +1300,7 @@ class collecting_collector {
   std::tuple<Arguments...> arguments_;
 };
 
-template <class Type, class Pusher, class... Arguments>
+export template <class Type, class Pusher, class... Arguments>
 [[nodiscard]] constexpr auto collecting(Pusher&& push, Arguments&&... given) {
   return collecting_collector<Type, std::remove_cvref_t<Pusher>,
                               std::remove_cvref_t<Arguments>...>(
@@ -2217,7 +2217,7 @@ struct match_closure
   }
 };
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr match_closure<Pattern> match{};
 
 // The head of the subject the pattern takes.
@@ -2287,7 +2287,7 @@ struct starts_with_closure
   }
 };
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr starts_with_closure<Pattern> starts_with{};
 
 // The leftmost match. Only over characters that are already all there: finding
@@ -2302,7 +2302,7 @@ struct search_closure
   }
 };
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr search_closure<Pattern> search{};
 
 // One match after another, found as they are asked for.
@@ -2511,7 +2511,7 @@ class read_once_finder {
 };
 
 // A place to push characters that are not wanted.
-struct nowhere {
+export struct nowhere {
   constexpr void push_back(char) const noexcept {}
 };
 
@@ -2833,13 +2833,13 @@ struct search_all_closure
   }
 };
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr search_all_closure<Pattern> search_all{};
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr search_all_closure<Pattern> iterator{};
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr search_all_closure<Pattern> tokenize{};
 
 // The pieces between the matches, found as they are asked for.
@@ -3099,10 +3099,10 @@ struct split_closure
   }
 };
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr split_closure<Pattern> split{};
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[deprecated("use search_all")]]
 inline constexpr search_all_closure<Pattern> range{};
 

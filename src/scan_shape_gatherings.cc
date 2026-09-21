@@ -21,8 +21,8 @@ export import scan.shape.contexts;
 #define SCAN_FORCE_INLINE inline
 #endif
 
-export namespace scan::detail {
-template <class Type, std::size_t Index>
+namespace scan::detail {
+export template <class Type, std::size_t Index>
 using field_type = typename scan::fields<Type>::template at<Index>;
 
 // Nothing is gathered at the place a leaf that reads its own groups stands on:
@@ -41,7 +41,7 @@ template <class Held, class StateType>
 // over whole. Asked through a function of its own so that the question is
 // answered once, where the mark's type is known, instead of in every place
 // that would rather not know.
-template <class Mark>
+export template <class Mark>
 [[nodiscard]] constexpr const char* pointed_at(Mark position) {
   if constexpr (std::is_pointer_v<Mark>) {
     return position;
@@ -68,7 +68,7 @@ template <class Mark>
 // something an assignment should not walk over has no say in it. Told both --
 // the state as it stands and the note taken where the match was -- it puts its
 // own back the way it means to.
-template <class Held, class StateType>
+export template <class Held, class StateType>
 constexpr void groups_go_back_to(StateType& live, const StateType& kept) {
   if constexpr (requires {
                   scan::scanner<Held>::groups_go_back_to(live, kept);
@@ -209,7 +209,7 @@ struct fold_turn {
 // A position is how many characters have been read, or the address one past
 // the character that wrote it -- the walk says it one way or the other. Either
 // way what the group stood on begins one before where its opening says.
-[[nodiscard]] constexpr std::string_view stood_on(const char* text, auto began,
+export [[nodiscard]] constexpr std::string_view stood_on(const char* text, auto began,
                                                   auto ended) {
   if constexpr (std::is_pointer_v<decltype(began)>) {
     const char* from = began > text ? began - 1 : text;
@@ -225,7 +225,7 @@ struct fold_turn {
 // Said as a negative count where positions are counted, and as no address at
 // all where they are addresses -- the walk says them one way or the other and
 // everything that reads them asks here.
-[[nodiscard]] constexpr bool stood_nowhere(auto where) {
+export [[nodiscard]] constexpr bool stood_nowhere(auto where) {
   if constexpr (std::is_pointer_v<decltype(where)>) {
     return where == nullptr;
   } else {
@@ -245,7 +245,7 @@ struct fold_turn {
 // machines that have fewer than sixty-five registers, which is most of them;
 // a reading that keeps everything at its registers has far more, and a mask of
 // one word silently stopped saying anything about those above the sixty-fourth.
-template <std::size_t Registers>
+export template <std::size_t Registers>
 struct one_per_register {
   std::array<std::uint64_t, (Registers + 63) / 64 == 0 ? 1
                                                        : (Registers + 63) / 64>
@@ -258,7 +258,7 @@ struct one_per_register {
   }
 };
 
-[[nodiscard]] constexpr bool closed_since(auto ended, auto began) {
+export [[nodiscard]] constexpr bool closed_since(auto ended, auto began) {
   if (stood_nowhere(ended)) return false;
   return ended >= began;
 }
@@ -270,7 +270,7 @@ struct one_per_register {
 // every turn after the first looks closed the moment it opens, and nothing is
 // handed to it at all. An end standing exactly where the beginning stands
 // therefore belongs to the turn before.
-[[nodiscard]] constexpr bool closed_since_turn(auto ended, auto began,
+export [[nodiscard]] constexpr bool closed_since_turn(auto ended, auto began,
                                                bool repeats) {
   if (stood_nowhere(ended)) return false;
   return repeats ? ended > began : ended >= began;
@@ -296,7 +296,7 @@ struct one_per_register {
 // for a second turn would double what every walk carries for nothing at all.
 struct no_turn {};
 
-template <class Held, class MarkType = std::ptrdiff_t, bool Repeats = true,
+export template <class Held, class MarkType = std::ptrdiff_t, bool Repeats = true,
           class CarrierType = scan::default_context_t, std::size_t Place = 0>
 struct fold_of {
   using held_type = std::remove_cv_t<Held>;
@@ -353,9 +353,9 @@ struct fold_of {
 //
 // A turn on its way out hears only what closes it: what a move opens belongs
 // to the turn that has begun, and so does the character.
-enum class fold_phase { whole, closings_only };
+export enum class fold_phase { whole, closings_only };
 
-template <fold_phase Phase = fold_phase::whole, std::size_t Place, class Held,
+export template <fold_phase Phase = fold_phase::whole, std::size_t Place, class Held,
           class ReadingType, class FoldType, class RegistersType>
 SCAN_FORCE_INLINE constexpr void fold_one_step(
     FoldType& fold, const ReadingType& reading,
@@ -449,7 +449,7 @@ SCAN_FORCE_INLINE constexpr void fold_one_step(
 // characters the walk stepped over costs one step and not one a character:
 // nothing is handed over, and what opened and what closed is the same at both
 // ends of a run, because a run is where nothing is written.
-template <class Held, class StateType>
+export template <class Held, class StateType>
 [[nodiscard]] consteval bool every_group_whole() {
   using held_type = std::remove_cv_t<Held>;
   return []<std::size_t... which>(std::index_sequence<which...>) {
@@ -467,7 +467,7 @@ template <class Held, class StateType>
 // move agrees about which groups a character is inside, every reading would be
 // told the very same things in the very same order, so one fold answers for
 // all of them and lives in the walk itself rather than in a register.
-template <auto& Automaton>
+export template <auto& Automaton>
 [[nodiscard]] consteval bool every_move_says_the_groups() {
   for (std::size_t state = 0; state < Automaton.states.size(); ++state) {
     const auto& here = Automaton.states[state];
@@ -481,9 +481,9 @@ template <auto& Automaton>
 // The move a state takes to stay where it is, where it has one. A run is
 // stepped over by taking that move again and again, so what it says about the
 // character is what the whole run is inside of.
-inline constexpr std::size_t no_move = std::numeric_limits<std::size_t>::max();
+export inline constexpr std::size_t no_move = std::numeric_limits<std::size_t>::max();
 
-template <auto& Automaton, std::size_t State>
+export template <auto& Automaton, std::size_t State>
 [[nodiscard]] consteval std::size_t staying_move() {
   const auto& here = Automaton.states[State];
   for (std::size_t move = 0; move < here.range_count; ++move) {
@@ -521,7 +521,7 @@ inline constexpr std::uint32_t only_fold_register =
 // of what is open for such a group is bookkeeping nobody reads -- and on a
 // group that begins again on every character, as `(X|Y)*` does, it is that
 // bookkeeping on every character.
-template <class Held, std::size_t Which, class StateType>
+export template <class Held, std::size_t Which, class StateType>
 [[nodiscard]] consteval bool takes_the_group_edges() {
   using scanner_type = scan::scanner<std::remove_cv_t<Held>>;
   return requires(StateType& state) {
@@ -543,7 +543,7 @@ template <class Held, std::size_t Which, class StateType>
 // agrees -- so what is open is a thing known while the machine is compiled, and
 // the word that used to carry it between characters was only ever a way of
 // reading back what was already known.
-template <auto& Automaton, std::size_t State>
+export template <auto& Automaton, std::size_t State>
 [[nodiscard]] consteval std::uint64_t open_on_entry() {
   for (std::size_t f = 0; f < Automaton.states.size(); ++f)
     for (std::size_t m = 0; m < Automaton.states[f].range_count; ++m)
@@ -559,7 +559,7 @@ template <auto& Automaton, std::size_t State>
 // key the compiler wrote a body for every one of them where a handful would do
 // -- and each of those it then optimises on its own and decides about inlining
 // on its own, by its unfolded size.
-template <std::size_t Place, class Held, std::uint64_t NowMask,
+export template <std::size_t Place, class Held, std::uint64_t NowMask,
           std::uint64_t AgainMask, std::uint64_t WasMask,
           bool EdgesCanMove = true, class FoldType>
 constexpr void fold_by_the_step(FoldType& fold, char symbol,
@@ -675,7 +675,7 @@ constexpr void fold_by_the_step(FoldType& fold, char symbol,
 // discipline a list is gathered by: readings that share that register share
 // what is gathered there, and where two readings would have to disagree the
 // machine has already given them registers of their own.
-template <std::size_t Place, std::size_t Slot, class Held, auto& Automaton,
+export template <std::size_t Place, std::size_t Slot, class Held, auto& Automaton,
           class StatesType, class RegistersType>
 constexpr void fold_the_readings(
     std::size_t state, const RegistersType& registers, StatesType& states,
@@ -723,7 +723,7 @@ template <class Type, std::size_t Group>
 // text it stands on, so its place gathers nothing and each of its groups
 // gathers characters. Every other group is gathered by the reader of the type
 // it holds, which is what it was before any of this.
-template <class Type, fixed_string Format, std::size_t Group,
+export template <class Type, fixed_string Format, std::size_t Group,
           class MarkType = std::ptrdiff_t>
 struct gathering_of {
   using held_type = leaf_kind_of_output<Type, Group>;
@@ -846,7 +846,7 @@ template <class Held, class StateType>
 // difference between the two, and it is worth the two names: what a walk
 // writes on every character is decided here, and what it may step over in one
 // go is decided below.
-template <class Type, fixed_string Format, auto& Automaton>
+export template <class Type, fixed_string Format, auto& Automaton>
 [[nodiscard]] consteval std::uint64_t groups_whose_mark_is_read() {
   std::uint64_t made = 0;
   [&]<std::size_t... group>(std::index_sequence<group...>) {
@@ -918,7 +918,7 @@ template <class Type, fixed_string Format, auto& Automaton>
 // Kept apart from the walk over places below so that the two lists of groups
 // -- the places and what is inside each of them -- are never expanded
 // together.
-template <class Type, fixed_string Format, std::size_t Group>
+export template <class Type, fixed_string Format, std::size_t Group>
 [[nodiscard]] consteval std::uint64_t edges_listened_for() {
   using how = gathering_of<Type, Format, Group>;
   using held = std::remove_cv_t<leaf_kind_of_output<Type, Group>>;
@@ -958,7 +958,7 @@ template <class Type, fixed_string Format, std::size_t Group>
 //
 // So a group whose characters go to a fold keeps its marks, unread as they
 // are. What is left to save is the groups a fold hears nothing about.
-template <class Type, fixed_string Format, std::size_t Group>
+export template <class Type, fixed_string Format, std::size_t Group>
 [[nodiscard]] consteval std::uint64_t characters_told_of() {
   using how = gathering_of<Type, Format, Group>;
   using held = std::remove_cv_t<leaf_kind_of_output<Type, Group>>;
@@ -1052,7 +1052,7 @@ template <class Type, fixed_string Format, auto& Automaton>
 // The question was asked of the whole machine and the answer used for the
 // trimmed one, which is the mistake. It is asked of the machine that will be
 // walked now, and where trimming would cost it that, nothing is trimmed.
-template <class Type, fixed_string Format, bool Cut>
+export template <class Type, fixed_string Format, bool Cut>
 inline constexpr std::uint64_t tags_worth_keeping = [] {
   constexpr std::uint64_t slim =
       tags_that_matter<Type, Format,
@@ -1084,7 +1084,7 @@ inline constexpr std::uint64_t tags_worth_keeping = [] {
   }
 }();
 
-template <class Type, fixed_string Format, bool Cut = true>
+export template <class Type, fixed_string Format, bool Cut = true>
 inline constexpr auto& streaming_automaton =
     packed_text_automaton<spread_text<Type, Format>, false, Cut,
                           tags_worth_keeping<Type, Format, Cut>>;
@@ -1099,7 +1099,7 @@ inline constexpr auto& streaming_automaton =
 // Nothing reads those positions then -- and writing them is not merely a store
 // on nearly every character: it makes every run a run that writes, which is a
 // run the vectors cannot step over.
-template <class Type, fixed_string Format, auto& Automaton>
+export template <class Type, fixed_string Format, auto& Automaton>
 [[nodiscard]] consteval std::uint64_t groups_whose_place_is_read() {
   std::uint64_t made = 0;
   [&]<std::size_t... group>(std::index_sequence<group...>) {

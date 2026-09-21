@@ -3,9 +3,9 @@ export module scan.range;
 import std;
 export import scan.shape;
 
-export namespace scan::detail {
+namespace scan::detail {
 
-template <class Type, fixed_string Format, std::size_t Extent, std::size_t... Index>
+export template <class Type, fixed_string Format, std::size_t Extent, std::size_t... Index>
 [[nodiscard]] constexpr Type convert(
     const std::array<std::string_view, Extent>& fields,
     std::index_sequence<Index...>) {
@@ -388,7 +388,7 @@ class streaming_result : public names_its_output<Format> {
 
 }  // namespace scan::detail
 
-export namespace scan {
+namespace scan {
 
 // Whether the type of the input promises a terminator past its last character.
 //
@@ -409,7 +409,7 @@ concept terminated_char_range =
      detail::literal_char_range<RangeType>);
 
 // What a scan of the head of an input hands back: the values, and what is left.
-template <class Type>
+export template <class Type>
 struct taken {
   Type value;
   std::string_view rest;
@@ -722,7 +722,7 @@ class each_stream_view {
 // reason.
 namespace experimental {
 
-template <class Type, fixed_string Format>
+export template <class Type, fixed_string Format>
 class reader {
  public:
   // False means the character was not taken and the machine has not moved:
@@ -957,7 +957,7 @@ struct each_closure : std::ranges::range_adaptor_closure<each_closure<Format>> {
   }
 };
 
-template <fixed_string Format>
+export template <fixed_string Format>
 inline constexpr each_closure<Format> each{};
 
 // What `each` over pieces hands back until somebody says what it reads into.
@@ -1063,7 +1063,7 @@ class each_pieces_view {
 };
 
 // The head of the input that the pattern takes, and what follows it.
-template <fixed_string Format, detail::contiguous_char_range RangeType>
+export template <fixed_string Format, detail::contiguous_char_range RangeType>
   requires(std::is_lvalue_reference_v<RangeType&&> || std::ranges::borrowed_range<RangeType>)
 [[nodiscard]] constexpr auto scan_prefix(RangeType&& input) {
   return prefix_scan<Format>(detail::characters_of(input));
@@ -1071,7 +1071,7 @@ template <fixed_string Format, detail::contiguous_char_range RangeType>
 
 // The same, for input that has to be read as it comes. Nothing is buffered and
 // nothing is looked at twice.
-template <fixed_string Format, std::ranges::input_range RangeType>
+export template <fixed_string Format, std::ranges::input_range RangeType>
   requires std::same_as<std::ranges::range_value_t<RangeType>, char> &&
            (!detail::contiguous_char_range<RangeType> ||
             (!std::is_lvalue_reference_v<RangeType&&> &&
@@ -1244,7 +1244,7 @@ struct scan_closure {
   }
 };
 
-template <fixed_string Format>
+export template <fixed_string Format>
 inline constexpr scan_closure<Format> scan{};
 
 template <class Type, fixed_string Format, std::ranges::input_range RangeType>

@@ -22,12 +22,12 @@ export import scan.shape.gatherings;
 #define SCAN_FORCE_INLINE inline
 #endif
 
-export namespace scan::detail {
-template <class Type, fixed_string Format, std::size_t Group,
+namespace scan::detail {
+export template <class Type, fixed_string Format, std::size_t Group,
           class MarkType = std::ptrdiff_t>
 [[nodiscard]] consteval bool alone_in_its_slot();
 
-template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
+export template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
 [[nodiscard]] consteval bool gathers_in_the_walk() {
   using how = gathering_of<Type, Format, Group>;
   // A list is left out twice over: it grows turn by turn, and which turn a
@@ -52,7 +52,7 @@ template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
 // together: the list is the slot the elements are appended to and the element
 // is the slot being gathered, and one of them living at a register would put
 // the other back there too.
-template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
+export template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
 [[nodiscard]] consteval bool list_gathers_in_the_walk() {
   if constexpr (!scanned_as_range<leaf_kind_of_output<Type, Group>>) {
     return false;
@@ -83,7 +83,7 @@ template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
 // the reader of the type that value is, and the output is put together from
 // those afterwards, the same way it is put together from pieces of a subject
 // that can be pointed at.
-template <class Type, fixed_string Format, std::size_t... Group>
+export template <class Type, fixed_string Format, std::size_t... Group>
 [[nodiscard]] constexpr auto make_scanner_state(
     std::index_sequence<Group...>) {
   static constexpr auto spread = spread_of<Type, Format>();
@@ -111,7 +111,7 @@ template <class Type, fixed_string Format>
 // The same, told what the place this shape stands at was told. Every place
 // inside begins with what it was told, which is what a place told a context
 // means one level down as much as it does at the call.
-template <class Type, fixed_string Format, class CarrierType, std::size_t... Group>
+export template <class Type, fixed_string Format, class CarrierType, std::size_t... Group>
 [[nodiscard]] constexpr auto make_scanner_state_told(
     const CarrierType& told, std::index_sequence<Group...>) {
   static constexpr auto spread = spread_of<Type, Format>();
@@ -128,7 +128,7 @@ template <class Type, fixed_string Format, class CarrierType, std::size_t... Gro
   return std::tuple{one.template operator()<Group>()...};
 }
 
-template <class Type, fixed_string Format, class CarrierType>
+export template <class Type, fixed_string Format, class CarrierType>
 [[nodiscard]] constexpr auto make_scanner_state_told(const CarrierType& told) {
   return make_scanner_state_told<Type, Format>(
       told, std::make_index_sequence<groups_of_output<Type>()>{});
@@ -219,13 +219,13 @@ using gathering_kinds_of =
                         groups_of_output<Type>(), CarrierType>::result;
 
 // What one register holds.
-template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
+export template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
           class CarrierType = scan::default_context_t>
 using register_state =
     typename gathering_kinds_of<Type, Format, MarkType, CarrierType>::as_a_tuple;
 
 // Which slot of it a group is gathered in.
-template <class Type, fixed_string Format, std::size_t Group,
+export template <class Type, fixed_string Format, std::size_t Group,
           class MarkType = std::ptrdiff_t,
           class CarrierType = scan::default_context_t>
 inline constexpr std::size_t gathering_slot =
@@ -235,7 +235,7 @@ inline constexpr std::size_t gathering_slot =
 
 // The default is said once, where the name is first declared above; saying it
 // again here is ill-formed and only a module unit lets it pass.
-template <class Type, fixed_string Format, std::size_t Group, class MarkType>
+export template <class Type, fixed_string Format, std::size_t Group, class MarkType>
 [[nodiscard]] consteval bool alone_in_its_slot() {
   // Slots are handed out by kind, not by place: two places gathered the same
   // way share one, because at a register they are still two -- the register is
@@ -255,7 +255,7 @@ template <class Type, fixed_string Format, std::size_t Group, class MarkType>
 // registers. So the slots are split in two: the ones that change on every
 // character stay a value of the gatherer, and the ones that collect are held by
 // the walk in a variable of its own and handed over by reference.
-template <class Kind>
+export template <class Kind>
 concept keeps_characters = requires(Kind& one, char letter) {
   one.push_back(letter);
 };
@@ -278,10 +278,10 @@ template <class TupleType, std::size_t... Which>
           std::tuple<>>{}...);
 }
 
-template <class TupleType>
+export template <class TupleType>
 using warm_slots_of = decltype(pick_warm<TupleType>(
     std::make_index_sequence<std::tuple_size_v<TupleType>>{}));
-template <class TupleType>
+export template <class TupleType>
 using cold_slots_of = decltype(pick_cold<TupleType>(
     std::make_index_sequence<std::tuple_size_v<TupleType>>{}));
 
@@ -291,7 +291,7 @@ using cold_slots_of = decltype(pick_cold<TupleType>(
 // container that keeps a resource keeps its own when it is assigned to, and the
 // slot was made on the default resource before anybody said otherwise. So the
 // slot is ended and begun where it stands, which is what "made with" means.
-template <class Slot, class Made>
+export template <class Slot, class Made>
 constexpr void begin_gathering_at(Slot& into, Made&& made) {
   if constexpr (requires { typename Slot::allocator_type; }) {
     std::destroy_at(&into);
@@ -305,7 +305,7 @@ constexpr void begin_gathering_at(Slot& into, Made&& made) {
 // would begin it. Where two groups of a kind ask for different parameters, the
 // one that is not first is begun again when its group opens, which is where
 // every group but one begins in any case.
-template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
+export template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
           class CarrierType = scan::default_context_t>
 [[nodiscard]] constexpr auto make_slots(const CarrierType& told = CarrierType{}) {
   register_state<Type, Format, MarkType, CarrierType> made{};
@@ -340,7 +340,7 @@ template <class Type, fixed_string Format, class MarkType = std::ptrdiff_t,
 // from the very first character begun where their reading says they are kept:
 // those never meet the command that begins a group, because they were opened
 // before there was a character to move on.
-template <class Type, fixed_string Format, auto& Automaton,
+export template <class Type, fixed_string Format, auto& Automaton,
           class MarkType = std::ptrdiff_t,
           class CarrierType = scan::default_context_t>
 [[nodiscard]] constexpr auto make_register_states(
@@ -438,7 +438,7 @@ struct kept_gatherings {
 // that back at the end. Said once here, because every other copy of a
 // gathering goes through an assignment, and an assignment keeps the resource
 // the thing being assigned to was made with.
-template <class Kind>
+export template <class Kind>
 [[nodiscard]] constexpr Kind copied_gathering(const Kind& one) {
   if constexpr (requires {
                   typename Kind::allocator_type;
@@ -487,7 +487,7 @@ template <class StatesType, std::size_t CommandCount>
   return kept;
 }
 
-template <std::size_t Group, class Type, fixed_string Format, auto& Automaton,
+export template <std::size_t Group, class Type, fixed_string Format, auto& Automaton,
           bool HandsTheCharacter = true, bool KeptInTheWalk = false,
           class StatesType, class KeptType, class RegistersType,
           std::size_t CommandCount,
@@ -744,7 +744,7 @@ constexpr void advance_scanner(
 // needs through one of these.
 // Nothing was kept by the walk: every gathering is at a register.
 struct nothing_kept_here {};
-inline constexpr nothing_kept_here nothing_was_kept{};
+export inline constexpr nothing_kept_here nothing_was_kept{};
 
 // What a walk kept for itself, and which places those are.
 //
@@ -752,7 +752,7 @@ inline constexpr nothing_kept_here nothing_was_kept{};
 // has the places in hand and not the machine: a place that follows a reading
 // is read from the register the reading names, and one the walk kept is read
 // from here.
-template <class SlotsType, std::uint64_t Places>
+export template <class SlotsType, std::uint64_t Places>
 struct kept_by_the_walk {
   static constexpr std::uint64_t which_places = Places;
   const SlotsType& slots;
@@ -909,7 +909,7 @@ struct gathered_by_the_registers {
 
 // Made rather than named: the reading, the states and the registers are all
 // deduced, and the type and the format are what say where a group is gathered.
-template <class Type, fixed_string Format, class ReadingType,
+export template <class Type, fixed_string Format, class ReadingType,
           class StatesType, class RegistersType,
           class KeptType = nothing_kept_here>
 [[nodiscard]] constexpr auto by_the_registers(
@@ -922,7 +922,7 @@ template <class Type, fixed_string Format, class ReadingType,
 }
 
 // The same, told as well where the ending put the tags it closed.
-template <class Type, fixed_string Format, class ReadingType,
+export template <class Type, fixed_string Format, class ReadingType,
           class StatesType, class RegistersType, class KeptType,
           class EndingType>
 [[nodiscard]] constexpr auto by_the_registers(const ReadingType& reading,
@@ -936,7 +936,7 @@ template <class Type, fixed_string Format, class ReadingType,
 }
 
 
-template <class Root, class Type, std::size_t Offset, bool AsOutput = false,
+export template <class Root, class Type, std::size_t Offset, bool AsOutput = false,
           class FailureType = failure_for<Root>, class SourceType,
           class CarrierType = scan::no_contexts>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType> finish_value(
@@ -991,7 +991,7 @@ template <class Root, class Type, std::size_t Offset, class FailureType,
 // clang's constant evaluator refuses those ("captures not currently allowed"):
 // a list of anything but a leaf could not be read while compiling. Appending
 // at the end is the same thing either way.
-template <class ListType, class ElementType>
+export template <class ListType, class ElementType>
 constexpr void append_to(ListType& list, ElementType&& value) {
   // `insert` only where it has to be. It is here at all because libc++ writes
   // `vector::emplace_back` through a helper taking two capturing lambdas, and
@@ -1040,14 +1040,14 @@ template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
   return (groups_whose_mark_is_read<Type, Format, Automaton>() >> Group) & 1;
 }
 
-template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
+export template <class Type, fixed_string Format, auto& Automaton, std::size_t Group>
 [[nodiscard]] consteval std::size_t tag_of_group() {
   const std::uint64_t mask = groups_whose_mark_is_read<Type, Format, Automaton>();
   return static_cast<std::size_t>(
       std::popcount(mask & ((std::uint64_t{1} << Group) - 1)));
 }
 
-template <auto& Automaton, std::size_t State, std::size_t Group>
+export template <auto& Automaton, std::size_t State, std::size_t Group>
 inline constexpr auto gathered_pairs = [] consteval {
   constexpr std::size_t capacity =
       Automaton.states[State].readings.size() == 0
@@ -1205,7 +1205,7 @@ constexpr void collect_turn_that_ended(
   }
 }
 
-template <class Type, fixed_string Format, auto& Automaton, class FailureType,
+export template <class Type, fixed_string Format, auto& Automaton, class FailureType,
           class RegistersType, class StatesType, std::size_t... Group>
 constexpr void collect_turns_that_ended(
     std::size_t state, const RegistersType& registers,
@@ -1216,7 +1216,7 @@ constexpr void collect_turns_that_ended(
    ...);
 }
 
-template <class Type, fixed_string Format, auto& Automaton, class FailureType,
+export template <class Type, fixed_string Format, auto& Automaton, class FailureType,
           class RegistersType, class StatesType, std::size_t CommandCount,
           class CarrierType = scan::no_contexts, std::size_t... Group>
 constexpr void collect_elements(
@@ -1230,7 +1230,7 @@ constexpr void collect_elements(
    ...);
 }
 
-template <class Type, fixed_string Format, auto& Automaton,
+export template <class Type, fixed_string Format, auto& Automaton,
           bool HandsTheCharacter = true, bool KeptInTheWalk = false,
           class RegistersType, class StatesType, std::size_t CommandCount,
           class CarrierType = scan::no_contexts, std::size_t... Group>
@@ -1275,7 +1275,7 @@ constexpr void advance_scanners(
 // its own reader to finish, a product asks its parts, a type made by a call
 // makes it. Each value is taken from the gathering of the register that holds
 // its opening tag in the reading that accepted.
-template <class Root, class Type, std::size_t Offset, bool AsOutput,
+export template <class Root, class Type, std::size_t Offset, bool AsOutput,
           class FailureType, class SourceType, class CarrierType>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Type, FailureType> finish_value(
     const SourceType& source, const char* text, const CarrierType& given) {

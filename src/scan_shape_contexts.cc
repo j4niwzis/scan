@@ -24,7 +24,7 @@ export import scan.shape.format;
 #define SCAN_FORCE_INLINE inline
 #endif
 
-export namespace scan::detail {
+namespace scan::detail {
 
 template <class Type, std::size_t Group>
 [[nodiscard]] consteval std::size_t branch_holding_group() {
@@ -39,7 +39,7 @@ template <class Type, std::size_t Group>
 // What a part of a place was told. A carrier knows its parts; a place told
 // nothing has no parts to ask about and says the same nothing to each of them,
 // which is what the whole-place forms do one level up.
-template <std::size_t Part, class CarrierType>
+export template <std::size_t Part, class CarrierType>
 [[nodiscard]] constexpr auto told_for_part(CarrierType&& given) {
   if constexpr (requires { given.template for_part<Part>(); }) {
     return given.template for_part<Part>();
@@ -64,7 +64,7 @@ template <class CarrierType>
   }
 }
 
-template <class CarrierType>
+export template <class CarrierType>
 [[nodiscard]] constexpr decltype(auto) leaf_of(CarrierType&& given) {
   if constexpr (requires { given.leaf(); }) {
     return given.leaf();
@@ -75,7 +75,7 @@ template <class CarrierType>
 
 // Said before it is asked for: how many places a context may be said at for one
 // field, which is worked out further down with the carriers.
-template <class FieldType>
+export template <class FieldType>
 [[nodiscard]] consteval std::size_t carrier_places();
 
 // The context said at the place a group belongs to.
@@ -83,7 +83,7 @@ template <class FieldType>
 // The walk knows groups; the caller said places. This walks down the shape the
 // same way the value is built, so a group of a place inside a place inside the
 // output ends at the context that place was given.
-template <class Type, std::size_t Group, class Carrier>
+export template <class Type, std::size_t Group, class Carrier>
 [[nodiscard]] constexpr auto context_at_group(Carrier&& given) {
   if constexpr (scanned_as_variant<std::remove_cv_t<Type>> &&
                 requires { given.template for_part<0>(); }) {
@@ -167,7 +167,7 @@ export template <class Told>
 
 }  // namespace scan
 
-export namespace scan::detail {
+namespace scan::detail {
 
 // Said before what is below names them: a leaf carrier keeps a pointer to a
 // reading and makes one as a default argument, and both of those are written
@@ -198,7 +198,7 @@ struct readings_for;
 // -- and the reading that knows it is made there too, as a default argument, so
 // it is alive for as long as the expression that said it. What crosses the door
 // is a pointer to the interface, and nothing here ever names a context type.
-template <class FieldType, std::size_t Copies = 1>
+export template <class FieldType, std::size_t Copies = 1>
 class context_leaf {
  public:
   using held = std::remove_cv_t<FieldType>;
@@ -273,7 +273,7 @@ class context_leaf {
   reading_of<held>* how_ = nullptr;
 };
 
-template <class... Parts>
+export template <class... Parts>
 class context_shape {
  public:
   static constexpr bool told_apart = true;
@@ -342,7 +342,7 @@ struct readings_for<no_place, It> {
 // into its parts; one of several opens up into its branches, because exactly
 // one of them runs and the caller may want to say something to each; anything
 // read whole is one place and takes one context.
-template <class FieldType>
+export template <class FieldType>
 [[nodiscard]] consteval std::size_t carrier_places() {
   if constexpr (scanned_as_variant<FieldType>) {
     return branch_count<FieldType>();
@@ -394,7 +394,7 @@ struct carrier_of<FieldType, Copies, false> {
       decltype(made(std::make_index_sequence<carrier_places<FieldType>()>{}));
 };
 
-template <class FieldType, std::size_t Copies = 1>
+export template <class FieldType, std::size_t Copies = 1>
 using carrier_for =
     typename carrier_of<std::remove_cv_t<FieldType>, Copies>::type;
 
@@ -457,7 +457,7 @@ using gather_state_for = decltype(gather_state_of<Held>());
 // state told the carrier written for that shape: a carrier knows nothing of the
 // caller's types, and a shape told nothing is that same carrier with nothing in
 // it.
-template <class Held>
+export template <class Held>
 [[nodiscard]] constexpr auto fold_state_of() {
   using held = std::remove_cv_t<Held>;
   if constexpr (requires {
@@ -685,12 +685,12 @@ template <class Told>
 
 }  // namespace scan
 
-export namespace scan::detail {
+namespace scan::detail {
 
 // A list built where its place said to build it. A container that takes an
 // allocator is given the one its place was told about; one that takes none is
 // made the way it always was.
-template <class Held, std::size_t Most = turns_unbounded, class Told>
+export template <class Held, std::size_t Most = turns_unbounded, class Told>
 [[nodiscard]] constexpr Held made_range(const Told& given) {
   // What the format could ask for, against what this container holds. A
   // container that says nothing says nothing here either.
@@ -729,7 +729,7 @@ template <class Held, std::size_t Most = turns_unbounded, class Told>
 // An empty list of the same kind as one that stands here already, keeping the
 // resource that one was made with. A turn ending and the next one beginning is
 // not a reason to go back to the default resource.
-template <class Held>
+export template <class Held>
 [[nodiscard]] constexpr Held made_like(const Held& other) {
   if constexpr (requires { typename Held::allocator_type; }) {
     return Held(other.get_allocator());
@@ -742,7 +742,7 @@ template <class Held>
 // A scanner begun with the context its place was given, asked for in the shapes
 // it may have been written in, and begun the way it always was where it takes
 // none.
-template <class Held, class CarrierType>
+export template <class Held, class CarrierType>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto scanner_begin_given(
     std::string_view parameters,
                                                  const CarrierType& told) {
@@ -785,7 +785,7 @@ template <class Held, class CarrierType>
 // The state of a leaf that is built from its own groups, told the context its
 // place was given. The same rule as everywhere: asked for with the context
 // first, and a scanner that takes none is begun the way it always was.
-template <class Held, class Context>
+export template <class Held, class Context>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto begun_groups(Context&& given) {
   // A place told in braces carries its context behind an interface that knows
   // the field. The type of the context does not cross the door, but the
@@ -915,7 +915,7 @@ template <class Parameters, class Type, std::size_t Offset, class CarrierType,
           groups, told_for_part<Index>(given))...);
 }
 
-template <class FailureType, class Parameters, class Type,
+export template <class FailureType, class Parameters, class Type,
           std::size_t Offset, bool AsOutput = false,
           class Ending = hands_a_failure_back,
           class CarrierType = scan::no_contexts>

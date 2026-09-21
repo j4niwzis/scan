@@ -3,7 +3,7 @@ export module scan.views;
 import std;
 export import scan.core;
 
-export namespace scan {
+namespace scan {
 
 namespace views {
 
@@ -53,7 +53,7 @@ struct static_chunk_adaptor
 
 };
 
-template <std::size_t Extent>
+export template <std::size_t Extent>
 inline constexpr static_chunk_adaptor<Extent> static_chunk;
 
 template <std::size_t Extent>
@@ -72,7 +72,7 @@ struct to_array_adaptor
   }
 };
 
-template <std::size_t Extent>
+export template <std::size_t Extent>
 inline constexpr to_array_adaptor<Extent> to_array;
 
 }  // namespace views
@@ -173,7 +173,7 @@ struct in_pieces_adaptor
 
 // `source | scan::in_pieces<512>` -- the same characters, handed over in
 // pieces of that size.
-template <std::size_t Room = 512>
+export template <std::size_t Room = 512>
 inline constexpr in_pieces_adaptor<Room> in_pieces{};
 
 struct format_details {

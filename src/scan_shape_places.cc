@@ -17,7 +17,7 @@ import boost.pfr;
 export import scan.compiler;
 export import scan.runtime;
 
-export namespace scan {
+namespace scan {
 
 // What a shape is made of, asked of the type rather than assumed of it.
 //
@@ -51,7 +51,7 @@ export namespace scan {
 // questions that are about the type rather than about a value: no object has
 // to exist for `sizeof...` or for the type at a place, and requiring one
 // would rule out every aggregate that cannot be default-constructed.
-template <class Type>
+export template <class Type>
 struct fields {
  private:
   static constexpr auto taken_apart = [](Type& value) {
@@ -82,7 +82,7 @@ struct fields {
   }
 };
 #else
-template <class Type>
+export template <class Type>
 struct fields {
   static constexpr std::size_t count = boost::pfr::tuple_size_v<Type>;
 
@@ -103,7 +103,7 @@ struct fields {
 
 }  // namespace scan
 
-export namespace scan::detail {
+namespace scan::detail {
 
 template <class Type, std::size_t... Index>
 [[nodiscard]] constexpr auto default_patterns(std::index_sequence<Index...>) {
@@ -116,7 +116,7 @@ template <class Type, std::size_t... Index>
       scanner_pattern<typename scan::fields<Type>::template at<Index>>()...};
 }
 
-template <fixed_string Format, std::size_t FieldCount>
+export template <fixed_string Format, std::size_t FieldCount>
 [[nodiscard]] consteval auto field_parameters() {
   std::array<std::string_view, FieldCount> result{};
   std::size_t field = 0;
@@ -175,19 +175,19 @@ template <fixed_string Format, std::size_t FieldCount>
 // groups are groups of whatever it is written into.
 // Whether a type is one of several: whatever `scan::branches` was told about,
 // which is `std::variant` and anything else somebody wrote a `branches` for.
-template <class Type>
+export template <class Type>
 concept scanned_as_variant = requires {
   scan::branches<std::remove_cv_t<Type>>::count;
 };
 
 // How many alternatives, and which type the k-th is, asked of whatever says
 // it.
-template <class Type>
+export template <class Type>
 [[nodiscard]] consteval std::size_t branch_count() {
   return scan::branches<std::remove_cv_t<Type>>::count;
 }
 
-template <class Type, std::size_t Which>
+export template <class Type, std::size_t Which>
 using branch_at =
     typename scan::branches<std::remove_cv_t<Type>>::template at<Which>;
 
@@ -196,7 +196,7 @@ using branch_at =
 // Either handed them when the match is done, or told which of them each
 // character belongs to as it arrives -- and either way its pattern has groups
 // in it, which are groups of whatever it is written into.
-template <class Type>
+export template <class Type>
 concept reads_its_own_groups =
     requires { scan::scanner<std::remove_cv_t<Type>>{}.begin_groups(); } ||
     requires(std::span<const std::string_view> given) {
@@ -212,7 +212,7 @@ concept reads_its_own_groups =
 // working that list out means asking how this type is read -- which is what is
 // being decided here. A member that is a plain bool has no such circle in it,
 // and saying it is the whole of what a shape has to do to be one.
-template <class Type>
+export template <class Type>
 concept says_it_reads_its_groups = requires {
   { scan::scanner<std::remove_cv_t<Type>>{}.reads_its_groups() } -> std::same_as<bool>;
   requires scan::scanner<std::remove_cv_t<Type>>{}.reads_its_groups();
@@ -231,7 +231,7 @@ concept says_it_is_a_list = requires {
   requires scan::scanner<std::remove_cv_t<Type>>::as_a_list;
 };
 
-template <class Type>
+export template <class Type>
 concept scanned_as_leaf = requires {
   sizeof(scan::scanner<std::remove_cv_t<Type>>);
 } && !says_it_is_a_list<Type>;
@@ -251,7 +251,7 @@ concept scanned_as_leaf = requires {
 // Both halves are required. A scanner with a `parse` and no format is an
 // ordinary leaf and reads itself from the text of one place; the format is what
 // says the places are the arguments.
-template <class Type>
+export template <class Type>
 concept scanned_from_values = says_it_reads_its_groups<Type> && requires {
   &scan::scanner<std::remove_cv_t<Type>>::parse;
 };
@@ -268,7 +268,7 @@ concept scanned_from_values = says_it_reads_its_groups<Type> && requires {
 // A type that is both a value and a range is read as a value, because that is
 // what a `std::string` field means. `as_a_list` is how a type says otherwise,
 // and saying it stops the type being a leaf at all.
-template <class Type>
+export template <class Type>
 concept scanned_as_range =
     !scanned_as_leaf<Type> &&
     !scanned_as_variant<Type> && std::ranges::range<Type> &&
@@ -288,7 +288,7 @@ struct call_parameters<ResultType (*)(ArgumentTypes...)> {
 
 // What a type is made of, for the purpose of reading it: the arguments of the
 // call that makes it, where there is one, and its fields otherwise.
-template <class Type, bool = scanned_from_values<Type>>
+export template <class Type, bool = scanned_from_values<Type>>
 struct parts_of;
 template <class Type>
   requires scanned_as_range<Type>
@@ -317,7 +317,7 @@ struct parts_of<Type, true> {
 // The same answer as the general one -- the arguments of the call that makes
 // it, or its fields -- but reached without asking whether the type is a list or
 // a leaf or a shape, because those are questions this one is used to answer.
-template <class Type, bool = scanned_from_values<Type>>
+export template <class Type, bool = scanned_from_values<Type>>
 struct shape_parts {
   static constexpr std::size_t count =
       scan::fields<std::remove_cv_t<Type>>::count;
@@ -355,7 +355,7 @@ concept a_choice_by_itself = requires {
   scan::branches<std::remove_cv_t<Type>>::count;
 };
 
-template <class Type>
+export template <class Type>
 [[nodiscard]] consteval bool says_a_list_inside();
 
 template <class Type>
@@ -374,7 +374,7 @@ template <class Type>
   }
 }
 
-template <class Type>
+export template <class Type>
 [[nodiscard]] consteval bool says_a_list_inside() {
   if constexpr (!says_it_reads_its_groups<Type>) {
     return a_list_field<Type>();
@@ -414,7 +414,7 @@ template <class Type>
 //
 // Then the k-th alternative is the name of the k-th group, and the pushes can
 // be overloads rather than a switch.
-template <class Type>
+export template <class Type>
 concept names_its_groups = requires {
   typename scan::scanner<std::remove_cv_t<Type>>::group;
 };
@@ -422,7 +422,7 @@ concept names_its_groups = requires {
 // Whether the type would rather have the group whole than a character at a
 // time. Only a subject that can be pointed at can offer it, so this is asked
 // together with whether there is anything to point at.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 concept takes_the_group_whole =
     requires(StateType& state, std::string_view text) {
       scan::scanner<std::remove_cv_t<Type>>{}.closed_group(
@@ -440,14 +440,14 @@ concept takes_the_group_whole =
           });
 
 // The state a type folds its groups in, as a type.
-template <class Type>
+export template <class Type>
 using group_state_of =
     decltype(scan::scanner<std::remove_cv_t<Type>>{}.begin_groups());
 
 // Whether the type takes the characters of this group at all. A fold may be
 // made of the edges alone -- counting the turns, saying which branch ran -- and
 // then there is nothing to hand a character to.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 concept takes_group_characters =
     requires(StateType& state, char letter) {
       scan::scanner<std::remove_cv_t<Type>>{}.push_group(
@@ -468,7 +468,7 @@ concept takes_group_characters =
 // length rather than a loop. A type that only takes characters is no better
 // off for it, and finding where the run ends so that it can be walked again is
 // a pass over it the reading was not going to make.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 concept takes_group_runs =
     requires(StateType& state, std::string_view run) {
       scan::scanner<std::remove_cv_t<Type>>{}.push_group(
@@ -480,7 +480,7 @@ concept takes_group_runs =
 // One character, handed to the group it belongs to, in whichever of the three
 // ways the type asked for: the name of the group, the group as a variant, or
 // its number. The choice is made here, where the number is a constant.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 constexpr void push_one_group(StateType& state, char letter) {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
@@ -514,7 +514,7 @@ constexpr void push_one_group(StateType& state, char letter) {
 // type that says it can take a run is handed it that way: `count += run.size()`
 // instead of a call a character. A type that says nothing of the sort is handed
 // the characters one at a time, which is what it asked for.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 constexpr void push_one_group(StateType& state, std::string_view run) {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
@@ -533,7 +533,7 @@ constexpr void push_one_group(StateType& state, std::string_view run) {
 
 // The two edges of a group, said the same three ways a push is said. A type
 // that only wants the characters says neither, and then nothing is said to it.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 constexpr void open_one_group(StateType& state) {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
@@ -558,14 +558,14 @@ constexpr void open_one_group(StateType& state) {
   }
 }
 
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 constexpr void close_one_group(StateType& state);
 
 // A group closing, and where the subject can be pointed at, the whole of what
 // it stood on handed over with it. Off a stream there is no such thing to hand,
 // so the type is told the characters as they arrive and told the closing on its
 // own; the two are the same fold, said with what each reading has to give.
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 constexpr void close_one_group(StateType& state, std::string_view text) {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
@@ -594,7 +594,7 @@ constexpr void close_one_group(StateType& state, std::string_view text) {
   }
 }
 
-template <class Type, std::size_t Which, class StateType>
+export template <class Type, std::size_t Which, class StateType>
 constexpr void close_one_group(StateType& state) {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
@@ -633,13 +633,13 @@ constexpr void close_one_group(StateType& state) {
 // that is a puzzle. Asked with empty parameters, both answer with a pattern,
 // and empty parameters are what a place with nothing written after the colon
 // hands over anyway.
-template <class Type>
+export template <class Type>
 [[nodiscard]] constexpr auto declared_pattern() {
   return scanner_pattern<std::remove_cv_t<Type>>(std::string_view{});
 }
 
 // And its characters, however the pattern is held.
-[[nodiscard]] constexpr std::string_view pattern_view(const auto& declared) {
+export [[nodiscard]] constexpr std::string_view pattern_view(const auto& declared) {
   if constexpr (requires { std::string_view(declared); }) {
     return std::string_view(declared);
   } else {
@@ -647,7 +647,7 @@ template <class Type>
   }
 }
 
-template <class Type>
+export template <class Type>
 [[nodiscard]] consteval std::size_t groups_a_leaf_opens() {
   // Asked of the hooks and not of the plain answer: this is a count and not a
   // decision. A type with `from_groups` and nothing else said opens the groups
@@ -664,7 +664,7 @@ template <class Type>
   }
 }
 
-template <class Type>
+export template <class Type>
 [[nodiscard]] consteval std::size_t groups_of() {
   if constexpr (scanned_as_leaf<Type>) {
     // The place itself, and the groups the type's own pattern opens inside
@@ -696,7 +696,7 @@ template <class Type>
 // place, and the groups its pattern opens after it -- and a product of places
 // to itself. Everything that builds a reading of a format asks the second
 // question, and asking the first would count a place nobody wrote.
-template <class Type>
+export template <class Type>
 [[nodiscard]] consteval std::size_t groups_of_output() {
   if constexpr (scanned_as_variant<Type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
@@ -713,7 +713,7 @@ template <class Type>
   }
 }
 
-template <class Type, std::size_t Field>
+export template <class Type, std::size_t Field>
 [[nodiscard]] consteval std::size_t groups_before_field() {
   return []<std::size_t... index>(std::index_sequence<index...>) {
     return (std::size_t{0} + ... +
@@ -776,7 +776,7 @@ using place_within_kind = typename place_at<Subject, Index, false>::kind;
 // Choosing between the two by a conditional would ask for both, and asking a
 // variant how many places its fields make is asking a variant for fields. Only
 // the one taken may be named.
-template <class Subject, bool Within>
+export template <class Subject, bool Within>
 [[nodiscard]] consteval std::size_t places_chosen() {
   if constexpr (Within) {
     return places_within<Subject>();
@@ -785,7 +785,7 @@ template <class Subject, bool Within>
   }
 }
 
-template <class Subject, bool Within, std::size_t Index>
+export template <class Subject, bool Within, std::size_t Index>
 struct place_chosen {
   static constexpr bool stands_alone =
       Within ? false
@@ -876,7 +876,7 @@ using leaf_kind = typename leaf_at<Subject, Index>::kind;
 // The same two, asked of a type as the output of its own format: never as a
 // value standing in somebody else's place, which is what it looks like to
 // whatever contains it.
-template <class Subject, std::size_t Index>
+export template <class Subject, std::size_t Index>
 using leaf_kind_of_output = typename leaf_at<
     Subject, Index,
     scanned_as_range<Subject> ? 1 : scanned_as_variant<Subject> ? 3 : 2>::kind;
@@ -925,7 +925,7 @@ struct leaf_offset_at<Subject, Index, 3> {
 template <class Subject, std::size_t Index>
 inline constexpr std::size_t leaf_offset_of = leaf_offset_at<Subject, Index>::value;
 
-template <class Subject, std::size_t Index>
+export template <class Subject, std::size_t Index>
 inline constexpr std::size_t leaf_offset_of_output = leaf_offset_at<
     Subject, Index,
     scanned_as_range<Subject> ? 1 : scanned_as_variant<Subject> ? 3
@@ -934,7 +934,7 @@ inline constexpr std::size_t leaf_offset_of_output = leaf_offset_at<
 // A leaf that is put together from the groups its own pattern opens, rather
 // than from the text it stands on. Where it opens none, it is an ordinary leaf
 // and nothing below changes for it.
-template <class Held>
+export template <class Held>
 inline constexpr bool gathers_by_its_groups =
     reads_its_own_groups<Held> && groups_a_leaf_opens<Held>() > 0;
 
@@ -953,7 +953,7 @@ concept folds_its_groups = requires {
   scan::scanner<std::remove_cv_t<Type>>{}.begin_groups();
 };
 
-template <class Held>
+export template <class Held>
 inline constexpr bool folds_by_turns =
     gathers_by_its_groups<Held> && folds_its_groups<Held>;
 
@@ -966,7 +966,7 @@ inline constexpr bool folds_by_turns =
 // subject is not kept, exactly as a leaf built from its own groups is. The
 // question is asked of the scanner and not of the type, so a scanner of
 // somebody's own that reads a view of the subject is read the same way.
-template <class Held>
+export template <class Held>
 inline constexpr bool reads_a_whole_piece_only =
     !gathers_by_its_groups<Held> &&
     scan::can_be_told_to_parse<std::remove_cv_t<Held>,
@@ -984,7 +984,7 @@ inline constexpr bool reads_a_whole_piece_only =
 // groups whole where they can be pointed at, which is the faster of the two
 // and the one that copies nothing. Only a type that cannot be handed them
 // forces the reading that gathers as it goes.
-template <class Held>
+export template <class Held>
 inline constexpr bool needs_the_turns =
     folds_by_turns<Held> && !requires(std::span<const std::string_view> given) {
       scan::scanner<std::remove_cv_t<Held>>{}.from_groups(given);

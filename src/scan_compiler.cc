@@ -5,7 +5,7 @@ import scan.tre;
 export import scan.core;
 export import scan.views;
 
-export namespace scan::detail {
+namespace scan::detail {
 
 
 
@@ -27,7 +27,7 @@ export namespace scan::detail {
   }
 }
 
-class tre_parser {
+export class tre_parser {
  public:
   constexpr tre_parser(std::string_view source,
                       std::span<const std::string_view> defaults,
@@ -342,7 +342,7 @@ class tre_parser {
   return true;
 }
 
-[[nodiscard]] constexpr scan::tre::tdfa minimize_tdfa(scan::tre::tdfa automaton) {
+export [[nodiscard]] constexpr scan::tre::tdfa minimize_tdfa(scan::tre::tdfa automaton) {
   if (automaton.states.empty()) return automaton;
   const std::size_t count = automaton.states.size();
   const std::size_t none = std::numeric_limits<std::size_t>::max();
@@ -612,7 +612,7 @@ struct packed_shape {
 }
 
 
-struct packed_command {
+export struct packed_command {
   static constexpr std::size_t no_source =
       std::numeric_limits<std::size_t>::max();
   std::size_t destination = 0;
@@ -625,7 +625,7 @@ struct packed_command {
 // the symbol against `first` and `last`, which is what the generated code
 // wanted from a cell-per-symbol table anyway -- it recovered these ranges from
 // it, once per instantiation, having paid to build the table first.
-template <std::size_t CommandCapacity>
+export template <std::size_t CommandCapacity>
 struct packed_range {
   static constexpr std::size_t reject =
       std::numeric_limits<std::size_t>::max();
@@ -649,7 +649,7 @@ struct packed_range {
   std::uint64_t groups_reopened = 0;
 };
 
-template <std::size_t CommandCapacity, std::size_t FinalCommandCapacity,
+export template <std::size_t CommandCapacity, std::size_t FinalCommandCapacity,
           std::size_t RangeCapacity, std::size_t TagCapacity = 0,
           std::size_t ReadingCapacity = 0>
 struct packed_state {
@@ -679,7 +679,7 @@ struct packed_state {
 // constants and the walk is a handful of compares the compiler lays out
 // itself. The state is still a value, so it is asked once, and from there the
 // runs of that state are constants.
-inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
+export inline constexpr std::size_t no_run = std::numeric_limits<std::size_t>::max();
 
 template <auto& Automaton, std::size_t State>
 [[nodiscard]] constexpr std::size_t run_taken_in(unsigned char symbol) {
@@ -699,7 +699,7 @@ template <auto& Automaton, std::size_t State>
 // indexes the cell. This is the table a generated scanner uses when it is told
 // to be a table, and it is only built for the machines that need it -- the
 // walks over characters in a row never ask.
-template <auto& Automaton>
+export template <auto& Automaton>
 inline constexpr auto step_table = [] consteval {
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(Automaton.states)>>;
@@ -719,7 +719,7 @@ inline constexpr auto step_table = [] consteval {
   return made;
 }();
 
-template <auto& Automaton>
+export template <auto& Automaton>
 [[nodiscard]] constexpr std::size_t run_taken(std::size_t here,
                                               unsigned char symbol) {
   const std::uint16_t run = step_table<Automaton>[here][symbol];
@@ -896,9 +896,9 @@ template <std::size_t StateCount, std::size_t RegisterCount,
 // around: the same determiniser, called as an ordinary function on first use,
 // and an interpreter over what it returns.
 #if defined(SCAN_AUTOMATA_AT_RUNTIME) && SCAN_AUTOMATA_AT_RUNTIME
-inline constexpr bool automata_at_runtime = true;
+export inline constexpr bool automata_at_runtime = true;
 #else
-inline constexpr bool automata_at_runtime = false;
+export inline constexpr bool automata_at_runtime = false;
 #endif
 
 // Two policies, and a pattern pays for the second only where it is read both
@@ -912,7 +912,7 @@ inline constexpr bool automata_at_runtime = false;
 // built from that pattern and nothing else -- so the layer that turns formats
 // into patterns can ask for a machine here without this one ever hearing what
 // a format is. Two spellings that spread to the same text are one machine.
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 [[nodiscard]] constexpr scan::tre::tnfa build_text_tnfa() {
   std::size_t captures = 0;
   tre_parser parser(Pattern.view(), {}, captures, true);
@@ -951,7 +951,7 @@ template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
 
 // Built once, on first use. The determiniser is the same one the compiled form
 // evaluates while compiling; asked at run time it answers in microseconds.
-template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
+export template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
           std::uint64_t Keep = ~std::uint64_t{0}>
 [[nodiscard]] inline const scan::tre::tdfa& runtime_text_automaton() {
   // The same four questions the packed one is asked, and asked here because a
@@ -967,7 +967,7 @@ template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
 
 // Told which groups the answer is made of, so that the marks of the rest are
 // never written and the readings that differ only in them are one reading.
-template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
+export template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
           std::uint64_t Keep = ~std::uint64_t{0}>
 inline constexpr auto packed_text_automaton =
     pack_text_tdfa<Pattern, Allocate, Cut, Keep>();
@@ -998,7 +998,7 @@ template <fixed_string Pattern>
                          shape.ranges, shape.readings>(tdfa);
 }
 
-template <fixed_string Pattern>
+export template <fixed_string Pattern>
 inline constexpr auto regex_automaton = pack_regex_tdfa<Pattern>();
 
 

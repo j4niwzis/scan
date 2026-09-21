@@ -20,7 +20,7 @@ export import scan.shape.values;
 #define SCAN_FORCE_INLINE inline
 #endif
 
-export namespace scan::detail {
+namespace scan::detail {
 template <class Type, fixed_string Format, class SourceType>
 struct taken_from_pieces {
   std::optional<Type> value;
@@ -30,7 +30,7 @@ struct taken_from_pieces {
 // How much a reading of this format has to carry between one match and the
 // next, where the subject arrives in pieces. The same number the stream
 // reading asks for: the longest walk out of a match that finds no other one.
-template <class Type, fixed_string Format>
+export template <class Type, fixed_string Format>
 inline constexpr std::size_t pieces_hold = [] consteval {
   constexpr std::size_t window =
       walk_past_a_match<streaming_automaton<Type, Format>>();
@@ -41,7 +41,7 @@ inline constexpr std::size_t pieces_hold = [] consteval {
   }
 }();
 
-template <class Type, fixed_string Format, class SourceType>
+export template <class Type, fixed_string Format, class SourceType>
 [[nodiscard]] constexpr auto take_from_pieces(SourceType& into,
                                               const char*& cursor,
                                               const char*& last,
@@ -84,7 +84,7 @@ template <class Type, fixed_string Format, class SourceType>
 // and asks for the next one where it runs out. Nothing is buffered: what a
 // field gathers, it gathers as the characters go by, and a piece is not looked
 // at again once the walk has left it.
-template <class Type, fixed_string Format,
+export template <class Type, fixed_string Format,
           class CarrierType = scan::default_context_t,
           piecewise_char_range PiecesType>
 [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> scan_pieces(
@@ -122,7 +122,7 @@ template <class Type, fixed_string Format,
   return into.taken();
 }
 
-template <class Type, fixed_string Format,
+export template <class Type, fixed_string Format,
           how_to_walk Walk = how_to_walk::by_length,
           class CarrierType = scan::default_context_t,
           std::ranges::input_range RangeType>
@@ -413,7 +413,7 @@ class a_char_at_a_time {
 // and going back is assigning it. That is why a forward range holds nothing at
 // all here, and why the only reading that has to name a number is the one that
 // cannot be gone back over.
-template <class Type, fixed_string Format,
+export template <class Type, fixed_string Format,
           class CarrierType = scan::default_context_t, class IteratorType,
           class SentinelType, std::size_t Hold>
 [[nodiscard]] constexpr std::expected<taken_ahead<Type>, failure_for<Type>>
@@ -504,7 +504,7 @@ scan_stream_prefix(IteratorType& first, SentinelType last,
 // can be gone back over, and nothing where no walk out of a match ever fails
 // to find another. Otherwise the characters read past a match, and the ones
 // already held when that happened.
-template <class Type, fixed_string Format, class IteratorType>
+export template <class Type, fixed_string Format, class IteratorType>
 inline constexpr std::size_t stream_hold = [] consteval {
   constexpr std::size_t window =
       walk_past_a_match<streaming_automaton_whole<Type, Format>>();
@@ -517,10 +517,10 @@ inline constexpr std::size_t stream_hold = [] consteval {
   }
 }();
 
-template <class Type, fixed_string Format, class IteratorType>
+export template <class Type, fixed_string Format, class IteratorType>
 using stream_carry_for = stream_carry<stream_hold<Type, Format, IteratorType>>;
 
-template <class Type, fixed_string Format,
+export template <class Type, fixed_string Format,
           class CarrierType = scan::default_context_t,
           std::ranges::input_range RangeType>
 [[nodiscard]] constexpr auto scan_stream_prefix(
@@ -559,12 +559,12 @@ template <class Type, fixed_string Format,
 // consumer that writes its own says the same things through the same hooks.
 // Nothing below this line knows that a type has fields; this is where that
 // knowledge lives.
-export namespace scan {
+namespace scan {
 
 
 
 
-template <fixed_string Format>
+export template <fixed_string Format>
 struct aggregate_scanner {
   // Said outright: the places of this type are a format of its own, so a
   // context said at a place of this type can be said to its places one by one.
@@ -795,14 +795,14 @@ struct aggregate_scanner {
 
 }  // namespace scan
 
-export namespace scan::detail {
+namespace scan::detail {
 
 #undef SCAN_FORCE_INLINE
 
 }  // namespace scan::detail
 
 
-export namespace scan {
+namespace scan {
 
 // How many groups a type's own pattern opens.
 //
