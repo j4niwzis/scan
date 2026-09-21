@@ -1151,6 +1151,10 @@ template <std::size_t Group, class Type, fixed_string Format, auto& Automaton,
 constexpr void collect_turn_that_ended(
     std::size_t state, const RegistersType& registers,
     StatesType& states, std::optional<FailureType>& failed) {
+  // Said here because the roads below that take none of it are chosen while
+  // this is compiled: a parameter read on one road only is one the compiler
+  // counts as unread on every other.
+  static_cast<void>(registers);
   if constexpr (Group == 0) {
     return;
   } else if constexpr (!scanned_as_range<leaf_kind_of_output<Type, Group - 1>>) {
