@@ -40,7 +40,7 @@ template <class Type, std::size_t Group>
 // nothing has no parts to ask about and says the same nothing to each of them,
 // which is what the whole-place forms do one level up.
 template <std::size_t Part, class CarrierType>
-[[nodiscard]] constexpr auto told_for_part(const CarrierType& given) {
+[[nodiscard]] constexpr auto told_for_part(CarrierType&& given) {
   if constexpr (requires { given.template for_part<Part>(); }) {
     return given.template for_part<Part>();
   } else {
@@ -65,7 +65,7 @@ template <class CarrierType>
 }
 
 template <class CarrierType>
-[[nodiscard]] constexpr decltype(auto) leaf_of(const CarrierType& given) {
+[[nodiscard]] constexpr decltype(auto) leaf_of(CarrierType&& given) {
   if constexpr (requires { given.leaf(); }) {
     return given.leaf();
   } else {
@@ -84,7 +84,7 @@ template <class FieldType>
 // same way the value is built, so a group of a place inside a place inside the
 // output ends at the context that place was given.
 template <class Type, std::size_t Group, class Carrier>
-[[nodiscard]] constexpr auto context_at_group(const Carrier& given) {
+[[nodiscard]] constexpr auto context_at_group(Carrier&& given) {
   if constexpr (scanned_as_variant<std::remove_cv_t<Type>> &&
                 requires { given.template for_part<0>(); }) {
     // One of several opens up into its branches: the group belongs to the one

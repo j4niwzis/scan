@@ -896,10 +896,16 @@ struct contexts_at_places {
   // one. The parts of a place are held the second way for the same reason.
   template <class One>
   struct owns {
-    // Written through on a carrier that is handed about by value: what a
-    // scanner is told is a place to keep things while a reading runs.
-    mutable std::remove_cvref_t<One> value;
+    std::remove_cvref_t<One> value;
   };
+
+  // What a place is told, said as a type: the caller's own thing as they wrote
+  // it, and one made at the call as const. The carrier is read as const
+  // wherever it is handed about -- it held nothing but addresses until now, so
+  // that cost nothing -- and a context it owns is reached through it. Said
+  // here rather than cast away: a scanner that wants to write into a context
+  // wants the caller's own, and one made at the call is nobody's to write to.
+
 
   template <class One>
   using held_as = std::conditional_t<
@@ -943,7 +949,7 @@ struct contexts_at_places {
 
   // Where the thing said at a place is, whichever way it is held.
   template <std::size_t Place>
-  [[nodiscard]] constexpr auto* at_place() const {
+  [[nodiscard]] constexpr auto* at_place() {
     auto& held = std::get<Place>(all);
     if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(held)>>) {
       return held;
@@ -953,7 +959,7 @@ struct contexts_at_places {
   }
 
   template <std::size_t Place>
-  [[nodiscard]] constexpr auto for_part() const {
+  [[nodiscard]] constexpr auto for_part() {
     if constexpr (for_everyone) {
       using first = std::tuple_element_t<0, std::tuple<Contexts...>>;
       return one_context<first, false>{at_place<0>()};
@@ -976,7 +982,7 @@ struct contexts_at_places {
     }
   }
 
-  [[nodiscard]] constexpr decltype(auto) leaf() const {
+  [[nodiscard]] constexpr decltype(auto) leaf() {
     using first = std::remove_cvref_t<
         std::tuple_element_t<0, std::tuple<Contexts...>>>;
     if constexpr (said_as_parts<first>) {
