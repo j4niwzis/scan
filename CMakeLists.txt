@@ -118,6 +118,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # installed from -- and only when nothing is answering already, which is the
 # case where this library is built inside somebody else's build and that build
 # brought its own.
+# Warnings that are not this library's to answer for.
+#
+# The standard library's own `std` module is named by the rule that reserves
+# the name, and Boost.PFR reaches for C++26 where the compiler has it and
+# includes a header inside a module purview where it does not. Three warnings
+# that say so on every build, about code this repository does not own.
+add_compile_options(
+  $<$<CXX_COMPILER_ID:Clang>:-Wno-reserved-module-identifier>
+  $<$<CXX_COMPILER_ID:Clang>:-Wno-c++26-extensions>
+  $<$<CXX_COMPILER_ID:Clang>:-Wno-include-angled-in-module-purview>)
+
 if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
   set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
       ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)

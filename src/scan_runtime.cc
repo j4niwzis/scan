@@ -404,6 +404,11 @@ template <class LaneType, std::size_t... Index>
   return LaneType{(static_cast<void>(Index), value)...};
 }
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpsabi"
+#endif
+
 template <class LaneType>
 [[nodiscard]] constexpr LaneType spread_over(unsigned char value) {
   return spread_over<LaneType>(value,
@@ -637,7 +642,8 @@ export template <staying_class Klass, bool InWords = true>
         lane head{}, tail{};
         __builtin_memcpy(&head, cursor, 32);
         __builtin_memcpy(&tail, cursor + 32, 32);
-        decltype(head < head) head_out{}, tail_out{};
+        decltype(std::declval<lane>() < std::declval<lane>()) head_out{},
+            tail_out{};
         outside_of<Klass>(head, head_out);
         outside_of<Klass>(tail, tail_out);
         if (any_of(head_out | tail_out)) {
@@ -1362,6 +1368,17 @@ SCAN_FORCE_INLINE constexpr void keep_the_place(
 
 // The walk a constant evaluation takes, said before it is written: the
 // wrapper below is what chooses between it and the threaded one.
+// Said here because the walk below names it before it is written out, and a
+// name with template arguments of its own is not a dependent one: it has to
+// have been seen.
+template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
+          class CursorType, class SentinelType, std::size_t RegisterCount,
+          class Gatherer, class AnswerType>
+[[nodiscard]] bool run_threaded(
+    CursorType& __restrict cursor, SentinelType last, Mark& __restrict place,
+    register_file<Mark, RegisterCount>& __restrict registers,
+    Gatherer& __restrict into, AnswerType& __restrict best);
+
 template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
           class CursorType, class SentinelType, std::size_t RegisterCount,
           class Gatherer, class AnswerType>
@@ -2936,5 +2953,9 @@ export [[nodiscard]] inline const char* run_prefix_runtime(
 
 
 #undef SCAN_FORCE_INLINE
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 }  // namespace scan::detail

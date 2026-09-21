@@ -142,11 +142,18 @@ namespace detail {
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA __forceinline
 #define SCAN_REGEX_NEVER_INLINE_CALL
 #define SCAN_REGEX_FORCE_INLINE_CALL
-#elif defined(__GNUC__) || defined(__clang__)
+#elif defined(__clang__)
 #define SCAN_REGEX_FORCE_INLINE [[gnu::always_inline]] inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
+// An attribute on a statement is clang's, and GCC says it ignores one every
+// time it reads it.
 #define SCAN_REGEX_NEVER_INLINE_CALL [[clang::noinline]]
 #define SCAN_REGEX_FORCE_INLINE_CALL [[clang::always_inline]]
+#elif defined(__GNUC__)
+#define SCAN_REGEX_FORCE_INLINE [[gnu::always_inline]] inline
+#define SCAN_REGEX_FORCE_INLINE_LAMBDA [[gnu::always_inline]]
+#define SCAN_REGEX_NEVER_INLINE_CALL
+#define SCAN_REGEX_FORCE_INLINE_CALL
 #else
 #define SCAN_REGEX_FORCE_INLINE inline
 #define SCAN_REGEX_FORCE_INLINE_LAMBDA

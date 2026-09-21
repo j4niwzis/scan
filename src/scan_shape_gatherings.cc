@@ -21,6 +21,14 @@ export import scan.shape.contexts;
 #define SCAN_FORCE_INLINE inline
 #endif
 
+// Asking for a call to be inlined is clang's attribute on a statement; GCC
+// reads one and says it ignored it.
+#if defined(__clang__)
+#define SCAN_INLINE_CALL [[clang::always_inline]]
+#else
+#define SCAN_INLINE_CALL
+#endif
+
 namespace scan::detail {
 export template <class Type, std::size_t Index>
 using field_type = typename scan::fields<Type>::template at<Index>;
@@ -368,7 +376,7 @@ SCAN_FORCE_INLINE constexpr void fold_one_step(
   const auto closing_of = [&](std::size_t which) {
     return slot_read(registers, reading[(Place + 1 + which) * 2 + 1]);
   };
-  [[clang::always_inline]] [&]<std::size_t... step>(std::index_sequence<step...>) {
+  SCAN_INLINE_CALL [&]<std::size_t... step>(std::index_sequence<step...>) {
     ((void)[&] {
       constexpr std::size_t which = inside - 1 - step;
       if ((fold.open & (std::uint64_t{1} << which)) == 0) return;
@@ -411,7 +419,7 @@ SCAN_FORCE_INLINE constexpr void fold_one_step(
     }(), ...);
   }(std::make_index_sequence<inside>{});
   if constexpr (Phase == fold_phase::closings_only) return;
-  [[clang::always_inline]] [&]<std::size_t... which>(std::index_sequence<which...>) {
+  SCAN_INLINE_CALL [&]<std::size_t... which>(std::index_sequence<which...>) {
     ((void)[&] {
       const auto began = opening_of(which);
       if (stood_nowhere(began) || fold.told_at[which] == began) return;
@@ -422,7 +430,7 @@ SCAN_FORCE_INLINE constexpr void fold_one_step(
     }(), ...);
   }(std::make_index_sequence<inside>{});
   if (hands_the_character) {
-    [[clang::always_inline]] [&]<std::size_t... which>(std::index_sequence<which...>) {
+    SCAN_INLINE_CALL [&]<std::size_t... which>(std::index_sequence<which...>) {
       ((void)[&] {
         if constexpr (takes_group_characters<held_type, which,
                                              typename FoldType::state_type> &&
