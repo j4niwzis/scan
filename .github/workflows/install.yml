@@ -28,7 +28,7 @@ concurrency:
 # The header generator, by the release it is taken from. One place, so that
 # moving to a newer one is one line.
 env:
-  DEMODULIZER: 0.1.1
+  DEMODULIZER: 0.1.2
 
 jobs:
   # The other compiler, asked the one question that matters here: does this
