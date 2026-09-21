@@ -1773,6 +1773,20 @@ template <auto& Automaton>
 // out by the preprocessor and every rung past the end of the machine is
 // thrown away by `if constexpr`. A rung costs about a millisecond to compile
 // and nothing at all to run.
+// What follows is the walk written as labels and jumps: a label's address
+// taken, and a goto through it. The standard has no way to say that -- both
+// compilers have had it for decades and neither spells it -- so the dialect is
+// asked for where the library is built (`gnu++`), and the warning is put down
+// here, where the extension is, rather than turned off for whoever reads these
+// headers. GCC has no finer word for it than `-Wpedantic`.
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wgnu-label-as-value"
+#elif defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
+
 #define SCAN_CAT_(a, b) a##b
 #define SCAN_CAT(a, b) SCAN_CAT_(a, b)
 // The same row three times over: a macro is not replaced inside its own
@@ -2724,6 +2738,12 @@ scan_over:
     return make(registers, best.matched);
   }
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 
 // The owning walk, for whoever is not one of its own frames.
 //

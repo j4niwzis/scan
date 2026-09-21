@@ -44,6 +44,10 @@ jobs:
     name: gcc ${{ matrix.gcc }}, libstdc++, import std
     runs-on: ubuntu-24.04
     container: debian:unstable
+    # After the run that generates the headers, because the headers this job
+    # reads are the ones that run made -- not the ones in the tree, which are a
+    # commit behind whatever is being built here.
+    needs: install
     timeout-minutes: 240
     strategy:
       fail-fast: false
@@ -93,6 +97,73 @@ jobs:
             -DSCAN_BUILD_TESTS=OFF \
             -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON
           cmake --build build-gcc --target scan
+
+      # A program of somebody else's, built as modules against the library that
+      # was just built and installed. The library compiling is one thing; a
+      # consumer importing it and running is the other, and this is the half
+      # that a build of the library alone never shows.
+      - name: and a program that imports it
+        run: |
+          cmake --install build-gcc --prefix "$PWD/prefix-gcc"
+          mkdir -p /tmp/uses
+          cat > /tmp/uses/main.cc <<'EOF'
+          import std;
+          import scan;
+          struct point { int x; int y; };
+          int main() {
+            const point one = scan::scan<"{},{}">("12,34");
+            const auto found = scan::match<"([0-9]+)-([a-z]+)">("42-abc");
+            std::println("{} {} {}", one.x, one.y, found.get<2>().to_view());
+            return one.x + one.y == 46 && found ? 0 : 1;
+          }
+          EOF
+          cat > /tmp/uses/CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.30)
+          project(uses CXX)
+          find_package(scan REQUIRED)
+          add_executable(uses main.cc)
+          target_link_libraries(uses PRIVATE scan::scan)
+          EOF
+          cmake -S /tmp/uses -B /tmp/uses/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-${{ matrix.gcc }} \
+            -DCMAKE_CXX_COMPILER=g++-${{ matrix.gcc }} \
+            -DCMAKE_PREFIX_PATH="$PWD/prefix-gcc"
+          cmake --build /tmp/uses/build
+          /tmp/uses/build/uses
+
+      # And the headers, read the way a consumer reads them -- the ones the run
+      # above generated, taken from what it uploaded rather than from the tree.
+      - uses: actions/download-artifact@v4
+        with:
+          name: scan-headers
+          path: generated-include
+
+      - name: the headers
+        run: |
+          pfr=$(find ~/.cache/cmake-everywhere build-gcc -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
+          test -n "$pfr" || { echo "Boost.PFR headers not found"; exit 1; }
+          pfr_include=$(dirname "$(dirname "$pfr")")
+          cat > /tmp/one.cc <<'EOF'
+          #include "scan.hpp"
+          struct row { std::string_view left, right; };
+          int how_long(const char* text) {
+            std::string_view view(text);
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(view);
+            return static_cast<int>(one.left.size() + one.right.size());
+          }
+          EOF
+          cat > /tmp/two.cc <<'EOF'
+          #include "scan.hpp"
+          #include <cstdio>
+          int how_long(const char* text);
+          int main() { std::printf("%d\n", how_long("left,right")); return 0; }
+          EOF
+          g++-${{ matrix.gcc }} -std=gnu++23 -I generated-include -I "$pfr_include" \
+            -DBOOST_PFR_USE_STD_MODULE=0 \
+            -fconstexpr-ops-limit=1000000000 -fconstexpr-depth=4096 \
+            /tmp/one.cc /tmp/two.cc -o /tmp/both
+          test "$(/tmp/both)" = "9"
 
   install:
     name: clang ${{ matrix.llvm }}, libc++, import std
