@@ -828,10 +828,10 @@ struct scan::scanner<tally> {
 };
 ```
 
-Three columns beside it: this library's own automaton written out as labels and
-direct jumps -- state for state, its register commands as named locals, calling
-these same hooks -- the same reading written by hand as loops and a pointer,
-and the library left to choose its own walk.
+Three columns beside it: the reading written out as labels and direct jumps,
+in the shape a scanner generator emits and calling these same hooks; the same
+reading written by hand as loops and a pointer; and the library left to choose
+its own walk.
 
 | heaps | `scan::scan<f>.scalar()` | written out | by hand | `scan::scan<f>` |
 | --- | --- | --- | --- | --- |
@@ -841,11 +841,10 @@ and the library left to choose its own walk.
 
 Straight lines with different intercepts. Fitted: a heap costs 3.19 ns here,
 3.14 ns written out and 3.78 ns by hand; entering costs about 120 ns against 27
-and 14. Per heap the walk and its own machine written out are the same within
-two per cent -- they are the same machine -- and sixteen per cent cheaper than
-the reading written by hand. Entering is what it is not cheap at: three times
-behind on forty-six characters, level on three thousand, ahead of the hand at
-both ends. Those hundred and twenty nanoseconds are the gathering the fold is
+and 14. Per heap the walk is within two per cent of the written-out scanner and
+sixteen per cent cheaper than the reading written by hand. Entering is what it
+is not cheap at: three times behind on forty-six characters, level on three
+thousand, ahead of the hand at both ends. Those hundred and twenty nanoseconds are the gathering the fold is
 kept in, the marks the machine writes, and the commands run before the first
 character -- paid once a reading, which is once a line for a reading handed one
 line at a time and unnoticed by one handed a file.
