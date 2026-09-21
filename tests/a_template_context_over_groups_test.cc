@@ -51,7 +51,7 @@ struct scan::scanner<numbers> {
   template <class Told>
     requires(!std::same_as<std::remove_cvref_t<Told>, scan::default_context_t>)
   static state<Told> begin_groups(const Told& told) {
-    return {std::pmr::vector<int>(scan::detail::resource_of(told)), 0};
+    return {std::pmr::vector<int>(scan::resource_of(told)), 0};
   }
 
   // The group's number as a plain index: one hook for both of them.

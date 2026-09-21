@@ -442,6 +442,59 @@ template <> struct scan::scanner<tagged> {
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
 
+**A state may be a template on what it was told.** A place said in braces
+carries its context behind an interface, so what reaches the hooks there is the
+carrier and not the caller's own type. A state that is a template takes
+whichever of the two it was handed, and `scan::resource_of` answers the same
+for both:
+
+```cpp
+struct arena {
+  std::pmr::memory_resource* where = nullptr;
+  std::pmr::memory_resource* resource() const { return where; }
+};
+
+struct numbers { std::pmr::vector<int> values; };
+struct both { numbers left; numbers right; };
+
+template <>
+struct scan::scanner<numbers> {
+  static constexpr std::string_view pattern() { return "([0-9]+)(?:,([0-9]+))*"; }
+
+  template <class Told>
+  struct state { std::pmr::vector<int> values; int running = 0; };
+
+  static state<scan::default_context_t> begin_groups() { return {}; }
+
+  template <class Told>
+    requires(!std::same_as<std::remove_cvref_t<Told>, scan::default_context_t>)
+  static state<Told> begin_groups(const Told& told) {
+    return {std::pmr::vector<int>(scan::resource_of(told)), 0};
+  }
+
+  // The group's number as a plain index: one hook for both of them.
+  template <class Told>
+  static void push_group(state<Told>& one, std::size_t, char digit) {
+    one.running = one.running * 10 + (digit - '0');
+  }
+  template <class Told>
+  static void closed_group(state<Told>& one, std::size_t) {
+    one.values.push_back(one.running);
+    one.running = 0;
+  }
+  template <class Told>
+  static numbers finish_groups(state<Told> one) { return {std::move(one.values)}; }
+};
+
+std::pmr::monotonic_buffer_resource bytes, other;
+scan::scan<"{} {}">(text).of<both>(arena{&bytes});                   // one for both
+scan::scan<"{} {}">(text).of<both>({arena{&bytes}, arena{&other}});  // one a place
+```
+
+A scanner that still cannot be written against an erased context says
+`static constexpr bool takes_its_context_deduced = true;`, and a braced list
+that would reach it is refused where it is written.
+
 **A context that keeps memory is used for what the reading builds.** A
 `std::pmr::memory_resource*`, an allocator, or anything answering `resource()`,
 `get_allocator()` or `told_resource()` is asked for it:
