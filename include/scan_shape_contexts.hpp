@@ -161,8 +161,24 @@ template <class Held, bool ToldApart, class ContextType>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr std::expected<Held, failure_for<Held>>
 groups_value(std::span<const std::string_view> groups, ContextType&& given);
 
-template <class Told>
-[[nodiscard]] constexpr std::pmr::memory_resource* resource_of(const Told& given);
+}  // namespace scan::detail
+
+namespace scan {
+
+// The memory a context keeps, whatever it keeps it as.
+//
+// An allocator says its resource, a resource is one, a thing that hands either
+// back says it too, and a place told in braces answers through the interface
+// that carries it -- so a scanner that wants memory asks this and is answered
+// the same whether it was told the caller's own thing or the carrier that
+// carries it. Nothing of the context's type has to cross the door for it.
+ template <class Told>
+[[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
+    const Told& given);
+
+}  // namespace scan
+
+ namespace scan::detail {
 
 // Said before what is below names them: a leaf carrier keeps a pointer to a
 // reading and makes one as a default argument, and both of those are written
@@ -651,10 +667,10 @@ struct reading_by final : reading_of<FieldType> {
 
 // The memory resource a context keeps, where it keeps one.
 //
-// An allocator says it, a resource is one, a thing that hands either back says
-// it too, and a place told in braces is asked through the interface that
-// carries it -- a resource is already a thing answered at runtime, so nothing
-// of the context's type has to cross the door for this.
+}  // namespace scan::detail
+
+namespace scan {
+
 template <class Told>
 [[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
     const Told& given) {
@@ -677,6 +693,10 @@ template <class Told>
     return nullptr;
   }
 }
+
+}  // namespace scan
+
+ namespace scan::detail {
 
 // A list built where its place said to build it. A container that takes an
 // allocator is given the one its place was told about; one that takes none is
