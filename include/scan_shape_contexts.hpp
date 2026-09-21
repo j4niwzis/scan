@@ -402,8 +402,12 @@ using context_place_of = typename decltype(context_place_kind<Type, Place>())::t
 // protocol, and the same rule: told a context or told none, what it begins is
 // the same kind of thing, so a place can hand the context over without the type
 // of it crossing the door.
+// Written as a named function and not as a lambda called where it stands: a
+// closure type belongs to the translation unit it was written in, and a name
+// exported from a module may not be one -- which is a thing a module compiler
+// is right to refuse.
 template <class Held>
-using gather_state_for = decltype([] {
+[[nodiscard]] constexpr auto gather_state_of() {
   if constexpr (requires {
                   scan::scanner<std::remove_cv_t<Held>>{}.begin(
                       std::string_view{});
@@ -416,7 +420,10 @@ using gather_state_for = decltype([] {
   } else {
     return scan::no_contexts{};
   }
-}());
+}
+
+template <class Held>
+using gather_state_for = decltype(gather_state_of<Held>());
 
 // What a fold begins with, said once for told and untold alike.
 //
@@ -427,7 +434,7 @@ using gather_state_for = decltype([] {
 // caller's types, and a shape told nothing is that same carrier with nothing in
 // it.
 template <class Held>
-using fold_state_for = decltype([] {
+[[nodiscard]] constexpr auto fold_state_of() {
   if constexpr (requires {
                   scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
                       std::declval<const carrier_for<Held>&>());
@@ -441,7 +448,10 @@ using fold_state_for = decltype([] {
   } else {
     return scan::no_contexts{};
   }
-}());
+}
+
+template <class Held>
+using fold_state_for = decltype(fold_state_of<Held>());
 
 // What a reading has to keep for the places under it: readings for them, where
 // the field is a shape, and nothing at all where it is read whole. Said in two

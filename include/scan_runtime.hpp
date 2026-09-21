@@ -406,13 +406,20 @@ inline constexpr std::size_t runs_worth_comparing_in_lanes = 3;
 
 #if defined(__clang__) || defined(__GNUC__)
 #define SCAN_HAS_LANES 1
+// Written as an initialisation and not as a loop that fills one in: a lane is a
+// vector type, and writing an element of one is a thing GCC will not do while
+// it is compiling. Said as a list of every element at once, both compilers make
+// the constant.
+template <class LaneType, std::size_t... Index>
+[[nodiscard]] constexpr LaneType spread_over(unsigned char value,
+                                             std::index_sequence<Index...>) {
+  return LaneType{(static_cast<void>(Index), value)...};
+}
+
 template <class LaneType>
 [[nodiscard]] constexpr LaneType spread_over(unsigned char value) {
-  LaneType made{};
-  for (std::size_t index = 0; index < sizeof(LaneType); ++index) {
-    made[index] = value;
-  }
-  return made;
+  return spread_over<LaneType>(value,
+                               std::make_index_sequence<sizeof(LaneType)>{});
 }
 
 // Two tables of sixteen bytes, which answer for a whole class at once however
@@ -455,13 +462,16 @@ template <staying_class Klass>
 
 // The same sixteen bytes repeated to the width of the lane: the shuffle picks
 // within each half of a wide register, so each half carries the whole table.
+template <class LaneType, std::array<unsigned char, 16> Table,
+          std::size_t... Index>
+[[nodiscard]] constexpr LaneType table_over(std::index_sequence<Index...>) {
+  return LaneType{Table[Index & 15]...};
+}
+
 template <class LaneType, std::array<unsigned char, 16> Table>
 [[nodiscard]] constexpr LaneType table_over() {
-  LaneType made{};
-  for (std::size_t index = 0; index < sizeof(LaneType); ++index) {
-    made[index] = Table[index & 15];
-  }
-  return made;
+  return table_over<LaneType, Table>(
+      std::make_index_sequence<sizeof(LaneType)>{});
 }
 
 #if defined(__SSSE3__) || defined(__AVX2__)
