@@ -255,11 +255,9 @@ row. `get<k>` past the last group is an empty submatch rather than an error.
 | a forward range | `std::ranges::subrange<It, It>`; nothing is copied either |
 | pieces, or a range read once | owned, because what it was read from is gone; `std::string` unless you say otherwise |
 
-Which of the three you get is decided by the subject, so the same reading gives
-views where it is handed a string and owns what it kept where it is handed a
-socket. `into<T>()` says what "owned" means and says nothing else: where the
-characters can be pointed at they are pointed at, and `into<std::pmr::string>()`
-on a `string_view` subject changes nothing.
+The subject decides which, so one reading gives views off a string and owns
+what it kept off a socket. `into<T>()` says what "owned" means and nothing
+else: `into<std::pmr::string>()` on a `string_view` subject changes nothing.
 
 `into(collectors…)` says it for each group separately, in the order the groups
 were written:
@@ -278,9 +276,8 @@ scan::match<"([0-9]+)-([a-z]+)-([a-z]+)">.into(
 | `scan::skip()` | nothing at all; `scan::skipped` stands in the answer and the group takes no room |
 | `scan::collecting<T>(push, args…)` | a `T`, made from `args…`, with every character handed to `push` |
 
-One collector to a group -- until one of them reads a type that has groups of
-its own. Those groups are that type's, so the collector after it starts past
-them:
+One collector to a group, except where one reads a type with groups of its
+own: those are that type's, and the next collector starts past them.
 
 ```cpp
 // `version` wrote three groups, so this is one collector over four groups.
@@ -326,10 +323,8 @@ Everything else in the format is a pattern and matches itself.
 | `scan::scan_prefix<f>(subject)` | the head of it, and what is left |
 | `scan::each<f>(subject)` | one record after another, lazily |
 
-All three take the same policy methods as `match` -- `sentinel`, `scalar`,
-`vec`, `sized`, `by_length` -- and the output type can be named at either end,
-because a scan runs when its type is known and until then it is only a
-description of one:
+All three take `match`'s policy methods -- `sentinel`, `scalar`, `vec`,
+`sized`, `by_length` -- and the output type may be named at either end:
 
 ```cpp
 scan::scan<f>(text).of<row>()                     // said after
@@ -340,15 +335,12 @@ constexpr auto read_row = scan::scan<"{},{},{}">.sentinel().of<row>();
 for (const std::string& line : lines) rows.push_back(read_row(line));
 ```
 
-Assigning the result of a scan converts it, and a conversion has nowhere to put
-a failure but an exception. `of<T>()` is that conversion under another name;
-`try_of<T>()` hands back `std::expected<T, …>` instead. `scan_prefix` has
-`take<T>()` and `try_take<T>()`, which give the value and the rest of the
-subject.
+A conversion has nowhere to put a failure but an exception, so `of<T>()`
+throws and `try_of<T>()` hands back `std::expected<T, …>`. `scan_prefix` says
+`take<T>()` and `try_take<T>()`, which also give what is left.
 
-**`past_space`** says once what `{*\s*}` before every place says over and over:
-every place begins past whatever whitespace is in front of it, which is what
-`%d` does in a `scanf` format and `{}` does not.
+**`past_space`** is `{*\s*}` before every place, said once -- what `%d` does in
+a `scanf` format and `{}` does not.
 
 ```cpp
 scan::scan<f>.past_space()(text)
@@ -419,28 +411,23 @@ pointer to a literal -- so a failure allocates nothing either:
 | `scan::out_of_range` | it is that type and it does not fit |
 | `scan::wrong_subject` | the reading asked for cannot be had off this kind of subject |
 
-All of them are `scan::scan_error`, which is an `std::exception` and not an
-`std::runtime_error` -- the latter keeps its message in a `std::string`, and
-this one has nothing to keep. `scan::field_error` sits between `scan_error` and
-the two field kinds and is never thrown itself: it is the name for catching
-either.
+All are `scan::scan_error`, an `std::exception` rather than an
+`std::runtime_error` -- that one keeps a `std::string` and this has nothing to
+keep. `scan::field_error` is never thrown; it is the name for catching either
+field kind.
 
-**Nothing in this library catches anything, and the reading itself never
-throws.** A reading hands back what it read or what went wrong, all the way
-down. Asking for the value rather than trying for it is the one place where a
-failure becomes a throw -- `of<T>()`, the conversion, `take<T>()` -- and that
-throw happens at the asking, not inside the walk. So the whole reading is
-usable where exceptions are turned off, which is what an embedded target is.
+**Nothing here catches anything, and the reading never throws.** A failure
+becomes a throw only where the value is asked for rather than tried for --
+`of<T>()`, the conversion, `take<T>()` -- and it throws at the asking, not
+inside the walk. The whole reading works with exceptions turned off.
 
-A scanner of your own that throws still throws, and it throws past everything:
-a reading that was asked to *try* does not turn it into a failure, because
-turning it into one would mean catching it. To have your failure handed back,
-hand it back.
+A scanner of your own that throws throws past all of it: a reading asked to
+*try* does not turn that into a failure, because turning it into one would mean
+catching it.
 
 Handed back rather than thrown, the kind survives: the error type of `try_of`
-and `try_take` is a `std::variant` of exactly the kinds that reading *that
-output* can produce -- this library's, and the ones its own scanners say.
-`scan::what(…)` gives the message whichever kind it holds.
+and `try_take` is a `std::variant` of exactly the kinds that reading can
+produce. `scan::what(…)` gives the message whichever it holds.
 
 ```cpp
 const auto got = scan::scan<"{},{}">(line).try_of<row>();
@@ -684,27 +671,22 @@ struct scan::scanner<numbers> {
 };
 ```
 
-An opening and a closing arrive once a turn, openings in the order the groups
-are written and closings innermost first. Where the subject can be pointed at,
-a closing can be handed the whole of what the group stood on --
-`closed_group(state&, scan::group_at<k>, std::string_view)` -- and then the
-characters are not handed over at all, so a run the walk stepped over in
-vectors costs one call rather than one a character. A fold that says only that
-form says by it that it wants a subject it can point at, and asking it to read
-a stream throws rather than quietly holding the characters. Every hook is
+An opening and a closing arrive once a turn: openings in the order the groups
+are written, closings innermost first. Where the subject can be pointed at a
+closing may be handed the whole of what the group stood on --
+`closed_group(state&, scan::group_at<k>, std::string_view)` -- and then no
+characters are handed over, so a run stepped over in vectors costs one call
+rather than one a character. Saying only that form says the fold wants a
+subject it can point at, and asking it to read a stream throws. Every hook is
 optional but `begin_groups` and `finish_groups`.
 
-One thing is the price of a fold and not a detail. **The walk stands in several
-readings of the subject at once**, and it carries a fold with each of them: the
-state is copied where a reading divides and dropped where a reading dies. So
-the state must be copyable, and it must be the only thing the fold touches --
-anything written outside it would be written for a reading that never happened.
-
-This is part of the incremental fold contract: **hooks may run for a reading
-that is later abandoned.** A walk that can pass a match has to read past it to
-find out whether a longer one is there, and what it reads on the way runs the
-hooks. **The completed fold state is exact**; the number of hook invocations is
-not an observable matching guarantee.
+**The walk stands in several readings of the subject at once** and carries a
+fold with each: the state is copied where a reading divides and dropped where
+one dies, so it must be copyable and must be the only thing the fold touches.
+This is the incremental fold contract: **hooks may run for a reading that is
+later abandoned** -- a walk that can pass a match has to read past it to find
+out whether a longer one is there. **The completed fold state is exact**; the
+number of hook invocations is not an observable matching guarantee.
 
 A fold may say what is kept of its state at a match, and how it goes back:
 
@@ -829,10 +811,9 @@ match nothing is where every engine answers differently. `([ab]*?)*` against
 | `scan::scan` | `[1,2)` |
 | RE2 | `[0,2)` |
 
-Following the order a backtracking engine tries things in gives this library's
-answer: the loop takes `b`, then takes `a`, and a third turn would match
-nothing. Perl divides it the same way and differs only by taking that last
-empty turn.
+The order a backtracking engine tries things in gives this one's answer: the
+loop takes `b`, then `a`, and a third turn would match nothing. Perl divides it
+the same way and differs only by taking that last empty turn.
 
 **Anchored and head readings differ where the order is what decides**, as
 `a|ab` above -- which is the same in Perl, where `^(?:a|ab)$` matches "ab" and
@@ -864,17 +845,15 @@ compilation nobody waits for.
 
 ## Speed
 
-Measured on one machine -- AMD Ryzen 9 9950X, clang 22.1.8 with libc++, `-O3
--march=native`, whole-program optimisation -- against CTRE, RE2, and `re2c`,
-which generates a scanner from a pattern in a separate build step. Take the
-numbers as shapes rather than as decimals. Each engine's code is generated by a
+One machine -- Ryzen 9 9950X, clang 22.1.8 with libc++, `-O3 -march=native`,
+LTO -- against CTRE, RE2 and re2c. Shapes, not decimals. Each engine gets a
 backend run of its own, because an `-mllvm` option handed to a link under LTO
-is handed to every engine at once; this library is built with
-`-jump-threading-across-loop-headers`, which is worth two to four per cent to a
-walk written out with a label for every state, and nineteen to re2c's scanner.
+reaches every engine at once; this one is built with
+`-jump-threading-across-loop-headers`, worth two to four per cent here and
+nineteen to re2c.
 
 **Five fields of letters out of one record** (`benchmarks/captures_benchmark.cc`),
-thirty characters, thirty-two records to a pass, median of seven:
+thirty characters, thirty-two records a pass, median of seven:
 
 | | a pass |
 | --- | --- |
@@ -885,18 +864,15 @@ thirty characters, thirty-two records to a pass, median of seven:
 | CTRE | 717 ns |
 | RE2 | 15986 ns |
 
-The same five fields out of a thousand characters, where a field is two hundred
-letters and the run is worth stepping over: 57.8 ns against re2c's 637, CTRE's
-692 and RE2's 11751. The crossover is the length of a *field*, not of the
-subject: the reading wins where there is a run to step over in vectors.
+The same five out of a thousand characters, a field being two hundred letters:
+57.8 ns against re2c's 637, CTRE's 692, RE2's 11751. The crossover is the
+length of a *field* and not of the subject -- what wins is a run worth stepping
+over in vectors.
 
 **Recognition** (`benchmarks/address_benchmark.cc`), an address of thirty-two
-characters, thirty-two subjects to a pass: 436 ns for
-`scan::match<p>.sentinel().scalar()`, 545 without the terminator, against
-re2c's 1186, RE2's 2616 and CTRE's 14339. Both of this library's rows say
-`.scalar()`: the length at which the reading starts taking words is worked out
-from the pattern, and for this one it lands below thirty-two, so left to itself
-it asks for words on a subject too short to pay for them.
+characters, thirty-two subjects a pass: 436 ns for
+`scan::match<p>.sentinel().scalar()` and 545 without the terminator, against
+re2c's 1186, RE2's 2616 and CTRE's 14339.
 
 **Against `sscanf`**, same characters in, same values out, thirty-two records:
 
@@ -907,20 +883,16 @@ it asks for words on a subject too short to pay for them.
 | five words into views | 10155 ns | 934 ns |
 | five words into room said in advance | 10155 ns | 4265 ns |
 
-**A fold** (`benchmarks/fold_benchmark.cc`) measures the thing the others
-cannot do: a type told which of its own groups each character belongs to while
-the walk passes over it, doing its arithmetic there -- no turn kept, no
-substring made, the number finished when the match is. Against this library's
-own automaton written out by hand as labels and direct jumps, and against the
-same reading written by hand as loops and a pointer: per element the walk and
-the machine written out are within two per cent of each other, and the walk is
-sixteen per cent cheaper than the hand-written loops. What it is not is cheap
-to enter -- about 120 ns against 27 and 14 -- which is the gathering and the
-register commands arranged before the first character, paid once a reading.
+**A fold** (`benchmarks/fold_benchmark.cc`) is the thing the others cannot do:
+a type told which of its groups each character belongs to, doing its arithmetic
+there -- no turn kept, no substring made. Per element the walk is within two
+per cent of the same automaton written out by hand as labels and jumps, and
+sixteen per cent cheaper than the same reading written as loops and a pointer.
+Entering one costs about 120 ns against 27 and 14, paid once a reading.
 
-Two benchmarks say the same thing about the same fault: the threshold between
-the two walks is measured from the pattern and not from the subject, and where
-they disagree `.scalar()` is what to say.
+Both `.scalar()` rows above say the same thing: the threshold between the two
+walks is measured from the pattern and not from the subject, and where they
+disagree `.scalar()` is what to say.
 
 ## What this is built on
 
