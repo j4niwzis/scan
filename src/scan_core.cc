@@ -642,6 +642,61 @@ export struct throws_a_failure {
 // The same for the hooks that gather rather than read a field: one name, and
 // the template argument says which way the caller is reading. A hook written
 // without it is asked the way it always was.
+// What a place was told, out of whatever routes it there.
+//
+// A carrier is the library's own thing: it says which context belongs to which
+// place, and a leaf of one holds the reading that knows the caller's type. A
+// scanner is written against the caller's type and nothing else, so every road
+// that asks a scanner asks through here. Written once because the two roads
+// that did it themselves disagreed, and the one that handed the carrier over
+// fell to the hook that takes nothing -- quietly, with whatever the context
+// carried left out of the answer.
+export template <class CarrierType>
+[[nodiscard]] constexpr decltype(auto) told_itself(CarrierType&& given) {
+  if constexpr (requires { given.leaf(); }) {
+    return given.leaf();
+  } else {
+    return (given);
+  }
+}
+
+// A leaf read from its own groups, told what its place was told.
+export template <class Type, class Ending = hands_a_failure_back,
+                 class CarrierType>
+[[nodiscard]] constexpr decltype(auto) told_from_groups(
+    std::span<const std::string_view> pieces, const CarrierType& given) {
+  if constexpr (requires {
+                  scanner_told_from_groups<Type, Ending>(pieces,
+                                                         told_itself(given));
+                }) {
+    return scanner_told_from_groups<Type, Ending>(pieces, told_itself(given));
+  } else if constexpr (requires {
+                         scanner_told_from_groups<Type, Ending>(pieces, given);
+                       }) {
+    return scanner_told_from_groups<Type, Ending>(pieces, given);
+  } else {
+    return scanner_told_from_groups<Type, Ending>(pieces);
+  }
+}
+
+// The same, where the scanner hands back the value itself.
+export template <class Type, class CarrierType>
+[[nodiscard]] constexpr auto told_from_groups_plain(
+    std::span<const std::string_view> pieces, const CarrierType& given) {
+  using held = std::remove_cv_t<Type>;
+  if constexpr (requires {
+                  scanner<held>{}.from_groups(pieces, told_itself(given));
+                }) {
+    return scanner<held>{}.from_groups(pieces, told_itself(given));
+  } else if constexpr (requires {
+                         scanner<held>{}.from_groups(pieces, given);
+                       }) {
+    return scanner<held>{}.from_groups(pieces, given);
+  } else {
+    return scanner<held>{}.from_groups(pieces);
+  }
+}
+
 // A gathering kept where a reading divides, and put back where one dies.
 //
 // The walk stands in several readings of the subject at once and carries a

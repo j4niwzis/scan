@@ -1127,22 +1127,7 @@ export template <class FailureType, class Parameters, class Type,
       if constexpr (scan::says_what_went_wrong_from_groups<held>) {
         // Told where the type can take it, and asked the old way where it
         // cannot: a shape that reads its own groups need not take a context.
-        auto got = [&] {
-          if constexpr (requires {
-                          scan::scanner_told_from_groups<held, Ending>(
-                              pieces, leaf_of(given));
-                        }) {
-            return scan::scanner_told_from_groups<held, Ending>(
-                pieces, leaf_of(given));
-          } else if constexpr (requires {
-                                 scan::scanner_told_from_groups<held, Ending>(
-                                     pieces, given);
-                               }) {
-            return scan::scanner_told_from_groups<held, Ending>(pieces, given);
-          } else {
-            return scan::scanner_told_from_groups<held, Ending>(pieces);
-          }
-        }();
+        auto got = scan::told_from_groups<held, Ending>(pieces, given);
         if (got) return std::move(*got);
         return Ending::template went_wrong<Type, FailureType>(
             std::move(got).error());
@@ -1157,20 +1142,8 @@ export template <class FailureType, class Parameters, class Type,
         // road below -- the one for a scanner that takes no context at all --
         // was taken instead, quietly.
         return scan::scanner<held>{}.from_groups(pieces, leaf_of(given));
-      } else if constexpr (requires {
-                             scan::scanner<held>{}.from_groups(pieces,
-                                                               leaf_of(given));
-                           }) {
-        // What this place was told, and not the carrier that routes it: told
-        // the carrier, a scanner that takes the caller's own type does not
-        // match, and the reading quietly falls to the hook that takes nothing.
-        return scan::scanner<held>{}.from_groups(pieces, leaf_of(given));
-      } else if constexpr (requires {
-                             scan::scanner<held>{}.from_groups(pieces, given);
-                           }) {
-        return scan::scanner<held>{}.from_groups(pieces, given);
       } else {
-        return scan::scanner<held>{}.from_groups(pieces);
+        return scan::told_from_groups_plain<held>(pieces, given);
       }
     } else {
       auto state = begun_groups<held>(leaf_of(given));

@@ -1334,26 +1334,17 @@ export template <class Root, class Type, std::size_t Offset, bool AsOutput,
     }(std::make_index_sequence<inside>{});
     const auto pieces = std::span<const std::string_view>(theirs);
     if constexpr (scan::says_what_went_wrong_from_groups<held>) {
-      auto got = [&] {
-        if constexpr (requires {
-                        scan::scanner_told_from_groups<held>(pieces, given);
-                      }) {
-          return scan::scanner_told_from_groups<held>(pieces, given);
-        } else {
-          return scan::scanner_told_from_groups<held>(pieces);
-        }
-      }();
+      auto got = scan::told_from_groups<held>(pieces, given);
       if (got) return std::move(*got);
       return std::unexpected(
           scan::as_a_failure<FailureType>(std::move(got).error()));
     } else if constexpr (requires {
-                           scan::scanner<held>{}.from_groups(pieces, given);
-                         }) {
-      return scan::scanner<held>{}.from_groups(pieces, given);
-    } else if constexpr (requires {
                            scan::scanner<held>{}.from_groups(pieces);
+                         } || requires {
+                           scan::scanner<held>{}.from_groups(
+                               pieces, scan::told_itself(given));
                          }) {
-      return scan::scanner<held>{}.from_groups(pieces);
+      return scan::told_from_groups_plain<held>(pieces, given);
     } else {
       auto state = begun_groups<held>(given);
       [&]<std::size_t... at>(std::index_sequence<at...>) {
