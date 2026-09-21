@@ -895,20 +895,10 @@ portable artefact.
 include(FetchContent)
 FetchContent_Declare(scan
   GIT_REPOSITORY https://github.com/j4niwzis/scan.git
-  GIT_TAG        main)
+  GIT_TAG        v0.1.0)   # a release tag; `main` to follow it
 FetchContent_MakeAvailable(scan)
 
 target_link_libraries(mine PRIVATE scan::scan)
-```
-
-A release is a file with a digest beside it, which is what a pin wants -- the
-URL and the hash are in the notes of each release, and
-`archive/<ref>.tar.gz` is not what to take:
-
-```cmake
-FetchContent_Declare(scan
-  URL      https://github.com/j4niwzis/scan/releases/download/v0.1.0/scan-0.1.0.tar.gz
-  URL_HASH SHA256=…)   # the digest is in the release notes
 ```
 
 Nothing has to be installed in your build first. This library wants Boost.PFR
