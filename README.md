@@ -1083,6 +1083,46 @@ A consumer needs the same compiler the library was built with, for the same
 reason any module library does: a BMI is not a portable artefact, and the
 interface units are compiled by your build rather than shipped compiled.
 
+#### Without cmake-everywhere
+
+What wants a provider is the Boost.PFR an aggregate is taken apart with, and
+the tests, benchmarks and fuzzer. Take the fields apart with a structured
+binding pack instead and build none of those, and this library depends on
+nothing at all -- so `FetchContent` is the whole of it:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(scan
+  GIT_REPOSITORY https://github.com/j4niwzis/scan.git
+  GIT_TAG        main)
+
+# C++26, and it needs no library: the fields of an aggregate are named by
+# `auto&& [...parts] = value;` rather than probed for.
+set(SCAN_FIELDS_BY_BINDING_PACK ON)
+FetchContent_MakeAvailable(scan)
+
+target_link_libraries(mine PRIVATE scan::scan)
+```
+
+The tests are off by default in anybody else's build, so nothing has to be
+said about them.
+
+Leave `SCAN_FIELDS_BY_BINDING_PACK` off -- because the compiler has no binding
+packs yet -- and Boost.PFR is wanted again, and then a provider has to answer
+for it. It is one file, pinned, copied into your own tree:
+
+```cmake
+# Before your project() call, and in the top-level listfile: CMake reads this
+# variable there and nowhere else.
+set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+    ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+```
+
+Said anywhere else it is not read, and `find_package(boost_pfr)` would fall
+through to whatever the machine happens to have -- so the library says outright
+that nothing is answering rather than letting a compiler error about Boost be
+the first sign of it.
+
 ### Without modules
 
 A project that cannot take modules reads the same library as headers. They are

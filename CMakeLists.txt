@@ -125,19 +125,6 @@ endif()
 
 project(scan VERSION 0.1.0 LANGUAGES CXX)
 
-# CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call and
-# by no other, so a build configured from a subdirectory of this has no
-# provider and no sign of it: find_package(boost_pfr) then falls through to
-# whatever the machine happens to have, and what finally says something is a
-# compiler error about Boost rather than about this.
-if(NOT COMMAND cme_provider)
-  message(FATAL_ERROR
-    "cmake-everywhere is not installed in this build, so nothing answers "
-    "find_package(boost_pfr). CMAKE_PROJECT_TOP_LEVEL_INCLUDES is only read "
-    "by the top-level project() call: configure this directory, and not a "
-    "subdirectory of it.")
-endif()
-
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   message(FATAL_ERROR "In-source builds not allowed.")
 endif()
@@ -203,6 +190,31 @@ endif()
 option(SCAN_FIELDS_BY_BINDING_PACK
        "Take an aggregate apart with a structured binding pack (C++26) rather than with Boost.PFR"
        OFF)
+
+# Asked where something is actually going to be asked for, and not before.
+#
+# CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call and
+# by no other, so a build configured from a subdirectory of this has no
+# provider and no sign of it: find_package(boost_pfr) then falls through to
+# whatever the machine happens to have, and what finally says something is a
+# compiler error about Boost rather than about this.
+#
+# What wants a provider is the Boost.PFR this takes an aggregate apart with,
+# and the tests, benchmarks and fuzzer. Take the fields apart with a binding
+# pack instead and build none of those, and this library depends on nothing at
+# all -- so it is consumable by a build that has never heard of
+# cmake-everywhere, which is what `FetchContent` is.
+if(NOT COMMAND cme_provider AND (NOT SCAN_FIELDS_BY_BINDING_PACK
+                                 OR SCAN_BUILD_TESTS
+                                 OR SCAN_BUILD_BENCHMARKS
+                                 OR SCAN_BUILD_FUZZER))
+  message(FATAL_ERROR
+    "cmake-everywhere is not installed in this build, so nothing answers "
+    "find_package(boost_pfr) and the rest. CMAKE_PROJECT_TOP_LEVEL_INCLUDES "
+    "is only read by the top-level project() call: name it there, and not in "
+    "a subdirectory. A build that wants no provider at all can set "
+    "SCAN_FIELDS_BY_BINDING_PACK ON, which needs C++26 and no library.")
+endif()
 
 if(NOT SCAN_FIELDS_BY_BINDING_PACK AND NOT SCAN_MODULES)
   # The ordinary Boost.PFR: a header build reads its headers, which is what
