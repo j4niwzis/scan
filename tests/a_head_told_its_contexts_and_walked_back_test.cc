@@ -184,6 +184,14 @@ struct scan::scanner<numbers> {
 
   // What is worth keeping of this gathering where the walk stands in a match.
   // Said so that the test can see that it was asked at all.
+  // And going back to it, where the walk went past the match and died. Said
+  // so that the test can see that the scanner was asked rather than walked
+  // over.
+  static void groups_go_back_to(state& live, const state& kept) {
+    if (kept.where != nullptr) kept.where->say("went back");
+    live = kept;
+  }
+
   static state keep_groups(const state& made) {
     if (made.where != nullptr) made.where->say("kept");
     return made;
@@ -249,6 +257,7 @@ TEST_F(a_head_told_its_contexts, AHeadToldInBracesThatWalkedBackOffAStream) {
   // And the scanner was asked what is worth keeping, rather than having its
   // state copied behind its back.
   EXPECT_GE(std::ranges::count(said, "kept"), 1);
+  EXPECT_GE(std::ranges::count(said, "went back"), 1);
   EXPECT_EQ(std::ranges::count(said, "turn closes 3"), 2);
 }
 

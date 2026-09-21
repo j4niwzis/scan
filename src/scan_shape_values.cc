@@ -1116,12 +1116,6 @@ class field_gatherer {
     return std::move(*made_);
   }
 
-  [[nodiscard]] constexpr std::optional<failure_for<Type>>& went_wrong() {
-    return failed_;
-  }
-
-  [[nodiscard]] constexpr std::optional<Type>& made() { return made_; }
-
   // Where the subject begins, for a walk that has all of it in front of it. A
   // fold reading such a subject is handed each of its groups whole.
   // Said once, where the subject is handed over, rather than on every

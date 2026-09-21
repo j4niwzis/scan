@@ -61,6 +61,24 @@ template <class Mark>
 // is worth keeping of it: the same type, because the copy is what the answer
 // is made from, and a scanner that says nothing is copied the way it always
 // was.
+// And going back to what was kept, where the walk went past a match and died.
+//
+// The other half of `keep_groups`, and it needs saying for the same reason:
+// putting a gathering back is an assignment, and a scanner whose state holds
+// something an assignment should not walk over has no say in it. Told both --
+// the state as it stands and the note taken where the match was -- it puts its
+// own back the way it means to.
+template <class Held, class StateType>
+constexpr void groups_go_back_to(StateType& live, const StateType& kept) {
+  if constexpr (requires {
+                  scan::scanner<Held>::groups_go_back_to(live, kept);
+                }) {
+    scan::scanner<Held>::groups_go_back_to(live, kept);
+  } else {
+    live = kept;
+  }
+}
+
 template <class Held, class StateType>
 [[nodiscard]] constexpr StateType kept_groups(const StateType& made) {
   if constexpr (requires {
@@ -112,7 +130,23 @@ struct fold_turn {
         wanted_a_subject(other.wanted_a_subject),
         text(other.text) {}
   constexpr fold_turn(fold_turn&&) = default;
-  constexpr fold_turn& operator=(const fold_turn&) = default;
+  // Put back the way the scanner says it is put back, and everything else the
+  // way it always was.
+  constexpr fold_turn& operator=(const fold_turn& other)
+    requires std::copy_constructible<state_type>
+  {
+    if (this != &other) {
+      groups_go_back_to<held_type>(state, other.state);
+      told_at = other.told_at;
+      ended_at = other.ended_at;
+      open = other.open;
+      started = other.started;
+      began_at = other.began_at;
+      wanted_a_subject = other.wanted_a_subject;
+      text = other.text;
+    }
+    return *this;
+  }
   constexpr fold_turn& operator=(fold_turn&&) = default;
   constexpr ~fold_turn() = default;
 
