@@ -1,35 +1,6 @@
 # scan
 
-Reading text into values, with the pattern known while the program is
-compiled.
-
-A pattern or a format written here becomes a tagged deterministic automaton at
-compile time, and the walk over that automaton is written out state by state.
-There is no pattern object at run time, no interpreter, and nothing is
-allocated to match. What comes out of a scan is a value of the type you asked
-for -- an aggregate, a variant, a list, a view into the subject -- rather than
-a match object you then take apart.
-
-Two layers sit on one machine:
-
-* the **pattern layer** answers questions about text: does this match, what is
-  the head of it, where are the matches, what lies between them;
-* the **format layer** reads text into a type: `{}` for each value, the type's
-  own fields deciding what each place means.
-
-Four kinds of subject are read by the same machine and answer the same way:
-characters in a row, input that arrives in pieces, a forward range, and a range
-that can only be read once.
-
-The pattern is a template argument, so a pattern that is only known while the
-program runs cannot be read here. Everything below follows from that: the walk
-has no dispatch in it, the cost of a reading can be asked before the program
-runs, and a subject that can never be looked at twice can still be read.
-Compiling a pattern is a constant evaluation that builds a machine, and a
-program with hundreds of them will feel it.
-
-Today it wants clang and `import std`; Boost.PFR unless C++26 binding packs are
-turned on, and a generated header form for projects without modules.
+Reading text into values, with the pattern known while the program is compiled.
 
 ```cpp
 import scan;
@@ -44,6 +15,23 @@ const point where = scan::scan<"{},{}">("12,34");
 // One record after another, off a stream, holding nothing.
 for (const point& one : scan::each<"{},{}\n">(std::cin).of<point>()) { … }
 ```
+
+The pattern is a template argument, so it becomes a tagged deterministic
+automaton while the program is compiled and the walk over it is written out
+state by state: no pattern object, no interpreter, no dispatch, nothing
+allocated to match. A pattern known only at run time cannot be read here.
+
+Two layers on one machine: the **pattern layer** asks about text -- match,
+head, where the matches are, what lies between -- and the **format layer**
+reads it into a type, the type's own fields deciding what each `{}` means.
+
+Four kinds of subject answer the same way: characters in a row, input in
+pieces, a forward range, and a range that can be read only once.
+
+Compiling a pattern is a constant evaluation that builds a machine, and a
+program with hundreds of them will feel it. Wants clang and `import std`;
+Boost.PFR unless C++26 binding packs are on; a generated header form for
+projects without modules.
 
 **Contents.** [A tour](#a-tour) · [What the answers mean](#what-the-answers-mean)
 · [The subject](#the-subject) · [The pattern layer](#the-pattern-layer) ·
