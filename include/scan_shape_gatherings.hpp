@@ -76,7 +76,7 @@ struct fold_turn {
 
   constexpr fold_turn()
     requires std::default_initializable<CarrierType>
-      : state(begun_groups<held_type>(CarrierType{})) {}
+      : state{} {}
   constexpr explicit fold_turn(const CarrierType& told)
       : state(begun_groups<held_type>(told)) {}
 

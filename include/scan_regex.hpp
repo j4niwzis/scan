@@ -406,26 +406,6 @@ template <fixed_string Pattern, std::size_t State>
   return answer;
 }
 
-// How many states a state can move to, not counting itself. One is a chain:
-// the machine goes there and nowhere else, and what follows can be written
-// where the move is. More than one is a fork, and writing what follows at the
-// fork would write it once per branch.
-// How far a chain is followed before the next state is reached by a call.
-//
-// A timestamp is nineteen states in a row, each taking one character; a row of
-// comma-separated fields is a dozen. Reaching each of them by a call is a call
-// for every character of the subject, which is what a generated scanner never
-// does -- so the chain is followed here, and the cap is only against a pattern
-// long enough to make one function of the whole of it.
-// The same rule the format layer follows, asked of this layer's automaton: how
-// much of the chain is written out is bounded by how many bodies that writes,
-// and not by how many states it passes -- a state with one way out writes one
-// body a step, a state that forks writes one per branch, and the number of
-// steps says nothing about the difference.
-template <fixed_string Pattern>
-[[nodiscard]] consteval std::size_t chain_budget() {
-  return bodies_worth_writing<regex_automaton<Pattern>>();
-}
 
 
 
@@ -523,20 +503,19 @@ template <fixed_string Pattern, unsigned char Sentinel>
 // the same one.
 template <fixed_string Pattern>
 [[nodiscard]] consteval detail::walk_shape bounded_shape(bool in_words) {
-  return {.in_words = in_words, .budget = chain_budget<Pattern>()};
+  return {.in_words = in_words};
 }
 
 template <fixed_string Pattern, unsigned char Terminator>
 [[nodiscard]] consteval detail::walk_shape terminated_shape(bool in_words) {
   return {.in_words = in_words,
           .by_terminator = true,
-          .terminator = Terminator,
-          .budget = chain_budget<Pattern>()};
+          .terminator = Terminator};
 }
 
 template <fixed_string Pattern>
 [[nodiscard]] consteval detail::walk_shape head_shape() {
-  return {.longest = true, .budget = chain_budget<Pattern>()};
+  return {.longest = true};
 }
 
 // Whether the subject matched, and where the longest head ended for the walks
@@ -573,10 +552,6 @@ template <fixed_string Pattern, detail::walk_shape Shape, class CursorType,
   // a match for every place it tries.
   SCAN_REGEX_FORCE_INLINE_CALL
   return detail::run_continuation<automaton, Shape, automaton.initial,
-                                  Shape.budget,
-                                  Shape.longest
-                                      ? 0
-                                      : minimum_match_length<Pattern>(),
                                   mark_type>(cursor, last, place, registers,
                                              nothing, best);
 }
@@ -1586,8 +1561,7 @@ struct collected_match_closure
     std::ptrdiff_t place = 0;
     detail::walk_answer<const char*> best;
     constexpr detail::walk_shape shape{.in_words = true};
-    if (!detail::run_continuation<automaton, shape, automaton.initial,
-                                  shape.budget, 0, std::ptrdiff_t>(
+    if (!detail::run_continuation<automaton, shape, automaton.initial, std::ptrdiff_t>(
             cursor, last, place, registers, into, best)) {
       return result_type{};
     }
@@ -1630,15 +1604,11 @@ struct collected_match_closure
     auto cursor = std::ranges::begin(input);
     std::ptrdiff_t position = 0;
     detail::walk_answer<decltype(cursor)> best;
-    // Written out, the same as every other walk. A subject handed over a
-    // character at a time cannot have the vectors -- there is nothing in a
-    // row to read -- but it can have the machine as code, and with a budget
-    // of nothing it was paying a call for every state it passed through, for
-    // every character.
-    constexpr detail::walk_shape once{.budget =
-                                          detail::chain_budget<Pattern>()};
-    if (!detail::run_continuation<automaton, once, automaton.initial,
-                                  once.budget, 0, std::ptrdiff_t>(
+    // The same walk as every other, and the plain shape of it: a subject
+    // handed over a character at a time cannot have the vectors, because
+    // there is nothing in a row to read.
+    constexpr detail::walk_shape once{};
+    if (!detail::run_continuation<automaton, once, automaton.initial, std::ptrdiff_t>(
             cursor, std::ranges::end(input), position, registers, into,
             best)) {
       return result_type{};
@@ -2220,8 +2190,7 @@ struct match_closure
     std::ptrdiff_t place = 0;
     detail::walk_answer<const char*> best;
     constexpr detail::walk_shape shape{.in_words = true};
-    if (!detail::run_continuation<automaton, shape, automaton.initial,
-                                  shape.budget, 0, std::ptrdiff_t>(
+    if (!detail::run_continuation<automaton, shape, automaton.initial, std::ptrdiff_t>(
             cursor, last, place, registers, into, best)) {
       return basic_result<HeldType, 0>{};
     }
@@ -2247,15 +2216,11 @@ struct match_closure
     std::ptrdiff_t place = 0;
     auto cursor = std::ranges::begin(input);
     detail::walk_answer<decltype(cursor)> best;
-    // Written out, the same as every other walk. A subject handed over a
-    // character at a time cannot have the vectors -- there is nothing in a
-    // row to read -- but it can have the machine as code, and with a budget
-    // of nothing it was paying a call for every state it passed through, for
-    // every character.
-    constexpr detail::walk_shape once{.budget =
-                                          detail::chain_budget<Pattern>()};
-    if (!detail::run_continuation<automaton, once, automaton.initial,
-                                  once.budget, 0, std::ptrdiff_t>(
+    // The same walk as every other, and the plain shape of it: a subject
+    // handed over a character at a time cannot have the vectors, because
+    // there is nothing in a row to read.
+    constexpr detail::walk_shape once{};
+    if (!detail::run_continuation<automaton, once, automaton.initial, std::ptrdiff_t>(
             cursor, std::ranges::end(input), place, registers, keep, best)) {
       return basic_result<HeldType, 0>{};
     }

@@ -6,6 +6,7 @@
 #include <exception>
 #include <expected>
 #include <iterator>
+#include <memory>
 #include <ranges>
 #include <string_view>
 #include <tuple>
@@ -859,13 +860,19 @@ struct no_contexts {
 // what "a value at a place is that place's and all of its parts'" means.
 template <class It, bool Apart>
 struct one_context {
+  using held = std::remove_reference_t<It>;
   static constexpr bool told_apart = Apart;
-  It thing;
+  // The caller's own thing and not a copy of it: a context is a place to keep
+  // things while a reading runs, and a scanner told one may write in it. What
+  // it was written as it stays -- a const one stays const, because the caller
+  // wrote it that way. It lives as long as the call that said it, which is the
+  // rule a context said in braces goes by as well.
+  held* thing = nullptr;
   template <std::size_t>
   [[nodiscard]] constexpr one_context for_part() const {
     return *this;
   }
-  [[nodiscard]] constexpr const It& leaf() const { return thing; }
+  [[nodiscard]] constexpr held& leaf() const { return *thing; }
 };
 
 // The contexts a call was given, in the order the places are read.
@@ -887,8 +894,8 @@ struct contexts_at_places {
   static constexpr std::size_t count = sizeof...(Contexts);
 
   constexpr contexts_at_places() = default;
-  constexpr explicit contexts_at_places(Contexts... given)
-      : all(std::move(given)...) {}
+  constexpr explicit contexts_at_places(Contexts&... given)
+      : all(std::addressof(given)...) {}
 
   template <std::size_t Place>
   [[nodiscard]] constexpr auto for_part() const {
@@ -907,9 +914,11 @@ struct contexts_at_places {
     }
   }
 
-  [[nodiscard]] constexpr decltype(auto) leaf() const { return std::get<0>(all); }
+  [[nodiscard]] constexpr decltype(auto) leaf() const { return *std::get<0>(all); }
 
-  std::tuple<Contexts...> all;
+  // Pointers rather than values, for the reason said above `one_context`: what
+  // a scanner writes into a context is written into the caller's own.
+  std::tuple<Contexts*...> all;
 };
 
 

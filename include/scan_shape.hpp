@@ -72,7 +72,7 @@ template <class Type, fixed_string Format, class SourceType>
   walk_answer<const char*, kept_type> best;
   constexpr walk_shape shape{.in_words = true, .longest = true};
   into.watch(best.at, best.upto);
-  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+  if (!run_continuation<automaton, shape, automaton.initial,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
     return said;
@@ -122,9 +122,8 @@ template <class Type, fixed_string Format,
   const char* last = nullptr;
   std::ptrdiff_t place = 0;
   walk_answer<const char*> best;
-  constexpr walk_shape shape{.in_words = true,
-                             .budget = bodies_worth_writing<automaton>()};
-  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+  constexpr walk_shape shape{.in_words = true};
+  if (!run_continuation<automaton, shape, automaton.initial,
                         std::ptrdiff_t>(cursor, last, place, registers, into,
                                         best)) {
     return std::unexpected(scan::as_a_failure<failure_for<Type>>(
@@ -185,9 +184,8 @@ template <class Type, fixed_string Format,
                   .tags_read =
                       groups_whose_place_is_read<Type, Format, automaton>(),
                   .tags_written =
-                      groups_whose_mark_is_read<Type, Format, automaton>(),
-                  .budget = bodies_worth_writing<automaton>()}
-            : walk_shape{.budget = bodies_worth_writing<automaton>()};
+                      groups_whose_mark_is_read<Type, Format, automaton>()}
+            : walk_shape{};
     // Nothing the reading fills in is made here.
     //
     // A walk written as labels is a walk no inliner will fold into this one,
@@ -195,7 +193,7 @@ template <class Type, fixed_string Format,
     // must stay in memory until the call returns -- which is every character
     // of the subject. Told to make its own instead, the gatherer and the
     // registers are values of the walk and go wherever values go.
-    return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
+    return run_owning<automaton, shape, automaton.initial,
                       const char*, points_at_it, const char*, const char*,
                       automaton.register_count,
                       field_gatherer<Type, Format, automaton, in_a_row,
@@ -220,9 +218,9 @@ template <class Type, fixed_string Format,
     gatherer_type into{collected, told};
     auto cursor = std::ranges::begin(input);
     mark_kind position = 0;
-    constexpr walk_shape shape{.budget = bodies_worth_writing<automaton>()};
+    constexpr walk_shape shape{};
     walk_answer<decltype(cursor)> best;
-    if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+    if (!run_continuation<automaton, shape, automaton.initial,
                           mark_kind>(cursor, std::ranges::end(input), position,
                                      registers, into, best)) {
       return std::unexpected(scan::as_a_failure<failure_for<Type>>(
@@ -295,6 +293,123 @@ struct stream_carry {
   }
 };
 
+// The characters of a reading that arrives as it is read, handed over as
+// pieces of one.
+//
+// The walk wants a piece it can point into; a reading that is read once has
+// nothing in a row behind it. So each character is a piece of its own, held
+// here while the walk stands in it, and the carry is given out first because
+// those characters were read before any of these.
+template <class IteratorType, class SentinelType, std::size_t Hold>
+class a_char_at_a_time {
+ public:
+  class cursor {
+   public:
+    using iterator_concept = std::input_iterator_tag;
+    using value_type = std::string_view;
+    using difference_type = std::ptrdiff_t;
+
+    cursor() = default;
+    constexpr explicit cursor(a_char_at_a_time* owner) : owner_(owner) {}
+
+    [[nodiscard]] constexpr std::string_view operator*() const {
+      owner_->settle();
+      return std::string_view(owner_->standing(), 1);
+    }
+    constexpr cursor& operator++() {
+      if (owner_ != nullptr) owner_->wants_another();
+      return *this;
+    }
+    constexpr void operator++(int) { ++*this; }
+    [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
+      if (owner_ == nullptr) return true;
+      owner_->settle();
+      return owner_->done_;
+    }
+
+   private:
+    a_char_at_a_time* owner_ = nullptr;
+  };
+
+  constexpr a_char_at_a_time(IteratorType& first, SentinelType last,
+                             stream_carry<Hold>& carry)
+      : first_(&first), last_(last), carry_(&carry) {}
+
+  [[nodiscard]] constexpr cursor begin() { return cursor(this); }
+  [[nodiscard]] constexpr std::default_sentinel_t end() const { return {}; }
+
+  // Whether the reading stands on a character that was taken out of it and
+  // not stepped over: the one that ended a match is looked at and left where
+  // it is.
+  [[nodiscard]] constexpr bool holding() const { return holding_; }
+  [[nodiscard]] constexpr char held() const { return *standing(); }
+
+  // The character handed over last was taken rather than refused, so the
+  // reading stands after it and not on it.
+  constexpr void step_over_it() {
+    if (!holding_) return;
+    ++*first_;
+    holding_ = false;
+  }
+
+ private:
+  friend class cursor;
+
+  // Where the character handed over last is. Two of them, used turn and turn
+  // about: whoever asks for the next one may still be holding a piece that
+  // points at this one, and a piece of a reading is looked at after the
+  // reading has been asked to move on.
+  [[nodiscard]] constexpr const char* standing() const {
+    return &slots_[at_];
+  }
+
+  // Asked for, and not taken until somebody wants it.
+  //
+  // Whoever reads this hands a piece to the walk and steps the cursor in the
+  // same breath -- that is what an input iterator is for, and the piece is
+  // looked at afterwards. Stepping here would read the character after the
+  // one being handed over, which on a subject that arrives as it is read is
+  // a character somebody has not typed yet, and which the walk may never ask
+  // for: the one that ends a match is the piece it is holding when it stops.
+  //
+  // So the step is remembered and not made. It is made where the next
+  // character is actually wanted -- when the walk asks whether there is one,
+  // or asks what it is -- and until then the reading stands on the character
+  // it handed over.
+  constexpr void wants_another() { asked_ = true; }
+
+  constexpr void settle() {
+    if (!asked_) return;
+    asked_ = false;
+    const unsigned into = at_ ^ 1u;
+    if (!carry_->empty()) {
+      slots_[into] = carry_->front();
+      carry_->pop();
+      at_ = into;
+      holding_ = false;
+      return;
+    }
+    step_over_it();
+    if (*first_ == last_) {
+      done_ = true;
+      return;
+    }
+    slots_[into] = static_cast<char>(**first_);
+    at_ = into;
+    holding_ = true;
+  }
+
+  IteratorType* first_ = nullptr;
+  SentinelType last_{};
+  stream_carry<Hold>* carry_ = nullptr;
+  char slots_[2]{};
+  unsigned at_ = 0;
+  // Nothing has been read yet, so the first character is owed from the start.
+  bool asked_ = true;
+  bool holding_ = false;
+  bool done_ = false;
+};
+
 // The head of a subject read as it arrives, and where it ended.
 //
 // The machine is offered the character before it is taken out of the reading,
@@ -319,97 +434,78 @@ scan_stream_prefix(IteratorType& first, SentinelType last,
   static_assert(
       can_go_back || window != std::numeric_limits<std::size_t>::max(),
       "this pattern can read any number of characters past a match without "
-      "finding another one, so the reading that has to give them back would "
-      "have to hold any number of them: read it from something that can be "
-      "gone back over -- a forward range, characters in a row, or input in "
-      "pieces");
-  stream_state<Type, Format> state;
-  std::optional<char> stopped;
-  std::optional<stream_state<Type, Format>> note;
-  // The place the note was taken at, kept the way this reading can keep it: an
-  // iterator where the reading can be gone back over, and nothing at all where
-  // it cannot -- an iterator of such a range cannot even be copied.
-  using place_type =
-      std::conditional_t<can_go_back, IteratorType, nothing_kept>;
-  place_type note_at{};
-  constexpr std::size_t held_here =
-      can_go_back || window == 0 ||
-              window == std::numeric_limits<std::size_t>::max()
-          ? 1
-          : window;
-  std::array<char, held_here> since{};
-  std::size_t since_count = 0;
-  if (state.accepting()) note = state;
-  // A character that has been taken but not stepped over yet.
+      "finding another one: read it from something that can be gone back "
+      "over -- a forward range, characters in a row, or input in pieces");
+  // The walk everything else is read by, handed one character at a time.
+  using source_type = a_char_at_a_time<IteratorType, SentinelType, Hold>;
+  using gatherer_type = field_gatherer<Type, Format, automaton, false,
+                                       std::ptrdiff_t, scan::default_context_t>;
+  register_file<std::ptrdiff_t, automaton.register_count> registers{};
+  registers.fill(scan::tre::negative_tag);
+  execute_initial<automaton>(registers, std::ptrdiff_t{0});
+  typename gatherer_type::cold_type collected =
+      made_cold_at_places<Type, Format, std::ptrdiff_t,
+                          typename gatherer_type::cold_type>(
+          scan::default_context_t{});
+  source_type one_by_one(first, last, carry);
+  gathers_from_pieces<gatherer_type, source_type&, pieces_hold<Type, Format>>
+      into(gatherer_type{collected, scan::default_context_t{}}, one_by_one);
+  const char* cursor = nullptr;
+  const char* end_of_it = nullptr;
+  std::ptrdiff_t place = 0;
+  // The same note the pieces reading takes, and for the same reason: where a
+  // walk out of a match can fail, the registers of the match are what going
+  // back to it means.
+  constexpr bool walks_past = window != 0;
+  using kept_type = std::conditional_t<
+      walks_past, register_file<std::ptrdiff_t, automaton.register_count>,
+      nothing_kept>;
+  walk_answer<const char*, kept_type> best;
+  // Where the machine last stood in a state that accepts, which is what a head
+  // is: this reading is a record and what follows it is somebody else's.
+  constexpr walk_shape shape{.in_words = true, .longest = true};
+  into.watch(best.at, best.upto);
+  const bool matched =
+      run_continuation<automaton, shape, automaton.initial,
+                       std::ptrdiff_t>(cursor, end_of_it, place, registers,
+                                       into, best);
+  // Looked at and not taken: the one that ended the match stays where it is,
+  // and is said here so that whoever asked knows what ended it.
   //
-  // Stepping over one reads the next: an iterator of a subject that arrives as
-  // it is read does its reading in `++`. So the step is put off until another
-  // character is actually wanted, and a match that settles where it stands
-  // never causes the one after it to be read at all. What is read is what the
-  // machine asked for, and nothing beyond it.
-  bool taken_here = false;
-  const auto step_over_it = [&] {
-    if (!taken_here) return;
-    ++first;
-    taken_here = false;
-  };
-  while (true) {
-    char symbol = 0;
-    if (!carry.empty()) {
-      symbol = carry.front();
-    } else {
-      step_over_it();
-      if (first == last) break;
-      symbol = static_cast<char>(*first);
-    }
-    if (!state.offer(symbol)) {
-      // Looked at and not taken: it stays where it is, and is said here so
-      // that whoever asked knows what ended the match.
-      stopped = symbol;
-      break;
-    }
-    if (!carry.empty()) {
-      carry.pop();
-    } else {
-      taken_here = true;
-    }
-    if constexpr (!can_go_back && window != 0) since[since_count++] = symbol;
-    if (state.accepting()) {
-      note = state;
-      since_count = 0;
-      if constexpr (can_go_back) note_at = first;
-      // Where the machine can go nowhere from where it stands, it is over, and
-      // nothing needs to be read to find that out.
-      if (state.settled()) break;
+  // The walk asks for another character after every one it takes, so a
+  // character still held when the walk is over is one it would not take. It
+  // stays unread, and the reading stands on it: stepping over it here is what
+  // ate the character that began the next record.
+  std::optional<char> stopped;
+  if (one_by_one.holding()) stopped = one_by_one.held();
+  if (!matched) {
+    return std::unexpected(scan::as_a_failure<failure_for<Type>>(
+        no_match<>("input does not match scan expression")));
+  }
+  // Back to the match that was kept. What the walk read past it was taken out
+  // of a subject that cannot be gone back over, so it goes into the carry and
+  // the next reading sees it first -- the adapter holding it goes out of scope
+  // with this call.
+  into.go_back_to(cursor, end_of_it);
+  if constexpr (Hold != 0) {
+    if (cursor != end_of_it) {
+      carry.put_in_front(cursor, static_cast<std::size_t>(end_of_it - cursor));
     }
   }
-  const auto handed_back =
-      [](std::expected<Type, failure_for<Type>> got,
-         std::optional<char> ended_it)
-      -> std::expected<taken_ahead<Type>, failure_for<Type>> {
-    if (!got) return std::unexpected(std::move(got).error());
-    return taken_ahead<Type>{std::move(*got), ended_it};
-  };
-  // Whoever reads on from here needs the reading to stand after what was
-  // taken; whoever does not would only make it read one more character.
-  if (read_on) step_over_it();
-  if (state.accepting()) return handed_back(std::move(state).finish(), stopped);
-  if (note) {
-    // Past the match and dead. The answer is the place that was kept, and what
-    // was read after it goes back in front of the reading.
-    if constexpr (can_go_back) {
-      first = note_at;
-    } else {
-      carry.put_in_front(since.data(), since_count);
-    }
-    // And the one that ended it, where one was looked at: going past a match
-    // and dying does not make the character that stopped the walk any less
-    // read. Thrown away here, it was the one thing the caller could not get
-    // back by any other means.
-    return handed_back(std::move(*note).finish(), stopped);
-  }
-  // Nothing matched; `finish` says so in the way the caller expects.
-  return handed_back(std::move(state).finish(), stopped);
+  // Taken or refused, which is what decides whether the reading stands on the
+  // character it stopped on or after it.
+  //
+  // Where no walk out of a match can fail, a match is the end of the walk:
+  // the state it accepts in has nowhere to go, the walk stops there without
+  // asking for another character, and the last one it was handed was taken.
+  // Where such a walk can fail, the walk stopped by being handed a character
+  // no move takes -- that one was never taken, and the next reading begins
+  // with it.
+  constexpr bool settles_at_a_match = window == 0;
+  if (read_on && settles_at_a_match) one_by_one.step_over_it();
+  auto got = into.taken();
+  if (!got) return std::unexpected(std::move(got).error());
+  return taken_ahead<Type>{std::move(*got), stopped};
 }
 
 // How much a reading of this format has to be able to hold: nothing where it
@@ -418,18 +514,14 @@ scan_stream_prefix(IteratorType& first, SentinelType last,
 // already held when that happened.
 template <class Type, fixed_string Format, class IteratorType>
 inline constexpr std::size_t stream_hold = [] consteval {
-  if constexpr (std::forward_iterator<IteratorType>) {
+  constexpr std::size_t window =
+      walk_past_a_match<streaming_automaton_whole<Type, Format>>();
+  if constexpr (window == std::numeric_limits<std::size_t>::max()) {
+    // Refused where it is used; sized so that saying so is what the caller
+    // sees, rather than an array of every address there is.
     return std::size_t{0};
   } else {
-    constexpr std::size_t window =
-        walk_past_a_match<streaming_automaton_whole<Type, Format>>();
-    if constexpr (window == std::numeric_limits<std::size_t>::max()) {
-      // Refused where it is used; sized so that saying so is what the caller
-      // sees, rather than an array of every address there is.
-      return std::size_t{0};
-    } else {
-      return window * 2;
-    }
+    return window * 2 + 1;
   }
 }();
 
