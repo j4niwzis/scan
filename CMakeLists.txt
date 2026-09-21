@@ -357,6 +357,38 @@ if(SCAN_MODULES AND EXISTS "${scan_headers_dir}/scan.hpp")
 endif()
 
 target_compile_features(scan ${scan_reaches} cxx_std_23)
+# The dialect said outright, because the walk is written in it.
+#
+# A machine written as labels and jumps -- a label's address taken, a goto
+# through it -- is not a thing standard C++ can say, and neither are the vector
+# types the character classes are read with. Both compilers have had them for
+# decades and neither spells them in the standard, so the answer is to ask for
+# the dialect that has them rather than to turn the warning off: `gnu++`, and
+# `-Wpedantic` then has nothing to say about what is written on purpose.
+set_target_properties(scan PROPERTIES CXX_EXTENSIONS ON)
+if(SCAN_FIELDS_BY_BINDING_PACK)
+  # And a binding pack is C++26, so that is the standard it is asked for
+  # rather than an extension warned about.
+  set_target_properties(scan PROPERTIES CXX_STANDARD 26)
+endif()
+
+# The dialect said outright, because this library speaks it.
+#
+# The walk is written as labels and a jump through a table of their addresses,
+# which is what a generated scanner is and what standard C++ has no way to say;
+# a lane is a vector type, which it has no way to say either. Both are
+# extensions that clang and GCC have had for decades and both are guarded by
+# the macros that ask whether the compiler is one of them -- so the honest
+# spelling of the standard here is `gnu++`, and a build that says `c++` is
+# asking for four thousand warnings about code that cannot be written any other
+# way.
+#
+# A binding pack is C++26; where the fields are taken apart that way, the
+# dialect is the later one.
+set_target_properties(scan PROPERTIES CXX_EXTENSIONS ON)
+if(SCAN_FIELDS_BY_BINDING_PACK)
+  set_target_properties(scan PROPERTIES CXX_STANDARD 26)
+endif()
 # In this build only. A Boost.PFR the provider built is a target of this build
 # directory, and install(EXPORT) refuses to export something that links it --
 # rightly, since what would be installed is a library whose dependency exists
