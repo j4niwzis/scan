@@ -654,6 +654,25 @@ struct throws_a_failure {
 // The same for the hooks that gather rather than read a field: one name, and
 // the template argument says which way the caller is reading. A hook written
 // without it is asked the way it always was.
+// A scanner that cannot be told through a braced list, and says so.
+//
+// Braces deduce nothing, so what a place is told arrives behind an interface
+// whose type was fixed before the call. A scanner whose hooks differ by the
+// type of the context -- which groups it wants, what its state is made of --
+// cannot be written against that, because the type it would overload on is
+// gone by the time it is asked. Such a scanner says this, and a braced list
+// that would reach it is refused where it is written rather than quietly
+// taking the hook that takes nothing.
+template <class Type>
+inline constexpr bool takes_its_context_deduced = [] {
+  using held = std::remove_cv_t<Type>;
+  if constexpr (requires { scanner<held>::takes_its_context_deduced; }) {
+    return static_cast<bool>(scanner<held>::takes_its_context_deduced);
+  } else {
+    return false;
+  }
+}();
+
 template <class Type, class StateType, class Ending>
 concept can_be_told_to_finish =
     requires(StateType state) {

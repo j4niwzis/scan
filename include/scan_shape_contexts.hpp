@@ -218,6 +218,16 @@ class context_leaf {
     made.kept = &given;
   }
 
+  // A leaf's own carrier: the reading is the thing the carrier asks, so the
+  // carrier is that reading and nothing else. Nothing is stored for it --
+  // storing a leaf's carrier inside the leaf would be a circle -- and what it
+  // carries is reached the same way every other carrier reaches it.
+  [[nodiscard]] static constexpr context_leaf at(reading_of<held>* how) {
+    context_leaf done;
+    done.how_ = how;
+    return done;
+  }
+
   // The same leaf, told a context that was said for the shape above it.
   template <class Store, class It>
   [[nodiscard]] static constexpr context_leaf wire(Store& made, It&& given) {
@@ -444,23 +454,26 @@ using gather_state_for = decltype(gather_state_of<Held>());
 // it.
 template <class Held>
 [[nodiscard]] constexpr auto fold_state_of() {
+  using held = std::remove_cv_t<Held>;
   if constexpr (requires {
-                  scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+                  scan::scanner<held>{}.begin_groups(
                       std::declval<const carrier_for<Held>&>());
                 }) {
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
-        std::declval<const carrier_for<Held>&>());
-  } else if constexpr (requires {
-                         scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
-                       }) {
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
+    // Named and not made: `declval` stands for a carrier that is never built
+    // here, so it may appear under `decltype` and nowhere else. Returning the
+    // call itself would deduce this return type by instantiating the body,
+    // which odr-uses `declval` and is ill-formed.
+    return std::type_identity<decltype(scan::scanner<held>{}.begin_groups(
+        std::declval<const carrier_for<Held>&>()))>{};
+  } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
+    return std::type_identity<decltype(scan::scanner<held>{}.begin_groups())>{};
   } else {
-    return scan::no_contexts{};
+    return std::type_identity<scan::no_contexts>{};
   }
 }
 
 template <class Held>
-using fold_state_for = decltype(fold_state_of<Held>());
+using fold_state_for = typename decltype(fold_state_of<Held>())::type;
 
 // What a reading has to keep for the places under it: readings for them, where
 // the field is a shape, and nothing at all where it is read whole. Said in two
@@ -510,6 +523,11 @@ template <class FieldType, class ContextType, bool ToldApart,
           std::size_t Copies>
 struct reading_by final : reading_of<FieldType> {
   using held = std::remove_cv_t<FieldType>;
+  static_assert(
+      !scan::takes_its_context_deduced<held>,
+      "this scanner says takes_its_context_deduced: a braced list of contexts "
+      "erases their types before it is asked, so say them without braces -- "
+      "one a place, or scan::parts{...} for the parts of one place");
   using answer = std::expected<held, failure_for<held>>;
 
   ContextType* kept = nullptr;
@@ -578,8 +596,13 @@ struct reading_by final : reading_of<FieldType> {
                     scan::scanner<held>{}.begin_groups(
                         std::declval<const carrier_for<held>&>());
                   }) {
-      return scan::scanner<held>{}.begin_groups(
-          carrier_for<held>::wire(under_, *kept));
+      if constexpr (carrier_places<held>() > 0) {
+        return scan::scanner<held>{}.begin_groups(
+            carrier_for<held>::wire(under_, *kept));
+      } else {
+        return scan::scanner<held>{}.begin_groups(
+            carrier_for<held>::at(this));
+      }
     } else if constexpr (requires {
                            scan::scanner<held>{}.begin_groups(*kept);
                          }) {
@@ -939,9 +962,15 @@ template <class FailureType, class Parameters, class Type,
         // cannot: a shape that reads its own groups need not take a context.
         auto got = [&] {
           if constexpr (requires {
-                          scan::scanner_told_from_groups<held, Ending>(pieces,
-                                                                       given);
+                          scan::scanner_told_from_groups<held, Ending>(
+                              pieces, leaf_of(given));
                         }) {
+            return scan::scanner_told_from_groups<held, Ending>(
+                pieces, leaf_of(given));
+          } else if constexpr (requires {
+                                 scan::scanner_told_from_groups<held, Ending>(
+                                     pieces, given);
+                               }) {
             return scan::scanner_told_from_groups<held, Ending>(pieces, given);
           } else {
             return scan::scanner_told_from_groups<held, Ending>(pieces);
@@ -950,6 +979,25 @@ template <class FailureType, class Parameters, class Type,
         if (got) return std::move(*got);
         return Ending::template went_wrong<Type, FailureType>(
             std::move(got).error());
+      } else if constexpr (requires {
+                             scan::scanner<held>{}.from_groups(pieces,
+                                                               leaf_of(given));
+                           }) {
+        // The place's own context and not the carrier holding it: a carrier
+        // said in braces is the leaf already, one deduced at the call is a
+        // wrapper around the caller's thing, and a scanner was written to take
+        // the caller's thing. Asked with the wrapper it does not match, and the
+        // road below -- the one for a scanner that takes no context at all --
+        // was taken instead, quietly.
+        return scan::scanner<held>{}.from_groups(pieces, leaf_of(given));
+      } else if constexpr (requires {
+                             scan::scanner<held>{}.from_groups(pieces,
+                                                               leaf_of(given));
+                           }) {
+        // What this place was told, and not the carrier that routes it: told
+        // the carrier, a scanner that takes the caller's own type does not
+        // match, and the reading quietly falls to the hook that takes nothing.
+        return scan::scanner<held>{}.from_groups(pieces, leaf_of(given));
       } else if constexpr (requires {
                              scan::scanner<held>{}.from_groups(pieces, given);
                            }) {
