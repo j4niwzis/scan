@@ -1211,7 +1211,7 @@ template <class Type, fixed_string Format, bool AbsentIsEmpty = false>
   const char* cursor = begin;
   const char* place = begin;
   constexpr walk_shape shape{.longest = true};
-  if (!run_continuation<automaton, shape, automaton.initial, shape.budget, 0,
+  if (!run_continuation<automaton, shape, automaton.initial,
                         const char*>(cursor, begin + input.size(), place,
                                      registers, nothing, best)) {
     return said;
@@ -1320,7 +1320,10 @@ template <class Type, fixed_string Format, int Sentinel, bool Terminated,
       // Nothing here is a constant: the automaton is a value built on first use
       // and the walk is a loop over it. Not one instantiation per state, not one
       // determinisation per pattern while compiling.
-      const scan::tre::tdfa& automaton = runtime_text_automaton<spread_text<Type, Format>>();
+      // Uncut, the same as the packed machine the other branch walks: this
+      // reading is anchored to both ends of the subject.
+      const scan::tre::tdfa& automaton =
+          runtime_text_automaton<spread_text<Type, Format>, true, false>();
       std::vector<const char*> registers(automaton.register_count, nullptr);
       if (!run_tagged_runtime(automaton, input.data(),
                               input.data() + input.size(), registers)) {
@@ -1396,8 +1399,7 @@ template <class Type, fixed_string Format, int Sentinel, bool Terminated,
       // four call sites, each would be a place where the marks could be owned
       // by somebody else again, which is what this was before.
       constexpr auto shape_for = [](bool in_words) {
-        walk_shape made{.in_words = in_words,
-                        .budget = bodies_worth_writing<automaton>()};
+        walk_shape made{.in_words = in_words};
         if constexpr (by_terminator) {
           made.by_terminator = true;
           made.terminator = terminator;
@@ -1407,7 +1409,7 @@ template <class Type, fixed_string Format, int Sentinel, bool Terminated,
       const char* const from = input.data();
       const char* const upto = from + input.size();
       const auto go = [&]<walk_shape shape>() {
-        return run_owning<automaton, shape, automaton.initial, shape.budget, 0,
+        return run_owning<automaton, shape, automaton.initial,
                           const char*, false, const char*, const char*,
                           automaton.register_count, gathers_nothing,
                           walk_answer<const char*>, decltype(build)>(

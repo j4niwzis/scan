@@ -951,9 +951,17 @@ template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
 
 // Built once, on first use. The determiniser is the same one the compiled form
 // evaluates while compiling; asked at run time it answers in microseconds.
-template <fixed_string Pattern, bool Allocate = true>
+template <fixed_string Pattern, bool Allocate = true, bool Cut = true,
+          std::uint64_t Keep = ~std::uint64_t{0}>
 [[nodiscard]] inline const scan::tre::tdfa& runtime_text_automaton() {
-  static const scan::tre::tdfa built = build_text_tdfa<Pattern, Allocate>();
+  // The same four questions the packed one is asked, and asked here because a
+  // reading that walks the packed machine and a reading that interprets this
+  // one are the same reading: a machine cut for a head cannot match a whole
+  // subject that goes past the head, and a reading told to match the whole of
+  // one was handed the cut machine for as long as only one of the two knew
+  // what it had been asked.
+  static const scan::tre::tdfa built =
+      build_text_tdfa<Pattern, Allocate, Cut, Keep>();
   return built;
 }
 
