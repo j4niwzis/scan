@@ -193,34 +193,32 @@ option(SCAN_FIELDS_BY_BINDING_PACK
 
 # Asked where something is actually going to be asked for, and not before.
 #
-# CMAKE_PROJECT_TOP_LEVEL_INCLUDES is read by the top-level project() call and
-# by no other, so a build configured from a subdirectory of this has no
-# provider and no sign of it: find_package(boost_pfr) then falls through to
-# whatever the machine happens to have, and what finally says something is a
-# compiler error about Boost rather than about this.
-#
-# What wants a provider is the Boost.PFR this takes an aggregate apart with,
-# and the tests, benchmarks and fuzzer. Take the fields apart with a binding
-# pack instead and build none of those, and this library depends on nothing at
-# all -- so it is consumable by a build that has never heard of
-# cmake-everywhere, which is what `FetchContent` is.
-if(NOT COMMAND cme_provider AND (NOT SCAN_FIELDS_BY_BINDING_PACK
-                                 OR SCAN_BUILD_TESTS
-                                 OR SCAN_BUILD_BENCHMARKS
-                                 OR SCAN_BUILD_FUZZER))
-  message(FATAL_ERROR
-    "cmake-everywhere is not installed in this build, so nothing answers "
-    "find_package(boost_pfr) and the rest. CMAKE_PROJECT_TOP_LEVEL_INCLUDES "
-    "is only read by the top-level project() call: name it there, and not in "
-    "a subdirectory. A build that wants no provider at all can set "
-    "SCAN_FIELDS_BY_BINDING_PACK ON, which needs C++26 and no library.")
+# What wants a resolver is the Boost.PFR an aggregate is taken apart with, and
+# the tests, benchmarks and fuzzer. Take the fields apart with a binding pack
+# instead and build none of those, and this library depends on nothing at all
+# -- and none of what follows happens.
+if(NOT SCAN_FIELDS_BY_BINDING_PACK OR SCAN_BUILD_TESTS
+   OR SCAN_BUILD_BENCHMARKS OR SCAN_BUILD_FUZZER)
+  # A dependency provider is installed by the top-level project() call and by
+  # no other, so a build that added this library to its own has none and
+  # cannot be given one: CMAKE_PROJECT_TOP_LEVEL_INCLUDES above is read where
+  # this is the project being configured and nowhere else.
+  #
+  # So cmake-everywhere is included here instead and asked by name. It is the
+  # same resolution -- the system first, a port second -- and it leaves
+  # whatever the consumer chose for their own build alone, which installing a
+  # provider from underneath them would not.
+  if(NOT COMMAND cme_find_package)
+    set(CME_WITHOUT_PROVIDER ON)
+    include(${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+  endif()
 endif()
 
 if(NOT SCAN_FIELDS_BY_BINDING_PACK AND NOT SCAN_MODULES)
   # The ordinary Boost.PFR: a header build reads its headers, which is what
   # every machine that has Boost already has. Nothing to build here, and
   # nothing to say about modules.
-  find_package(boost_pfr REQUIRED)
+  cme_find_package(boost_pfr REQUIRED)
 elseif(NOT SCAN_FIELDS_BY_BINDING_PACK)
   # Boost.PFR, as a module: the fields of an aggregate, by nothing but the type.
   # It is asked for as modules, and a copy of it installed on the machine is
@@ -258,7 +256,7 @@ elseif(NOT SCAN_FIELDS_BY_BINDING_PACK)
       "CMAKE_CXX_STANDARD 23"
       "CMAKE_CXX_MODULE_STD 1"
       "CMAKE_EXPERIMENTAL_CXX_IMPORT_STD ${CMAKE_EXPERIMENTAL_CXX_IMPORT_STD}")
-  find_package(boost_pfr REQUIRED COMPONENTS modules)
+  cme_find_package(boost_pfr REQUIRED COMPONENTS modules)
 
   # Said out loud, because getting this wrong is not a build error.
   #
