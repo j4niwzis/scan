@@ -36,8 +36,7 @@ struct shape_turns {
       : gatherings(make_scanner_state_told<held, Format>(given)),
         told(given) {}
 
-  gatherings_type gatherings =
-      make_scanner_state_told<held, Format>(CarrierType{});
+  gatherings_type gatherings{};
   // An element that did not read, kept until there is somebody to hand it to:
   // a turn ends in the middle of a walk, where there is nowhere to say so.
   std::optional<shape_failure<held>> went_wrong{};
