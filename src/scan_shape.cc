@@ -300,20 +300,21 @@ class a_char_at_a_time {
     using difference_type = std::ptrdiff_t;
 
     cursor() = default;
-    constexpr explicit cursor(a_char_at_a_time* owner) : owner_(owner) {
-      if (owner_ != nullptr) owner_->take_one();
-    }
+    constexpr explicit cursor(a_char_at_a_time* owner) : owner_(owner) {}
 
     [[nodiscard]] constexpr std::string_view operator*() const {
+      owner_->settle();
       return std::string_view(owner_->standing(), 1);
     }
     constexpr cursor& operator++() {
-      if (owner_ != nullptr) owner_->take_one();
+      if (owner_ != nullptr) owner_->wants_another();
       return *this;
     }
     constexpr void operator++(int) { ++*this; }
     [[nodiscard]] constexpr bool operator==(std::default_sentinel_t) const {
-      return owner_ == nullptr || owner_->done_;
+      if (owner_ == nullptr) return true;
+      owner_->settle();
+      return owner_->done_;
     }
 
    private:
@@ -332,6 +333,9 @@ class a_char_at_a_time {
   // it is.
   [[nodiscard]] constexpr bool holding() const { return holding_; }
   [[nodiscard]] constexpr char held() const { return *standing(); }
+
+  // The character handed over last was taken rather than refused, so the
+  // reading stands after it and not on it.
   constexpr void step_over_it() {
     if (!holding_) return;
     ++*first_;
@@ -342,14 +346,31 @@ class a_char_at_a_time {
   friend class cursor;
 
   // Where the character handed over last is. Two of them, used turn and turn
-  // about: whoever asks for the next one is still holding a piece that points
-  // at this one, and a piece of a reading is looked at after the reading has
-  // moved on.
+  // about: whoever asks for the next one may still be holding a piece that
+  // points at this one, and a piece of a reading is looked at after the
+  // reading has been asked to move on.
   [[nodiscard]] constexpr const char* standing() const {
     return &slots_[at_];
   }
 
-  constexpr void take_one() {
+  // Asked for, and not taken until somebody wants it.
+  //
+  // Whoever reads this hands a piece to the walk and steps the cursor in the
+  // same breath -- that is what an input iterator is for, and the piece is
+  // looked at afterwards. Stepping here would read the character after the
+  // one being handed over, which on a subject that arrives as it is read is
+  // a character somebody has not typed yet, and which the walk may never ask
+  // for: the one that ends a match is the piece it is holding when it stops.
+  //
+  // So the step is remembered and not made. It is made where the next
+  // character is actually wanted -- when the walk asks whether there is one,
+  // or asks what it is -- and until then the reading stands on the character
+  // it handed over.
+  constexpr void wants_another() { asked_ = true; }
+
+  constexpr void settle() {
+    if (!asked_) return;
+    asked_ = false;
     const unsigned into = at_ ^ 1u;
     if (!carry_->empty()) {
       slots_[into] = carry_->front();
@@ -373,6 +394,8 @@ class a_char_at_a_time {
   stream_carry<Hold>* carry_ = nullptr;
   char slots_[2]{};
   unsigned at_ = 0;
+  // Nothing has been read yet, so the first character is owed from the start.
+  bool asked_ = true;
   bool holding_ = false;
   bool done_ = false;
 };
@@ -445,7 +468,6 @@ scan_stream_prefix(IteratorType& first, SentinelType last,
   // ate the character that began the next record.
   std::optional<char> stopped;
   if (one_by_one.holding()) stopped = one_by_one.held();
-  static_cast<void>(read_on);
   if (!matched) {
     return std::unexpected(scan::as_a_failure<failure_for<Type>>(
         no_match<>("input does not match scan expression")));
@@ -460,6 +482,17 @@ scan_stream_prefix(IteratorType& first, SentinelType last,
       carry.put_in_front(cursor, static_cast<std::size_t>(end_of_it - cursor));
     }
   }
+  // Taken or refused, which is what decides whether the reading stands on the
+  // character it stopped on or after it.
+  //
+  // Where no walk out of a match can fail, a match is the end of the walk:
+  // the state it accepts in has nowhere to go, the walk stops there without
+  // asking for another character, and the last one it was handed was taken.
+  // Where such a walk can fail, the walk stopped by being handed a character
+  // no move takes -- that one was never taken, and the next reading begins
+  // with it.
+  constexpr bool settles_at_a_match = window == 0;
+  if (read_on && settles_at_a_match) one_by_one.step_over_it();
   auto got = into.taken();
   if (!got) return std::unexpected(std::move(got).error());
   return taken_ahead<Type>{std::move(*got), stopped};
