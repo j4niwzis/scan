@@ -1171,6 +1171,24 @@ struct contexts_at_places {
   std::tuple<held_as<Contexts>...> all;
 };
 
+// The contexts of one call, made where they are said.
+//
+// Which kind each is -- the caller's own thing held as its address, or one made
+// at the call and held here -- is `contexts_at_places`' own business, and this
+// is the one door into it. Every entry point that takes contexts comes through
+// here, because the one that worked the kinds out for itself got them wrong:
+// it stripped the reference, which made a named thing the caller still owned
+// into something to move out of.
+export template <class... Contexts>
+using contexts_said = contexts_at_places<Contexts...>;
+
+export template <class... Contexts>
+[[nodiscard]] constexpr contexts_said<Contexts...> contexts_from(
+    Contexts&&... given) {
+  return contexts_said<Contexts...>(given...);
+}
+
+
 // The parts of one place, said where the place is said.
 //
 // A braced list says the same thing and says it behind an interface: a braced

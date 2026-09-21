@@ -54,7 +54,7 @@ class reading_with {
 
  private:
   Reading what_;
-  scan::contexts_at_places<Contexts...> given_;
+  scan::contexts_said<Contexts...> given_;
 };
 
 // Naming what a reading is for, written once for every kind of subject.
@@ -101,7 +101,7 @@ struct names_its_output {
       }
     } else {
       return std::forward<Self>(self).template asked_for<Type>(
-          scan::contexts_at_places<Contexts...>(given...));
+          scan::contexts_from(std::forward<Contexts>(given)...));
     }
   }
 
@@ -483,7 +483,8 @@ class prefix_scan {
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
   try_take(Contexts&&... given) const {
-    return taken_with<Type>(scan::contexts_at_places<Contexts...>(given...));
+    return taken_with<Type>(
+        scan::contexts_from(std::forward<Contexts>(given)...));
   }
 
   template <class Type>
@@ -496,7 +497,7 @@ class prefix_scan {
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr taken<Type> take(Contexts&&... given) const {
     return or_thrown(
-        taken_with<Type>(scan::contexts_at_places<Contexts...>(given...)));
+        taken_with<Type>(scan::contexts_from(std::forward<Contexts>(given)...)));
   }
 
   template <class Type>
@@ -886,8 +887,7 @@ class each_stream_scan {
     if constexpr (sizeof...(Contexts) == 0) {
       return each_stream_view<Type, Format, RangeType>(std::move(self.input_));
     } else {
-      using carrier =
-          scan::contexts_at_places<Contexts...>;
+      using carrier = scan::contexts_said<Contexts...>;
       return each_stream_view<Type, Format, RangeType, carrier>(
           std::move(self.input_), carrier(given...));
     }
