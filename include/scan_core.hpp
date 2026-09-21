@@ -901,9 +901,29 @@ struct contexts_at_places {
   // a place by value -- they are a handful of addresses already, and the thing
   // that said them is a temporary of the call that says it, so holding its
   // address would be holding the address of something that dies first.
+  // A context of the caller's own is held as the address of it: what a scanner
+  // writes into one is written into theirs. One said at the call is nobody
+  // else's, so it is moved in and held here -- and then there is nothing for
+  // it to outlive, which is what lets a reading that hands back a view take
+  // one. The parts of a place are held the second way for the same reason.
   template <class One>
-  using held_as =
-      std::conditional_t<said_as_parts<std::remove_cvref_t<One>>, One, One*>;
+  struct owns {
+    std::remove_cvref_t<One> value;
+  };
+
+  // What a place is told, said as a type: the caller's own thing as they wrote
+  // it, and one made at the call as const. The carrier is read as const
+  // wherever it is handed about -- it held nothing but addresses until now, so
+  // that cost nothing -- and a context it owns is reached through it. Said
+  // here rather than cast away: a scanner that wants to write into a context
+  // wants the caller's own, and one made at the call is nobody's to write to.
+
+
+  template <class One>
+  using held_as = std::conditional_t<
+      said_as_parts<std::remove_cvref_t<One>>, owns<One>,
+      std::conditional_t<std::is_lvalue_reference_v<One>,
+                         std::remove_reference_t<One>*, owns<One>>>;
 
   static constexpr bool for_everyone = [] {
     if constexpr (sizeof...(Contexts) == 1) {
@@ -925,14 +945,40 @@ struct contexts_at_places {
 
   template <class One, class Given>
   [[nodiscard]] static constexpr held_as<One> held_for(Given& given) {
-    if constexpr (said_as_parts<std::remove_cvref_t<One>>) {
-      return given;
+    if constexpr (!std::is_lvalue_reference_v<One> ||
+                  said_as_parts<std::remove_cvref_t<One>>) {
+      return held_as<One>{static_cast<std::remove_cvref_t<One>&&>(given)};
     } else {
-      static_assert(
-          !std::is_rvalue_reference_v<Given&&> || std::is_const_v<Given>,
-          "a context is held as the address of it, so it has to outlive the "
-          "reading: name it rather than handing over a temporary");
+      // The address of it, and nothing said here about how long it has to
+      // live. A reading that runs inside the call it was written in is over
+      // before the full expression is, so a context made at that call is
+      // still there -- an allocator wrapped around a resource, say. A reading
+      // that outlives the call has to ask for more than that, and asks where
+      // it is written.
       return std::addressof(given);
+    }
+  }
+
+  // What a place is told, said as a type, where the carrier is read as const.
+  //
+  // A context of the caller's own is an address either way -- const on the
+  // carrier is const on the pointer, never on what it points at -- so it
+  // arrives as they wrote it. One the carrier owns is reached through the
+  // carrier, so a const carrier hands it over as const, and that is said here
+  // rather than cast away.
+  template <class One>
+  using told_as =
+      std::conditional_t<std::is_lvalue_reference_v<One>, One,
+                         const std::remove_cvref_t<One>&>;
+
+  // Where the thing said at a place is, whichever way it is held.
+  template <std::size_t Place>
+  [[nodiscard]] constexpr auto* at_place() const {
+    auto& held = std::get<Place>(all);
+    if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(held)>>) {
+      return held;
+    } else {
+      return std::addressof(held.value);
     }
   }
 
@@ -940,16 +986,13 @@ struct contexts_at_places {
   [[nodiscard]] constexpr auto for_part() const {
     if constexpr (for_everyone) {
       using first = std::tuple_element_t<0, std::tuple<Contexts...>>;
-      return one_context<first, false>{std::get<0>(all)};
+      return one_context<told_as<first>, false>{at_place<0>()};
     } else if constexpr (Place < sizeof...(Contexts)) {
       using here = std::tuple_element_t<Place, std::tuple<Contexts...>>;
       if constexpr (said_as_parts<std::remove_cvref_t<here>>) {
-        // The parts of this place, handed on as they were said. A place that
-        // is a shape asks them for its own parts in turn, which is the whole
-        // of what saying them in one does.
-        return std::get<Place>(all);
+        return std::get<Place>(all).value;
       } else {
-        return one_context<here, true>{std::get<Place>(all)};
+        return one_context<told_as<here>, true>{at_place<Place>()};
       }
     } else {
       static_assert(Place < sizeof...(Contexts),
@@ -964,9 +1007,53 @@ struct contexts_at_places {
     using first = std::remove_cvref_t<
         std::tuple_element_t<0, std::tuple<Contexts...>>>;
     if constexpr (said_as_parts<first>) {
-      return std::get<0>(all);
+      return std::get<0>(all).value;
     } else {
-      return *std::get<0>(all);
+      return *at_place<0>();
+    }
+  }
+
+  template <std::size_t Place>
+  [[nodiscard]] constexpr auto* at_place() {
+    auto& held = std::get<Place>(all);
+    if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(held)>>) {
+      return held;
+    } else {
+      return std::addressof(held.value);
+    }
+  }
+
+  template <std::size_t Place>
+  [[nodiscard]] constexpr auto for_part() {
+    if constexpr (for_everyone) {
+      using first = std::tuple_element_t<0, std::tuple<Contexts...>>;
+      return one_context<first, false>{at_place<0>()};
+    } else if constexpr (Place < sizeof...(Contexts)) {
+      using here = std::tuple_element_t<Place, std::tuple<Contexts...>>;
+      if constexpr (said_as_parts<std::remove_cvref_t<here>>) {
+        // The parts of this place, handed on as they were said. A place that
+        // is a shape asks them for its own parts in turn, which is the whole
+        // of what saying them in one does.
+        return std::get<Place>(all).value;
+      } else {
+        return one_context<here, true>{at_place<Place>()};
+      }
+    } else {
+      static_assert(Place < sizeof...(Contexts),
+                    "this reading has more places than it was given contexts: "
+                    "give one for every place, one for all of them, or write "
+                    "scan::default_context where a place wants none");
+      return no_contexts{};
+    }
+  }
+
+  [[nodiscard]] constexpr decltype(auto) leaf() {
+    using first = std::remove_cvref_t<
+        std::tuple_element_t<0, std::tuple<Contexts...>>>;
+    if constexpr (said_as_parts<first>) {
+      return std::get<0>(all).value;
+    } else {
+      return *at_place<0>();
     }
   }
 
@@ -992,12 +1079,14 @@ struct parts : contexts_at_places<Parts...> {
   // Made empty as well, because the walk makes a carrier of its own before it
   // is told anything.
   constexpr parts() = default;
-  constexpr explicit parts(Parts&... given)
-      : contexts_at_places<Parts...>(given...) {}
+  template <class... Given>
+    requires(sizeof...(Given) == sizeof...(Parts))
+  constexpr explicit parts(Given&&... given)
+      : contexts_at_places<Parts...>(static_cast<Given&&>(given)...) {}
 };
 
 template <class... Parts>
-parts(Parts&...) -> parts<Parts...>;
+parts(Parts&&...) -> parts<Parts...>;
 
 template <class... Parts>
 inline constexpr bool said_as_parts<parts<Parts...>> = true;
