@@ -41,8 +41,8 @@ projects without modules.
 
 ## A tour
 
-Everything below is a callable object, so it can be used as a function or piped
-into with `|`, which is what a range adaptor closure is for.
+Every entry point is a callable object and a range adaptor closure, so
+`subject | scan::search<p>` is `scan::search<p>(subject)`.
 
 ```cpp
 // Does the whole subject match?
@@ -83,45 +83,37 @@ for (const row& one : scan::each<"{},{[a-z]+}\n">(text).of<row>()) { … }
 
 ### Leftmost-first
 
-The rule is Perl's, which is also RE2's and CTRE's: **the first alternative
-under which the whole expression matches wins, however short it is.**
-Alternation is ordered, repetition is greedy unless it is written lazy, and
-where several parses are possible the one the order prefers is the one whose
-groups you get.
+Perl's rule, which is RE2's and CTRE's: **the first alternative under which the
+whole expression matches wins, however short it is.** Alternation is ordered,
+repetition greedy unless written lazy.
 
 ```cpp
 scan::each<"{{for}|{each}|{foreach}}">("foreach")   // for, then each
 scan::each<"{{foreach}|{for}|{each}}">("foreach")   // foreach
 ```
 
-In the first, the match of `for` is the first walk in that state, so everything
-below it has lost and the record ends there. In the second, the walk of
-`foreach` sits above that match and is still alive, so the machine goes on.
-This is not the longest match: `for|each|foreach` reading "foreach" stops at
-`for`, where a lexer would take the whole word.
+In the first, the match of `for` is the first walk in that state and everything
+below it has lost. Not longest-match: a lexer would take the whole word.
 
 ### Anchored, or a head
 
-A pattern is read in one of two ways, and the difference is what ends the
-reading:
-
-* **anchored** -- the subject ends it. `match` and `scan` read this way.
+* **anchored** -- the subject ends the reading. `match`, `scan`.
 * **a head** -- the match ends it. `starts_with`, `search`, `scan_prefix`,
-  `each`, `split` and `search_all` read this way.
+  `each`, `split`, `search_all`.
 
-The two need different machines. For a head, a walk below a match has lost and
-is cut where the automaton is built. Anchored, that same walk may be the only
-one that reaches the end of the subject, so it is kept:
+Different machines: for a head a walk below a match has lost and is cut when
+the automaton is built; anchored, that walk may be the only one that reaches
+the end.
 
 ```cpp
-scan::match<"a|ab">("ab")          // matches `ab`: `a` cannot reach the end
-scan::starts_with<"a|ab">("ab")    // takes `a`: `a` matched first
+scan::match<"a|ab">("ab")          // `ab`: `a` cannot reach the end
+scan::starts_with<"a|ab">("ab")    // `a`: it matched first
 ```
 
 ### Nothing is walked back, except by a note
 
 A walk can pass a match hunting a longer one the order prefers and die --
-`foreach|for|each` reading "fore" -- so it keeps a note: the place and the
+`foreach|for|each` reading "fore" -- so it keeps a note: the place, the
 registers there, and what a fold gathered. Whether a machine can pass a match
 at all is a compile-time question; where every step out of a match lands in
 another, the note is a pointer. No backtracking beyond it, and nothing is ever
@@ -129,10 +121,9 @@ tried a second way.
 
 ### Groups
 
-Groups are numbered by their opening parenthesis, from one; nought is the whole
-match. A group that took no part in the winning parse says so rather than
-coming back empty, and a group in a repetition holds the turn that won, which
-for a greedy repetition is the last one.
+Numbered by opening parenthesis from one; nought is the whole match. A group
+that took no part says so rather than coming back empty, and a group in a
+repetition holds the turn that won.
 
 ## The subject
 
@@ -143,40 +134,34 @@ for a greedy repetition is the last one.
 | a forward range | a character at a time | nothing; the note is an iterator, and going back is assigning it |
 | a range read once (`views::istream`, `istreambuf_iterator`) | a character at a time, once | the characters read past a match, and no more |
 
-A string literal is a subject like any other and its NUL is not part of it:
-`scan<"{}">("450")` reads three characters, read *to* the NUL rather than by
-counting. For a buffer you filled, hand over a `string_view` of the filled
-part.
+A string literal's NUL is not part of it: `scan<"{}">("450")` reads three
+characters, read *to* the NUL rather than by counting. For a buffer you filled,
+hand over a `string_view` of the filled part.
 
 ### A subject that can only be read once
 
-A deterministic machine never looks ahead, so it can read a range that has no
-way back -- `std::views::istream`, a socket, a pipe -- and gather the fields as
-they arrive:
+A deterministic machine never looks ahead, so it reads a range with no way back
+-- `std::views::istream`, a socket, a pipe -- gathering fields as they arrive:
 
 ```cpp
 std::istringstream source("set speed 42\nset gain 7\n");
-source >> std::noskipws;  // or the spaces never reach the machine
+source >> std::noskipws;
 struct command { scan::held<16> name; int value; };
 for (const command& one :
      scan::each<"set {[a-z]+} {[0-9]+}\n">(std::views::istream<char>(source))
          .of<command>()) { … }
 ```
 
-Nothing is buffered. The characters go through the machine as they come, each
-field gathers into whatever collects it, and the record is built where the
-match ends. Two things are held, and both are numbers the pattern names while
-it is compiled:
+Nothing is buffered. Two things are held, and both are numbers the pattern
+names while it is compiled:
 
-* **what was read past a match**, where the walk went on for a longer one and
-  died -- those characters belong to the next record;
-* **what a failed attempt swallowed**, where a search starts one character
-  later and needs the characters again.
+* **what was read past a match**, which belongs to the next record;
+* **what a failed attempt swallowed**, which a search starting one character
+  later needs again.
 
-For most patterns both are zero. Where a number cannot be named -- a cycle with
-no match along it, like `a+b`, which can eat any number of characters and still
-not match -- the reading is refused where it is compiled, and told why. It is
-not silently buffered. The order of the alternatives is what decides this:
+For most patterns both are zero. Where no number can be named -- a cycle with
+no match along it, `a+b` -- the reading is refused where it is compiled rather
+than silently buffered. The order of the alternatives decides:
 
 ```cpp
 scan::search_all<"a|abcd">   // holds nothing: the match of `a` ends the walk
@@ -184,9 +169,6 @@ scan::search_all<"abcd|a">   // holds two characters: `abcd` outlives the match
 ```
 
 ## The pattern layer
-
-Every entry point is a callable object taking a subject, and every one is also
-a range adaptor closure, so `subject | scan::search<p>` is `scan::search<p>(subject)`.
 
 | | what it answers |
 | --- | --- |
@@ -197,13 +179,12 @@ a range adaptor closure, so `subject | scan::search<p>` is `scan::search<p>(subj
 | `scan::split<p>` | the pieces between the matches, as a lazy view |
 | `scan::tokenize<p>`, `scan::iterator<p>`, `scan::range<p>` | other spellings of `search_all` |
 
-`search` and `split` want characters that are all there; `match`,
-`starts_with`, `search_all` and `split` read a subject that arrives once as
-well, under the rules above.
+`search` and `split` want characters that are all there; the rest read a
+subject that arrives once as well.
 
 ### Saying what the reading should be
 
-The caller's three choices are methods, so they compose in any order:
+Policies are methods and compose in any order:
 
 ```cpp
 scan::match<p>(text)                          // the length says which walk
@@ -238,10 +219,6 @@ for (char letter : found) { … }      // begin/end/size on the whole match
 std::string_view text = found;       // and the conversion
 ```
 
-A submatch answers the same way -- `operator bool`, `begin`/`end`/`size`,
-`held()`, and `data()`/`to_view()`/the conversion where the characters lie in a
-row. `get<k>` past the last group is an empty submatch rather than an error.
-
 ### Collectors: what a group comes back as
 
 | subject | what a group is |
@@ -254,8 +231,7 @@ The subject decides which, so one reading gives views off a string and owns
 what it kept off a socket. `into<T>()` says what "owned" means and nothing
 else: `into<std::pmr::string>()` on a `string_view` subject changes nothing.
 
-`into(collectors…)` says it for each group separately, in the order the groups
-were written:
+`into(collectors…)` says it per group, in the order the groups were written:
 
 ```cpp
 scan::match<"([0-9]+)-([a-z]+)-([a-z]+)">.into(
@@ -267,8 +243,8 @@ scan::match<"([0-9]+)-([a-z]+)-([a-z]+)">.into(
 | | |
 | --- | --- |
 | `scan::text()` | the characters, held as the subject affords -- the default |
-| `scan::as<T>(args…)` | a `T`: built as `T(first, last, args…)` where the arguments allow it, otherwise parsed by `scan::scanner<T>` |
-| `scan::skip()` | nothing at all; `scan::skipped` stands in the answer and the group takes no room |
+| `scan::as<T>(args…)` | a `T`: built as `T(first, last, args…)` where that works, otherwise parsed by `scan::scanner<T>` |
+| `scan::skip()` | nothing; `scan::skipped` stands in the answer and the group takes no room |
 | `scan::collecting<T>(push, args…)` | a `T`, made from `args…`, with every character handed to `push` |
 
 One collector to a group, except where one reads a type with groups of its
@@ -278,20 +254,15 @@ own: those are that type's, and the next collector starts past them.
 // `version` wrote three groups, so this is one collector over four groups.
 scan::match<"v=(([0-9]+)\\.([0-9]+)\\.([0-9]+))-([a-z]+)!">.into(
     scan::as<version>(), scan::text())(text);
-```
 
-`collecting` is for an answer that is neither a string nor a parsed value -- a
-count, a hash, a checksum:
-
-```cpp
+// For an answer that is neither text nor a parsed value.
 scan::match<"([a-z]+)">.into(scan::collecting<std::size_t>(
     [](std::size_t& sum, char letter) { sum += static_cast<unsigned char>(letter); }));
 ```
 
 ## The format layer
 
-A format is a pattern with places in it, and each place is a value of the
-output type:
+A format is a pattern with places in it, each place a value of the output type:
 
 ```cpp
 struct row { int id; std::string_view name; double weight; };
@@ -318,8 +289,8 @@ Everything else in the format is a pattern and matches itself.
 | `scan::scan_prefix<f>(subject)` | the head of it, and what is left |
 | `scan::each<f>(subject)` | one record after another, lazily |
 
-All three take `match`'s policy methods -- `sentinel`, `scalar`, `vec`,
-`sized`, `by_length` -- and the output type may be named at either end:
+All three take `match`'s policy methods, and the output type may be named at
+either end:
 
 ```cpp
 scan::scan<f>(text).of<row>()                     // said after
@@ -330,8 +301,8 @@ constexpr auto read_row = scan::scan<"{},{},{}">.sentinel().of<row>();
 for (const std::string& line : lines) rows.push_back(read_row(line));
 ```
 
-A conversion has nowhere to put a failure but an exception, so `of<T>()`
-throws and `try_of<T>()` hands back `std::expected<T, …>`. `scan_prefix` says
+A conversion has nowhere to put a failure but an exception, so `of<T>()` throws
+and `try_of<T>()` hands back `std::expected<T, …>`. `scan_prefix` says
 `take<T>()` and `try_take<T>()`, which also give what is left.
 
 **`past_space`** is `{*\s*}` before every place, said once -- what `%d` does in
@@ -346,39 +317,34 @@ constexpr auto stamp = scan::fixed_string("{}-{}-{}T{}:{}:{}").past_space();
 
 * anything with a `scan::scanner<T>`: the integers, the floating-point types,
   `bool`, `char`, `std::string`, `std::pmr::string`, `std::string_view`, and
-  `scan::held<N>` -- characters in room said in advance, for a reading with no
-  allocator, which keeps what fits and says `overflowed` for what did not;
+  `scan::held<N>` -- room said in advance, for a reading with no allocator,
+  keeping what fits and saying `overflowed` for what did not;
 * an aggregate, whose fields are the places inside a nested `{…}`;
 * a sum type -- `std::variant`, or anything with a `scan::branches<T>`;
 * a range, which takes as many turns as the place allows.
 
 A type that is both a range and has a scanner -- `std::string` -- is read as
-one value, unless its scanner says `as_a_list`.
+one value unless its scanner says `as_a_list`.
 
 ### Reading into a list
 
 ```cpp
 struct row { std::vector<int> values; };
 const row one = scan::scan<"{{}{*,?}}">("1,2,3,4");
-```
 
-The place is a shape of two: the element, and a separator kept by nobody. Left
-alone it takes as many turns as the subject affords; a repetition after it
-bounds them, and the bounds are known where the reading is compiled:
-
-```cpp
 scan::scan<"{{}{*,?}}{2,3}">("1,2,3")   // at least two turns, at most three
 scan::scan<"{{}{* ?}}+">(pairs)         // one or more
-scan::scan<"{{}{*,?}}?">(text)          // none or one -- which an optional is
+scan::scan<"{{}{*,?}}?">(text)          // none or one -- an optional
 ```
 
-The container is filled through `push_back`; where the count has an upper bound
-and the container can grow, the room is taken once rather than a handful at a
-time. A container with room of its own says so with `scan::room_for`, and then
-a place that could ask for more than it holds is refused where it is compiled.
+The place is a shape of two: the element, and a separator kept by nobody. The
+bounds are known where the reading is compiled. Filling is `push_back`, and
+with an upper bound the room is taken once. `scan::room_for` says a container
+holds only so many, and then a place that could ask for more is refused at
+compile time.
 
-A list is read by the machine that gathers as it goes even where the subject
-lies in a row, because a repeated group keeps only the turn that won.
+A list is read by the machine that gathers as it goes even off a subject in a
+row, because a repeated group keeps only the turn that won.
 
 ### Reading into a sum
 
@@ -388,37 +354,32 @@ const row one = scan::scan<"{{[0-9]+}|{[a-z]+}}">(text);   // the format says th
 const row two = scan::scan<"{}">(text);                    // each type's own pattern
 ```
 
-The branches are tried in the order they are written, and the first under which
-the whole reading succeeds is the one you get. Which branch ran is read from
-the mark that branch left, not by trying the alternatives again. Anything with
-a `scan::branches<T>` is read the same way.
+Branches are tried in the order written, and the first under which the whole
+reading succeeds wins. Which branch ran is read from the mark it left, not by
+trying the alternatives again.
 
 ### Failures
 
-What is thrown says what went wrong by its type, and holds its message as a
-pointer to a literal -- so a failure allocates nothing either:
-
 | thrown | what it means |
 | --- | --- |
-| `scan::no_match` | the subject is not what the pattern says: nothing matched, nothing matched at the head, no branch took it |
+| `scan::no_match` | the subject is not what the pattern says |
 | `scan::no_group` | a value was asked for out of a group that took no part |
 | `scan::bad_field` | a place matched and what stood there is not that type |
 | `scan::out_of_range` | it is that type and it does not fit |
 | `scan::wrong_subject` | the reading asked for cannot be had off this kind of subject |
 
 All are `scan::scan_error`, an `std::exception` rather than an
-`std::runtime_error` -- that one keeps a `std::string` and this has nothing to
-keep. `scan::field_error` is never thrown; it is the name for catching either
-field kind.
+`std::runtime_error` -- that one keeps a `std::string`, this holds a pointer to
+a literal and allocates nothing. `scan::field_error` is never thrown; it is the
+name for catching either field kind.
 
 **Nothing here catches anything, and the reading never throws.** A failure
 becomes a throw only where the value is asked for rather than tried for --
-`of<T>()`, the conversion, `take<T>()` -- and it throws at the asking, not
-inside the walk. The whole reading works with exceptions turned off.
+`of<T>()`, the conversion, `take<T>()` -- at the asking, not inside the walk.
+The whole reading works with exceptions turned off.
 
 A scanner of your own that throws throws past all of it: a reading asked to
-*try* does not turn that into a failure, because turning it into one would mean
-catching it.
+*try* does not turn that into a failure, because that would mean catching it.
 
 Handed back rather than thrown, the kind survives: the error type of `try_of`
 and `try_take` is a `std::variant` of exactly the kinds that reading can
@@ -436,17 +397,17 @@ if (!got) {
 
 A context is a thing of the caller's that the library has never heard of -- an
 allocator, a pool, a piece of the program's world -- handed to the one call
-where the value of a place is made, and going no further. It inherits nothing,
-it is not wrapped, and its type is never forgotten.
+where the value of a place is made. It inherits nothing, it is not wrapped, and
+its type is never forgotten.
 
 ```cpp
-scan::scan<"{} {}">(text).of<pair>(fast)                // one is everybody's
-scan::scan<"{} {}">(text).of<pair>(fast, slow)          // one per place, in order
-scan::scan<"{} {}">(text).of<pair>(fast, scan::default_context)   // this place wants none
+scan::scan<"{} {}">(text).of<pair>(fast)                         // one is everybody's
+scan::scan<"{} {}">(text).of<pair>(fast, slow)                   // one per place, in order
+scan::scan<"{} {}">(text).of<pair>(fast, scan::default_context)  // this place wants none
 scan::scan<"{} {} {}">(text).of<nest>({{fast, scan::default_context}, slow})
 scan::scan<"{} {} {}">(text).of<nest>(scan::parts{fast, scan::default_context}, slow)
 scan::scan<"{} {} {}">(text).with(scan::parts{fast, slow}, slow).of<nest>()
-const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is named
+const pair got = scan::scan<"{} {}">(text).with(fast);           // before the type is named
 ```
 
 * **One** is everybody's; a scanner that takes none is read as it always was.
@@ -455,16 +416,14 @@ const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is na
 * **In braces** and **`scan::parts{...}`** both say the parts of a place, as
   deep as the shape goes -- the branches of a sum, the places of a type that
   says its own format. `parts` is deduced where braces are erased; see
-  [what braces cost](#what-braces-cost). A value at a place is that place's
-  and all of its parts'.
+  [what braces cost](#what-braces-cost).
 * A fold or a list is told **without** braces: one value of many turns, not a
   shape of parts.
 * `with(…)` says it before the output type is named.
 
-A context reaches exactly the call that makes a value, which is `parse`,
-`from_groups`, `begin` or `begin_groups` -- as an overload taking one more
-argument. All of it works in a constant expression, and on every kind of
-subject.
+A context reaches exactly the call that makes a value -- `parse`,
+`from_groups`, `begin`, `begin_groups` -- as an overload taking one more
+argument, in a constant expression and on every kind of subject.
 
 ```cpp
 template <> struct scan::scanner<tagged> {
@@ -476,9 +435,7 @@ template <> struct scan::scanner<tagged> {
 
 **A context that keeps memory is used for what the reading builds.** A
 `std::pmr::memory_resource*`, an allocator, or anything answering `resource()`,
-`get_allocator()` or `told_resource()` is asked for it, and then the containers
-a place makes -- a `std::pmr::string` field, a list that grows -- are built
-with it:
+`get_allocator()` or `told_resource()` is asked for it:
 
 ```cpp
 std::pmr::monotonic_buffer_resource bytes;
@@ -494,9 +451,9 @@ of<nest>({{fast, slow}, fast})            // erased: one type for every field
 of<nest>(scan::parts{fast, slow}, fast)   // deduced: nothing erased
 ```
 
-A braced list deduces nothing, so the parameter's type is fixed before the
-call -- one type per field, whatever was written there. That is the erasure,
-and it costs two things:
+A braced list deduces nothing, so the parameter's type is fixed before the call
+-- one type per field, whatever was written there. That is the erasure, and it
+costs two things:
 
 * every leaf of the list gets a reading made as a **default argument of the
   call**, which is what makes it live to the end of the full expression;
@@ -517,15 +474,11 @@ anything.
 
 ## Extension points
 
-Everything a type can say about how it is read is a specialisation or a member.
-Nothing **you write** is virtual and nothing you write is inherited, apart from
-`aggregate_scanner`, which is a convenience.
-
-The one place a call into your scanner arrives through an interface is a
-context said in braces, and that interface is the library's own -- your scanner
-is the same plain specialisation either way, and says nothing about it. "What
-braces cost" above is where that is explained, and `scan::parts` is how to say
-the same thing without it.
+Everything a type says about how it is read is a specialisation or a member.
+Nothing **you write** is virtual or inherited, apart from `aggregate_scanner`.
+The one place a call arrives through an interface is a context said in braces,
+and that interface is the library's own -- see
+[what braces cost](#what-braces-cost).
 
 | point | what it says |
 | --- | --- |
@@ -542,17 +495,15 @@ the same thing without it.
 ```cpp
 template <>
 struct scan::scanner<weight> {
-  // What the place matches when the format does not say. A member or a
-  // function, and taking the parameters written after the colon if it wants.
-  static constexpr std::string_view pattern() { return "[0-9]+(?:\\.[0-9]+)?"; }
+  // What the place matches when the format does not say.
+  static constexpr std::string_view pattern();
   static constexpr auto pattern(std::string_view parameters);
 
   // From the text of the place, with the parameters if it wants them.
   static constexpr weight parse(std::string_view text);
   static constexpr weight parse(std::string_view text, std::string_view parameters);
 
-  // For a subject that arrives a character at a time: make a state, take the
-  // characters, then make the value.
+  // For a subject that arrives a character at a time.
   static constexpr state begin();
   static constexpr state begin(std::string_view parameters);
   static constexpr void push(state&, char);
@@ -565,8 +516,8 @@ one-pass reading needs, and a type with them can be a field of a record read
 off a stream. The built-in scanners are written that way -- the integers take
 `{:x}`, `{:o}`, `{:b}`, `{:i}` and a width through `parameters`.
 
-Every function of yours that makes a value has a second shape, used wherever
-the throwing one would be, that hands the failure back instead:
+Every function that makes a value has a second shape that hands the failure
+back instead, used wherever the throwing one would be:
 
 | asked for | handed back |
 | --- | --- |
@@ -575,16 +526,15 @@ the throwing one would be, that hands the failure back instead:
 | `from_groups(groups)` | `try_from_groups(groups)` |
 | `finish_groups(state)` | `try_finish_groups(state)` |
 
-A push needs none: the walk is not over when a character arrives, so a push
-that finds something wrong records it and hands it back at the end -- what
-`scan::held<N>` does with a field too long. The kinds must be `scan_error`s,
-since asking rather than trying throws what was handed back, and a scanner
-says them in its return type:
-
 ```cpp
 static std::expected<weight, std::variant<too_heavy, not_a_weight>>
 try_parse(std::string_view text);
 ```
+
+A push needs none: the walk is not over when a character arrives, so a push
+that finds something wrong records it and hands it back at the end -- what
+`scan::held<N>` does with a field too long. The kinds must be `scan_error`s,
+since asking rather than trying throws what was handed back.
 
 ### A shape: a type that says a whole format
 
@@ -596,12 +546,11 @@ struct line { point from; point to; };
 const line one = scan::scan<"{} -> {}">("(1, 2) -> (3, 4)");
 ```
 
-The places inside `point`'s format mean `point`'s fields wherever it is used.
-Nothing is read twice: the outer pattern and the inner one are one automaton.
+The places inside `point`'s format mean `point`'s fields wherever it is used,
+and the outer pattern and the inner one are one automaton.
 
-With a `parse` taking the places as arguments, the type need not be an
-aggregate at all -- it may have invariants, private members, or an order of its
-own:
+With a `parse` taking the places as arguments the type need not be an aggregate
+-- it may have invariants, private members, or an order of its own:
 
 ```cpp
 template <>
@@ -614,9 +563,8 @@ struct scan::scanner<angle> : scan::aggregate_scanner<"{}deg{}min"> {
 
 ### A type that reads its own groups
 
-A leaf may say a pattern with groups in it and be built from those groups
-rather than from the text it stood on. They are groups of the same match, found
-on the way past.
+A leaf may say a pattern with groups and be built from those rather than from
+the text it stood on -- groups of the same match, found on the way past.
 
 ```cpp
 template <>
@@ -630,20 +578,19 @@ struct scan::scanner<version> {
 };
 ```
 
-This works in a format and in a pattern alike, and a place standing for such a
-type takes parameters but not a pattern of its own: the groups are counted off
-the pattern the type declares.
+Works in a format and a pattern alike. Such a place takes parameters but not a
+pattern of its own: the groups are counted off the pattern the type declares.
 
-`from_groups` is handed views of the subject, so it wants a subject there is
-something left to point at. Reading a subject that arrives once into a type
-that says only `from_groups` does not compile -- by then the characters are
-gone. Such a type reads a stream by saying the fold instead.
+`from_groups` is handed views, so it wants a subject there is something left to
+point at -- reading a once-only subject into a type that says only
+`from_groups` does not compile. Such a type reads a stream by saying the fold
+instead.
 
 ### A fold: a type told its groups as they happen
 
 `from_groups` hands over what is there when the match is over, which for a
 repeated group is the last turn and nothing before it. A type whose groups
-repeat is therefore told the turns as they go and folds them itself:
+repeat is told the turns as they go and folds them itself:
 
 ```cpp
 template <>
@@ -653,8 +600,7 @@ struct scan::scanner<numbers> {
   static constexpr std::string_view pattern() { return "([0-9]+)(?:,([0-9]+))*"; }
 
   static constexpr state begin_groups();
-  // One overload a group: the group's number said as a type you can overload
-  // on. `std::size_t` does as well.
+  // One overload a group; `std::size_t` does as well as `group_at<k>`.
   static constexpr void opened_group(state&, scan::group_at<0>);
   static constexpr void push_group(state&, scan::group_at<0>, char);
   static constexpr void closed_group(state&, scan::group_at<0>);
@@ -663,14 +609,14 @@ struct scan::scanner<numbers> {
 };
 ```
 
-An opening and a closing arrive once a turn: openings in the order the groups
-are written, closings innermost first. Where the subject can be pointed at a
-closing may be handed the whole of what the group stood on --
+Openings arrive in the order the groups are written, closings innermost first,
+once a turn. Where the subject can be pointed at a closing may be handed the
+whole of what the group stood on --
 `closed_group(state&, scan::group_at<k>, std::string_view)` -- and then no
 characters are handed over, so a run stepped over in vectors costs one call
 rather than one a character. Saying only that form says the fold wants a
-subject it can point at, and asking it to read a stream throws. Every hook is
-optional but `begin_groups` and `finish_groups`.
+subject it can point at. Every hook is optional but `begin_groups` and
+`finish_groups`.
 
 **The walk stands in several readings of the subject at once** and carries a
 fold with each: the state is copied where a reading divides and dropped where
@@ -680,19 +626,17 @@ later abandoned** -- a walk that can pass a match has to read past it to find
 out whether a longer one is there. **The completed fold state is exact**; the
 number of hook invocations is not an observable matching guarantee.
 
-A fold may say what is kept of its state at a match, and how it goes back:
-
 ```cpp
-static state keep_groups(const state& made);                    // kept there
+static state keep_groups(const state& made);                    // kept at a match
 static void groups_go_back_to(state& live, const state& kept);  // and back to it
 ```
 
-Said neither, it is copied and assigned as it always was.
+Said neither, the state is copied and assigned as it always was.
 
 ### A list, a sum, a container of your own
 
 ```cpp
-// Read as many as there are, even though the type has a scanner of its own.
+// Read as many as there are, though the type has a scanner of its own.
 template <> struct scan::scanner<packet_bytes> {
   static constexpr bool as_a_list = true;
   …
@@ -714,43 +658,32 @@ template <> struct scan::room_for<three_at_most> {
 };
 ```
 
-A container is read into through `value_type` and `push_back`; `room_for` is
-what lets a place that could take more turns than it holds be refused where it
-is compiled, and what lets one that can grow take all the room at once.
-
-`scan::fields<T>` answers the three questions a shape is asked of its fields --
-how many, what the one at an index is, how to reach it in a value -- and is
-specialised for a type that is not an aggregate.
+A container is read into through `value_type` and `push_back`. `scan::fields<T>`
+answers the three questions a shape asks of its fields -- how many, the type at
+an index, the reference in a value -- for a type that is not an aggregate.
 
 ### A collector of your own
 
-A collector speaks the same four hooks a scanner does -- `parse`, `begin`,
-`push`, `finish` -- and says one thing more: what it makes. Nothing you write
-is virtual and nothing you write is inherited; write the ones it needs and
-leave the rest out.
+The same four hooks a scanner has, and one thing more: what it makes.
 
 ```cpp
 struct hex_bytes {
   // What it makes. Either one type…
   using value_type = std::vector<std::byte>;
   // …or a type per holder, where what it makes depends on what the subject
-  // affords -- a view where the characters can be pointed at, something owning
+  // affords: a view where the characters can be pointed at, something owning
   // where they cannot.
   template <class Holder> using value_for = Holder;
 
-  // From the whole group at once, where the subject can be pointed at. The
-  // second argument is whatever was written after the colon.
+  // From the whole group at once, where the subject can be pointed at.
   value_type parse(std::string_view text, std::string_view parameters) const;
   template <class Holder>
   Holder parse(std::string_view text, std::string_view parameters) const;
 
-  // A character at a time, where it cannot: this makes the state…
+  // A character at a time where it cannot, a run at a time where it can.
   value_type begin(std::string_view parameters) const;
-  // …this is handed every character of the group as it arrives, and a run the
-  // walk stepped over in vectors in one go where it can…
   void push(value_type& into, char letter) const;
   void push(value_type& into, std::string_view run) const;
-  // …and this turns it into the answer.
   value_type finish(value_type state) const;
 
   // Optional: nothing at all from this group. `scan::skipped` stands in the
@@ -759,30 +692,25 @@ struct hex_bytes {
 };
 ```
 
-Write both halves and the collector works everywhere; write only `parse` and it
-works wherever the characters can be pointed at.
+Write both halves and it works everywhere; write only `parse` and it works
+wherever the characters can be pointed at.
 
-**So a `scan::scanner<T>` is a collector of `T`**, and can be handed straight to
-`into` -- the hooks are the same ones, and what it makes is the type it is the
-scanner of:
+**A `scan::scanner<T>` is therefore a collector of `T`** and can be handed
+straight to `into`; `scan::as<T>(args…)` is that with arguments, for a value
+built from something the scanner has never heard of.
 
 ```cpp
 text | scan::match<"([0-9]+)g-([a-z]+)">.into(scan::scanner<weight>{}, scan::text())
 ```
 
-`scan::as<T>(args…)` is that with arguments: it is what to write when the value
-is built from something the scanner has never heard of, a pool or a limit.
-
 ## The pattern syntax
 
-Literals; `.`; classes `[a-z]`, `[^a-z]`, with ranges and escapes; the escapes
-`\d \D \s \S \w \W` and the usual `\n \t \\` and friends; groups `(…)` and
-`(?:…)`; alternation `|`; the repetitions `* + ? {n} {n,} {n,m}`, each of them
-lazy with a `?` after it (`*?`, `+?`, `??`, `{n,m}?`).
+Literals; `.`; classes `[a-z]`, `[^a-z]` with ranges and escapes; `\d \D \s \S
+\w \W` and the usual `\n \t \\`; groups `(…)` and `(?:…)`; alternation `|`; the
+repetitions `* + ? {n} {n,} {n,m}`, each lazy with a `?` after it.
 
-There is no lookaround, there are no backreferences, and there are no Unicode
-properties. Patterns are bytes: a UTF-8 literal matches itself, and `.` is one
-byte rather than one code point.
+No lookaround, no backreferences, no Unicode properties. Patterns are bytes: a
+UTF-8 literal matches itself and `.` is one byte, not one code point.
 
 ## Where this differs from other engines
 
@@ -790,11 +718,10 @@ byte rather than one code point.
 (`past_space`); the whole subject must match unless you read a head with
 `scan_prefix`; a scan is all or nothing where `sscanf` hands back how many
 fields it filled; an integer too big for its type is an error rather than
-undefined behaviour; and nothing is locale-dependent.
+undefined behaviour; nothing is locale-dependent.
 
 **From Perl and RE2, in one corner.** A quantifier around something that can
-match nothing is where every engine answers differently. `([ab]*?)*` against
-"ba", anchored:
+match nothing. `([ab]*?)*` against "ba", anchored:
 
 | | group 1 |
 | --- | --- |
@@ -807,33 +734,28 @@ The order a backtracking engine tries things in gives this one's answer: the
 loop takes `b`, then `a`, and a third turn would match nothing. Perl divides it
 the same way and differs only by taking that last empty turn.
 
-**Anchored and head readings differ where the order is what decides**, as
-`a|ab` above -- which is the same in Perl, where `^(?:a|ab)$` matches "ab" and
-`(?:a|ab)` matches "a".
+**Anchored and head readings differ where the order decides**, as `a|ab` above
+-- the same in Perl, where `^(?:a|ab)$` matches "ab" and `(?:a|ab)` matches
+"a".
 
 ## What is known while it is compiled
 
-The automaton is asked these before your program runs, and they are what the
-refusals and the costs are made of:
-
-* **the shortest match** -- a subject shorter than it is answered without
-  reading a character;
+* **the shortest match** -- a shorter subject is answered without reading a
+  character;
 * **the walk past a match** (`fallback_window`) -- how far the machine can read
-  past a match before it dies, which is what a reading that cannot go back has
-  to hold, and whether it has to hold anything at all;
+  past a match before it dies, which is what a once-only reading has to hold;
 * **the walk from the start** -- how much a failed attempt can swallow, which
-  is what a search over a subject read once has to give back;
+  is what a search over such a subject has to give back;
 * **whether a terminator is safe** -- that the pattern cannot match it;
-* **which walk reads it** -- the states are labels and a jump through a table
-  of their addresses where the program runs, and the same states numbered
-  where a constant evaluation reads it, because a label is not a thing a
-  constant evaluation has. One rung, read two ways.
+* **which walk reads it** -- labels and a jump through a table of their
+  addresses at run time, the same states numbered under constant evaluation,
+  because a label is not a thing a constant evaluation has. One rung, read two
+  ways.
 
 Determinization stops at twenty thousand states and says so. It costs
-exponentially more states than an expression has symbols for expressions that
-are perfectly ordinary -- anything that reads freely and then counts, `.*a.{20}`
-and its like -- and where that happens here it is not a slow program but a
-compilation nobody waits for.
+exponentially more states than an expression has symbols for perfectly ordinary
+ones -- anything that reads freely and then counts, `.*a.{20}` and its like --
+and there it is not a slow program but a compilation nobody waits for.
 
 ## Speed
 
@@ -861,10 +783,9 @@ The same five out of a thousand characters, a field being two hundred letters:
 length of a *field* and not of the subject -- what wins is a run worth stepping
 over in vectors.
 
-**Recognition** (`benchmarks/address_benchmark.cc`), an address of thirty-two
-characters, thirty-two subjects a pass: 436 ns for
-`scan::match<p>.sentinel().scalar()` and 545 without the terminator, against
-re2c's 1186, RE2's 2616 and CTRE's 14339.
+**Recognition** (`benchmarks/address_benchmark.cc`), thirty-two characters,
+thirty-two subjects a pass: 436 ns for `scan::match<p>.sentinel().scalar()` and
+545 without the terminator, against re2c's 1186, RE2's 2616, CTRE's 14339.
 
 **Against `sscanf`**, same characters in, same values out, thirty-two records:
 
@@ -875,59 +796,55 @@ re2c's 1186, RE2's 2616 and CTRE's 14339.
 | five words into views | 10155 ns | 934 ns |
 | five words into room said in advance | 10155 ns | 4265 ns |
 
-**A fold** (`benchmarks/fold_benchmark.cc`) is the thing the others cannot do:
-a type told which of its groups each character belongs to, doing its arithmetic
+**A fold** (`benchmarks/fold_benchmark.cc`) is what the others cannot do: a
+type told which of its groups each character belongs to, doing its arithmetic
 there -- no turn kept, no substring made. Per element the walk is within two
-per cent of the same automaton written out by hand as labels and jumps, and
-sixteen per cent cheaper than the same reading written as loops and a pointer.
-Entering one costs about 120 ns against 27 and 14, paid once a reading.
+per cent of the same automaton written by hand as labels and jumps, and sixteen
+per cent cheaper than the same reading written as loops and a pointer. Entering
+one costs about 120 ns against 27 and 14, paid once a reading.
 
-Both `.scalar()` rows above say the same thing: the threshold between the two
-walks is measured from the pattern and not from the subject, and where they
-disagree `.scalar()` is what to say.
+Both `.scalar()` rows say the same thing: the threshold between the two walks
+is measured from the pattern and not from the subject, and where they disagree
+`.scalar()` is what to say.
 
 ## What this is built on
 
-The machine is a tagged deterministic finite automaton:
+A tagged deterministic finite automaton:
 
 * Ville Laurikari, *NFAs with Tagged Transitions, their Conversion to
   Deterministic Automata and Application to Regular Expressions* (2000);
 * Ulya Trofimovich, *[Tagged Deterministic Finite Automata with
-  Lookahead](https://arxiv.org/abs/1907.08837)* (2019) -- TDFA(1), which is
-  what makes a field cost one write instead of one per character;
+  Lookahead](https://arxiv.org/abs/1907.08837)* (2019) -- TDFA(1), which makes
+  a field cost one write instead of one per character;
 * Angelo Borsotti and Ulya Trofimovich, *[A closer look at
   TDFA](https://arxiv.org/abs/2206.01398)* (2022) -- the algorithm in full.
 
 Two things here are not from those papers. The **disambiguation policy** is
-leftmost-first, which is Perl's rule, RE2's and CTRE's; the papers implement
-POSIX and leftmost-greedy. The mechanism is the cut: where a walk in a state
-has matched, every walk below it in precedence has lost and is removed, which
-is what a Pike VM does by killing lower-priority threads at a Match
-instruction. The **format layer** -- reading a format against the type it scans
-into, building the value where the match ends, and reading records one after
-another off a subject that arrives as it is read -- has no paper behind it.
+leftmost-first -- Perl's rule, RE2's, CTRE's -- where the papers implement
+POSIX and leftmost-greedy; the mechanism is the cut, which is what a Pike VM
+does by killing lower-priority threads at a Match instruction. The **format
+layer** has no paper behind it.
 
 ## Tests and fuzzing
 
-Around eighty test files, each holding one or two patterns, because compiling a
-pattern is a constant evaluation and a translation unit holding ten of them
-costs ten times as much whenever one is touched.
+Around eighty test files, one or two patterns each: compiling a pattern is a
+constant evaluation, and a translation unit holding ten of them costs ten times
+as much whenever one is touched.
 
 * **A differential fuzzer against RE2.** Everything that happens while a
   pattern is compiled is ordinary code that also runs, so the fuzzer builds
-  machines from patterns made up at run time and compares the answers --
-  matched or not, where a head ended, where every group began and ended --
-  against RE2, whose default rule is the same leftmost-first.
+  machines from patterns made up at run time and compares matched-or-not, where
+  a head ended, and where every group began and ended.
 
   ```sh
   cmake -B build -DSCAN_BUILD_FUZZER=ON && cmake --build build --target differential_fuzz
   ./build/differential_fuzz --seed 1 --rounds 200000
   ```
 
-* **The walk against the interpreter.** The fuzzer cannot reach the walk
-  itself, which exists only where something is compiled. So a test compares it
-  against the interpreter over an automaton built from the same pattern by the
-  same code, on every subject up to four characters.
+* **The walk against the interpreter.** The fuzzer cannot reach the walk, which
+  exists only where something is compiled, so a test compares it against the
+  interpreter over an automaton built from the same pattern by the same code,
+  on every subject up to four characters.
 
 ## Building
 
@@ -942,14 +859,13 @@ ctest --test-dir build
 | `SCAN_BUILD_BENCHMARKS` | the benchmarks: against CTRE, RE2, re2c and `sscanf`. Brings all four in |
 | `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
 | `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
-| `SCAN_AUTOMATA_AT_RUNTIME` | build the machine on first use rather than writing it out while the program is compiled. On for a top-level build; the suite is run both ways, because the two are meant to answer the same |
+| `SCAN_AUTOMATA_AT_RUNTIME` | build the machine on first use rather than writing it out while compiling. On for a top-level build; the suite is run both ways |
 | `SCAN_FIELDS_BY_BINDING_PACK` | the fields of an aggregate from a structured binding pack rather than from Boost.PFR |
 | `SCAN_MODULES` | build and install the module interface units, beside the headers; on by default |
 
 The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
 `scan.compiler`, `scan.runtime`, `scan.shape`, `scan.range`, `scan.regex`,
-`scan.scanners` -- with `scan` as an umbrella that re-exports it. Importing
-`scan` is all that is wanted.
+`scan.scanners` -- with `scan` as an umbrella that re-exports it.
 
 ### With modules
 
@@ -968,16 +884,12 @@ add_executable(mine main.cc)
 target_link_libraries(mine PRIVATE scan::scan)
 ```
 
-```cpp
-import scan;   // the umbrella; nothing else is named
-```
-
 The prefix holds the archive, the interface units (`lib/scan/modules/src/`),
 the CMake package and a port declaration. Your build compiles the interface
 units, so it wants the compiler the library was built with -- a BMI is not a
 portable artefact.
 
-#### As somebody else's subproject
+### As somebody else's subproject
 
 ```cmake
 include(FetchContent)
@@ -1019,10 +931,10 @@ find_package(scan REQUIRED COMPONENTS headers binding-pack)   # the second
 ```
 
 Boost.PFR is the only dependency and the switch is whether to have it. An
-aggregate's fields are wanted three ways -- how many, the type at an index,
-the reference in a value. Boost.PFR probes for them; `auto&& [...parts] =
-value;` names them, which is C++26 and so off by default. On, nothing is
-fetched and nothing is linked.
+aggregate's fields are wanted three ways -- how many, the type at an index, the
+reference in a value. Boost.PFR probes for them; `auto&& [...parts] = value;`
+names them, which is C++26 and so off by default. On, nothing is fetched and
+nothing is linked.
 
 ## Licence
 
