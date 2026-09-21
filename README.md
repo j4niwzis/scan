@@ -137,8 +137,9 @@ die without finding it -- `foreach|for|each` reading "fore". So the walk keeps
 a note: the place, and the registers as they stood there. Whether the automaton
 can walk past a match at all is asked while it is compiled; where every step
 out of a match lands in another match, the note is a pointer and nothing is
-copied. There is no backtracking beyond that note, and nothing is ever tried a
-second way.
+copied. What a fold gathered is noted the same way, and a fold may say what is
+worth keeping of its state rather than having it copied outright. There is no
+backtracking beyond that note, and nothing is ever tried a second way.
 
 ### Groups
 
@@ -568,10 +569,14 @@ and nothing waiting to die:
 for (const row& one : scan::each<f>(source).of<row>(scan::parts{fast, fast}, fast)) { ... }
 ```
 
-A context is held as the address of it wherever it is said, because what a
-scanner writes into one is written into the caller's own. So it has to be
-something the caller is still holding, and one that is not is refused while it
-compiles rather than read after it is gone.
+A context is held as the address of it, because what a scanner writes into one
+is written into the caller's own. How long it has to live is a question about
+the reading rather than about the context. A reading that runs inside the call
+it was written in -- `scan`, `match`, `scan_prefix` and the rest -- is over
+before anything said at that call is, so a context may be written where it is
+used, as the allocator above is. A reading that hands back a view is not over,
+and `each` says so: it takes contexts that are named, and one that is not is
+refused while it compiles rather than read after it is gone.
 
 Which leaves braces saying nothing `scan::parts` does not say, and costing
 what `scan::parts` does not cost. They read well on a shape written out in
@@ -745,13 +750,13 @@ state is copied where a reading divides and dropped where a reading dies. So
 the state must be copyable, and it must be the only thing the fold touches --
 anything written outside it would be written for a reading that never happened.
 
-That is worth saying plainly, because it is a fact about the machine and not
-about this implementation: where a pattern can read past a match and come back,
-the walk must read past it to find out whether there is a longer one, and the
-hooks of everything on the way run while it does. That the reading was
-abandoned is known only when it dies, which is after. **The state is what is
-exact** -- it is put back to what the match left -- and the number of times a
-hook ran is not.
+This is part of the incremental fold contract: **hooks may run for a reading
+that is later abandoned.** Where a pattern can read past a match and come back,
+the walk has to read past it to find out whether there is a longer one, and the
+hooks of everything on the way run while it does -- that the reading was
+abandoned is known only when it dies, which is after. **The completed fold
+state is exact**, put back to what the match left; the number of hook
+invocations is not an observable matching guarantee.
 
 A fold may say how that keeping and putting back are done, where copying its
 state outright is not what copying it means:
@@ -903,8 +908,10 @@ refusals and the costs are made of:
 * **the walk from the start** -- how much a failed attempt can swallow, which
   is what a search over a subject read once has to give back;
 * **whether a terminator is safe** -- that the pattern cannot match it;
-* **how much of the walk to write out** -- the chain is written state by state
-  up to a budget, and only where the state has one way out.
+* **which walk reads it** -- the states are labels and a jump through a table
+  of their addresses where the program runs, and the same states numbered
+  where a constant evaluation reads it, because a label is not a thing a
+  constant evaluation has. One rung, read two ways.
 
 Determinization stops at twenty thousand states and says so. It costs
 exponentially more states than an expression has symbols for expressions that
@@ -1028,6 +1035,7 @@ ctest --test-dir build
 | `SCAN_BUILD_BENCHMARKS` | the benchmarks: against CTRE, RE2, re2c and `sscanf`. Brings all four in |
 | `SCAN_BUILD_FUZZER` | the differential fuzzer; brings RE2 and abseil with it |
 | `SCAN_FUZZER_LIBFUZZER` | the same fuzzer under libFuzzer with the sanitizers |
+| `SCAN_AUTOMATA_AT_RUNTIME` | build the machine on first use rather than writing it out while the program is compiled. On for a top-level build; the suite is run both ways, because the two are meant to answer the same |
 | `SCAN_FIELDS_BY_BINDING_PACK` | the fields of an aggregate from a structured binding pack rather than from Boost.PFR |
 | `SCAN_MODULES` | build and install the module interface units, beside the headers; on by default |
 
