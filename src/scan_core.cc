@@ -947,7 +947,60 @@ struct contexts_at_places {
     }
   }
 
+  // What a place is told, said as a type, where the carrier is read as const.
+  //
+  // A context of the caller's own is an address either way -- const on the
+  // carrier is const on the pointer, never on what it points at -- so it
+  // arrives as they wrote it. One the carrier owns is reached through the
+  // carrier, so a const carrier hands it over as const, and that is said here
+  // rather than cast away.
+  template <class One>
+  using told_as =
+      std::conditional_t<std::is_lvalue_reference_v<One>, One,
+                         const std::remove_cvref_t<One>&>;
+
   // Where the thing said at a place is, whichever way it is held.
+  template <std::size_t Place>
+  [[nodiscard]] constexpr auto* at_place() const {
+    auto& held = std::get<Place>(all);
+    if constexpr (std::is_pointer_v<std::remove_cvref_t<decltype(held)>>) {
+      return held;
+    } else {
+      return std::addressof(held.value);
+    }
+  }
+
+  template <std::size_t Place>
+  [[nodiscard]] constexpr auto for_part() const {
+    if constexpr (for_everyone) {
+      using first = std::tuple_element_t<0, std::tuple<Contexts...>>;
+      return one_context<told_as<first>, false>{at_place<0>()};
+    } else if constexpr (Place < sizeof...(Contexts)) {
+      using here = std::tuple_element_t<Place, std::tuple<Contexts...>>;
+      if constexpr (said_as_parts<std::remove_cvref_t<here>>) {
+        return std::get<Place>(all).value;
+      } else {
+        return one_context<told_as<here>, true>{at_place<Place>()};
+      }
+    } else {
+      static_assert(Place < sizeof...(Contexts),
+                    "this reading has more places than it was given contexts: "
+                    "give one for every place, one for all of them, or write "
+                    "scan::default_context where a place wants none");
+      return no_contexts{};
+    }
+  }
+
+  [[nodiscard]] constexpr decltype(auto) leaf() const {
+    using first = std::remove_cvref_t<
+        std::tuple_element_t<0, std::tuple<Contexts...>>>;
+    if constexpr (said_as_parts<first>) {
+      return std::get<0>(all).value;
+    } else {
+      return *at_place<0>();
+    }
+  }
+
   template <std::size_t Place>
   [[nodiscard]] constexpr auto* at_place() {
     auto& held = std::get<Place>(all);
