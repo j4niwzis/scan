@@ -796,16 +796,67 @@ thirty-two subjects a pass: 436 ns for `scan::match<p>.sentinel().scalar()` and
 | five words into views | 10155 ns | 934 ns |
 | five words into room said in advance | 10155 ns | 4265 ns |
 
-**A fold** (`benchmarks/fold_benchmark.cc`) is what the others cannot do: a
+**A fold** (`benchmarks/fold_benchmark.cc`) is the one the others cannot run: a
 type told which of its groups each character belongs to, doing its arithmetic
-there -- no turn kept, no substring made. Per element the walk is within two
-per cent of the same automaton written by hand as labels and jumps, and sixteen
-per cent cheaper than the same reading written as loops and a pointer. Entering
-one costs about 120 ns against 27 and 14, paid once a reading.
+there -- no turn kept, no substring made, the number finished when the match
+is. The subject is `value=(`, heaps of marks, `)` and a tail. A heap is a
+number written in weighed marks -- the underscores give the decimal place, `X`
+counts one and `Y` two, so twelve is `__X_XX` -- and the type that adds them up
+never sees a character of it:
 
-Both `.scalar()` rows say the same thing: the threshold between the two walks
-is measured from the pattern and not from the subject, and where they disagree
-`.scalar()` is what to say.
+```cpp
+template <>
+struct scan::scanner<tally> {
+  static constexpr std::string_view pattern() { return R"(\(((_+)(X|Y)*)*\))"; }
+  struct state_type { unsigned long total = 0; unsigned place = 0, marks = 0; };
+  static constexpr state_type begin_groups() { return {}; }
+  static constexpr void opened_group(state_type& one, scan::group_at<0>) {
+    one.place = 0; one.marks = 0;                        // a heap begins
+  }
+  static constexpr void closed_group(state_type& one, scan::group_at<0>) {
+    unsigned long weight = 1;                            // it ends: weigh it
+    for (unsigned step = 1; step < one.place; ++step) weight *= 10;
+    one.total += weight * one.marks;
+  }
+  static constexpr void push_group(state_type& one, scan::group_at<1>, char) {
+    ++one.place;                                         // an underscore
+  }
+  static constexpr void push_group(state_type& one, scan::group_at<2>, char letter) {
+    one.marks += letter == 'Y' ? 2u : 1u;                // a mark
+  }
+  static constexpr tally finish_groups(state_type one) { return {one.total}; }
+};
+```
+
+Three columns beside it: this library's own automaton written out as labels and
+direct jumps -- state for state, its register commands as named locals, calling
+these same hooks -- the same reading written by hand as loops and a pointer,
+and the library left to choose its own walk.
+
+| heaps | `scan::scan<f>.scalar()` | written out | by hand | `scan::scan<f>` |
+| --- | --- | --- | --- | --- |
+| 10 | 141 ns | 41.4 ns | 42.5 ns | 170 ns |
+| 100 | 439 ns | 341 ns | 392 ns | 1176 ns |
+| 1000 | 3314 ns | 3170 ns | 3797 ns | 11887 ns |
+
+Straight lines with different intercepts. Fitted: a heap costs 3.19 ns here,
+3.14 ns written out and 3.78 ns by hand; entering costs about 120 ns against 27
+and 14. Per heap the walk and its own machine written out are the same within
+two per cent -- they are the same machine -- and sixteen per cent cheaper than
+the reading written by hand. Entering is what it is not cheap at: three times
+behind on forty-six characters, level on three thousand, ahead of the hand at
+both ends. Those hundred and twenty nanoseconds are the gathering the fold is
+kept in, the marks the machine writes, and the commands run before the first
+character -- paid once a reading, which is once a line for a reading handed one
+line at a time and unnoticed by one handed a file.
+
+The last column is the library left to itself, at 11.9 ns a heap against 3.19.
+The length at which the reading starts taking words instead of characters is
+worked out from the pattern -- sixteen characters for every run in it worth
+stepping over -- and not from the subject, and a heap of one to four characters
+is far shorter than one vector step. Both `.scalar()` rows, here and in the
+address benchmark, say the same thing: the threshold is measured from the
+pattern, and where the two walks disagree `.scalar()` is what to say.
 
 ## What this is built on
 
