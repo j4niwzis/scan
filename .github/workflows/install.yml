@@ -166,7 +166,7 @@ jobs:
           test "$(/tmp/both)" = "9"
 
   install:
-    name: clang ${{ matrix.llvm }}, libc++, import std
+    name: clang ${{ matrix.llvm }}, libc++, ${{ matrix.automata == 1 && 'automata at runtime' || 'machines written out' }}
     # Only the tag runs write anything; the rest read.
     permissions:
       contents: write
@@ -179,6 +179,15 @@ jobs:
         # C++23 modules and asks nothing of a compiler that a release before
         # this one does not have.
         llvm: [22]
+        # Which machine a pattern becomes: a table built on first use, or code
+        # written out while the program is compiled. They are meant to answer
+        # the same, and the only thing that can say whether they do is the
+        # suite, run both ways -- so it is run both ways, at once, by the same
+        # steps rather than by a copy of them.
+        #
+        # Everything that is not the suite is asked once, on the leg that
+        # builds the machines the release is built with.
+        automata: [1, 0]
     steps:
       - uses: actions/checkout@v4
 
@@ -250,6 +259,7 @@ jobs:
             -DCMAKE_C_COMPILER=/usr/local/bin/clang \
             -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
             -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DSCAN_AUTOMATA_AT_RUNTIME=${{ matrix.automata }} \
             -DCME_STORE_ENABLED=ON \
             -DCME_SOURCES_ENABLED=ON \
             -DCMAKE_INSTALL_PREFIX="$PWD/prefix"
@@ -265,6 +275,7 @@ jobs:
       # its own and comes down as a binary, so this repository carries no
       # libtooling and no clang development packages.
       - name: the header generator
+        if: matrix.automata == 1
         run: |
           curl -fsSL -o demodulizer \
             https://github.com/j4niwzis/demodulizer/releases/download/v${{ env.DEMODULIZER }}/demodulizer
@@ -277,6 +288,7 @@ jobs:
       # from. The map's paths are relative to the build directory and quoted,
       # which a shell splitting on spaces keeps rather than removes.
       - name: the headers, generated
+        if: matrix.automata == 1
         run: |
           generate() {
             from=$1; into=$2
@@ -302,6 +314,7 @@ jobs:
       # refuses those on sight -- this is the other half, and it is the answer
       # rather than the argument.
       - name: and they build, and link twice
+        if: matrix.automata == 1
         run: |
           pfr=$(find ~/.cache/cmake-everywhere build -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
           test -n "$pfr" || { echo "Boost.PFR headers not found"; exit 1; }
@@ -337,6 +350,7 @@ jobs:
       # And that the other switch still builds as modules, which nothing else
       # here compiles. Nothing is fetched for it -- that is the point of it.
       - name: the modules, with the other switch
+        if: matrix.automata == 1
         run: |
           cmake -S . -B build-pack -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -350,6 +364,7 @@ jobs:
       # And the whole of what a consumer does: the library configured as
       # headers, installed, and something built against the prefix.
       - name: as a consumer that cannot take modules
+        if: matrix.automata == 1
         run: |
           cmake -S . -B build-hdr -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -365,6 +380,7 @@ jobs:
           test -f prefix-hdr/lib/cmake/scan/scanConfig.cmake
 
       - uses: actions/upload-artifact@v4
+        if: matrix.automata == 1
         with:
           name: scan-headers
           path: include
@@ -375,32 +391,8 @@ jobs:
       - name: the tests
         run: ctest --test-dir build --output-on-failure
 
-      # And the same suite with the machines written out.
-      #
-      # `SCAN_AUTOMATA_AT_RUNTIME` decides whether a pattern becomes a table
-      # built on first use or code written while the program is compiled, and
-      # the two are meant to answer the same. Only a suite run both ways can
-      # say that they do -- and they did not: a reading anchored to both ends
-      # was handed the machine cut at a match by one of them and the whole
-      # machine by the other, and nothing here asked.
-      #
-      # It is the default that decides which way the build above goes, and the
-      # default is on. So the walk written as code -- every state a label, and
-      # the one a constant evaluation takes -- was the half nothing ran.
-      - name: the tests, with the machines written out
-        run: |
-          cmake -S . -B build-written -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
-            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
-            -DSCAN_AUTOMATA_AT_RUNTIME=0 \
-            -DCME_STORE_ENABLED=ON \
-            -DCME_SOURCES_ENABLED=ON
-          cmake --build build-written
-          ctest --test-dir build-written --output-on-failure
-
       - name: install
+        if: matrix.automata == 1
         run: cmake --install build
 
       # What is in the prefix, said out loud: the archive, the module sources
@@ -408,6 +400,7 @@ jobs:
       # port declaration that answers for this library on a machine that has
       # it.
       - name: what is in the prefix
+        if: matrix.automata == 1
         run: |
           find prefix -type f | sort
           test -f prefix/lib/cmake/scan/scanConfig.cmake
@@ -428,6 +421,7 @@ jobs:
       # there to answer it -- so this is the consumer a consumer would
       # actually be, and it uses the same pin this repository does.
       - name: something built against the installed copy
+        if: matrix.automata == 1
         run: |
           mkdir -p /tmp/consumer/cmake
           cp cmake/get_cme.cmake /tmp/consumer/cmake/
@@ -489,6 +483,7 @@ jobs:
       # copy rather than building one of its own. `COMPONENTS headers` is the
       # whole of what it says differently.
       - name: the same copy, asked for as headers
+        if: matrix.automata == 1
         run: |
           mkdir -p /tmp/by-headers
           cat > /tmp/by-headers/CMakeLists.txt <<'EOF'
@@ -533,6 +528,7 @@ jobs:
       # set before its project(), and asks the provider for the library --
       # which is what everybody who cannot take modules will actually do.
       - name: a project with no modules at all, through the provider
+        if: matrix.automata == 1
         run: |
           mkdir -p /tmp/plain/cmake
           cp cmake/get_cme.cmake /tmp/plain/cmake/
@@ -587,7 +583,7 @@ jobs:
       # that just made it: these files were generated from this build,
       # compiled, and linked from two translation units a few steps ago.
       - name: the headers, into the tree
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: matrix.automata == 1 && github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           git config user.name 'j4niwzis'
           git config user.email 'j4niwzis@proton.me'
