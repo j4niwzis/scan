@@ -611,3 +611,64 @@ jobs:
           # generated from this commit and is not a change to anybody else's.
           git pull --rebase --autostash origin main
           git push origin HEAD:main
+
+  # A tag is a release, and a release is a file with a digest beside it.
+  #
+  # Not `archive/<ref>.tar.gz`: that one is generated on request, and when the
+  # compression behind it changed every digest pinned against one broke at
+  # once. What is uploaded here is stored as it was uploaded.
+  #
+  # After the jobs above, because a tag that does not build is not a release.
+  release:
+    name: the release
+    needs: [install, gcc]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `git archive` and not a tarball of the checkout: what is in it is what
+      # the tag says is in it, generated headers and all, with no build
+      # leavings and no .git.
+      - name: the archive, and what it hashes to
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          name="scan-${tag#v}"
+          git archive --format=tar.gz --prefix="${name}/" -o "${name}.tar.gz" "${tag}"
+          sha256sum "${name}.tar.gz" | tee "${name}.tar.gz.sha256"
+          echo "name=${name}" >> "$GITHUB_ENV"
+
+      # Read back, because a pin that cannot be verified is a URL. The headers
+      # are in it where the run that made this tag committed them.
+      - name: taken the way a project takes it
+        run: |
+          mkdir -p check && tar -C check -xzf "${{ env.name }}.tar.gz"
+          test -f "check/${{ env.name }}/CMakeLists.txt"
+          test -f "check/${{ env.name }}/src/scan.cc"
+          test -f "check/${{ env.name }}/include/scan.hpp"
+
+      - name: said where a consumer can read it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          {
+            echo '```cmake'
+            echo 'include(FetchContent)'
+            echo 'FetchContent_Declare(scan'
+            echo "  URL      https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${{ env.name }}.tar.gz"
+            echo "  URL_HASH SHA256=$(cut -d' ' -f1 < "${{ env.name }}.tar.gz.sha256"))"
+            echo 'FetchContent_MakeAvailable(scan)'
+            echo ''
+            echo 'target_link_libraries(mine PRIVATE scan::scan)'
+            echo '```'
+            echo ''
+            echo 'The generated headers are in `include/` of that archive, for a project'
+            echo 'that cannot take modules.'
+          } > notes.md
+          gh release create "${tag}" --title "${tag}" --notes-file notes.md \
+            "${{ env.name }}.tar.gz" "${{ env.name }}.tar.gz.sha256"

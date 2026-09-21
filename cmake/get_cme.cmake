@@ -16,13 +16,20 @@
 # revision from before the change. So the pin that was applied is
 # remembered, and a pin that differs from it wins -- while -DCME_VERSION=
 # on the command line still stands until this file says something else.
-set(CME_PINNED "b91a7502555160557059eb41243ab4d7a96815de")
-set(CME_PINNED_SHA256 "da46692e17a5f16b5d85ae8a2e43670c616c74eeeafb37d5acfa56b579750dfa")
+# A release asset and not `archive/<ref>.tar.gz`: the generated one is made on
+# request, and when the compression behind it changed every digest pinned
+# against one broke at once. A file uploaded to a release is stored as it was
+# uploaded, so a digest of one stays true.
+set(CME_PINNED "v0.2.0")
+set(CME_PINNED_URL "https://github.com/j4niwzis/cmake-everywhere/releases/download/v0.2.0/cmake-everywhere-0.2.0.tar.gz")
+set(CME_PINNED_SHA256 "694c4081bd13acc65e286db31c0a60fe3f36ec0c7ef343d7bc2228d6a757592d")
 if(NOT "${CME_PIN_APPLIED}" STREQUAL "${CME_PINNED}")
   set(CME_VERSION "${CME_PINNED}" CACHE STRING
     "cmake-everywhere revision" FORCE)
+  set(CME_URL "${CME_PINNED_URL}" CACHE STRING
+    "Where that revision is fetched from" FORCE)
   set(CME_SHA256 "${CME_PINNED_SHA256}" CACHE STRING
-    "The digest of that revision's archive" FORCE)
+    "The digest of what is fetched" FORCE)
   set(CME_PIN_APPLIED "${CME_PINNED}" CACHE INTERNAL
     "The pin this build directory was given")
 endif()
@@ -75,9 +82,14 @@ if(NOT EXISTS "${CME_SOURCE_DIR}/cmake-everywhere.cmake"
   else()
     message(STATUS "cmake-everywhere: fetching ${CME_VERSION}")
   endif()
-  file(DOWNLOAD
-    "https://github.com/j4niwzis/cmake-everywhere/archive/${CME_VERSION}.tar.gz"
-    "${archive}" STATUS status EXPECTED_HASH SHA256=${CME_SHA256})
+  if(CME_URL)
+    set(cme_from "${CME_URL}")
+  else()
+    set(cme_from
+        "https://github.com/j4niwzis/cmake-everywhere/archive/${CME_VERSION}.tar.gz")
+  endif()
+  file(DOWNLOAD "${cme_from}" "${archive}"
+       STATUS status EXPECTED_HASH SHA256=${CME_SHA256})
   list(GET status 0 code)
   if(NOT code EQUAL 0)
     list(GET status 1 reason)

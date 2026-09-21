@@ -11,7 +11,7 @@
       "version": "1.92.0"
     },
     "cmake-everywhere": {
-      "version": "b91a7502555160557059eb41243ab4d7a96815de"
+      "version": "v0.2.0"
     },
     "googletest-modules": {
       "commit": "706920f1d230f0316d271466d8885735be3e300e",
