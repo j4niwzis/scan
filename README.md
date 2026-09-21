@@ -1039,6 +1039,50 @@ The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
 `scan.scanners` -- with `scan` as an umbrella that re-exports it. Importing
 `scan` is all that is wanted.
 
+### With modules
+
+This is the ordinary way. `find_package(scan)`, link `scan::scan`, and
+`import scan;` -- the interface units are installed beside the archive and your
+own build compiles them, which is what consuming a module library is.
+
+```cmake
+cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
+
+# The library is written with `import std`, so a consumer of it asks for the
+# same. CMake wants the experimental gate said by its own UUID.
+set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
+set(CMAKE_CXX_MODULE_STD 1)
+
+# Where its dependency comes from, for a project that has no provider of its
+# own. One that has is already answered and needs none of this.
+if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
+  set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+      ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+endif()
+
+project(mine LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 23)
+
+find_package(scan REQUIRED)
+add_executable(mine main.cc)
+target_link_libraries(mine PRIVATE scan::scan)
+```
+
+```cpp
+import scan;   // the umbrella; nothing else has to be named
+```
+
+What the prefix holds is the archive, the module sources a consumer compiles
+its own interfaces from (`lib/scan/modules/src/`), the CMake package, and a
+port declaration that answers for this library on a machine that has
+`cmake-everywhere`. `scanConfig.cmake` asks for Boost.PFR in turn -- that is
+what the provider line above is for, and what turning
+`SCAN_FIELDS_BY_BINDING_PACK` on removes.
+
+A consumer needs the same compiler the library was built with, for the same
+reason any module library does: a BMI is not a portable artefact, and the
+interface units are compiled by your build rather than shipped compiled.
+
 ### Without modules
 
 A project that cannot take modules reads the same library as headers. They are
