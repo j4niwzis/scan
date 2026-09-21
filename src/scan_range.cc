@@ -32,8 +32,8 @@ template <class Type, fixed_string Format, std::size_t Extent, std::size_t... In
 template <class Reading, class... Contexts>
 class reading_with {
  public:
-  constexpr reading_with(Reading what, Contexts... given)
-      : what_(std::move(what)), given_(std::move(given)...) {}
+  constexpr reading_with(Reading what, Contexts&... given)
+      : what_(std::move(what)), given_(given...) {}
 
   template <class Type>
     requires(std::is_aggregate_v<Type> || scanned_as_variant<Type>)
@@ -54,7 +54,7 @@ class reading_with {
 
  private:
   Reading what_;
-  scan::contexts_at_places<Contexts...> given_;
+  scan::contexts_at_places<std::remove_reference_t<Contexts>...> given_;
 };
 
 // Naming what a reading is for, written once for every kind of subject.
@@ -72,7 +72,7 @@ class reading_with {
 // throw at the asking.
 struct names_its_output {
   template <class Type, class Self, class... Contexts>
-  [[nodiscard]] constexpr Type of(this Self&& self, const Contexts&... given) {
+  [[nodiscard]] constexpr Type of(this Self&& self, Contexts&&... given) {
     if constexpr (sizeof...(Contexts) == 0) {
       if constexpr (requires { self.template read_or_throw<Type>(); }) {
         return std::forward<Self>(self).template read_or_throw<Type>();
@@ -81,7 +81,7 @@ struct names_its_output {
       }
     } else {
       return std::forward<Self>(self).template asked_for<Type>(
-          scan::contexts_at_places<Contexts...>(given...));
+          scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...));
     }
   }
 
@@ -94,12 +94,12 @@ struct names_its_output {
 
   template <class Type, class Self, class... Contexts>
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      this Self&& self, const Contexts&... given) {
+      this Self&& self, Contexts&&... given) {
     if constexpr (sizeof...(Contexts) == 0) {
       return std::forward<Self>(self).template read<Type>();
     } else {
       return std::forward<Self>(self).template read<Type>(
-          scan::contexts_at_places<Contexts...>(given...));
+          scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...));
     }
   }
 
@@ -229,8 +229,9 @@ class borrowed_result : public names_its_output {
   // reading assigned to a variable needs, because the conversion that names the
   // type has nowhere to put them.
   template <class... Contexts>
-  [[nodiscard]] constexpr auto with(Contexts... given) const {
-    return reading_with<borrowed_result, Contexts...>(*this, given...);
+  [[nodiscard]] constexpr auto with(Contexts&&... given) const {
+    return reading_with<borrowed_result, std::remove_reference_t<Contexts>...>(
+        *this, given...);
   }
 
   // The same things the reading could be told before it was handed a subject,
@@ -443,16 +444,73 @@ class prefix_scan {
         input_.substr(found.head.size())};
   }
 
+  // The same head, told what the places were told.
+  //
+  // A head is where the fallback lives: the walk goes past a match on the
+  // chance of a longer one the order prefers, and where it dies the answer is
+  // the place it passed. What a scanner wrote into a context along the way it
+  // wrote for a reading that did not happen -- the state is copied where a
+  // reading divides, a context is not -- so a context is the one place where
+  // the walk can be watched, and the one place where writing is the caller's
+  // own business.
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
+  try_take(Contexts&&... given) const {
+    return taken_with<Type>(scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...));
+  }
+
+  template <class Type>
+  [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
+  try_take(detail::carrier_for<Type> given) const {
+    return taken_with<Type>(given);
+  }
+
+  template <class Type, class... Contexts>
+    requires(sizeof...(Contexts) > 0)
+  [[nodiscard]] constexpr taken<Type> take(Contexts&&... given) const {
+    return or_thrown(
+        taken_with<Type>(scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...)));
+  }
+
+  template <class Type>
+  [[nodiscard]] constexpr taken<Type> take(detail::carrier_for<Type> given) const {
+    return or_thrown(taken_with<Type>(given));
+  }
+
   template <class Type>
     requires std::is_aggregate_v<Type> || detail::scanned_as_variant<Type>
   constexpr operator Type() const {
     return take<Type>().value;
   }
 
+  // The head and what follows it, told a carrier: one walk, the same as above,
+  // and the value built with what each place was given.
+  template <class Type, class CarrierType>
+  [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
+  taken_with(const CarrierType& given) const {
+    const auto found =
+        detail::taken_prefix_fields<Type, Format,
+                                    detail::holds_a_variant<Type>()>(input_);
+    if (!found.matched) {
+      return std::unexpected(scan::as_a_failure<detail::failure_for<Type>>(
+          no_match<>("input does not begin with the pattern")));
+    }
+    auto made =
+        detail::build_value<detail::failure_for<Type>,
+                            detail::format_parameters<Type, Format>, Type, 0,
+                            false, scan::hands_a_failure_back, CarrierType>(
+            found.groups, given);
+    if (!made) return std::unexpected(std::move(made).error());
+    return taken<Type>{std::move(*made), input_.substr(found.head.size())};
+  }
+
   template <class Type>
   [[nodiscard]] constexpr Type of() const {
     return take<Type>().value;
   }
+
+ private:
 
   template <class Type>
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>

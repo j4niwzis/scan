@@ -32,45 +32,40 @@ env:
 
 jobs:
   # The other compiler, asked the one question that matters here: does this
-  # library compile where it is not clang? As modules, which is what the
-  # library is written as -- the headers are generated from these very
-  # interfaces and are read by the run below.
+  # library compile where it is not clang, and do the readings say the same
+  # things? Everything is built and every test is run.
   #
-  # Nothing is run. What a reading answers is settled by the run above, on a
-  # compiler this repository can build every test with; what is settled here is
-  # that nothing in the sources is written the way only one compiler accepts.
-  # Two things already were: a lane filled element by element in a constant
-  # expression, and a type named as the result of a lambda in a module
-  # interface -- the second of which is ill-formed and only one compiler says
-  # so ([basic.link]/17).
+  # In a container rather than on the runner, because `import std` wants a
+  # libstdc++ that ships the module's source and a GCC that reads it without
+  # tripping over its own <ranges>: 15.2 does not -- it says the deduced return
+  # type of `iota_view::size` conflicts with the one it imported -- and 15.3
+  # does. An image is where a version can be asked for.
   gcc:
     name: gcc ${{ matrix.gcc }}, libstdc++, import std
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    container: debian:unstable
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         gcc: [15]
     steps:
-      - uses: actions/checkout@v4
-
-      # `import std` wants a libstdc++ that ships the module's source and a
-      # GCC that can be told to read it; fifteen is the first that does both.
-      - name: gcc
+      - name: what a container has not got
         run: |
-          sudo apt-get update || true
-          sudo apt-get install -y ninja-build software-properties-common curl
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt-get update
-          sudo apt-get install -y g++-${{ matrix.gcc }}
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            g++-${{ matrix.gcc }} ninja-build curl ca-certificates git \
+            python3 tar xz-utils
           g++-${{ matrix.gcc }} --version
+
+      - uses: actions/checkout@v4
 
       - name: cmake
         run: |
           version=4.4.3
           curl -sSL -o cmake.tar.gz \
             "https://github.com/Kitware/CMake/releases/download/v${version}/cmake-${version}-linux-x86_64.tar.gz"
-          sudo tar xzf cmake.tar.gz -C /opt
+          tar xzf cmake.tar.gz -C /opt
           echo "/opt/cmake-${version}-linux-x86_64/bin" >> "$GITHUB_PATH"
 
       - name: what was fetched before
@@ -80,18 +75,17 @@ jobs:
           key: scan-gcc-${{ matrix.gcc }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}
           restore-keys: scan-gcc-${{ matrix.gcc }}-
 
-      # The library itself, as modules. The tests are left out: each of them is
-      # a machine built while it compiles, and what they answer is answered in
-      # the run above.
-      - name: the modules
+      - name: build
         run: |
           cmake -S . -B build-gcc -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc-${{ matrix.gcc }} \
             -DCMAKE_CXX_COMPILER=g++-${{ matrix.gcc }} \
-            -DSCAN_BUILD_TESTS=OFF \
             -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON
-          cmake --build build-gcc --target scan
+          cmake --build build-gcc
+
+      - name: the tests
+        run: ctest --test-dir build-gcc --output-on-failure
 
   install:
     name: clang ${{ matrix.llvm }}, libc++, import std

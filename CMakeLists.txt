@@ -663,6 +663,7 @@ enable_testing()
 # being compiled, so two patterns in one file is two waits in a row, and
 # separate files are two waits at once.
 set(scan_tests
+  a_head_that_was_walked_past_test
   where_a_gathering_lives_test
   a_resource_told_to_a_gathering_test
   a_context_of_your_own_test
