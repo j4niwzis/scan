@@ -159,7 +159,12 @@ template <class Told>
 template <class FieldType>
 struct reading_of;
 
-template <class FieldType, class ContextType, bool ToldApart>
+// How many readings of one field the walk can stand in at once, said as a
+// number by whoever knows the machine. The carrier is handed it rather than
+// working it out: what a reading is told is written where the contexts are,
+// and the contexts are written where the format is not.
+template <class FieldType, class ContextType, bool ToldApart,
+          std::size_t Copies = 1>
 struct reading_by;
 // One context said for a whole shape needs one reading per leaf under it, and
 // those readings have to outlive the call that says it. They are made as a
@@ -177,7 +182,7 @@ struct readings_for;
 // -- and the reading that knows it is made there too, as a default argument, so
 // it is alive for as long as the expression that said it. What crosses the door
 // is a pointer to the interface, and nothing here ever names a context type.
-template <class FieldType>
+template <class FieldType, std::size_t Copies = 1>
 class context_leaf {
  public:
   using held = std::remove_cv_t<FieldType>;
@@ -197,7 +202,7 @@ class context_leaf {
              !std::same_as<std::remove_cvref_t<It>, no_place>)
   constexpr context_leaf(
       It&& given,
-      reading_by<held, std::remove_reference_t<It>, true>&& made = {})
+      reading_by<held, std::remove_reference_t<It>, true, Copies>&& made = {})
       : how_(&made) {
     made.kept = &given;
   }
@@ -291,10 +296,10 @@ class context_shape {
   std::tuple<Parts...> parts_{};
 };
 
-template <class FieldType, class It>
-struct readings_for<context_leaf<FieldType>, It> {
+template <class FieldType, std::size_t Copies, class It>
+struct readings_for<context_leaf<FieldType, Copies>, It> {
   using type = reading_by<std::remove_cv_t<FieldType>,
-                          std::remove_reference_t<It>, false>;
+                          std::remove_reference_t<It>, false, Copies>;
 };
 
 template <class It, class... Parts>
@@ -344,44 +349,48 @@ using carrier_place_for = typename decltype(carrier_place_kind<FieldType, K>()):
 
 // Which carrier a field wants: read whole, and it is a leaf; opening up into
 // places, and it is a shape over their carriers, worked out the same way.
-template <class FieldType, bool Whole = (carrier_places<FieldType>() == 0)>
+template <class FieldType, std::size_t Copies = 1,
+          bool Whole = (carrier_places<FieldType>() == 0)>
 struct carrier_of;
 
-template <class FieldType>
-struct carrier_of<FieldType, true> {
-  using type = context_leaf<FieldType>;
+template <class FieldType, std::size_t Copies>
+struct carrier_of<FieldType, Copies, true> {
+  using type = context_leaf<FieldType, Copies>;
 };
 
-template <class FieldType>
-struct carrier_of<FieldType, false> {
+template <class FieldType, std::size_t Copies>
+struct carrier_of<FieldType, Copies, false> {
   template <std::size_t... K>
   static auto made(std::index_sequence<K...>)
-      -> context_shape<
-          typename carrier_of<carrier_place_for<FieldType, K>>::type...>;
+      -> context_shape<typename carrier_of<carrier_place_for<FieldType, K>,
+                                           Copies>::type...>;
   using type =
       decltype(made(std::make_index_sequence<carrier_places<FieldType>()>{}));
 };
 
-template <class FieldType>
-using carrier_for = typename carrier_of<std::remove_cv_t<FieldType>>::type;
+template <class FieldType, std::size_t Copies = 1>
+using carrier_for =
+    typename carrier_of<std::remove_cv_t<FieldType>, Copies>::type;
 
-template <class Type, std::size_t Place>
+template <class Type, std::size_t Place, std::size_t Copies = 1>
 [[nodiscard]] consteval auto context_place_kind() {
   if constexpr (carrier_places<Type>() == 0) {
     if constexpr (Place == 0) {
-      return std::type_identity<context_leaf<std::remove_cv_t<Type>>>{};
+      return std::type_identity<context_leaf<std::remove_cv_t<Type>, Copies>>{};
     } else {
       return std::type_identity<no_place>{};
     }
   } else if constexpr (Place < carrier_places<Type>()) {
-    return std::type_identity<carrier_for<carrier_place_for<Type, Place>>>{};
+    return std::type_identity<
+        carrier_for<carrier_place_for<Type, Place>, Copies>>{};
   } else {
     return std::type_identity<no_place>{};
   }
 }
 
-template <class Type, std::size_t Place>
-using context_place_of = typename decltype(context_place_kind<Type, Place>())::type;
+template <class Type, std::size_t Place, std::size_t Copies = 1>
+using context_place_of =
+    typename decltype(context_place_kind<Type, Place, Copies>())::type;
 
 
 // The state a scanner that gathers begins with. A scanner told a context and a
@@ -446,16 +455,17 @@ using fold_state_for = decltype(fold_state_of<Held>());
 // the field is a shape, and nothing at all where it is read whole. Said in two
 // pieces rather than one conditional, because a leaf's own carrier is a reading
 // of that leaf -- naming it inside itself is a circle.
-template <class Held, class ContextType,
+template <class Held, class ContextType, std::size_t Copies = 1,
           bool AShape = (carrier_places<std::remove_cv_t<Held>>() > 0)>
 struct readings_under {
   using type = scan::no_contexts;
 };
 
-template <class Held, class ContextType>
-struct readings_under<Held, ContextType, true> {
-  using type = typename readings_for<carrier_for<std::remove_cv_t<Held>>,
-                                     ContextType>::type;
+template <class Held, class ContextType, std::size_t Copies>
+struct readings_under<Held, ContextType, Copies, true> {
+  using type =
+      typename readings_for<carrier_for<std::remove_cv_t<Held>, Copies>,
+                            ContextType>::type;
 };
 
 template <class FieldType>
@@ -485,7 +495,8 @@ struct reading_of {
 // it either: a context is a place to keep things while a reading runs, and a
 // scanner that is told one may write in it. It is made at the place the context
 // is said, as a default argument, so it lives exactly as long as the call.
-template <class FieldType, class ContextType, bool ToldApart>
+template <class FieldType, class ContextType, bool ToldApart,
+          std::size_t Copies>
 struct reading_by final : reading_of<FieldType> {
   using held = std::remove_cv_t<FieldType>;
   using answer = std::expected<held, failure_for<held>>;
@@ -494,7 +505,8 @@ struct reading_by final : reading_of<FieldType> {
   // The readings for the places under this one, where this is a shape. They
   // live here because they have to outlive what they are wired into, and what
   // they are wired into is a state the walk carries about.
-  [[no_unique_address]] typename readings_under<held, ContextType>::type under_{};
+  [[no_unique_address]] typename readings_under<held, ContextType,
+                                                Copies>::type under_{};
 
   static constexpr bool by_groups =
       requires { scan::scanner<held>{}.begin_groups(); } ||
