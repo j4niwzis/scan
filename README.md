@@ -29,9 +29,9 @@ Four kinds of subject answer the same way: characters in a row, input in
 pieces, a forward range, and a range that can be read only once.
 
 Compiling a pattern is a constant evaluation that builds a machine, and a
-program with hundreds of them will feel it. Wants clang and `import std`;
-Boost.PFR unless C++26 binding packs are on; a generated header form for
-projects without modules.
+program with hundreds of them will feel it. clang or GCC 15, as the modules it
+is written as or as the headers generated from them in `include/`; Boost.PFR
+unless C++26 binding packs are on.
 
 **Contents.** [A tour](#a-tour) · [What the answers mean](#what-the-answers-mean)
 · [The subject](#the-subject) · [The pattern layer](#the-pattern-layer) ·
