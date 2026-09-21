@@ -492,10 +492,9 @@ const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is na
   place's and all of its parts'.
 * **`scan::parts{...}`** says what a braced list says, and says it where the
   types are still deduced: it nests the same way, stands wherever a context
-  stands, and nothing about it is erased. It is held by value, so the
-  `scan::parts{...}` itself is allowed to be the temporary it looks like --
-  the contexts inside it are still the caller's own and still have to outlive
-  the reading.
+  stands, and nothing about it is erased. It is held by value -- it is a
+  handful of addresses and nothing else -- so it does not have to be named.
+  What is inside it is contexts, and those go by the rule below.
 * A fold or a list is told its context **without** braces: it is one value made
   of many turns, not a shape of parts.
 * `with(…)` says the same thing before the output type is named, which is what
@@ -569,20 +568,27 @@ and nothing waiting to die:
 for (const row& one : scan::each<f>(source).of<row>(scan::parts{fast, fast}, fast)) { ... }
 ```
 
-Contexts themselves are bound by reference wherever they are said, so a
-temporary context handed to any reading is refused while it compiles rather
-than read after it is gone.
+A context is held as the address of it wherever it is said, because what a
+scanner writes into one is written into the caller's own. So it has to be
+something the caller is still holding, and one that is not is refused while it
+compiles rather than read after it is gone.
 
-Where a place wants a context and the reading is the hot path, say it as it
-stands. Braces are for saying what the parts of a shape are told, which is a
-thing the other spelling cannot say at all -- and that is what the virtual
-call is for.
+Which leaves braces saying nothing `scan::parts` does not say, and costing
+what `scan::parts` does not cost. They read well on a shape written out in
+full and they are what the library had first; `scan::parts` is the one that
+works on every reading.
 
 ## Extension points
 
 Everything a type can say about how it is read is a specialisation or a member.
-Nothing is virtual and nothing is inherited, apart from `aggregate_scanner`,
-which is a convenience.
+Nothing **you write** is virtual and nothing you write is inherited, apart from
+`aggregate_scanner`, which is a convenience.
+
+The one place a call into your scanner arrives through an interface is a
+context said in braces, and that interface is the library's own -- your scanner
+is the same plain specialisation either way, and says nothing about it. "What
+braces cost" above is where that is explained, and `scan::parts` is how to say
+the same thing without it.
 
 | point | what it says |
 | --- | --- |
@@ -739,6 +745,28 @@ state is copied where a reading divides and dropped where a reading dies. So
 the state must be copyable, and it must be the only thing the fold touches --
 anything written outside it would be written for a reading that never happened.
 
+That is worth saying plainly, because it is a fact about the machine and not
+about this implementation: where a pattern can read past a match and come back,
+the walk must read past it to find out whether there is a longer one, and the
+hooks of everything on the way run while it does. That the reading was
+abandoned is known only when it dies, which is after. **The state is what is
+exact** -- it is put back to what the match left -- and the number of times a
+hook ran is not.
+
+A fold may say how that keeping and putting back are done, where copying its
+state outright is not what copying it means:
+
+```cpp
+static state keep_groups(const state& made);                    // what is worth keeping
+static void groups_go_back_to(state& live, const state& kept);  // and going back to it
+```
+
+`keep_groups` is asked where the walk keeps a match, and hands back what is
+worth keeping of the state -- in the same type, because the answer is made out
+of it. `groups_go_back_to` is asked where a walk that went past a match died
+and the gathering has to be put back. A fold that says neither is copied and
+assigned the way it always was.
+
 ### A list, a sum, a container of your own
 
 ```cpp
@@ -775,8 +803,9 @@ specialised for a type that is not an aggregate.
 ### A collector of your own
 
 A collector speaks the same four hooks a scanner does -- `parse`, `begin`,
-`push`, `finish` -- and says one thing more: what it makes. Nothing is virtual
-and nothing is inherited; write the ones it needs and leave the rest out.
+`push`, `finish` -- and says one thing more: what it makes. Nothing you write
+is virtual and nothing you write is inherited; write the ones it needs and
+leave the rest out.
 
 ```cpp
 struct hex_bytes {
