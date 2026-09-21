@@ -482,6 +482,11 @@ concept takes_group_runs =
 // its number. The choice is made here, where the number is a constant.
 export template <class Type, std::size_t Which, class StateType>
 constexpr void push_one_group(StateType& state, char letter) {
+  // A fold kept inside the reading that was told the context: the state
+  // is not here, so the turn is said to the reading instead.
+  if constexpr (requires { state.template pushed<Which>(letter); }) {
+    state.template pushed<Which>(letter);
+  } else {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
                   scanner_type{}.push_group(state, scan::group_at<Which>{},
@@ -506,6 +511,7 @@ constexpr void push_one_group(StateType& state, char letter) {
   } else {
     scanner_type{}.push_group(state, Which, letter);
   }
+  }
 }
 
 // The same, handed a run of characters rather than one.
@@ -516,6 +522,11 @@ constexpr void push_one_group(StateType& state, char letter) {
 // the characters one at a time, which is what it asked for.
 export template <class Type, std::size_t Which, class StateType>
 constexpr void push_one_group(StateType& state, std::string_view run) {
+  // A fold kept inside the reading that was told the context: the state
+  // is not here, so the turn is said to the reading instead.
+  if constexpr (requires { state.template pushed<Which>(run); }) {
+    state.template pushed<Which>(run);
+  } else {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
                   scanner_type{}.push_group(state, scan::group_at<Which>{},
@@ -529,12 +540,18 @@ constexpr void push_one_group(StateType& state, std::string_view run) {
   } else {
     for (const char letter : run) push_one_group<Type, Which>(state, letter);
   }
+  }
 }
 
 // The two edges of a group, said the same three ways a push is said. A type
 // that only wants the characters says neither, and then nothing is said to it.
 export template <class Type, std::size_t Which, class StateType>
 constexpr void open_one_group(StateType& state) {
+  // A fold kept inside the reading that was told the context: the state
+  // is not here, so the turn is said to the reading instead.
+  if constexpr (requires { state.template opened<Which>(); }) {
+    state.template opened<Which>();
+  } else {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
                   scanner_type{}.opened_group(state, scan::group_at<Which>{});
@@ -556,6 +573,7 @@ constexpr void open_one_group(StateType& state) {
   } else if constexpr (requires { scanner_type{}.opened_group(state, Which); }) {
     scanner_type{}.opened_group(state, Which);
   }
+  }
 }
 
 export template <class Type, std::size_t Which, class StateType>
@@ -567,6 +585,11 @@ constexpr void close_one_group(StateType& state);
 // own; the two are the same fold, said with what each reading has to give.
 export template <class Type, std::size_t Which, class StateType>
 constexpr void close_one_group(StateType& state, std::string_view text) {
+  // A fold kept inside the reading that was told the context: the state
+  // is not here, so the turn is said to the reading instead.
+  if constexpr (requires { state.template closed<Which>(text); }) {
+    state.template closed<Which>(text);
+  } else {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
                   scanner_type{}.closed_group(state, scan::group_at<Which>{},
@@ -592,10 +615,16 @@ constexpr void close_one_group(StateType& state, std::string_view text) {
     for (char letter : text) push_one_group<Type, Which>(state, letter);
     close_one_group<Type, Which>(state);
   }
+  }
 }
 
 export template <class Type, std::size_t Which, class StateType>
 constexpr void close_one_group(StateType& state) {
+  // A fold kept inside the reading that was told the context: the state
+  // is not here, so the turn is said to the reading instead.
+  if constexpr (requires { state.template closed<Which>(); }) {
+    state.template closed<Which>();
+  } else {
   using scanner_type = scan::scanner<std::remove_cv_t<Type>>;
   if constexpr (requires {
                   scanner_type{}.closed_group(state, scan::group_at<Which>{});
@@ -616,6 +645,7 @@ constexpr void close_one_group(StateType& state) {
     }
   } else if constexpr (requires { scanner_type{}.closed_group(state, Which); }) {
     scanner_type{}.closed_group(state, Which);
+  }
   }
 }
 
