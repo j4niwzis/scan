@@ -710,6 +710,7 @@ enable_testing()
 # being compiled, so two patterns in one file is two waits in a row, and
 # separate files are two waits at once.
 set(scan_tests
+  a_template_context_over_groups_test
   a_context_taken_by_a_template_test
   a_head_told_its_contexts_and_walked_back_test
   every_record_told_the_same_context_test

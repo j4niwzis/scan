@@ -279,6 +279,18 @@ TEST_F(a_context_of_your_own, ALeafReadFromItsGroupsIsToldToo) {
   EXPECT_EQ(got.range.mark, 2);
 }
 
+// The same place, said without braces: one context a place, types deduced.
+// Told the carrier rather than what the place was told, a scanner taking the
+// caller's own type does not match, and the reading used to fall to the hook
+// that takes nothing -- quietly, with the mark left at zero.
+TEST_F(a_context_of_your_own, ALeafReadFromItsGroupsIsToldWithoutBracesToo) {
+  const auto got = scan::scan<"{} {}">("abc 3-9"sv).of<holder>(fast, slow);
+  EXPECT_EQ(got.head.mark, 1);
+  EXPECT_EQ(got.range.lo, 3);
+  EXPECT_EQ(got.range.hi, 9);
+  EXPECT_EQ(got.range.mark, 2);
+}
+
 TEST_F(a_context_of_your_own, ToldBeforeTheOutputTypeIsNamed) {
   const pair got = scan::scan<"{} {}">("abc def"sv).with(fast);
   EXPECT_EQ(got.left.mark, 1);
