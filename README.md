@@ -493,9 +493,8 @@ const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is na
   place's and all of its parts'.
 * **`scan::parts{...}`** says what a braced list says, and says it where the
   types are still deduced: it nests the same way, stands wherever a context
-  stands, and nothing about it is erased. It is held by value -- it is a
-  handful of addresses and nothing else -- so it does not have to be named.
-  What is inside it is contexts, and those go by the rule below.
+  stands, and nothing about it is erased. What is inside it is contexts, held
+  the way contexts are held anywhere.
 * A fold or a list is told its context **without** braces: it is one value made
   of many turns, not a shape of parts.
 * `with(…)` says the same thing before the output type is named, which is what
@@ -560,23 +559,19 @@ are still alive when they are used.
 **A reading that is lazy cannot.** `each<f>(r).of<T>(...)` hands back a view
 and reads a record when it is asked for one -- which is after the call that
 named the output has ended, and after a braced list's readings have died with
-it. So `each` does not take braces at all.
-
-It takes `scan::parts` instead, which says the same thing with nothing erased
-and nothing waiting to die:
+it. So `each` does not take braces at all. It takes contexts the ordinary way,
+made at the call or not, and `scan::parts` for the parts of a place:
 
 ```cpp
 for (const row& one : scan::each<f>(source).of<row>(scan::parts{fast, fast}, fast)) { ... }
 ```
 
-A context is held as the address of it, because what a scanner writes into one
-is written into the caller's own. How long it has to live is a question about
-the reading rather than about the context. A reading that runs inside the call
-it was written in -- `scan`, `match`, `scan_prefix` and the rest -- is over
-before anything said at that call is, so a context may be written where it is
-used, as the allocator above is. A reading that hands back a view is not over,
-and `each` says so: it takes contexts that are named, and one that is not is
-refused while it compiles rather than read after it is gone.
+**A context may be written where it is used.** One of the caller's own -- a
+named thing -- is held as the address of it, because what a scanner writes into
+one is written into theirs. One made at the call, as the allocator above is, is
+nobody else's: it is moved into the reading and held there. So there is nothing
+for it to outlive, and a reading that hands back a view carries what it was
+told for as long as it reads.
 
 Which leaves braces saying nothing `scan::parts` does not say, and costing
 what `scan::parts` does not cost. They read well on a shape written out in

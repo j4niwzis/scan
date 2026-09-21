@@ -54,7 +54,7 @@ class reading_with {
 
  private:
   Reading what_;
-  scan::contexts_at_places<std::remove_reference_t<Contexts>...> given_;
+  scan::contexts_at_places<Contexts...> given_;
 };
 
 // Naming what a reading is for, written once for every kind of subject.
@@ -101,7 +101,7 @@ struct names_its_output {
       }
     } else {
       return std::forward<Self>(self).template asked_for<Type>(
-          scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...));
+          scan::contexts_at_places<Contexts...>(given...));
     }
   }
 
@@ -120,7 +120,7 @@ struct names_its_output {
       return std::forward<Self>(self).template read<Type>();
     } else {
       return std::forward<Self>(self).template read<Type>(
-          scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...));
+          scan::contexts_at_places<Contexts...>(given...));
     }
   }
 
@@ -479,7 +479,7 @@ class prefix_scan {
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
   try_take(Contexts&&... given) const {
-    return taken_with<Type>(scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...));
+    return taken_with<Type>(scan::contexts_at_places<Contexts...>(given...));
   }
 
   template <class Type>
@@ -492,7 +492,7 @@ class prefix_scan {
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr taken<Type> take(Contexts&&... given) const {
     return or_thrown(
-        taken_with<Type>(scan::contexts_at_places<std::remove_reference_t<Contexts>...>(given...)));
+        taken_with<Type>(scan::contexts_at_places<Contexts...>(given...)));
   }
 
   template <class Type>
@@ -872,11 +872,18 @@ class each_stream_scan {
                       detail::streaming_automaton<Type, Format>>(),
                   "this pattern is happy with nothing at all, so reading one "
                   "match after another would never move");
+    // And the contexts have to be the caller's own, named.
+    //
+    // Nothing said here about what may be written at the call. A context of
+    // the caller's own is held as the address of it and one made at the call
+    // is moved into the carrier, which this view holds -- so a record read
+    // long after that expression has ended is read with what it was told
+    // either way.
     if constexpr (sizeof...(Contexts) == 0) {
       return each_stream_view<Type, Format, RangeType>(std::move(self.input_));
     } else {
       using carrier =
-          scan::contexts_at_places<std::remove_reference_t<Contexts>...>;
+          scan::contexts_at_places<Contexts...>;
       return each_stream_view<Type, Format, RangeType, carrier>(
           std::move(self.input_), carrier(given...));
     }

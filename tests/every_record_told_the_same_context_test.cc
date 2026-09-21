@@ -243,4 +243,27 @@ TEST_F(every_record_told, ThePartsOfAPlaceToldToEveryRecord) {
   EXPECT_EQ(marks, std::vector<int>({2, 2}));
 }
 
+// A context made at the call, told to a reading that reads a record long
+// after that call has ended.
+//
+// Held by the carrier rather than pointed at: a context of the caller's own is
+// the caller's own and is reached through its address, and one made here is
+// nobody else's, so it is moved in and kept. There is nothing left for it to
+// outlive.
+TEST_F(every_record_told, AContextMadeAtTheCallIsKeptByTheReading) {
+  std::size_t taken = 0;
+  counted_reading source("for abc 1,2 for def 3,4 ", &taken);
+  int records = 0;
+  std::vector<int> marks;
+  for (const row& one :
+       scan::each<"{{foreach}|{for}|{each}} {} {} ">(std::move(source))
+           .of<row>(room{7, &said})) {
+    marks.push_back(one.tail.mark);
+    ++records;
+    if (records > 4) break;
+  }
+  EXPECT_EQ(records, 2);
+  EXPECT_EQ(marks, std::vector<int>({7, 7}));
+}
+
 }  // namespace
