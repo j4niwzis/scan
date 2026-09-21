@@ -607,12 +607,15 @@ class each_view {
 };
 
 // The same off a range that is read as it comes.
-template <class Type, fixed_string Format, class RangeType>
+template <class Type, fixed_string Format, class RangeType,
+          class CarrierType = scan::default_context_t>
 class each_stream_view {
  public:
-  constexpr explicit each_stream_view(RangeType input)
+  constexpr explicit each_stream_view(RangeType input,
+                                      CarrierType told = CarrierType{})
       : input_(std::move(input)),
-        first_(std::ranges::begin(input_)) {}
+        first_(std::ranges::begin(input_)),
+        told_(std::move(told)) {}
 
   each_stream_view(each_stream_view&&) = default;
   each_stream_view& operator=(each_stream_view&&) = default;
@@ -659,8 +662,8 @@ class each_stream_view {
   constexpr void advance() {
     value_.reset();
     if (carry_.empty() && first_ == std::ranges::end(input_)) return;
-    auto got = detail::scan_stream_prefix<Type, Format>(
-        first_, std::ranges::end(input_), carry_);
+    auto got = detail::scan_stream_prefix<Type, Format, CarrierType>(
+        first_, std::ranges::end(input_), carry_, true, told_);
     if (!got) {
       value_.reset();
       return;
@@ -677,6 +680,9 @@ class each_stream_view {
                            std::ranges::iterator_t<RangeType>> carry_;
   std::optional<Type> value_;
   std::optional<char> stopped_;
+  // Told once and told to every record: what a reading is told is a fact about
+  // the reading and not about the record it is on.
+  CarrierType told_;
 };
 
 // A machine fed one character at a time, for input that arrives rather than
@@ -764,7 +770,7 @@ class reader {
 // character that ended the match, which is handed back with the values because
 // it has been read and there is nowhere to put it back.
 template <fixed_string Format, std::ranges::input_range RangeType>
-class prefix_stream_scan {
+class prefix_stream_scan : public detail::names_its_output {
  public:
   constexpr explicit prefix_stream_scan(RangeType input)
       : input_(std::move(input)) {}
@@ -777,14 +783,14 @@ class prefix_stream_scan {
   // The answer says how much room it needs for what it hands back, which is a
   // question about the pattern and the reading both, so it is deduced rather
   // than named here.
-  template <class Type>
-  [[nodiscard]] constexpr auto try_take() {
-    return detail::scan_stream_prefix<Type, Format>(input_);
+  template <class Type, class CarrierType = scan::default_context_t>
+  [[nodiscard]] constexpr auto try_take(const CarrierType& told = CarrierType{}) {
+    return detail::scan_stream_prefix<Type, Format, CarrierType>(input_, told);
   }
 
-  template <class Type>
-  [[nodiscard]] constexpr auto take() {
-    return or_thrown(try_take<Type>());
+  template <class Type, class CarrierType = scan::default_context_t>
+  [[nodiscard]] constexpr auto take(const CarrierType& told = CarrierType{}) {
+    return or_thrown(try_take<Type, CarrierType>(told));
   }
 
   template <class Type>
@@ -793,15 +799,14 @@ class prefix_stream_scan {
     return take<Type>().value;
   }
 
-  template <class Type>
-  [[nodiscard]] constexpr Type of() {
-    return take<Type>().value;
-  }
-
-  template <class Type>
-  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>>
-  try_of() {
-    auto got = try_take<Type>();
+  // What a head hands back is the value and what stopped it; what
+  // `names_its_output` asks for is the value alone, so `of` and `try_of` are
+  // the ones written there -- told as the contexts stand, or in braces, the
+  // same as off any other subject.
+  template <class Type, class CarrierType = scan::default_context_t>
+  [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> read(
+      const CarrierType& told = CarrierType{}) {
+    auto got = try_take<Type, CarrierType>(told);
     if (!got) return std::unexpected(got.error());
     return std::move(got->value);
   }
@@ -847,14 +852,44 @@ class each_stream_scan {
   each_stream_scan(const each_stream_scan&) = delete;
   each_stream_scan& operator=(const each_stream_scan&) = delete;
 
-  template <class Type>
-  [[nodiscard]] constexpr each_stream_view<Type, Format, RangeType> of() && {
+  // Told as the contexts stand, or told nothing.
+  //
+  // Said here rather than taken from `names_its_output`, because what naming
+  // the output of this reading makes is not a value but a view: one record
+  // after another, each of them told the same thing.
+  template <class Type, class... Contexts>
+  [[nodiscard]] constexpr auto of(this each_stream_scan&& self,
+                                  Contexts&&... given) {
     static_assert(!detail::matches_nothing<
                       detail::streaming_automaton<Type, Format>>(),
                   "this pattern is happy with nothing at all, so reading one "
                   "match after another would never move");
-    return each_stream_view<Type, Format, RangeType>(std::move(input_));
+    if constexpr (sizeof...(Contexts) == 0) {
+      return each_stream_view<Type, Format, RangeType>(std::move(self.input_));
+    } else {
+      using carrier =
+          scan::contexts_at_places<std::remove_reference_t<Contexts>...>;
+      return each_stream_view<Type, Format, RangeType, carrier>(
+          std::move(self.input_), carrier(given...));
+    }
   }
+
+  // And no braced list here, where every other reading takes one.
+  //
+  // What a reading is told is held as the address of it: a context is a handle
+  // -- an allocator, a pool, a pointer to the caller's world -- and the copy
+  // that costs a word is the copy of that address. Everywhere else the reading
+  // is run by the call that named its output, so a context written in braces
+  // at that call lives until the full expression ends, which is after the
+  // reading is over.
+  //
+  // This one is a view. It reads a record when it is asked for one, which is
+  // after the call that made it has ended -- and a braced list makes its
+  // contexts at that call and nothing else holds them. So the form that can
+  // only be given temporaries is the form this reading cannot take, and what
+  // is left takes lvalues: `contexts_at_places` binds `Contexts&`, so handing
+  // it a temporary is a thing the compiler refuses rather than a thing that
+  // reads freed memory on the second record.
 
  private:
   RangeType input_;
