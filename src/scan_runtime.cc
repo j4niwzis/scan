@@ -1078,7 +1078,8 @@ struct gathers_from_pieces : GathererType {
 
   constexpr explicit gathers_from_pieces(GathererType inner,
                                          PiecesType given)
-      : GathererType(std::move(inner)), pieces(std::move(given)) {}
+      : GathererType(std::move(inner)),
+        pieces(std::forward<PiecesType>(given)) {}
 
   // Where the walk writes the place it kept, so that carrying the characters
   // it stands in can move it along with them.
@@ -1600,6 +1601,32 @@ template <auto& Automaton, walk_shape Shape, std::size_t State,
       keep_the_place<Automaton, State>(best, registers, here, spot, into);
     }
   }
+  // A match with nowhere to go is where the reading ends, and no character is
+  // read to find that out.
+  //
+  // The walk learns that it cannot go on by being handed a character no move
+  // takes. Where the state has no moves at all, that character says nothing
+  // the automaton did not already say when it was built -- and on a subject
+  // that arrives as it is read, asking for it is asking somebody to type one
+  // more character before the record they finished can be handed over.
+  //
+  // Only where the walk is looking for a head. A reading anchored to the end
+  // of the subject is not over where a match is: there may be more of the
+  // subject, and a match that is not at the end of it is not an answer.
+  if constexpr (Shape.longest && accepts_here &&
+                Automaton.states[State].range_count == 0) {
+    best.matched = true;
+    best.at = here;
+    keep_the_end(best, last);
+    if constexpr (by_place) {
+      execute_static_final_commands<Automaton, State>(registers, here);
+    } else {
+      execute_static_final_commands<Automaton, State>(registers, spot);
+    }
+    put_back();
+    into.template ended<State>(registers);
+    return true;
+  }
   while (true) {
     // A character that is certainly there is read without asking whether it
     // is: the subject was measured against the shortest match before the first
@@ -1923,6 +1950,21 @@ template <auto& Automaton, walk_shape Shape, std::size_t State, class Mark,
       }
     }
     keep_here();
+  }
+  // As in `run_body`: a match with nowhere to go ends the reading without
+  // reading anything to find it out.
+  if constexpr (Shape.longest && accepts_here &&
+                Automaton.states[State].range_count == 0) {
+    best.matched = true;
+    best.at = here;
+    keep_the_end(best, last);
+    if constexpr (by_place) {
+      execute_static_final_commands<Automaton, State>(registers, here);
+    } else {
+      execute_static_final_commands<Automaton, State>(registers, spot);
+    }
+    into.template ended<State>(registers);
+    return step_said::stopped;
   }
   for (;;) {
     if constexpr (!Shape.by_terminator) {
