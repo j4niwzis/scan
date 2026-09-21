@@ -954,7 +954,7 @@ portable artefact.
 include(FetchContent)
 FetchContent_Declare(scan
   GIT_REPOSITORY https://github.com/j4niwzis/scan.git
-  GIT_TAG        v0.1.0)   # a release tag; `main` to follow it
+  GIT_TAG        main)
 FetchContent_MakeAvailable(scan)
 
 target_link_libraries(mine PRIVATE scan::scan)
