@@ -105,7 +105,8 @@ jobs:
       - name: and a program that imports it
         run: |
           cmake --install build-gcc --prefix "$PWD/prefix-gcc"
-          mkdir -p /tmp/uses
+          mkdir -p /tmp/uses/cmake
+          cp cmake/get_cme.cmake /tmp/uses/cmake/
           cat > /tmp/uses/main.cc <<'EOF'
           import std;
           import scan;
@@ -117,9 +118,22 @@ jobs:
             return one.x + one.y == 46 && found ? 0 : 1;
           }
           EOF
+          # Through the provider, as the other consumers in this file are:
+          # what this library was installed with is what it asks for, and
+          # `scanConfig.cmake` says so -- `find_dependency(boost_pfr)`. A
+          # consumer handed nothing but the prefix has nowhere to find that,
+          # and this one was handed nothing but the prefix.
           cat > /tmp/uses/CMakeLists.txt <<'EOF'
-          cmake_minimum_required(VERSION 3.30)
+          cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
+          set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD
+              "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
+          set(CMAKE_CXX_MODULE_STD 1)
+          if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
+            set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+                ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
+          endif()
           project(uses CXX)
+          set(CMAKE_CXX_STANDARD 23)
           find_package(scan REQUIRED)
           add_executable(uses main.cc)
           target_link_libraries(uses PRIVATE scan::scan)
