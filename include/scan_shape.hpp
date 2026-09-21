@@ -635,7 +635,6 @@ struct aggregate_scanner {
   // take. Where neither is true, the shape keeps the road that spreads its
   // places into the automaton around it.
   [[nodiscard]] constexpr bool reads_its_groups(this const auto& self) {
-    using type = scanner_target_t<decltype(self)>;
     static_cast<void>(self);
     return true;
   }
