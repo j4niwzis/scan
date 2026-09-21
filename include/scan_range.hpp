@@ -84,6 +84,19 @@ class reading_with {
 // A reading that can hand the value over without building an expected first is
 // asked that way, and one that cannot is asked for what it has and told to
 // throw at the asking.
+// How many readings of one field the walk stands in at once.
+//
+// A variable template, because it is a fact about the pair and nothing else:
+// the compiler works it out once for a type and a format and remembers it,
+// where a function would work it out again at every place that asked.
+template <class Type, fixed_string Format>
+inline constexpr std::size_t copies_of_a_reading =
+    streaming_automaton<Type, Format>.register_count;
+
+// Told the format, so that a place written in braces can be handed the number
+// of readings the walk will stand in. The output type is named at the call and
+// the format at the reading, and the carrier wants both.
+template <fixed_string Format>
 struct names_its_output {
   template <class Type, class Self, class... Contexts>
   [[nodiscard]] constexpr Type of(this Self&& self, Contexts&&... given) {
@@ -102,7 +115,8 @@ struct names_its_output {
   // The same, where a place is a shape and its parts want their own contexts.
   // A braced list deduces nothing, so this is the whole list at once.
   template <class Type, class Self>
-  [[nodiscard]] constexpr Type of(this Self&& self, carrier_for<Type> given) {
+  [[nodiscard]] constexpr Type of(
+      this Self&& self, carrier_for<Type, copies_of_a_reading<Type, Format>> given) {
     return std::forward<Self>(self).template asked_for<Type>(given);
   }
 
@@ -119,7 +133,8 @@ struct names_its_output {
 
   template <class Type, class Self>
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
-      this Self&& self, carrier_for<Type> given) {
+      this Self&& self,
+      carrier_for<Type, copies_of_a_reading<Type, Format>> given) {
     return std::forward<Self>(self).template read<Type>(given);
   }
 
@@ -138,7 +153,7 @@ struct names_its_output {
 
 template <fixed_string Format, int Terminator = -1, bool Terminated = false,
           how_to_walk Walk = how_to_walk::by_length>
-class borrowed_result : public names_its_output {
+class borrowed_result : public names_its_output<Format> {
  public:
   constexpr explicit borrowed_result(std::string_view input) : input_(input) {}
 
@@ -301,7 +316,7 @@ class borrowed_result : public names_its_output {
 // What a scan over pieces hands back until somebody says what it is scanning
 // into.
 template <fixed_string Format, class PiecesType>
-class pieces_result : public names_its_output {
+class pieces_result : public names_its_output<Format> {
  public:
   constexpr explicit pieces_result(PiecesType input)
       : input_(std::move(input)) {}
@@ -337,7 +352,7 @@ class pieces_result : public names_its_output {
 };
 
 template <fixed_string Format, std::ranges::input_range RangeType>
-class streaming_result : public names_its_output {
+class streaming_result : public names_its_output<Format> {
  public:
   constexpr explicit streaming_result(RangeType input)
       : input_(std::move(input)) {}
@@ -770,7 +785,7 @@ class reader {
 // character that ended the match, which is handed back with the values because
 // it has been read and there is nowhere to put it back.
 template <fixed_string Format, std::ranges::input_range RangeType>
-class prefix_stream_scan : public detail::names_its_output {
+class prefix_stream_scan : public detail::names_its_output<Format> {
  public:
   constexpr explicit prefix_stream_scan(RangeType input)
       : input_(std::move(input)) {}
