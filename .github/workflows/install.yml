@@ -375,6 +375,31 @@ jobs:
       - name: the tests
         run: ctest --test-dir build --output-on-failure
 
+      # And the same suite with the machines written out.
+      #
+      # `SCAN_AUTOMATA_AT_RUNTIME` decides whether a pattern becomes a table
+      # built on first use or code written while the program is compiled, and
+      # the two are meant to answer the same. Only a suite run both ways can
+      # say that they do -- and they did not: a reading anchored to both ends
+      # was handed the machine cut at a match by one of them and the whole
+      # machine by the other, and nothing here asked.
+      #
+      # It is the default that decides which way the build above goes, and the
+      # default is on. So the walk written as code -- every state a label, and
+      # the one a constant evaluation takes -- was the half nothing ran.
+      - name: the tests, with the machines written out
+        run: |
+          cmake -S . -B build-written -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=/usr/local/bin/clang \
+            -DCMAKE_CXX_COMPILER=/usr/local/bin/clang++ \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DSCAN_AUTOMATA_AT_RUNTIME=0 \
+            -DCME_STORE_ENABLED=ON \
+            -DCME_SOURCES_ENABLED=ON
+          cmake --build build-written
+          ctest --test-dir build-written --output-on-failure
+
       - name: install
         run: cmake --install build
 
