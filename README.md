@@ -178,9 +178,6 @@ for (const command& one :
          .of<command>()) { … }
 ```
 
-`std::noskipws` is not this library's idea: `>>` steps over whitespace by
-default, so the range would hand over `setspeed42setgain7`.
-
 Nothing is buffered. The characters go through the machine as they come, each
 field gathers into whatever collects it, and the record is built where the
 match ends. Two things are held, and both are numbers the pattern names while
@@ -482,23 +479,17 @@ scan::scan<"{} {} {}">(text).with(scan::parts{fast, slow}, slow).of<nest>()
 const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is named
 ```
 
-* **One** context is everybody's: whoever takes one takes it, and a scanner
-  that takes none is read as it always was.
-* **More than one** is one per place, in the order the places are read. Handing
-  a context to a place whose scanner takes none is said while it is compiled
-  rather than quietly dropped.
-* **In braces**, the list goes as deep as the shape does, so the parts of a
-  place can each have their own -- including the branches of a sum and the
-  places of a type that says a format of its own. A value at a place is that
-  place's and all of its parts'.
-* **`scan::parts{...}`** says what a braced list says, and says it where the
-  types are still deduced: it nests the same way, stands wherever a context
-  stands, and nothing about it is erased. What is inside it is contexts, held
-  the way contexts are held anywhere.
-* A fold or a list is told its context **without** braces: it is one value made
-  of many turns, not a shape of parts.
-* `with(…)` says the same thing before the output type is named, which is what
-  a reading assigned to a variable needs.
+* **One** is everybody's; a scanner that takes none is read as it always was.
+* **More than one** is one per place, in the order the places are read. Giving
+  one to a place whose scanner takes none is said while it is compiled.
+* **In braces** and **`scan::parts{...}`** both say the parts of a place, as
+  deep as the shape goes -- the branches of a sum, the places of a type that
+  says its own format. `parts` is deduced where braces are erased; see
+  [what braces cost](#what-braces-cost). A value at a place is that place's
+  and all of its parts'.
+* A fold or a list is told **without** braces: one value of many turns, not a
+  shape of parts.
+* `with(…)` says it before the output type is named.
 
 A context reaches exactly the call that makes a value, which is `parse`,
 `from_groups`, `begin` or `begin_groups` -- as an overload taking one more
@@ -528,55 +519,31 @@ const two got = scan::scan<"{[a-z]+} {[a-z]+}">(text).of<two>(
 
 ### What braces cost
 
-A context said **as it stands** is handed to the scanner as itself. Its type is
-a template parameter the whole way down, nothing is erased, and the call the
-library makes is the call you wrote.
-
-A context said **in braces** cannot be. A braced list says the parts of a place
-one by one, and how deep it goes is a fact about the shape rather than about
-any one context -- so what the places under it are handed has to be one type
-per field, whatever the caller wrote there. The list is held behind an
-interface that knows the field and not the context, and two things come with
-that:
-
-* Each leaf of the list gets a small reading made for it, **as a default
-  argument of the call**. That is what makes it live long enough -- a default
-  argument lives to the end of the full expression, which is after the reading
-  has run.
-* Calls into your scanner from behind that interface are **virtual**:
-  `parse`, `from_groups`, `begin_groups` and the rest. Clang devirtualises
-  them -- the implementation is `final` and is built in the same full
-  expression as the call -- but whether it then inlines them is its own
-  decision, and no attribute makes it.
-
-Two things follow.
-
-**A reading that runs inside the call it was written in can take braces.**
-`scan<f>(text).of<T>({a, b})` and `scan_prefix<f>(r).of<T>({a, b})` both make
-their value before the full expression ends, so the readings the braces made
-are still alive when they are used.
-
-**A reading that is lazy cannot.** `each<f>(r).of<T>(...)` hands back a view
-and reads a record when it is asked for one -- which is after the call that
-named the output has ended, and after a braced list's readings have died with
-it. So `each` does not take braces at all. It takes contexts the ordinary way,
-made at the call or not, and `scan::parts` for the parts of a place:
-
 ```cpp
-for (const row& one : scan::each<f>(source).of<row>(scan::parts{fast, fast}, fast)) { ... }
+of<nest>({{fast, slow}, fast})            // erased: one type for every field
+of<nest>(scan::parts{fast, slow}, fast)   // deduced: nothing erased
 ```
 
-**A context may be written where it is used.** One of the caller's own -- a
-named thing -- is held as the address of it, because what a scanner writes into
-one is written into theirs. One made at the call, as the allocator above is, is
-nobody else's: it is moved into the reading and held there. So there is nothing
-for it to outlive, and a reading that hands back a view carries what it was
-told for as long as it reads.
+A braced list deduces nothing, so the parameter's type is fixed before the
+call -- one type per field, whatever was written there. That is the erasure,
+and it costs two things:
 
-Which leaves braces saying nothing `scan::parts` does not say, and costing
-what `scan::parts` does not cost. They read well on a shape written out in
-full and they are what the library had first; `scan::parts` is the one that
-works on every reading.
+* every leaf of the list gets a reading made as a **default argument of the
+  call**, which is what makes it live to the end of the full expression;
+* calls into your scanner from behind it are **virtual** -- `parse`,
+  `from_groups`, `begin_groups`. Clang devirtualises them; whether it inlines
+  them is its own decision.
+
+So `each` takes no braces -- it reads a record after that expression has ended
+-- and takes `scan::parts`, which costs neither:
+
+```cpp
+for (const row& one : scan::each<f>(source).of<row>(scan::parts{fast, fast}, fast))
+```
+
+A named context is held as its address, so a scanner writes into the caller's
+own. One made at the call is moved in and held. Nothing has to outlive
+anything.
 
 ## Extension points
 
@@ -746,26 +713,19 @@ the state must be copyable, and it must be the only thing the fold touches --
 anything written outside it would be written for a reading that never happened.
 
 This is part of the incremental fold contract: **hooks may run for a reading
-that is later abandoned.** Where a pattern can read past a match and come back,
-the walk has to read past it to find out whether there is a longer one, and the
-hooks of everything on the way run while it does -- that the reading was
-abandoned is known only when it dies, which is after. **The completed fold
-state is exact**, put back to what the match left; the number of hook
-invocations is not an observable matching guarantee.
+that is later abandoned.** A walk that can pass a match has to read past it to
+find out whether a longer one is there, and what it reads on the way runs the
+hooks. **The completed fold state is exact**; the number of hook invocations is
+not an observable matching guarantee.
 
-A fold may say how that keeping and putting back are done, where copying its
-state outright is not what copying it means:
+A fold may say what is kept of its state at a match, and how it goes back:
 
 ```cpp
-static state keep_groups(const state& made);                    // what is worth keeping
-static void groups_go_back_to(state& live, const state& kept);  // and going back to it
+static state keep_groups(const state& made);                    // kept there
+static void groups_go_back_to(state& live, const state& kept);  // and back to it
 ```
 
-`keep_groups` is asked where the walk keeps a match, and hands back what is
-worth keeping of the state -- in the same type, because the answer is made out
-of it. `groups_go_back_to` is asked where a walk that went past a match died
-and the gathering has to be put back. A fold that says neither is copied and
-assigned the way it always was.
+Said neither, it is copied and assigned as it always was.
 
 ### A list, a sum, a container of your own
 
@@ -1041,24 +1001,12 @@ The library is a module graph -- `scan.core`, `scan.tre`, `scan.views`,
 
 ### With modules
 
-This is the ordinary way. `find_package(scan)`, link `scan::scan`, and
-`import scan;` -- the interface units are installed beside the archive and your
-own build compiles them, which is what consuming a module library is.
-
 ```cmake
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-# The library is written with `import std`, so a consumer of it asks for the
-# same. CMake wants the experimental gate said by its own UUID.
+# This library is written with `import std`, so a consumer asks for it too.
 set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
 set(CMAKE_CXX_MODULE_STD 1)
-
-# Where its dependency comes from, for a project that has no provider of its
-# own. One that has is already answered and needs none of this.
-if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
-  set(CMAKE_PROJECT_TOP_LEVEL_INCLUDES
-      ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
-endif()
 
 project(mine LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
@@ -1069,24 +1017,15 @@ target_link_libraries(mine PRIVATE scan::scan)
 ```
 
 ```cpp
-import scan;   // the umbrella; nothing else has to be named
+import scan;   // the umbrella; nothing else is named
 ```
 
-What the prefix holds is the archive, the module sources a consumer compiles
-its own interfaces from (`lib/scan/modules/src/`), the CMake package, and a
-port declaration that answers for this library on a machine that has
-`cmake-everywhere`. `scanConfig.cmake` asks for Boost.PFR in turn -- that is
-what the provider line above is for, and what turning
-`SCAN_FIELDS_BY_BINDING_PACK` on removes.
-
-A consumer needs the same compiler the library was built with, for the same
-reason any module library does: a BMI is not a portable artefact, and the
-interface units are compiled by your build rather than shipped compiled.
+The prefix holds the archive, the interface units (`lib/scan/modules/src/`),
+the CMake package and a port declaration. Your build compiles the interface
+units, so it wants the compiler the library was built with -- a BMI is not a
+portable artefact.
 
 #### As somebody else's subproject
-
-`FetchContent` is the whole of it, and nothing has to be installed in your
-build first:
 
 ```cmake
 include(FetchContent)
@@ -1098,31 +1037,19 @@ FetchContent_MakeAvailable(scan)
 target_link_libraries(mine PRIVATE scan::scan)
 ```
 
-What this library needs is Boost.PFR, and it resolves that itself. A dependency
-provider is installed by the top-level `project()` call and by no other, so a
-library added to somebody else's build cannot have one -- and does not ask for
-one: it includes [cmake-everywhere](https://github.com/j4niwzis/cmake-everywhere)
-without the hook and asks by name. The system first, a port second, built once
-and stored, and **your build is left as you configured it** -- no provider
-installed from underneath you, and nothing fighting whatever resolves packages
-in your project already.
+Nothing has to be installed in your build first. This library wants Boost.PFR
+and resolves it itself: a provider is installed by the top-level `project()`
+and by no other, so this one includes
+[cmake-everywhere](https://github.com/j4niwzis/cmake-everywhere) without the
+hook and asks by name. Your build is left as you configured it, and where
+something already answers `find_package(boost_pfr)` that is what answers.
 
-Where something already answers `find_package(boost_pfr)` -- your own provider,
-or a Boost.PFR the machine has -- that is what answers, and none of the above
-happens.
-
-And if you would rather this library depended on nothing at all, take the
-fields of an aggregate apart with a structured binding pack instead. It is
-C++26, it needs no library, and then nothing is fetched and nothing is
-resolved:
+Or depend on nothing at all -- C++26, no library, nothing fetched:
 
 ```cmake
 set(SCAN_FIELDS_BY_BINDING_PACK ON)
 FetchContent_MakeAvailable(scan)
 ```
-
-The tests are off by default in anybody else's build, so nothing has to be said
-about them.
 
 ### Without modules
 
