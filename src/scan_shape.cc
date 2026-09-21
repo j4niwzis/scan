@@ -413,11 +413,13 @@ class a_char_at_a_time {
 // and going back is assigning it. That is why a forward range holds nothing at
 // all here, and why the only reading that has to name a number is the one that
 // cannot be gone back over.
-template <class Type, fixed_string Format, class IteratorType,
+template <class Type, fixed_string Format,
+          class CarrierType = scan::default_context_t, class IteratorType,
           class SentinelType, std::size_t Hold>
 [[nodiscard]] constexpr std::expected<taken_ahead<Type>, failure_for<Type>>
 scan_stream_prefix(IteratorType& first, SentinelType last,
-                   stream_carry<Hold>& carry, bool read_on = true) {
+                   stream_carry<Hold>& carry, bool read_on = true,
+                   const CarrierType& told = CarrierType{}) {
   constexpr const auto& automaton = streaming_automaton<Type, Format>;
   constexpr std::size_t window = walk_past_a_match<automaton>();
   constexpr bool can_go_back = std::forward_iterator<IteratorType>;
@@ -428,18 +430,18 @@ scan_stream_prefix(IteratorType& first, SentinelType last,
       "over -- a forward range, characters in a row, or input in pieces");
   // The walk everything else is read by, handed one character at a time.
   using source_type = a_char_at_a_time<IteratorType, SentinelType, Hold>;
-  using gatherer_type = field_gatherer<Type, Format, automaton, false,
-                                       std::ptrdiff_t, scan::default_context_t>;
+  using gatherer_type =
+      field_gatherer<Type, Format, automaton, false, std::ptrdiff_t,
+                     CarrierType>;
   register_file<std::ptrdiff_t, automaton.register_count> registers{};
   registers.fill(scan::tre::negative_tag);
   execute_initial<automaton>(registers, std::ptrdiff_t{0});
   typename gatherer_type::cold_type collected =
       made_cold_at_places<Type, Format, std::ptrdiff_t,
-                          typename gatherer_type::cold_type>(
-          scan::default_context_t{});
+                          typename gatherer_type::cold_type>(told);
   source_type one_by_one(first, last, carry);
   gathers_from_pieces<gatherer_type, source_type&, pieces_hold<Type, Format>>
-      into(gatherer_type{collected, scan::default_context_t{}}, one_by_one);
+      into(gatherer_type{collected, told}, one_by_one);
   const char* cursor = nullptr;
   const char* end_of_it = nullptr;
   std::ptrdiff_t place = 0;
@@ -518,8 +520,11 @@ inline constexpr std::size_t stream_hold = [] consteval {
 template <class Type, fixed_string Format, class IteratorType>
 using stream_carry_for = stream_carry<stream_hold<Type, Format, IteratorType>>;
 
-template <class Type, fixed_string Format, std::ranges::input_range RangeType>
-[[nodiscard]] constexpr auto scan_stream_prefix(RangeType&& input) {
+template <class Type, fixed_string Format,
+          class CarrierType = scan::default_context_t,
+          std::ranges::input_range RangeType>
+[[nodiscard]] constexpr auto scan_stream_prefix(
+    RangeType&& input, const CarrierType& told = CarrierType{}) {
   auto first = std::ranges::begin(input);
   // One head and no reading after it, so what the walk read past the match has
   // nowhere to go: the carry below goes out of scope with this call. A reading
@@ -528,8 +533,8 @@ template <class Type, fixed_string Format, std::ranges::input_range RangeType>
   // the caller instead, and nothing is eaten.
   constexpr std::size_t hold = stream_hold<Type, Format, decltype(first)>;
   stream_carry<hold> carry;
-  auto got = scan_stream_prefix<Type, Format>(first, std::ranges::end(input),
-                                              carry, false);
+  auto got = scan_stream_prefix<Type, Format, CarrierType>(
+      first, std::ranges::end(input), carry, false, told);
   using answer = taken_ahead<Type, hold>;
   if (!got) {
     return std::expected<answer, failure_for<Type>>(

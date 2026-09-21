@@ -371,6 +371,24 @@ if(SCAN_FIELDS_BY_BINDING_PACK)
   # rather than an extension warned about.
   set_target_properties(scan PROPERTIES CXX_STANDARD 26)
 endif()
+
+# The dialect said outright, because this library speaks it.
+#
+# The walk is written as labels and a jump through a table of their addresses,
+# which is what a generated scanner is and what standard C++ has no way to say;
+# a lane is a vector type, which it has no way to say either. Both are
+# extensions that clang and GCC have had for decades and both are guarded by
+# the macros that ask whether the compiler is one of them -- so the honest
+# spelling of the standard here is `gnu++`, and a build that says `c++` is
+# asking for four thousand warnings about code that cannot be written any other
+# way.
+#
+# A binding pack is C++26; where the fields are taken apart that way, the
+# dialect is the later one.
+set_target_properties(scan PROPERTIES CXX_EXTENSIONS ON)
+if(SCAN_FIELDS_BY_BINDING_PACK)
+  set_target_properties(scan PROPERTIES CXX_STANDARD 26)
+endif()
 # In this build only. A Boost.PFR the provider built is a target of this build
 # directory, and install(EXPORT) refuses to export something that links it --
 # rightly, since what would be installed is a library whose dependency exists
@@ -682,6 +700,8 @@ enable_testing()
 # being compiled, so two patterns in one file is two waits in a row, and
 # separate files are two waits at once.
 set(scan_tests
+  a_head_told_its_contexts_and_walked_back_test
+  every_record_told_the_same_context_test
   a_head_that_was_walked_past_test
   where_a_gathering_lives_test
   a_resource_told_to_a_gathering_test
