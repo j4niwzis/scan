@@ -993,6 +993,54 @@ class field_gatherer {
   // Only the fact is written down now: which state accepted, and where the
   // marks stood. The value is made once, at the end, out of the gatherings
   // themselves -- so a hook runs where the walk ran and nowhere else.
+  // Room for the registers one match reads. A reading names two for every
+  // group and its parts, and a handful is what that comes to -- against the
+  // three hundred and seventy-nine the machine has, of which a match reads
+  // none but these.
+  static constexpr std::size_t note_room = 4 * field_count + 8;
+  using one_register = typename states_type::value_type;
+
+  // What the walk stood in, where it stood in a match.
+  //
+  // Everything the value is made of and nothing else: the gatherings, the
+  // registers that this match's reading names, which lists had a turn open,
+  // and where the marks stood. The gatherings were copied here before this
+  // was written and are copied here still; what is new is that the registers
+  // are taken by name rather than by the armful.
+  template <class Named>
+  constexpr bool keep_a_note(const Named* reading, std::size_t many,
+                             const Named* ending, std::size_t ending_many) {
+    note_count_ = 0;
+    const auto take = [&](const Named* from, std::size_t count) {
+      for (std::size_t at = 0; at < count; ++at) {
+        const auto which = static_cast<std::size_t>(from[at]);
+        if (which >= states_.size()) continue;
+        bool have = false;
+        for (std::size_t seen = 0; seen < note_count_; ++seen) {
+          if (note_which_[seen] == which) have = true;
+        }
+        if (have) continue;
+        if (note_count_ == note_room) return false;
+        note_which_[note_count_] = which;
+        note_what_[note_count_] = states_[which];
+        ++note_count_;
+      }
+      return true;
+    };
+    if (!take(reading, many)) return false;
+    return take(ending, ending_many);
+  }
+
+  constexpr void the_note_goes_back() {
+    for (std::size_t at = 0; at < note_count_; ++at) {
+      states_[note_which_[at]] = note_what_[at];
+    }
+    [&]<std::size_t... Which>(std::index_sequence<Which...>) {
+      ((slot<Which>() = std::get<Which>(*note_slots_)), ...);
+    }(std::make_index_sequence<std::tuple_size_v<plain_folds_type>>{});
+    turns_open_ = note_turns_;
+  }
+
   template <std::size_t State, class RegistersType>
   constexpr void ended(const RegistersType& registers) {
     if constexpr (walks_past) {
@@ -1007,7 +1055,21 @@ class field_gatherer {
       // has registers -- three hundred and seventy-nine for a row of three
       // places with a fold in it. Kept at every accepting position the walk
       // steps through, that is not a copy, it is a cliff.
+      constexpr const auto& packed = Automaton.states[State];
+      const auto& reading = packed.readings[packed.accepting_slot];
+      if (keep_a_note(reading.data(), reading.size(),
+                      packed.ending_reading.data(),
+                      packed.ending_reading.size())) {
+        note_slots_.emplace(all_slots());
+        note_turns_ = turns_open_;
+        accepted_ = State;
+        at_the_match_ = registers;
+        return;
+      }
+      // More registers than the note has room for: made where the walk stands,
+      // the way it always was.
       build_value<State>(registers);
+      accepted_ = no_state;
     } else {
       // Where it cannot, the last match is the end of the walk and nothing is
       // written after it. So only the fact is written down -- which state
@@ -1030,7 +1092,8 @@ class field_gatherer {
   // not read is kept here too: the walk that met it is not over, and there is
   // nowhere to say so until it is.
   [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> taken() {
-    if constexpr (!walks_past) if (accepted_ != no_state) {
+    if (accepted_ != no_state) {
+      if constexpr (walks_past) the_note_goes_back();
       // One case a state, written by a fold because how many there are is a
       // template parameter rather than a number somebody wrote down. Only a
       // state that accepts has a value to make.
@@ -1330,8 +1393,20 @@ class field_gatherer {
   // Which state accepted, and where the marks stood there. Nothing at all
   // until a match is met.
   std::size_t accepted_ = no_state;
+  [[no_unique_address]] registers_type at_the_match_{};
+  // The registers this match reads, by name, and what they held where it
+  // stood. Nothing at all where a walk cannot go past a match.
   [[no_unique_address]]
-  std::conditional_t<walks_past, nothing_kept, registers_type> at_the_match_{};
+  std::conditional_t<walks_past, std::array<std::size_t, note_room>,
+                     nothing_kept> note_which_{};
+  [[no_unique_address]]
+  std::conditional_t<walks_past, std::array<one_register, note_room>,
+                     nothing_kept> note_what_{};
+  [[no_unique_address]]
+  std::conditional_t<walks_past, std::optional<plain_folds_type>, nothing_kept>
+      note_slots_{};
+  std::size_t note_count_ = 0;
+  std::uint64_t note_turns_ = 0;
   std::optional<Type> made_;
   std::optional<failure_for<Type>> failed_;
   const char* text_ = nullptr;
