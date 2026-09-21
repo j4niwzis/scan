@@ -935,7 +935,7 @@ struct contexts_at_places {
   [[nodiscard]] static constexpr held_as<One> held_for(Given& given) {
     if constexpr (!std::is_lvalue_reference_v<One> ||
                   said_as_parts<std::remove_cvref_t<One>>) {
-      return held_as<One>{static_cast<std::remove_cvref_t<One>&&>(given)};
+      return held_as<One>{std::forward<Given>(given)};
     } else {
       // The address of it, and nothing said here about how long it has to
       // live. A reading that runs inside the call it was written in is over

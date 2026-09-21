@@ -430,8 +430,17 @@ template <> struct scan::scanner<tagged> {
   static constexpr std::string_view pattern() { return "[a-z]+"; }
   static tagged parse(std::string_view text);
   static tagged parse(std::string_view text, const room& where);   // told one
+
+  // Or one hook for as many contexts as have what it uses. Constrained,
+  // because an unconstrained template answers every question asked of it.
+  template <class Told>
+    requires requires(const Told& one) { { one.mark } -> std::convertible_to<int>; }
+  static tagged parse(std::string_view text, const Told& told);
 };
 ```
+
+**What the caller owns is held as its address; what was made at the call is
+moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
 
 **A context that keeps memory is used for what the reading builds.** A
 `std::pmr::memory_resource*`, an allocator, or anything answering `resource()`,
