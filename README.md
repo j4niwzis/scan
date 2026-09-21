@@ -120,14 +120,12 @@ scan::starts_with<"a|ab">("ab")    // takes `a`: `a` matched first
 
 ### Nothing is walked back, except by a note
 
-A walk can go past a match on the chance of a longer one the order prefers, and
-die without finding it -- `foreach|for|each` reading "fore". So the walk keeps
-a note: the place, and the registers as they stood there. Whether the automaton
-can walk past a match at all is asked while it is compiled; where every step
-out of a match lands in another match, the note is a pointer and nothing is
-copied. What a fold gathered is noted the same way, and a fold may say what is
-worth keeping of its state rather than having it copied outright. There is no
-backtracking beyond that note, and nothing is ever tried a second way.
+A walk can pass a match hunting a longer one the order prefers and die --
+`foreach|for|each` reading "fore" -- so it keeps a note: the place and the
+registers there, and what a fold gathered. Whether a machine can pass a match
+at all is a compile-time question; where every step out of a match lands in
+another, the note is a pointer. No backtracking beyond it, and nothing is ever
+tried a second way.
 
 ### Groups
 
@@ -145,11 +143,10 @@ for a greedy repetition is the last one.
 | a forward range | a character at a time | nothing; the note is an iterator, and going back is assigning it |
 | a range read once (`views::istream`, `istreambuf_iterator`) | a character at a time, once | the characters read past a match, and no more |
 
-A string literal is a subject like any other, and the nul the compiler put at
-the end of it is not part of it: `scan<"{}">("450")` reads three characters. It
-is read *to* that nul rather than by counting, which is the faster of the two
-walks. A buffer you filled yourself is as long as it says it is: hand over a
-`string_view` of the part that was filled.
+A string literal is a subject like any other and its NUL is not part of it:
+`scan<"{}">("450")` reads three characters, read *to* the NUL rather than by
+counting. For a buffer you filled, hand over a `string_view` of the filled
+part.
 
 ### A subject that can only be read once
 
@@ -220,16 +217,14 @@ scan::match<p>.into<std::pmr::string>()(text) // where the answers are kept
 `sized()` and `by_length()` are the opposites of `sentinel()` and of the two
 walk choices.
 
-**A terminator** is a character the pattern can never match, sitting after the
-subject -- which a `std::string` always has and a `string_view` into the middle
-of something does not. Where there is one, the walk tests the character and not
-the end of the input as well. That the pattern cannot match it is checked while
-it is compiled; that it is really there is your promise.
+**`sentinel()`** promises a terminator past the end -- NUL unless you name
+another. The walk then tests the character instead of also testing the end. A
+`static_assert` checks the pattern cannot match it; that it is there is your
+promise, as with any `c_str()`.
 
-**The walk** is chosen by how long the subject is, unless you say. A subject of
-a few dozen characters is read faster one at a time, a long one in words --
-and saying so means the length is never looked at and the walk you did not name
-is not written at all.
+**The walk** is chosen by length unless you say: a few dozen characters go
+faster one at a time, a long subject in words. Naming it means the length is
+never read and the other walk is never written.
 
 ### What a match hands back
 
@@ -565,12 +560,10 @@ struct scan::scanner<weight> {
 };
 ```
 
-`parse` alone is enough for a subject held in memory; `begin`/`push`/`finish`
-are what a one-pass reading uses, and a type that has them can be a field of a
-record read off a stream. This is what the library's own scanners look like:
-the integers take `{:x}`, `{:o}`, `{:b}`, `{:i}` and a width through
-`parameters`, and gather digits through `push` so that a number can be read off
-a socket.
+`parse` is enough for a subject in memory; `begin`/`push`/`finish` is what a
+one-pass reading needs, and a type with them can be a field of a record read
+off a stream. The built-in scanners are written that way -- the integers take
+`{:x}`, `{:o}`, `{:b}`, `{:i}` and a width through `parameters`.
 
 Every function of yours that makes a value has a second shape, used wherever
 the throwing one would be, that hands the failure back instead:
@@ -582,12 +575,11 @@ the throwing one would be, that hands the failure back instead:
 | `from_groups(groups)` | `try_from_groups(groups)` |
 | `finish_groups(state)` | `try_finish_groups(state)` |
 
-A push has no such shape and needs none: the walk is not over when a character
-arrives, so a push that finds something wrong says so in its own state and
-hands it back at the end -- which is what `scan::held<N>` does with a field too
-long to fit. The kinds have to be `scan_error`s, because asking for the value
-rather than trying for it throws what was handed back, and a scanner says them
-in the best place there is, the type it returns:
+A push needs none: the walk is not over when a character arrives, so a push
+that finds something wrong records it and hands it back at the end -- what
+`scan::held<N>` does with a field too long. The kinds must be `scan_error`s,
+since asking rather than trying throws what was handed back, and a scanner
+says them in its return type:
 
 ```cpp
 static std::expected<weight, std::variant<too_heavy, not_a_weight>>
@@ -1013,29 +1005,24 @@ FetchContent_MakeAvailable(scan)
 
 ### Without modules
 
-A project that cannot take modules reads the same library as headers. They are
-generated from these very interface units by
-[demodulizer](https://github.com/j4niwzis/demodulizer) and live in `include/`.
-Nobody writes them: every push to `main` regenerates them from that commit's
-interface units, builds them, links them from two translation units, and
-commits them back -- so what is in the tree is what the tree generates, and a
-checkout has them already.
+The same library as headers, in `include/`, generated from these interface
+units by [demodulizer](https://github.com/j4niwzis/demodulizer). Every push to
+`main` regenerates, builds and links them and commits them back, so a checkout
+has them already.
 
-There is one set of them and it answers to both switches: a generated header
-keeps the condition around the import it came from. Through `cmake-everywhere`
-it is two features:
+One set answers both switches -- a generated header keeps the condition around
+the import it came from. Through `cmake-everywhere`, two features:
 
 ```cmake
 find_package(scan REQUIRED COMPONENTS headers)                # the first
 find_package(scan REQUIRED COMPONENTS headers binding-pack)   # the second
 ```
 
-Boost.PFR is the only dependency, and the switch is whether to have it. A
-shape's fields are asked for in one place and three ways: how many there are,
-what the one at an index is, and how to reach it in a value. Boost.PFR answers
-by probing what an aggregate can be built from; a structured binding pack
-answers by naming them -- `auto&& [...parts] = value;` -- which is C++26, so it
-is off by default. Turned on, nothing is fetched and nothing is linked.
+Boost.PFR is the only dependency and the switch is whether to have it. An
+aggregate's fields are wanted three ways -- how many, the type at an index,
+the reference in a value. Boost.PFR probes for them; `auto&& [...parts] =
+value;` names them, which is C++26 and so off by default. On, nothing is
+fetched and nothing is linked.
 
 ## Licence
 
