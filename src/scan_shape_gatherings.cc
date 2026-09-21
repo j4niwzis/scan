@@ -50,6 +50,28 @@ template <class Mark>
   }
 }
 
+// What is worth keeping of a gathering, where the walk keeps a match.
+//
+// A walk keeps every match it passes, and keeping one means keeping the
+// gatherings as they stood there. For a fold that is its state, and copying a
+// state outright is whatever a copy of it means -- which a scanner whose state
+// holds something that should not be duplicated has no say in.
+//
+// `keep_groups` is that say. Handed the state as it stands, it hands back what
+// is worth keeping of it: the same type, because the copy is what the answer
+// is made from, and a scanner that says nothing is copied the way it always
+// was.
+template <class Held, class StateType>
+[[nodiscard]] constexpr StateType kept_groups(const StateType& made) {
+  if constexpr (requires {
+                  { scan::scanner<Held>::keep_groups(made) } -> std::same_as<StateType>;
+                }) {
+    return scan::scanner<Held>::keep_groups(made);
+  } else {
+    return made;
+  }
+}
+
 // A fold, and what it has been told.
 //
 // The state is the type's own -- it says how it is made and what it holds. The
@@ -74,6 +96,25 @@ struct fold_turn {
       : state{} {}
   constexpr explicit fold_turn(const CarrierType& told)
       : state(begun_groups<held_type>(told)) {}
+
+  // Kept the way the scanner says it is kept, and everything else the way it
+  // always was. Written out because a copy constructor of its own is what
+  // takes the state through `kept_groups`; the rest of a turn is positions and
+  // bits, which mean the same in a copy as they did where they were written.
+  constexpr fold_turn(const fold_turn& other)
+    requires std::copy_constructible<state_type>
+      : state(kept_groups<held_type>(other.state)),
+        told_at(other.told_at),
+        ended_at(other.ended_at),
+        open(other.open),
+        started(other.started),
+        began_at(other.began_at),
+        wanted_a_subject(other.wanted_a_subject),
+        text(other.text) {}
+  constexpr fold_turn(fold_turn&&) = default;
+  constexpr fold_turn& operator=(const fold_turn&) = default;
+  constexpr fold_turn& operator=(fold_turn&&) = default;
+  constexpr ~fold_turn() = default;
 
   state_type state;
   // Where the walk stood, said the way the walk says it: a count where the

@@ -182,6 +182,13 @@ struct scan::scanner<numbers> {
     }
   }
 
+  // What is worth keeping of this gathering where the walk stands in a match.
+  // Said so that the test can see that it was asked at all.
+  static state keep_groups(const state& made) {
+    if (made.where != nullptr) made.where->say("kept");
+    return made;
+  }
+
   static numbers finish_groups(state made) {
     return numbers{std::move(made.values), made.mark};
   }
@@ -239,6 +246,9 @@ TEST_F(a_head_told_its_contexts, AHeadToldInBracesThatWalkedBackOffAStream) {
   // is where that is written down, so that changing it is a thing somebody
   // sees rather than a thing somebody's program finds out.
   EXPECT_GE(std::ranges::count(said, "fold begins"), 1);
+  // And the scanner was asked what is worth keeping, rather than having its
+  // state copied behind its back.
+  EXPECT_GE(std::ranges::count(said, "kept"), 1);
   EXPECT_EQ(std::ranges::count(said, "turn closes 3"), 2);
 }
 
