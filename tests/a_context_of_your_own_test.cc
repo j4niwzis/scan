@@ -212,6 +212,31 @@ TEST_F(a_context_of_your_own, OnePerPlaceAndOneThatWantsNone) {
   EXPECT_EQ(got.right.mark, 0);
 }
 
+// The same thing said where the types are still deduced. Nothing is erased,
+// so the calls into the scanner are the calls that were written -- and a
+// reading that runs after the call it was written in can take these.
+TEST_F(a_context_of_your_own, PartsSayThePartsOfAPlaceWithoutBraces) {
+  const auto got = scan::scan<"{} {} {}">("abc def ghi"sv)
+                       .of<nest>(scan::parts{fast, scan::default_context}, slow);
+  EXPECT_EQ(got.both.left.text, "abc");
+  EXPECT_EQ(got.both.left.mark, 1);
+  EXPECT_EQ(got.both.right.mark, 0);
+  EXPECT_EQ(got.last.text, "ghi");
+  EXPECT_EQ(got.last.mark, 2);
+}
+
+// And said before the output type is named, which is what a reading kept in a
+// variable needs. The parts are held by value, so the one that said them is
+// allowed to be the temporary it is.
+TEST_F(a_context_of_your_own, PartsSaidBeforeTheTypeIsNamed) {
+  const auto got = scan::scan<"{} {} {}">("abc def ghi"sv)
+                       .with(scan::parts{fast, slow}, slow)
+                       .of<nest>();
+  EXPECT_EQ(got.both.left.mark, 1);
+  EXPECT_EQ(got.both.right.mark, 2);
+  EXPECT_EQ(got.last.mark, 2);
+}
+
 TEST_F(a_context_of_your_own, BracesSayThePartsOfAPlace) {
   const auto got = scan::scan<"{} {} {}">("abc def ghi"sv)
                        .of<nest>({{{fast}, scan::default_context}, {slow}});

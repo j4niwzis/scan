@@ -476,6 +476,8 @@ scan::scan<"{} {}">(text).of<pair>(fast)                // one is everybody's
 scan::scan<"{} {}">(text).of<pair>(fast, slow)          // one per place, in order
 scan::scan<"{} {}">(text).of<pair>(fast, scan::default_context)   // this place wants none
 scan::scan<"{} {} {}">(text).of<nest>({{fast, scan::default_context}, slow})
+scan::scan<"{} {} {}">(text).of<nest>(scan::parts{fast, scan::default_context}, slow)
+scan::scan<"{} {} {}">(text).with(scan::parts{fast, slow}, slow).of<nest>()
 const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is named
 ```
 
@@ -488,6 +490,12 @@ const pair got = scan::scan<"{} {}">(text).with(fast);  // before the type is na
   place can each have their own -- including the branches of a sum and the
   places of a type that says a format of its own. A value at a place is that
   place's and all of its parts'.
+* **`scan::parts{...}`** says what a braced list says, and says it where the
+  types are still deduced: it nests the same way, stands wherever a context
+  stands, and nothing about it is erased. It is held by value, so the
+  `scan::parts{...}` itself is allowed to be the temporary it looks like --
+  the contexts inside it are still the caller's own and still have to outlive
+  the reading.
 * A fold or a list is told its context **without** braces: it is one value made
   of many turns, not a shape of parts.
 * `with(…)` says the same thing before the output type is named, which is what
@@ -552,8 +560,17 @@ are still alive when they are used.
 **A reading that is lazy cannot.** `each<f>(r).of<T>(...)` hands back a view
 and reads a record when it is asked for one -- which is after the call that
 named the output has ended, and after a braced list's readings have died with
-it. So `each` takes its contexts as they stand and nothing else. It binds them
-by reference, so a temporary handed to it is refused while it compiles rather
+it. So `each` does not take braces at all.
+
+It takes `scan::parts` instead, which says the same thing with nothing erased
+and nothing waiting to die:
+
+```cpp
+for (const row& one : scan::each<f>(source).of<row>(scan::parts{fast, fast}, fast)) { ... }
+```
+
+Contexts themselves are bound by reference wherever they are said, so a
+temporary context handed to any reading is refused while it compiles rather
 than read after it is gone.
 
 Where a place wants a context and the reading is the hot path, say it as it

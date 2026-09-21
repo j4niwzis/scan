@@ -221,4 +221,26 @@ TEST_F(every_record_told, EveryRecordIsToldTheSameThing) {
   EXPECT_EQ(marks, std::vector<int>({2, 2}));
 }
 
+// And the parts of a place, said to a reading that is lazy.
+//
+// Braces cannot reach here: the readings a braced list makes are default
+// arguments of the call that named the output, and this reading reads a record
+// after that call has ended. `scan::parts` is deduced and held by value, so
+// there is nothing waiting to die.
+TEST_F(every_record_told, ThePartsOfAPlaceToldToEveryRecord) {
+  std::size_t taken = 0;
+  counted_reading source("for abc 1,2 for def 3,4 ", &taken);
+  int records = 0;
+  std::vector<int> marks;
+  for (const row& one :
+       scan::each<"{{foreach}|{for}|{each}} {} {} ">(std::move(source))
+           .of<row>(scan::parts{fast, fast}, fast)) {
+    marks.push_back(one.tail.mark);
+    ++records;
+    if (records > 4) break;
+  }
+  EXPECT_EQ(records, 2);
+  EXPECT_EQ(marks, std::vector<int>({2, 2}));
+}
+
 }  // namespace

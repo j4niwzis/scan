@@ -875,15 +875,54 @@ struct one_context {
 // Held by value: a reading may be carried away from the call that made it, and
 // a context is a handle -- an allocator, a pool, a pointer to the caller's
 // world -- so the copy costs a word and cannot dangle.
+// Whether a thing said at a place is the parts of that place rather than a
+// context for the whole of it.
+template <class>
+inline constexpr bool said_as_parts = false;
+
 template <class... Contexts>
 struct contexts_at_places {
-  static constexpr bool for_everyone = sizeof...(Contexts) == 1;
+  // What is held for one thing said at a place.
+  //
+  // The address of a context, for the reason said above `one_context`: what a
+  // scanner writes into one is written into the caller's own. But the parts of
+  // a place by value -- they are a handful of addresses already, and the thing
+  // that said them is a temporary of the call that says it, so holding its
+  // address would be holding the address of something that dies first.
+  template <class One>
+  using held_as =
+      std::conditional_t<said_as_parts<std::remove_cvref_t<One>>, One, One*>;
+
+  static constexpr bool for_everyone = [] {
+    if constexpr (sizeof...(Contexts) == 1) {
+      return !said_as_parts<
+          std::remove_cvref_t<std::tuple_element_t<0, std::tuple<Contexts...>>>>;
+    } else {
+      return false;
+    }
+  }();
   static constexpr bool told_apart = !for_everyone;
   static constexpr std::size_t count = sizeof...(Contexts);
 
   constexpr contexts_at_places() = default;
-  constexpr explicit contexts_at_places(Contexts&... given)
-      : all(std::addressof(given)...) {}
+
+  template <class... Given>
+    requires(sizeof...(Given) == sizeof...(Contexts))
+  constexpr explicit contexts_at_places(Given&&... given)
+      : all(held_for<Contexts, Given>(given)...) {}
+
+  template <class One, class Given>
+  [[nodiscard]] static constexpr held_as<One> held_for(Given& given) {
+    if constexpr (said_as_parts<std::remove_cvref_t<One>>) {
+      return given;
+    } else {
+      static_assert(
+          !std::is_rvalue_reference_v<Given&&> || std::is_const_v<Given>,
+          "a context is held as the address of it, so it has to outlive the "
+          "reading: name it rather than handing over a temporary");
+      return std::addressof(given);
+    }
+  }
 
   template <std::size_t Place>
   [[nodiscard]] constexpr auto for_part() const {
@@ -892,7 +931,14 @@ struct contexts_at_places {
       return one_context<first, false>{std::get<0>(all)};
     } else if constexpr (Place < sizeof...(Contexts)) {
       using here = std::tuple_element_t<Place, std::tuple<Contexts...>>;
-      return one_context<here, true>{std::get<Place>(all)};
+      if constexpr (said_as_parts<std::remove_cvref_t<here>>) {
+        // The parts of this place, handed on as they were said. A place that
+        // is a shape asks them for its own parts in turn, which is the whole
+        // of what saying them in one does.
+        return std::get<Place>(all);
+      } else {
+        return one_context<here, true>{std::get<Place>(all)};
+      }
     } else {
       static_assert(Place < sizeof...(Contexts),
                     "this reading has more places than it was given contexts: "
@@ -902,12 +948,47 @@ struct contexts_at_places {
     }
   }
 
-  [[nodiscard]] constexpr decltype(auto) leaf() const { return *std::get<0>(all); }
+  [[nodiscard]] constexpr decltype(auto) leaf() const {
+    using first = std::remove_cvref_t<
+        std::tuple_element_t<0, std::tuple<Contexts...>>>;
+    if constexpr (said_as_parts<first>) {
+      return std::get<0>(all);
+    } else {
+      return *std::get<0>(all);
+    }
+  }
 
-  // Pointers rather than values, for the reason said above `one_context`: what
-  // a scanner writes into a context is written into the caller's own.
-  std::tuple<Contexts*...> all;
+  std::tuple<held_as<Contexts>...> all;
 };
+
+// The parts of one place, said where the place is said.
+//
+// A braced list says the same thing and says it behind an interface: a braced
+// list deduces nothing, so what the places under it are handed has to be one
+// type for every field and the context's own type does not cross. Said this
+// way the types are deduced and nothing is erased, so the calls into a scanner
+// are the calls that were written -- and a reading that runs after the call it
+// was written in can take these, where it cannot take braces.
+//
+//     scan<f>(text).of<nest>(scan::parts{slow, fast}, fast)
+//     scan<f>(text).with(scan::parts{fast, slow}, slow).of<nest>()
+//
+// Held by value wherever it is said, because it is a handful of addresses and
+// the thing that said it is a temporary of that call.
+template <class... Parts>
+struct parts : contexts_at_places<Parts...> {
+  // Made empty as well, because the walk makes a carrier of its own before it
+  // is told anything.
+  constexpr parts() = default;
+  constexpr explicit parts(Parts&... given)
+      : contexts_at_places<Parts...>(given...) {}
+};
+
+template <class... Parts>
+parts(Parts&...) -> parts<Parts...>;
+
+template <class... Parts>
+inline constexpr bool said_as_parts<parts<Parts...>> = true;
 
 
 // A scanner that says what went wrong rather than throwing it.
