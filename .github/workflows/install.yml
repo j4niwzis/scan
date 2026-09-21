@@ -290,7 +290,7 @@ jobs:
               fi
               flags=$(sed -n 's|^-fmodule-file="\([^=]*\)=\(.*\)"$|-fmodule-file=\1='"$PWD/$from"'/\2|p' "$map")
               ./demodulizer --into="$into" --spell 'boost.pfr=<boost/pfr.hpp>' \
-                "$one" -- clang++ -std=c++23 -stdlib=libc++ -x c++-module $flags
+                "$one" -- clang++ -std=gnu++23 -stdlib=libc++ -x c++-module $flags
             done
             ls -l "$into"
           }
@@ -328,7 +328,7 @@ jobs:
             set -- $pair
             what=$1; shift
             echo "--- $what"
-            clang++ -std=c++23 -stdlib=libc++ -I include "$@" \
+            clang++ -std=gnu++23 -stdlib=libc++ -I include "$@" \
               -fconstexpr-steps=300000000 -fconstexpr-depth=4096 \
               /tmp/one.cc /tmp/two.cc -o /tmp/both
             test "$(/tmp/both)" = "9"
