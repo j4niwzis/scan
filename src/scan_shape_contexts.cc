@@ -152,7 +152,7 @@ groups_value(std::span<const std::string_view> groups, ContextType&& given);
 
 // The memory a context keeps, whatever it keeps it as: the library's own
 // question, asked where a place builds something that allocates.
-template <class Told>
+export template <class Told>
 [[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
     const Told& given);
 
@@ -831,7 +831,7 @@ struct reading_by final : reading_of<FieldType> {
 
 // The memory resource a context keeps, where it keeps one.
 //
-template <class Told>
+export template <class Told>
 [[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
     const Told& given) {
   using kind = std::remove_cvref_t<Told>;
