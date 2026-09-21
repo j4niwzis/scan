@@ -873,7 +873,7 @@ class field_gatherer {
   // failure: a place passed early where a field was not read yet is not this
   // reading's answer, and holding on to that would lose every match after it.
   template <std::size_t State, class RegistersType>
-  constexpr void ended(const RegistersType& registers) {
+  constexpr void build_value(const RegistersType& registers) {
     constexpr const auto& packed = Automaton.states[State];
     // What the walk kept is told where the walk stands, and then read from
     // where it is.
@@ -980,10 +980,81 @@ class field_gatherer {
     made_.emplace(std::move(*got));
   }
 
+  // Whether a walk of this machine can go past a match and die away from one.
+  //
+  // Where it cannot, the match the walk stops in is the match the answer is
+  // made from: nothing was written into the gatherings after it, so there is
+  // nothing to keep and nothing to go back to. That is most patterns, and
+  // there everything below costs nothing at all.
+  static constexpr bool walks_past = walk_past_a_match<Automaton>() != 0;
+  static constexpr std::size_t no_state = static_cast<std::size_t>(-1);
+  using registers_type = register_file<MarkKind, Automaton.register_count>;
+
+  // A match, written down rather than read out.
+  //
+  // A walk keeps every match it passes and the last one is the answer, so the
+  // value used to be made at every one of them -- out of a copy of every
+  // gathering, because the walk goes on writing into the live ones and a value
+  // already made must not change under it. That is the whole set copied at
+  // every accepting position the walk steps through, and a scanner's hooks run
+  // again on every copy: a turn that closed once was closed twice, and a hook
+  // that wrote anything outside its own state wrote it twice.
+  //
+  // Only the fact is written down now: which state accepted, and where the
+  // marks stood. The value is made once, at the end, out of the gatherings
+  // themselves -- so a hook runs where the walk ran and nowhere else.
+  template <std::size_t State, class RegistersType>
+  constexpr void ended(const RegistersType& registers) {
+    if constexpr (walks_past) {
+      // A walk that can die away from a match has to have the answer made
+      // where it stood, because what it writes afterwards is not the answer.
+      // Made out of a copy of the gatherings, as it always was -- and the
+      // hooks of a scanner run again on that copy, which is what makes a turn
+      // close twice where a walk goes past a match and comes back.
+      //
+      // Deferring it would mean keeping the states the registers carry as
+      // well as the gatherings, and there are as many of those as the machine
+      // has registers -- three hundred and seventy-nine for a row of three
+      // places with a fold in it. Kept at every accepting position the walk
+      // steps through, that is not a copy, it is a cliff.
+      build_value<State>(registers);
+    } else {
+      // Where it cannot, the last match is the end of the walk and nothing is
+      // written after it. So only the fact is written down -- which state
+      // accepted and where the marks stood -- and the value is made once, at
+      // the end, out of the gatherings themselves. Nothing is copied at all,
+      // and a hook runs where the walk ran and nowhere else.
+      accepted_ = State;
+      at_the_match_ = registers;
+    }
+  }
+
+  // Back to the match that was kept, where the walk went past one and died.
+  //
+  // Assigned rather than made anew: a gathering that keeps a resource does not
+  // take the other one's resource when it is assigned, which is what puts the
+  // characters back where they belong without moving the memory they live in.
+  constexpr void the_gatherings_go_back() {}
+
   // What was read, or what went wrong instead. An element of a list that did
   // not read is kept here too: the walk that met it is not over, and there is
   // nowhere to say so until it is.
   [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> taken() {
+    if constexpr (!walks_past) if (accepted_ != no_state) {
+      // One case a state, written by a fold because how many there are is a
+      // template parameter rather than a number somebody wrote down. Only a
+      // state that accepts has a value to make.
+      [&]<std::size_t... State>(std::index_sequence<State...>) {
+        const auto one = [&]<std::size_t Which>() {
+          if constexpr (Automaton.states[Which].accepting_slot !=
+                        packed_state<0, 0, 0>::not_accepting) {
+            if (accepted_ == Which) build_value<Which>(at_the_match_);
+          }
+        };
+        (one.template operator()<State>(), ...);
+      }(std::make_index_sequence<states_in<Automaton>>{});
+      accepted_ = no_state;
+    }
     if (failed_) return std::unexpected(std::move(*failed_));
     if (!made_) {
       return std::unexpected(scan::as_a_failure<failure_for<Type>>(
@@ -1266,6 +1337,11 @@ class field_gatherer {
   // walk goes. Empty where nothing was told, so it costs nothing there.
   [[no_unique_address]] CarrierType told_{};
   states_type states_;
+  // Which state accepted, and where the marks stood there. Nothing at all
+  // until a match is met.
+  std::size_t accepted_ = no_state;
+  [[no_unique_address]]
+  std::conditional_t<walks_past, nothing_kept, registers_type> at_the_match_{};
   std::optional<Type> made_;
   std::optional<failure_for<Type>> failed_;
   const char* text_ = nullptr;
