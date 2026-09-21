@@ -32,8 +32,8 @@ env:
 
 jobs:
   # The other compiler, asked the one question that matters here: does this
-  # library compile where it is not clang, and do the readings say the same
-  # things? Everything is built and every test is run.
+  # library compile where it is not clang? Both ways in: as the modules it is
+  # written as, and as the headers a consumer who cannot take modules reads.
   #
   # In a container rather than on the runner, because `import std` wants a
   # libstdc++ that ships the module's source and a GCC that reads it without
@@ -75,17 +75,50 @@ jobs:
           key: scan-gcc-${{ matrix.gcc }}-${{ hashFiles('cmake/get_cme.cmake', 'cme-lock.json') }}
           restore-keys: scan-gcc-${{ matrix.gcc }}-
 
+      # The library, and not the tests with it: every test here says
+      # `import gtest`, and googletest's module port does not build with GCC --
+      # its umbrella imports itself, which GCC refuses ("cannot import module in
+      # its own purview"). That is upstream and not ours; when it builds, the
+      # step below grows a `ctest` line and this comment goes away.
       - name: build
         run: |
           cmake -S . -B build-gcc -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=gcc-${{ matrix.gcc }} \
             -DCMAKE_CXX_COMPILER=g++-${{ matrix.gcc }} \
+            -DSCAN_BUILD_TESTS=OFF \
             -DCME_STORE_ENABLED=ON -DCME_SOURCES_ENABLED=ON
-          cmake --build build-gcc
+          cmake --build build-gcc --target scan
 
-      - name: the tests
-        run: ctest --test-dir build-gcc --output-on-failure
+      # And what a consumer who cannot take modules reads: the headers in the
+      # tree, compiled by this compiler. Two translation units, because a
+      # definition that is not inline is one per translation unit and one of
+      # them never shows it.
+      - name: the headers
+        run: |
+          pfr=$(find ~/.cache/cmake-everywhere build-gcc -name pfr.hpp -path '*boost*' 2>/dev/null | head -1)
+          test -n "$pfr" || { echo "Boost.PFR headers not found"; exit 1; }
+          pfr_include=$(dirname "$(dirname "$pfr")")
+          cat > /tmp/one.cc <<'EOF'
+          #include "scan.hpp"
+          struct row { std::string_view left, right; };
+          int how_long(const char* text) {
+            std::string_view view(text);
+            const row one = scan::scan<"{[a-z]+},{[a-z]+}">(view);
+            return static_cast<int>(one.left.size() + one.right.size());
+          }
+          EOF
+          cat > /tmp/two.cc <<'EOF'
+          #include "scan.hpp"
+          #include <cstdio>
+          int how_long(const char* text);
+          int main() { std::printf("%d\n", how_long("left,right")); return 0; }
+          EOF
+          g++-${{ matrix.gcc }} -std=gnu++23 -I include -I "$pfr_include" \
+            -DBOOST_PFR_USE_STD_MODULE=0 \
+            -fconstexpr-ops-limit=1000000000 -fconstexpr-depth=4096 \
+            /tmp/one.cc /tmp/two.cc -o /tmp/both
+          test "$(/tmp/both)" = "9
 
   install:
     name: clang ${{ matrix.llvm }}, libc++, import std
