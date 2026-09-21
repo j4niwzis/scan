@@ -118,7 +118,7 @@ jobs:
             -DBOOST_PFR_USE_STD_MODULE=0 \
             -fconstexpr-ops-limit=1000000000 -fconstexpr-depth=4096 \
             /tmp/one.cc /tmp/two.cc -o /tmp/both
-          test "$(/tmp/both)" = "9
+          test "$(/tmp/both)" = "9"
 
   install:
     name: clang ${{ matrix.llvm }}, libc++, import std
