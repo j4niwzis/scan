@@ -87,6 +87,13 @@ inline constexpr std::size_t copies_of_a_reading =
     2 * detail::groups_of_output<Type>() *
         (detail::packed_automaton<Type, Format>.register_count + 2) + 8;
 
+// How long a turn is held back where a fold is kept in one place: the longest
+// the machine can go without standing in one reading. Nothing waits at all
+// where the walk always stands in one.
+template <class Type, fixed_string Format>
+inline constexpr std::size_t turns_a_reading_holds_back =
+    detail::turns_held_back<detail::packed_automaton<Type, Format>>();
+
 // Told the format, so that a place written in braces can be handed the number
 // of readings the walk will stand in. The output type is named at the call and
 // the format at the reading, and the carrier wants both.

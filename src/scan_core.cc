@@ -668,6 +668,28 @@ constexpr void groups_go_back_to(StateType& live, const StateType& kept) {
   }
 }
 
+// A fold kept in one place rather than one for every reading the walk stands
+// in.
+//
+// The walk stands in several readings at once, and a fold told its groups as
+// they go is kept with each of them -- which is what makes a turn cost a write
+// and nothing else. Where the state is a handful of numbers that is the right
+// trade; where it holds something that allocates, it is a great many of them
+// made and thrown away.
+//
+// A scanner says this, and then its turns are held back until the walk stands
+// in one reading, and told in one go. The same hooks, the same order, told
+// later: what it costs is that a turn is not seen the moment it happens.
+export template <class Type>
+inline constexpr bool gathers_in_one_place = [] {
+  using held = std::remove_cv_t<Type>;
+  if constexpr (requires { scanner<held>::gathers_in_one_place; }) {
+    return static_cast<bool>(scanner<held>::gathers_in_one_place);
+  } else {
+    return false;
+  }
+}();
+
 // A scanner that cannot be told through a braced list, and says so.
 //
 // Braces deduce nothing, so what a place is told arrives behind an interface

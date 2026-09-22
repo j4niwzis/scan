@@ -2678,6 +2678,94 @@ export template <auto& Automaton>
   return answer;
 }
 
+// Where the walk stands in one reading and no other.
+//
+// A state holds a reading for every road still alive in it, and the tags of
+// each are kept apart. Standing in one of them means there is nobody left to
+// disagree about what has been read so far: everything gathered up to here is
+// what the answer will be made of, whichever way the walk goes on.
+//
+// This is what lets a fold be kept in one place rather than one for every
+// reading: the turns wait until the walk stands in one, and are told then.
+export template <auto& Automaton, std::size_t State>
+[[nodiscard]] consteval bool stands_in_one_reading() {
+  return Automaton.states[State].readings.size() == 1;
+}
+
+// How far a turn is held back, where a fold is kept in one place.
+//
+// The same walk as `barren_walks`, stopping where the machine stands in one
+// reading rather than where it matches: from every state, the longest way on
+// that never reaches one. A state that can go round for ever without reaching
+// one has no number, and a scanner that asks to be kept in one place is
+// refused there -- the turns would be held for ever.
+export template <auto& Automaton>
+[[nodiscard]] consteval auto walks_until_one_reading() {
+  constexpr std::size_t state_count =
+      std::tuple_size_v<std::remove_cvref_t<decltype(Automaton.states)>>;
+  struct answer_type {
+    std::array<std::size_t, state_count> longest{};
+    std::array<bool, state_count> forever{};
+  };
+  answer_type answer;
+  const auto alone = [&](std::size_t state) {
+    return Automaton.states[state].readings.size() == 1;
+  };
+  const auto relax = [&](const std::array<std::size_t, state_count>& from) {
+    std::array<std::size_t, state_count> next{};
+    for (std::size_t state = 0; state < state_count; ++state) {
+      const auto& packed = Automaton.states[state];
+      std::size_t best = 0;
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (alone(target)) continue;
+        best = std::max(best, from[target] + 1);
+      }
+      next[state] = best;
+    }
+    return next;
+  };
+  for (std::size_t round = 0; round < state_count; ++round) {
+    const auto next = relax(answer.longest);
+    if (next == answer.longest) return answer;
+    answer.longest = next;
+  }
+  const auto once_more = relax(answer.longest);
+  for (std::size_t state = 0; state < state_count; ++state) {
+    answer.forever[state] = once_more[state] != answer.longest[state];
+  }
+  for (std::size_t round = 0; round < state_count; ++round) {
+    bool changed = false;
+    for (std::size_t state = 0; state < state_count; ++state) {
+      if (answer.forever[state]) continue;
+      const auto& packed = Automaton.states[state];
+      for (std::size_t index = 0; index < packed.range_count; ++index) {
+        const std::size_t target = packed.ranges[index].target;
+        if (alone(target) || !answer.forever[target]) continue;
+        answer.forever[state] = true;
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+  return answer;
+}
+
+// How many turns can be waiting at once, which is how long the queue has to
+// be. Said as a number of characters, because a turn is opened, pushed to and
+// closed by characters and there is at most one of each a character.
+export template <auto& Automaton>
+[[nodiscard]] consteval std::size_t turns_held_back() {
+  constexpr auto walks = walks_until_one_reading<Automaton>();
+  std::size_t window = 0;
+  for (std::size_t state = 0; state < walks.longest.size(); ++state) {
+    if (walks.forever[state]) return std::numeric_limits<std::size_t>::max();
+    window = std::max(window, walks.longest[state]);
+  }
+  return window;
+}
+
 // How far past a match the machine can read before it dies -- the fallback
 // window of the TDFA papers. For `a+` it is zero: every state the machine
 // stands in after a step is a final state, so wherever it stops it has a
@@ -2685,6 +2773,7 @@ export template <auto& Automaton>
 // final state can walk into a cycle with no match along it, there is no
 // number.
 export template <auto& Automaton>
+
 [[nodiscard]] consteval std::size_t walk_past_a_match() {
   constexpr auto walks = barren_walks<Automaton>();
   std::size_t window = 0;
