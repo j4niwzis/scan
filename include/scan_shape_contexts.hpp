@@ -94,8 +94,15 @@ template <class CarrierType>
 // The walk knows groups; the caller said places. This walks down the shape the
 // same way the value is built, so a group of a place inside a place inside the
 // output ends at the context that place was given.
+// Handed over as it stands, and not as a copy of it.
+//
+// Said `auto`, the branch that hands a leaf's own context over turned the
+// reference into a copy on the stack, and a scanner that kept the address of
+// what it was told read freed memory the moment the walk carried its state
+// past the call. The caller's own thing outlives the reading; what was handed
+// over used not to.
  template <class Type, std::size_t Group, class Carrier>
-[[nodiscard]] constexpr auto context_at_group(Carrier&& given) {
+[[nodiscard]] constexpr decltype(auto) context_at_group(Carrier&& given) {
   if constexpr (scanned_as_variant<std::remove_cv_t<Type>> &&
                 requires { given.template for_part<0>(); }) {
     // One of several opens up into its branches: the group belongs to the one
@@ -241,7 +248,11 @@ class context_leaf {
   [[nodiscard]] constexpr scan::no_contexts for_part() const {
     return {};
   }
-  [[nodiscard]] constexpr const context_leaf& leaf() const { return *this; }
+  // By value, and the value is a pointer: a leaf is handed down from carriers
+  // that are made where they are asked for, so a reference to one would be a
+  // reference into something that has already gone. What a place was told is
+  // reached through it either way.
+  [[nodiscard]] constexpr context_leaf leaf() const { return *this; }
 
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
   // Whatever the interface hands back, which is said where the interface is --
@@ -538,7 +549,10 @@ struct folding_in {
   std::size_t slot = 0;
   alone_type alone{};
 
-  [[deprecated("untold")]] constexpr folding_in() : alone(begun_alone<held>()) {}
+  // Made before there is a reading to be told about, which the walk does for
+  // every slot it carries: what it gathers goes here until it is told, and a
+  // handle that is told takes it over.
+  constexpr folding_in() : alone(begun_alone<held>()) {}
   constexpr explicit folding_in(reading_of<held>* from) : how(from) {
     if (how != nullptr) {
       slot = how->fold_begin();
