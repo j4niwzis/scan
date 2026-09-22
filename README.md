@@ -423,21 +423,49 @@ const pair got = scan::scan<"{} {}">(text).with(fast);           // before the t
 
 A context reaches exactly the call that makes a value -- `parse`,
 `from_groups`, `begin`, `begin_groups` -- as an overload taking one more
-argument, in a constant expression and on every kind of subject.
+argument, in a constant expression and on every kind of subject. A type told
+its groups as they go is told its context where its state begins, and keeps it
+there for the rest of the reading:
 
 ```cpp
 template <> struct scan::scanner<tagged> {
-  static constexpr std::string_view pattern() { return "[a-z]+"; }
-  static tagged parse(std::string_view text);
-  static tagged parse(std::string_view text, const room& where);   // told one
+  static constexpr std::string_view pattern() { return "([a-z]+)"; }
 
-  // Or one hook for as many contexts as have what it uses. Constrained,
-  // because an unconstrained template answers every question asked of it.
-  template <class Told>
-    requires requires(const Told& one) { { one.mark } -> std::convertible_to<int>; }
-  static tagged parse(std::string_view text, const Told& told);
+  struct state { std::string text; int mark = 0; const room* where = nullptr; };
+
+  static state begin_groups() { return {}; }
+  static state begin_groups(const room& told) {          // told one
+    told.say("a name begins");
+    return {{}, told.mark, &told};
+  }
+
+  static void opened_group(state& one, scan::group_at<0>) { one.text.clear(); }
+  static void push_group(state& one, scan::group_at<0>, char letter) {
+    one.text.push_back(letter);
+  }
+  static void closed_group(state& one, scan::group_at<0>) {
+    if (one.where != nullptr) one.where->say("a name: " + one.text);
+  }
+  static tagged finish_groups(state one) { return {std::move(one.text), one.mark}; }
 };
 ```
+
+A leaf read whole rather than by its groups takes it on `parse` instead --
+`parse(std::string_view text, const room& told)` -- and a shape that reads its
+own groups on `from_groups`. It is the same overload either way.
+
+Every one of these may be a template on what it was told, and different places
+may be told different types:
+
+```cpp
+template <class Told>
+  requires requires(const Told& one) { { one.mark } -> std::convertible_to<int>; }
+static tagged parse(std::string_view text, const Told& told);
+```
+
+Constrained, because an unconstrained template answers every question this
+library asks of it, including the ones it asks to work out whether a context
+reaches this place at all.
 
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
