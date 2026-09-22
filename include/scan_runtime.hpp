@@ -2701,7 +2701,7 @@ scan_over:
 // reading: the turns wait until the walk stands in one, and are told then.
  template <auto& Automaton, std::size_t State>
 [[nodiscard]] consteval bool stands_in_one_reading() {
-  return Automaton.states[State].readings.size() == 1;
+  return Automaton.states[State].reading_count == 1;
 }
 
 // How far a turn is held back, where a fold is kept in one place.
@@ -2721,7 +2721,15 @@ scan_over:
   };
   answer_type answer;
   const auto alone = [&](std::size_t state) {
-    return Automaton.states[state].readings.size() == 1;
+    const auto& here = Automaton.states[state];
+    if (here.reading_count == 1) return true;
+    // The same second way the walk uses: where every move says what its
+    // character lies inside, no reading would tell the fold anything another
+    // one would not.
+    for (std::size_t move = 0; move < here.range_count; ++move) {
+      if (!here.ranges[move].groups_known) return false;
+    }
+    return true;
   };
   const auto relax = [&](const std::array<std::size_t, state_count>& from) {
     std::array<std::size_t, state_count> next{};
