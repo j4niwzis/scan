@@ -424,48 +424,61 @@ const pair got = scan::scan<"{} {}">(text).with(fast);           // before the t
 A context reaches exactly the call that makes a value -- `parse`,
 `from_groups`, `begin`, `begin_groups` -- as an overload taking one more
 argument, in a constant expression and on every kind of subject. A type told
-its groups as they go is told its context where its state begins, and keeps it
-there for the rest of the reading:
+its groups as they go is told its context where its state begins, and every
+hook may be a template on what it was told -- the state included:
 
 ```cpp
 template <> struct scan::scanner<tagged> {
   static constexpr std::string_view pattern() { return "([a-z]+)"; }
 
-  struct state { std::string text; int mark = 0; const room* where = nullptr; };
+  template <class Told>
+  struct state { std::string text; int mark = 0; std::vector<std::string>* said = nullptr; };
 
-  static state begin_groups() { return {}; }
-  static state begin_groups(const room& told) {          // told one
+  static state<scan::default_context_t> begin_groups() { return {}; }
+
+  // Constrained, because an unconstrained template answers every question this
+  // library asks of it, including the ones it asks to work out whether a
+  // context reaches this place at all.
+  template <class Told>
+    requires requires(const Told& one) {
+      one.say(std::string{});
+      { one.mark } -> std::convertible_to<int>;
+    }
+  static state<Told> begin_groups(const Told& told) {
     told.say("a name begins");
-    return {{}, told.mark, &told};
+    return {{}, told.mark, told.said};
   }
 
-  static void opened_group(state& one, scan::group_at<0>) { one.text.clear(); }
-  static void push_group(state& one, scan::group_at<0>, char letter) {
+  template <class Told>
+  static void opened_group(state<Told>& one, scan::group_at<0>) { one.text.clear(); }
+  template <class Told>
+  static void push_group(state<Told>& one, scan::group_at<0>, char letter) {
     one.text.push_back(letter);
   }
-  static void closed_group(state& one, scan::group_at<0>) {
-    if (one.where != nullptr) one.where->say("a name: " + one.text);
+  template <class Told>
+  static void closed_group(state<Told>& one, scan::group_at<0>) {
+    if (one.said != nullptr) one.said->push_back("a name: " + one.text);
   }
-  static tagged finish_groups(state one) { return {std::move(one.text), one.mark}; }
+  template <class Told>
+  static tagged finish_groups(state<Told> one) { return {std::move(one.text), one.mark}; }
 };
+
+struct pair { tagged left; tagged right; };
+
+const pair got = scan::scan<"{} {}">(text).of<pair>(here, there);    // two kinds
+const pair same = scan::scan<"{} {}">(text).of<pair>({here, there}); // and in braces
 ```
 
-A leaf read whole rather than by its groups takes it on `parse` instead --
-`parse(std::string_view text, const room& told)` -- and a shape that reads its
-own groups on `from_groups`. It is the same overload either way.
+Different places may be told different types, and the scanner is written once
+for all of them. A leaf read whole rather than by its groups takes the context
+on `parse` instead -- `parse(std::string_view text, const Told& told)` -- and a
+shape that reads its own groups on `from_groups`.
 
-Every one of these may be a template on what it was told, and different places
-may be told different types:
-
-```cpp
-template <class Told>
-  requires requires(const Told& one) { { one.mark } -> std::convertible_to<int>; }
-static tagged parse(std::string_view text, const Told& told);
-```
-
-Constrained, because an unconstrained template answers every question this
-library asks of it, including the ones it asks to work out whether a context
-reaches this place at all.
+**What a hook is handed lives as long as the call.** The state outlives every
+call that touches it -- the walk stands in several readings at once and carries
+one with each -- so a state keeps what it copied out of the context and not the
+address of it. The context itself is the caller's and outlives the reading; it
+is what a hook is handed that is not to be pointed at.
 
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.

@@ -527,7 +527,10 @@ struct folding_in {
   std::size_t slot = 0;
   alone_type alone{};
 
-  [[deprecated("untold")]] constexpr folding_in() : alone(begun_alone<held>()) {}
+  // Made before there is a reading to be told about, which the walk does for
+  // every slot it carries: what it gathers goes here until it is told, and a
+  // handle that is told takes it over.
+  constexpr folding_in() : alone(begun_alone<held>()) {}
   constexpr explicit folding_in(reading_of<held>* from) : how(from) {
     if (how != nullptr) {
       slot = how->fold_begin();
