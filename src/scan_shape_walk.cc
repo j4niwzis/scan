@@ -1204,7 +1204,7 @@ constexpr void collect_element(
       auto one = finish_value<Type, element, Group, false, FailureType>(
           by_the_registers<Type, Format>(packed.readings[reading], states,
                                          registers),
-          text, context_at_group<Type, list_group>(told));
+          text, element_context_at<Type, list_group>(told));
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;

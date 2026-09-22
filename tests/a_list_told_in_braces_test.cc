@@ -80,11 +80,18 @@ class a_list_told_in_braces : public ::testing::Test {
 };
 
 
-// What a braced context reaches in a list is the list itself: the carrier
-// keeps one reading per leaf and a leaf is typed by its field, so the list is
-// built with what the caller said. Its elements are told through a reading of
-// their own, which this carrier does not keep yet -- said without braces they
-// are told, and that is what `a_context_reaches_a_list` says.
+// A braced context reaches the list and the things in it. The carrier keeps a
+// reading for the field, and for a row whose elements are read with what the
+// row was told it keeps a second one beside it -- so an element is told
+// through an interface written for an element, and not through the row's.
+TEST_F(a_list_told_in_braces, EveryElementIsToldTheSame) {
+  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>({fast});
+  ASSERT_EQ(got.values.size(), 3u);
+  EXPECT_EQ(got.values[0].value, 11);
+  EXPECT_EQ(got.values[1].value, 12);
+  EXPECT_EQ(got.values[2].value, 13);
+}
+
 TEST_F(a_list_told_in_braces, TheListIsBuiltOnTheResourceItWasTold) {
   const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>({mine});
   ASSERT_EQ(got.values.size(), 3u);
