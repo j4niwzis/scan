@@ -76,27 +76,10 @@ export template <class Mark>
 // something an assignment should not walk over has no say in it. Told both --
 // the state as it stands and the note taken where the match was -- it puts its
 // own back the way it means to.
-export template <class Held, class StateType>
-constexpr void groups_go_back_to(StateType& live, const StateType& kept) {
-  if constexpr (requires {
-                  scan::scanner<Held>::groups_go_back_to(live, kept);
-                }) {
-    scan::scanner<Held>::groups_go_back_to(live, kept);
-  } else {
-    live = kept;
-  }
-}
-
-template <class Held, class StateType>
-[[nodiscard]] constexpr StateType kept_groups(const StateType& made) {
-  if constexpr (requires {
-                  { scan::scanner<Held>::keep_groups(made) } -> std::same_as<StateType>;
-                }) {
-    return scan::scanner<Held>::keep_groups(made);
-  } else {
-    return made;
-  }
-}
+// Both of these are said in scan.core now, because a fold kept inside a
+// reading puts its state back the same way and cannot import this.
+using scan::groups_go_back_to;
+using scan::kept_groups;
 
 // A fold, and what it has been told.
 //
@@ -539,6 +522,8 @@ export template <class Held, std::size_t Which, class StateType>
 [[nodiscard]] consteval bool takes_the_group_edges() {
   using scanner_type = scan::scanner<std::remove_cv_t<Held>>;
   return requires(StateType& state) {
+    state.template opened<Which>();
+  } || requires(StateType& state) {
     scanner_type{}.opened_group(state, scan::group_at<Which>{});
   } || requires(StateType& state) {
     scanner_type{}.opened_group(state, Which);
