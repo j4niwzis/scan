@@ -1212,7 +1212,7 @@ constexpr void collect_turn_that_ended(
       } else {
         append_to(
             std::get<gathering_slot<Type, Format, list_group>>(states[into]),
-            scan::scanner<held>{}.finish_groups(std::move(fold.going.state)));
+            scan::finished_groups<held>(std::move(fold.going.state)));
       }
     }
   }
@@ -1374,7 +1374,7 @@ constexpr void advance_scanners(
         return std::unexpected(
             scan::as_a_failure<FailureType>(std::move(got).error()));
       } else {
-        return scan::scanner<held>{}.finish_groups(std::move(state));
+        return scan::finished_groups<held>(std::move(state));
       }
     }
   } else if constexpr (a_value &&

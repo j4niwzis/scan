@@ -654,6 +654,32 @@ template <class ErrorType>
 // The same for the hooks that gather rather than read a field: one name, and
 // the template argument says which way the caller is reading. A hook written
 // without it is asked the way it always was.
+// A gathering kept where a reading divides, and put back where one dies.
+//
+// The walk stands in several readings of the subject at once and carries a
+// fold with each. A scanner that keeps something an assignment should not walk
+// over says how both are done; one that says nothing is copied and assigned
+// the way it always was.
+ template <class Held, class StateType>
+[[nodiscard]] constexpr StateType kept_groups(const StateType& made) {
+  if constexpr (requires {
+                  { scanner<Held>::keep_groups(made) } -> std::same_as<StateType>;
+                }) {
+    return scanner<Held>::keep_groups(made);
+  } else {
+    return made;
+  }
+}
+
+ template <class Held, class StateType>
+constexpr void groups_go_back_to(StateType& live, const StateType& kept) {
+  if constexpr (requires { scanner<Held>::groups_go_back_to(live, kept); }) {
+    scanner<Held>::groups_go_back_to(live, kept);
+  } else {
+    live = kept;
+  }
+}
+
 // A scanner that cannot be told through a braced list, and says so.
 //
 // Braces deduce nothing, so what a place is told arrives behind an interface
@@ -808,18 +834,41 @@ concept can_be_told_to_finish_groups =
           std::move(state));
     } || requires(StateType state) {
       scanner<std::remove_cv_t<Type>>{}.finish_groups(std::move(state));
-    };
+    // A fold kept inside the reading that knows the context's type: the state
+    // is not here to be handed over, so the reading is asked to finish it.
+    } || requires(StateType state) { state.finish(); };
 
  template <class Type, class Ending = hands_a_failure_back, class StateType>
   requires can_be_told_to_finish_groups<Type, StateType, Ending>
 [[nodiscard]] constexpr decltype(auto) scanner_told_finish_groups(
     StateType state) {
   using held = std::remove_cv_t<Type>;
-  if constexpr (requires {
-                  scanner<held>{}.template finish_groups<Ending>(
-                      std::move(state));
-                }) {
+  if constexpr (requires { state.finish(); }) {
+    return state.finish();
+  } else if constexpr (requires {
+                         scanner<held>{}.template finish_groups<Ending>(
+                             std::move(state));
+                       }) {
     return scanner<held>{}.template finish_groups<Ending>(std::move(state));
+  } else {
+    return scanner<held>{}.finish_groups(std::move(state));
+  }
+}
+
+// The same, where the scanner says nothing can go wrong: a fold kept in the
+// reading still answers with what it made, and there is nothing in it to
+// report.
+ template <class Type, class StateType>
+  requires(requires(StateType one) { one.finish(); } ||
+           requires(StateType one) {
+             scanner<std::remove_cv_t<Type>>{}.finish_groups(std::move(one));
+           })
+[[nodiscard]] constexpr std::remove_cv_t<Type> finished_groups(
+    StateType state) {
+  using held = std::remove_cv_t<Type>;
+  if constexpr (requires { state.finish(); }) {
+    auto got = state.finish();
+    return std::move(*got);
   } else {
     return scanner<held>{}.finish_groups(std::move(state));
   }
