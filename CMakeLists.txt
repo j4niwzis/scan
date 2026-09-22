@@ -721,6 +721,7 @@ enable_testing()
 # being compiled, so two patterns in one file is two waits in a row, and
 # separate files are two waits at once.
 set(scan_tests
+  a_fold_kept_in_one_place_test
   a_templated_state_over_groups_test
   a_template_context_over_groups_test
   a_context_taken_by_a_template_test

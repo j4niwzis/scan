@@ -117,7 +117,8 @@ struct names_its_output {
   // A braced list deduces nothing, so this is the whole list at once.
   template <class Type, class Self>
   [[nodiscard]] constexpr Type of(
-      this Self&& self, carrier_for<Type, copies_of_a_reading<Type, Format>> given) {
+      this Self&& self, carrier_for<Type, copies_of_a_reading<Type, Format>,
+                  turns_a_reading_holds_back<Type, Format>> given) {
     return std::forward<Self>(self).template asked_for<Type>(given);
   }
 
@@ -135,7 +136,8 @@ struct names_its_output {
   template <class Type, class Self>
   [[nodiscard]] constexpr std::expected<Type, detail::failure_for<Type>> try_of(
       this Self&& self,
-      carrier_for<Type, copies_of_a_reading<Type, Format>> given) {
+      carrier_for<Type, copies_of_a_reading<Type, Format>,
+                  turns_a_reading_holds_back<Type, Format>> given) {
     return std::forward<Self>(self).template read<Type>(given);
   }
 

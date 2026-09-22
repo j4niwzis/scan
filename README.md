@@ -492,6 +492,21 @@ what the walk carries is a slot in it. A reading dividing takes a slot of its
 own -- which is what `keep_groups` is for -- and a reading that dies gives one
 back.
 
+**A fold may be kept in one place.** A fold told its groups as they go is kept
+with every reading the walk stands in, which is what makes a turn cost a write
+and nothing else. Where the state holds something that allocates, that is a
+great many made and thrown away, so a scanner may say so:
+
+```cpp
+static constexpr bool gathers_in_one_place = true;
+```
+
+Then one state is kept and the turns are held back until the machine stands in
+one reading -- where no road is left to disagree with what has been read -- and
+told in one go. The same hooks in the same order, told later: what it costs is
+that a turn is not seen the moment it happens, and that how long they wait has
+to be a number the pattern names while it is compiled.
+
 A scanner that still cannot be written against a context said in braces says
 `static constexpr bool takes_its_context_deduced = true;`, and a braced list
 that would reach it is refused where it is written.
