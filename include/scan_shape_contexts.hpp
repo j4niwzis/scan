@@ -738,15 +738,14 @@ struct reading_by final : reading_of<FieldType> {
                          scan::no_contexts>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held>();
 
-  // Grown rather than counted out.
+  // One for every gathering the walk keeps, which is the number the carrier
+  // was given and is counted from the machine: a register state for each of
+  // the machine's registers and a warm and a cold one beside them, a gathering
+  // in each of those for every group, and two turns in each gathering.
   //
-  // How many readings of one place the walk stands in at once is not the
-  // number this carrier was given: the walk keeps a state for every register
-  // as well, and copies one for every road it tries. Counting that out here
-  // would be counting the machine's shape from the wrong side, and coming up
-  // short means two readings sharing a slot -- which is not an error anybody
-  // sees, it is an answer built out of what another reading gathered.
-  std::vector<std::optional<fold_state>> slots_{};
+  // The same states the walk holds inline where the contexts were not said in
+  // braces. Nothing is kept here that is not kept there.
+  std::array<std::optional<fold_state>, folds ? Copies : 1> slots_{};
 
   [[nodiscard]] constexpr std::size_t fold_begin() override {
     if constexpr (folds) {
@@ -758,11 +757,12 @@ struct reading_by final : reading_of<FieldType> {
     }
   }
 
-  [[nodiscard]] constexpr std::size_t a_free_slot() {
+  [[nodiscard]] constexpr std::size_t a_free_slot() const {
     for (std::size_t at = 0; at < slots_.size(); ++at) {
       if (!slots_[at].has_value()) return at;
     }
-    slots_.emplace_back();
+    // Never reached: the carrier is given one for every gathering the walk
+    // keeps, counted from the machine rather than guessed at.
     return slots_.size() - 1;
   }
   constexpr void fold_opened(std::size_t slot, std::size_t which) override {
