@@ -84,7 +84,8 @@ class reading_with {
 // where a function would work it out again at every place that asked.
 template <class Type, fixed_string Format>
 inline constexpr std::size_t copies_of_a_reading =
-    4 * detail::groups_of_output<Type>() + 8;
+    2 * detail::groups_of_output<Type>() *
+        (detail::packed_automaton<Type, Format>.register_count + 2) + 8;
 
 // Told the format, so that a place written in braces can be handed the number
 // of readings the walk will stand in. The output type is named at the call and
