@@ -47,7 +47,7 @@ struct scan::scanner<tagged> {
   struct state {
     std::string text;
     int mark = 0;
-    std::vector<std::string>* said = nullptr;
+    const Told* where = nullptr;
   };
 
   static state<scan::default_context_t> begin_groups() { return {}; }
@@ -59,7 +59,7 @@ struct scan::scanner<tagged> {
     }
   static state<Told> begin_groups(const Told& told) {
     told.say("a name begins");
-    return {{}, told.mark, told.said};
+    return {{}, told.mark, &told};
   }
 
   template <class Told>
@@ -74,7 +74,9 @@ struct scan::scanner<tagged> {
 
   template <class Told>
   static void closed_group(state<Told>& one, scan::group_at<0>) {
-    if (one.said != nullptr) one.said->push_back("a name: " + one.text);
+    if constexpr (requires(const Told& told) { told.say(std::string{}); }) {
+      if (one.where != nullptr) one.where->say("a name: " + one.text);
+    }
   }
 
   template <class Told>
@@ -99,14 +101,14 @@ TEST_F(a_templated_state, ToldWithoutBraces) {
   EXPECT_EQ(got.right.text, "def");
   EXPECT_EQ(got.right.mark, 3);
   EXPECT_NE(std::ranges::find(said, "a name: abc"), said.end());
-  EXPECT_NE(std::ranges::find(said, "a name: def"), said.end());
+  EXPECT_NE(std::ranges::find(said, "depot: a name: def"), said.end());
 }
 
 TEST_F(a_templated_state, AndInBraces) {
   const pair got = scan::scan<"{} {}">("abc def"sv).of<pair>({here, there});
   EXPECT_EQ(got.left.mark, 7);
   EXPECT_EQ(got.right.mark, 3);
-  EXPECT_NE(std::ranges::find(said, "a name: def"), said.end());
+  EXPECT_NE(std::ranges::find(said, "depot: a name: def"), said.end());
 }
 
 TEST_F(a_templated_state, ToldNothingItReadsTheWayItAlwaysDid) {

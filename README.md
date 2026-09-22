@@ -432,7 +432,7 @@ template <> struct scan::scanner<tagged> {
   static constexpr std::string_view pattern() { return "([a-z]+)"; }
 
   template <class Told>
-  struct state { std::string text; int mark = 0; std::vector<std::string>* said = nullptr; };
+  struct state { std::string text; int mark = 0; const Told* told = nullptr; };
 
   static state<scan::default_context_t> begin_groups() { return {}; }
 
@@ -446,7 +446,7 @@ template <> struct scan::scanner<tagged> {
     }
   static state<Told> begin_groups(const Told& told) {
     told.say("a name begins");
-    return {{}, told.mark, told.said};
+    return {{}, told.mark, &told};
   }
 
   template <class Told>
@@ -457,7 +457,7 @@ template <> struct scan::scanner<tagged> {
   }
   template <class Told>
   static void closed_group(state<Told>& one, scan::group_at<0>) {
-    if (one.said != nullptr) one.said->push_back("a name: " + one.text);
+    if (one.told != nullptr) one.told->say("a name: " + one.text);
   }
   template <class Told>
   static tagged finish_groups(state<Told> one) { return {std::move(one.text), one.mark}; }
@@ -474,11 +474,9 @@ for all of them. A leaf read whole rather than by its groups takes the context
 on `parse` instead -- `parse(std::string_view text, const Told& told)` -- and a
 shape that reads its own groups on `from_groups`.
 
-**What a hook is handed lives as long as the call.** The state outlives every
-call that touches it -- the walk stands in several readings at once and carries
-one with each -- so a state keeps what it copied out of the context and not the
-address of it. The context itself is the caller's and outlives the reading; it
-is what a hook is handed that is not to be pointed at.
+What a hook is handed is the caller's own thing and not a copy of it, so a
+state may keep its address: a context lives as long as the call that said it,
+and the whole reading happens inside that call.
 
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
