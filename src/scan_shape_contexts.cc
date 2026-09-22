@@ -564,8 +564,17 @@ struct folding_in {
   // As long as the machine can go without standing in one reading, which is
   // worked out from it while the pattern is compiled. Nothing waits where the
   // scanner did not ask for it.
+  // Room for what is held, counted in what is held rather than in how far the
+  // walk goes: the window is a number of characters, and one character can
+  // open a group, put itself in it and close it again -- for every group this
+  // leaf opens. Sized short, the queue would drop the end of what it was told
+  // and say nothing about it.
+  static constexpr std::size_t groups_here =
+      groups_a_leaf_opens<held>() == 0 ? 1 : groups_a_leaf_opens<held>();
+  static constexpr std::size_t room_for_turns =
+      waits ? 3 * groups_here * (Window + 1) + 1 : 0;
   [[no_unique_address]] std::conditional_t<
-      waits, std::array<turn, Window + 1>, std::array<turn, 0>> waiting_{};
+      waits, std::array<turn, room_for_turns>, std::array<turn, 0>> waiting_{};
   [[no_unique_address]] std::conditional_t<waits, std::uint32_t, no_contexts>
       count_{};
   alone_type alone{};

@@ -723,6 +723,7 @@ enable_testing()
 set(scan_tests
   a_fold_kept_in_one_place_test
   a_fold_told_in_braces_test
+  a_fold_held_back_test
   a_list_told_in_braces_test
   a_list_on_the_resource_it_was_told_test
   a_templated_state_over_groups_test
