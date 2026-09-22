@@ -501,11 +501,15 @@ great many made and thrown away, so a scanner may say so:
 static constexpr bool gathers_in_one_place = true;
 ```
 
-Then one state is kept and the turns are held back until the machine stands in
-one reading -- where no road is left to disagree with what has been read -- and
-told in one go. The same hooks in the same order, told later: what it costs is
-that a turn is not seen the moment it happens, and that how long they wait has
-to be a number the pattern names while it is compiled.
+Then one state is kept, whatever the reading was told and whether it was told
+anything at all. Where the machine says at every move what the character lies
+inside, nothing waits: the turns go into that one state as they happen, because
+every reading would tell it the same ones. Where it cannot say -- the first
+letter of `([a-z]?)([a-z]+)` could belong to either group -- the turns are held
+until it can, and told then: the same hooks in the same order, said later. What
+it costs is that such a turn is not seen the moment it happens, and that how
+long one waits has to be a number the pattern names while it is compiled. An
+expression that could hold them for ever is refused where it is written.
 
 A scanner that still cannot be written against a context said in braces says
 `static constexpr bool takes_its_context_deduced = true;`, and a braced list
