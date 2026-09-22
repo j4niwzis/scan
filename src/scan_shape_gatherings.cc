@@ -309,7 +309,13 @@ export template <class Held, class MarkType = std::ptrdiff_t, bool Repeats = tru
 struct fold_of {
   using held_type = std::remove_cv_t<Held>;
   static constexpr std::size_t inside = groups_a_leaf_opens<held_type>();
-  using state_type = typename fold_turn<Held, MarkType>::state_type;
+  // The state of the turns this holds, which is what it is told with. Said
+  // without the carrier it was the state of a fold told nothing -- the same
+  // type as long as nothing a fold keeps depends on what it was told, and a
+  // quiet lie the moment something does: the probes that ask whether a group
+  // takes characters would ask about a state no turn here has.
+  using state_type =
+      typename fold_turn<Held, MarkType, CarrierType>::state_type;
 
   constexpr fold_of()
     requires std::default_initializable<CarrierType>
