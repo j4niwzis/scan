@@ -48,11 +48,10 @@ struct scan::scanner<numbers> {
 
   static state<scan::default_context_t> begin_groups() { return {}; }
 
-  // The caller's own type, and nothing of the library's in the signature.
   template <class Told>
-    requires requires(const Told& one) { one.resource(); }
+    requires(!std::same_as<std::remove_cvref_t<Told>, scan::default_context_t>)
   static state<Told> begin_groups(const Told& told) {
-    return {std::pmr::vector<int>(told.resource()), 0};
+    return {std::pmr::vector<int>(scan::detail::resource_of(told)), 0};
   }
 
   // The group's number as a plain index: one hook for both of them.

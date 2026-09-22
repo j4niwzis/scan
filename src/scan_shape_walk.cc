@@ -1199,7 +1199,7 @@ constexpr void collect_turn_that_ended(
       } else {
         append_to(
             std::get<gathering_slot<Type, Format, list_group>>(states[into]),
-            scan::finished_groups<held>(std::move(fold.going.state)));
+            scan::scanner<held>{}.finish_groups(std::move(fold.going.state)));
       }
     }
   }
@@ -1361,7 +1361,7 @@ export template <class Root, class Type, std::size_t Offset, bool AsOutput,
         return std::unexpected(
             scan::as_a_failure<FailureType>(std::move(got).error()));
       } else {
-        return scan::finished_groups<held>(std::move(state));
+        return scan::scanner<held>{}.finish_groups(std::move(state));
       }
     }
   } else if constexpr (a_value &&

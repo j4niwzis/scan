@@ -156,16 +156,15 @@ export template <class Told>
 [[nodiscard]] constexpr std::pmr::memory_resource* resource_of(
     const Told& given);
 
+}  // namespace scan
+
+namespace scan::detail {
+
 // Said before what is below names them: a leaf carrier keeps a pointer to a
 // reading and makes one as a default argument, and both of those are written
 // out further down, where the context still has its type.
 template <class FieldType>
 struct reading_of;
-
-// A fold in a reading, said as a slot in it. Written out below, where the
-// interface it speaks to has been said.
-template <class FieldType>
-struct folding_in;
 
 // How many readings of one field the walk can stand in at once, said as a
 // number by whoever knows the machine. The carrier is handed it rather than
@@ -215,6 +214,16 @@ class context_leaf {
     made.kept = &given;
   }
 
+  // A leaf's own carrier: the reading is the thing the carrier asks, so the
+  // carrier is that reading and nothing else. Nothing is stored for it --
+  // storing a leaf's carrier inside the leaf would be a circle -- and what it
+  // carries is reached the same way every other carrier reaches it.
+  [[nodiscard]] static constexpr context_leaf at(reading_of<held>* how) {
+    context_leaf done;
+    done.how_ = how;
+    return done;
+  }
+
   // The same leaf, told a context that was said for the shape above it.
   template <class Store, class It>
   [[nodiscard]] static constexpr context_leaf wire(Store& made, It&& given) {
@@ -235,8 +244,7 @@ class context_leaf {
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
   // Whatever the interface hands back, which is said where the interface is --
   // further down, after what a carrier is has been worked out.
-  // Said below, where the handle it hands back is written out.
-  [[nodiscard]] constexpr folding_in<held> begin_fold() const;
+  [[nodiscard]] constexpr auto begin_fold() const { return how_->begin_fold(); }
   [[nodiscard]] constexpr auto begin_gather(std::string_view parameters) const {
     return how_->begin_gather(parameters);
   }
@@ -440,7 +448,29 @@ using gather_state_for = decltype(gather_state_of<Held>());
 // state told the carrier written for that shape: a carrier knows nothing of the
 // caller's types, and a shape told nothing is that same carrier with nothing in
 // it.
-export 
+export template <class Held>
+[[nodiscard]] constexpr auto fold_state_of() {
+  using held = std::remove_cv_t<Held>;
+  if constexpr (requires {
+                  scan::scanner<held>{}.begin_groups(
+                      std::declval<const carrier_for<Held>&>());
+                }) {
+    // Named and not made: `declval` stands for a carrier that is never built
+    // here, so it may appear under `decltype` and nowhere else. Returning the
+    // call itself would deduce this return type by instantiating the body,
+    // which odr-uses `declval` and is ill-formed.
+    return std::type_identity<decltype(scan::scanner<held>{}.begin_groups(
+        std::declval<const carrier_for<Held>&>()))>{};
+  } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
+    return std::type_identity<decltype(scan::scanner<held>{}.begin_groups())>{};
+  } else {
+    return std::type_identity<scan::no_contexts>{};
+  }
+}
+
+template <class Held>
+using fold_state_for = typename decltype(fold_state_of<Held>())::type;
+
 // What a reading has to keep for the places under it: readings for them, where
 // the field is a shape, and nothing at all where it is read whole. Said in two
 // pieces rather than one conditional, because a leaf's own carrier is a reading
@@ -471,143 +501,14 @@ struct reading_of {
   // The same, for a scanner handed its pieces rather than its groups.
   [[nodiscard]] constexpr virtual gather_state_for<held> begin_gather(
       std::string_view parameters) = 0;
-
-  // A fold, kept where the context still has its type.
-  //
-  // Every one of these takes the slot the state lives in, because the walk
-  // stands in several readings at once and each carries a fold of its own. How
-  // many is the number the carrier was given, which is worked out from the
-  // shape before any of this is built.
-  constexpr virtual void fold_begin(std::size_t slot) = 0;
-  constexpr virtual void fold_opened(std::size_t slot, std::size_t which) = 0;
-  constexpr virtual void fold_pushed(std::size_t slot, std::size_t which,
-                                     char letter) = 0;
-  constexpr virtual void fold_pushed_run(std::size_t slot, std::size_t which,
-                                         std::string_view run) = 0;
-  constexpr virtual void fold_closed(std::size_t slot, std::size_t which) = 0;
-  constexpr virtual void fold_closed_on(std::size_t slot, std::size_t which,
-                                        std::string_view text) = 0;
-  [[nodiscard]] constexpr virtual answer fold_finish(std::size_t slot) = 0;
-  // A reading divides: the state is kept as the scanner says it is kept, in a
-  // slot of its own, and the walk that took the other road holds that one.
-  [[nodiscard]] constexpr virtual std::size_t fold_kept(std::size_t slot) = 0;
-  constexpr virtual void fold_back_to(std::size_t live, std::size_t kept) = 0;
-  constexpr virtual void fold_drop(std::size_t slot) = 0;
+  // Begun where the context still has its type, handed back as the state the
+  // scanner would have begun anyway.
+  [[nodiscard]] constexpr virtual fold_state_for<held> begin_fold() = 0;
   [[nodiscard]] constexpr virtual answer read(std::string_view text,
                                               std::string_view parameters) = 0;
   [[nodiscard]] constexpr virtual answer read_groups(
       std::span<const std::string_view> groups) = 0;
 };
-
-// A fold in a reading, said as a slot in it.
-//
-// This is what a place told in braces carries instead of a state: the same
-// type whatever the context is, and every turn of the fold a call through the
-// interface. Copying one is a reading dividing, which is what the scanner's
-// own `keep_groups` is for; assigning one is a reading going back.
-template <class Held>
-[[nodiscard]] constexpr auto begun_alone() {
-  if constexpr (requires { scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(); }) {
-    return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
-  } else {
-    return scan::no_contexts{};
-  }
-}
-
-template <class FieldType>
-struct folding_in {
-  using held = std::remove_cv_t<FieldType>;
-  using answer = std::expected<held, failure_for<held>>;
-  // A place in a braced list that was written `scan::default_context` carries
-  // a leaf with nothing in it. The fold still runs, so the state is here
-  // instead -- named, because a scanner told nothing has one type for it.
-  using alone_type = decltype(begun_alone<held>());
-
-  reading_of<held>* how = nullptr;
-  std::size_t slot = 0;
-  alone_type alone{};
-
-  constexpr folding_in() : alone(begun_alone<held>()) {}
-  constexpr explicit folding_in(reading_of<held>* from) : how(from) {
-    if (how != nullptr) {
-      how->fold_begin(slot);
-    } else {
-      alone = begun_alone<held>();
-    }
-  }
-  constexpr folding_in(const folding_in& other)
-      : how(other.how),
-        slot(other.how == nullptr ? 0 : other.how->fold_kept(other.slot)),
-        alone(other.how == nullptr ? kept_groups<held>(other.alone)
-                                   : alone_type{}) {}
-  constexpr folding_in& operator=(const folding_in& other) {
-    if (this != &other) {
-      if (how != nullptr && other.how != nullptr) {
-        how->fold_back_to(slot, other.slot);
-      } else if (how == nullptr && other.how == nullptr) {
-        groups_go_back_to<held>(alone, other.alone);
-      }
-    }
-    return *this;
-  }
-  constexpr folding_in(folding_in&& other) noexcept
-      : how(other.how), slot(other.slot) {
-    other.how = nullptr;
-  }
-  constexpr folding_in& operator=(folding_in&& other) noexcept {
-    if (this != &other) {
-      if (how != nullptr) how->fold_drop(slot);
-      how = other.how;
-      slot = other.slot;
-      other.how = nullptr;
-    }
-    return *this;
-  }
-  constexpr ~folding_in() {
-    if (how != nullptr) how->fold_drop(slot);
-  }
-
-  template <std::size_t Which>
-  constexpr void opened() {
-    if (how != nullptr) how->fold_opened(slot, Which);
-    else open_one_group<held, Which>(alone);
-  }
-  template <std::size_t Which>
-  constexpr void pushed(char letter) {
-    if (how != nullptr) how->fold_pushed(slot, Which, letter);
-    else push_one_group<held, Which>(alone, letter);
-  }
-  template <std::size_t Which>
-  constexpr void pushed(std::string_view run) {
-    if (how != nullptr) how->fold_pushed_run(slot, Which, run);
-    else push_one_group<held, Which>(alone, run);
-  }
-  template <std::size_t Which>
-  constexpr void closed() {
-    if (how != nullptr) how->fold_closed(slot, Which);
-    else close_one_group<held, Which>(alone);
-  }
-  template <std::size_t Which>
-  constexpr void closed(std::string_view text) {
-    if (how != nullptr) how->fold_closed_on(slot, Which, text);
-    else close_one_group<held, Which>(alone, text);
-  }
-  [[nodiscard]] constexpr answer finish() {
-    if (how != nullptr) return how->fold_finish(slot);
-    if constexpr (scan::says_what_went_wrong_folding<held>) {
-      return scan::scanner_told_finish_groups<held, scan::hands_a_failure_back>(
-          std::move(alone));
-    } else {
-      return answer(scan::finished_groups<held>(std::move(alone)));
-    }
-  }
-};
-
-template <class FieldType, std::size_t Copies>
-[[nodiscard]] constexpr folding_in<std::remove_cv_t<FieldType>>
-context_leaf<FieldType, Copies>::begin_fold() const {
-  return folding_in<held>(how_);
-}
 
 // The implementation is written where the context still has its type, so it
 // holds the caller's own thing -- not a copy of it, and not a const picture of
@@ -681,118 +582,33 @@ struct reading_by final : reading_of<FieldType> {
     }
   }
 
-  // The fold itself, kept here.
-  //
-  // The scanner is asked with the caller's own thing, so its hooks may be
-  // templates on that type and its state may be of a piece with it. None of
-  // that crosses the door: what the walk carries is a slot number.
-  [[nodiscard]] static constexpr auto begun_here(ContextType* told) {
-    if constexpr (requires { scan::scanner<held>{}.begin_groups(*told); }) {
-      return scan::scanner<held>{}.begin_groups(*told);
+  // A shape is begun with a carrier of its own, wired here: what this reading
+  // was told is said to every place under it, through readings that live in
+  // this very object and so last exactly as long as it does. That is what lets
+  // a context said in braces reach a place whose type says a format of its own
+  // -- the state such a place keeps names the carrier and never the context.
+  [[nodiscard]] constexpr fold_state_for<held> begin_fold() override {
+    if constexpr (requires {
+                    scan::scanner<held>{}.begin_groups(
+                        std::declval<const carrier_for<held>&>());
+                  }) {
+      if constexpr (carrier_places<held>() > 0) {
+        return scan::scanner<held>{}.begin_groups(
+            carrier_for<held>::wire(under_, *kept));
+      } else {
+        return scan::scanner<held>{}.begin_groups(
+            carrier_for<held>::at(this));
+      }
+    } else if constexpr (requires {
+                           scan::scanner<held>{}.begin_groups(*kept);
+                         }) {
+      return scan::scanner<held>{}.begin_groups(*kept);
     } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
       return scan::scanner<held>{}.begin_groups();
     } else {
       return scan::no_contexts{};
     }
   }
-  // Every leaf a braced list can reach has these, because they are virtual;
-  // only a leaf that folds its groups has anything to do in them.
-  static constexpr bool folds =
-      requires { scan::scanner<held>{}.begin_groups(); } ||
-      requires(ContextType* told) {
-        scan::scanner<held>{}.begin_groups(*told);
-      };
-  using fold_state =
-      std::conditional_t<folds, decltype(begun_here(std::declval<ContextType*>())),
-                         scan::no_contexts>;
-  static constexpr std::size_t inside = groups_a_leaf_opens<held>();
-
-  std::array<std::optional<fold_state>, folds ? Copies : 1> slots_{};
-
-  constexpr void fold_begin(std::size_t slot) override {
-    if constexpr (folds) slots_[slot] = begun_here(kept);
-  }
-  constexpr void fold_opened(std::size_t slot, std::size_t which) override {
-    if constexpr (folds) {
-      at_group(which, [&]<std::size_t k>() {
-        open_one_group<held, k>(*slots_[slot]);
-      });
-    }
-  }
-  constexpr void fold_pushed(std::size_t slot, std::size_t which,
-                             char letter) override {
-    if constexpr (folds) {
-      at_group(which, [&]<std::size_t k>() {
-        push_one_group<held, k>(*slots_[slot], letter);
-      });
-    }
-  }
-  constexpr void fold_pushed_run(std::size_t slot, std::size_t which,
-                                 std::string_view run) override {
-    if constexpr (folds) {
-      at_group(which, [&]<std::size_t k>() {
-        push_one_group<held, k>(*slots_[slot], run);
-      });
-    }
-  }
-  constexpr void fold_closed(std::size_t slot, std::size_t which) override {
-    if constexpr (folds) {
-      at_group(which, [&]<std::size_t k>() {
-        close_one_group<held, k>(*slots_[slot]);
-      });
-    }
-  }
-  constexpr void fold_closed_on(std::size_t slot, std::size_t which,
-                                std::string_view text) override {
-    if constexpr (folds) {
-      at_group(which, [&]<std::size_t k>() {
-        close_one_group<held, k>(*slots_[slot], text);
-      });
-    }
-  }
-  [[nodiscard]] constexpr answer fold_finish(std::size_t slot) override {
-    if constexpr (!folds) {
-      return answer(std::unexpected(scan::as_a_failure<failure_for<held>>(
-          scan::no_match<>("this place does not fold its groups"))));
-    } else if constexpr (scan::says_what_went_wrong_folding<held>) {
-      return scan::scanner_told_finish_groups<held, scan::hands_a_failure_back>(
-          std::move(*slots_[slot]));
-    } else {
-      return scan::finished_groups<held>(std::move(*slots_[slot]));
-    }
-  }
-  [[nodiscard]] constexpr std::size_t fold_kept(std::size_t slot) override {
-    if constexpr (!folds) return slot;
-    else
-    for (std::size_t free = 0; free < Copies; ++free) {
-      if (slots_[free].has_value()) continue;
-      slots_[free] = kept_groups<held>(*slots_[slot]);
-      return free;
-    }
-    // The number of readings the walk can stand in at once is worked out from
-    // the shape before any of this runs, so there is always one.
-    return slot;
-  }
-  constexpr void fold_back_to(std::size_t live, std::size_t kept_at) override {
-    if constexpr (folds) {
-      groups_go_back_to<held>(*slots_[live], *slots_[kept_at]);
-    }
-  }
-  constexpr void fold_drop(std::size_t slot) override {
-    slots_[slot].reset();
-  }
-
- private:
-  // The walk knows a group by a number it has while it is compiled; the
-  // interface says one at run time, so it is turned back into the other here.
-  template <class Body>
-  constexpr void at_group(std::size_t which, Body&& body) {
-    [&]<std::size_t... k>(std::index_sequence<k...>) {
-      ((k == which ? body.template operator()<k>() : void()), ...);
-    }(std::make_index_sequence<inside>{});
-  }
-
- public:
 
   [[nodiscard]] constexpr answer read(std::string_view text,
                                       std::string_view parameters) override {
@@ -853,6 +669,10 @@ export template <class Told>
     return nullptr;
   }
 }
+
+}  // namespace scan
+
+namespace scan::detail {
 
 // A list built where its place said to build it. A container that takes an
 // allocator is given the one its place was told about; one that takes none is
@@ -962,9 +782,18 @@ export template <class Held, class Context>
                   given.told();
                   given.begin_fold();
                 }) {
-    // One type either way: the handle knows whether there is a reading behind
-    // it, and keeps the state itself where there is not.
-    return given.begin_fold();
+    if (given.told()) return given.begin_fold();
+    // Told nothing is the same carrier with nothing in it, so that both ways
+    // out of here hand back the one type the interface says.
+    if constexpr (requires {
+                    scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+                        carrier_for<std::remove_cv_t<Held>>{});
+                  }) {
+      return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups(
+          carrier_for<std::remove_cv_t<Held>>{});
+    } else {
+      return scan::scanner<std::remove_cv_t<Held>>{}.begin_groups();
+    }
   } else if constexpr (!std::same_as<std::remove_cvref_t<Context>,
                               scan::default_context_t> &&
                 !requires { given.told(); } &&
@@ -1000,7 +829,7 @@ groups_value(std::span<const std::string_view> groups, ContextType&& given) {
         close_one_group<Held, at>(state, groups[at]);
       }(), ...);
     }(std::make_index_sequence<inside>{});
-    return scan::finished_groups<Held>(std::move(state));
+    return scan::scanner<Held>{}.finish_groups(std::move(state));
   }
 }
 
@@ -1163,7 +992,7 @@ export template <class FailureType, class Parameters, class Type,
         return Ending::template went_wrong<Type, FailureType>(
             std::move(got).error());
       } else {
-        return scan::finished_groups<held>(std::move(state));
+        return scan::scanner<held>{}.finish_groups(std::move(state));
       }
     }
   } else if constexpr (a_value) {

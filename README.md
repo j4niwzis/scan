@@ -442,9 +442,11 @@ template <> struct scan::scanner<tagged> {
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
 
-**A state may be a template on what it was told.** Nothing of this library
-appears in the scanner's signature: the hooks name the caller's own type, in
-braces as well as without them.
+**A state may be a template on what it was told.** A place said in braces
+carries its context behind an interface, so what reaches the hooks there is the
+carrier and not the caller's own type. A state that is a template takes
+whichever of the two it was handed, and `scan::resource_of` answers the same
+for both:
 
 ```cpp
 struct arena {
@@ -465,9 +467,9 @@ struct scan::scanner<numbers> {
   static state<scan::default_context_t> begin_groups() { return {}; }
 
   template <class Told>
-    requires requires(const Told& one) { one.resource(); }
+    requires(!std::same_as<std::remove_cvref_t<Told>, scan::default_context_t>)
   static state<Told> begin_groups(const Told& told) {
-    return {std::pmr::vector<int>(told.resource()), 0};
+    return {std::pmr::vector<int>(scan::resource_of(told)), 0};
   }
 
   // The group's number as a plain index: one hook for both of them.
@@ -489,14 +491,7 @@ scan::scan<"{} {}">(text).of<both>(arena{&bytes});                   // one for 
 scan::scan<"{} {}">(text).of<both>({arena{&bytes}, arena{&other}});  // one a place
 ```
 
-A braced list cannot deduce the type of what is in it, so a place told that way
-reaches its scanner through an interface. The state the scanner keeps is not
-that interface's to name -- it belongs to the context's type -- so it stays in
-the reading, where the type is still there, and what the walk carries is a slot
-in it. Copying that slot is a reading dividing, which is what `keep_groups` is
-for.
-
-A scanner that still cannot be written against a context said in braces says
+A scanner that still cannot be written against an erased context says
 `static constexpr bool takes_its_context_deduced = true;`, and a braced list
 that would reach it is refused where it is written.
 
