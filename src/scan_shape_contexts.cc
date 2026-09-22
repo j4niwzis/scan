@@ -602,6 +602,19 @@ struct reading_by final : reading_of<FieldType> {
     } else if constexpr (requires {
                            scan::scanner<held>{}.begin_groups(*kept);
                          }) {
+      // One state for one shape, said plainly because it is the rule the walk
+      // is built on: the gatherings a walk carries are typed by the type and
+      // the format before any context exists -- twenty-six of them are named
+      // that way -- so what a fold keeps may be told the context and may not
+      // be *of* it. A scanner whose state follows the caller's own type takes
+      // the carrier instead, which is the one type every context arrives as.
+      static_assert(
+          std::same_as<decltype(scan::scanner<held>{}.begin_groups(*kept)),
+                       fold_state_for<held>>,
+          "this scanner keeps a different state for the context it was told "
+          "than for none, and a walk has room for one: take the carrier -- "
+          "begin_groups(const Told&) with scan::detail::resource_of(told) -- "
+          "or say takes_its_context_deduced and be told without braces");
       return scan::scanner<held>{}.begin_groups(*kept);
     } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
       return scan::scanner<held>{}.begin_groups();
