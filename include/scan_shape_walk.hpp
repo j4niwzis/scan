@@ -500,6 +500,25 @@ template <class StatesType, std::size_t CommandCount>
   return kept;
 }
 
+// A fold that held its turns back, told them.
+//
+// Reached the way the turns were: through the slot the group gathers in, and
+// the two turns a gathering keeps. A fold that did not ask to wait has no
+// `settle` and this is nothing at all.
+ template <std::size_t Group, class Type, fixed_string Format,
+          class StatesType>
+constexpr void settle_one_fold(StatesType& states) {
+  for (auto& one : states) {
+    auto& fold = std::get<gathering_slot<Type, Format, Group>>(one);
+    if constexpr (requires { fold.here.state.settle(); }) {
+      fold.here.state.settle();
+      if constexpr (requires { fold.going.state.settle(); }) {
+        fold.going.state.settle();
+      }
+    }
+  }
+}
+
  template <std::size_t Group, class Type, fixed_string Format, auto& Automaton,
           bool HandsTheCharacter = true, bool KeptInTheWalk = false,
           class StatesType, class KeptType, class RegistersType,
@@ -1280,6 +1299,13 @@ constexpr void advance_scanners(
          symbol, state, left_state, position, registers, states, states,
          commands, count, text, told),
      ...);
+  }
+  // Where the machine stands in one reading there is nobody left to disagree
+  // with what has been read, so a fold that held its turns back is told them
+  // now. A fold that did not ask to wait has nothing waiting and says so while
+  // this is compiled.
+  if (Automaton.states[state].readings.size() == 1) {
+    (settle_one_fold<Group, Type, Format>(states), ...);
   }
 }
 

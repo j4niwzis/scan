@@ -182,7 +182,7 @@ struct reading_of;
 
 // A fold in a reading, said as a slot in it. Written out below, where the
 // interface it speaks to has been said.
-template <class FieldType>
+template <class FieldType, std::size_t Window>
 struct folding_in;
 
 // How many readings of one field the walk can stand in at once, said as a
@@ -190,7 +190,7 @@ struct folding_in;
 // working it out: what a reading is told is written where the contexts are,
 // and the contexts are written where the format is not.
 template <class FieldType, class ContextType, bool ToldApart,
-          std::size_t Copies = 1>
+          std::size_t Copies = 1, std::size_t Window = 0>
 struct reading_by;
 // One context said for a whole shape needs one reading per leaf under it, and
 // those readings have to outlive the call that says it. They are made as a
@@ -208,7 +208,7 @@ struct readings_for;
 // -- and the reading that knows it is made there too, as a default argument, so
 // it is alive for as long as the expression that said it. What crosses the door
 // is a pointer to the interface, and nothing here ever names a context type.
- template <class FieldType, std::size_t Copies = 1>
+ template <class FieldType, std::size_t Copies = 1, std::size_t Window = 0>
 class context_leaf {
  public:
   using held = std::remove_cv_t<FieldType>;
@@ -228,7 +228,7 @@ class context_leaf {
              !std::same_as<std::remove_cvref_t<It>, no_place>)
   constexpr context_leaf(
       It&& given,
-      reading_by<held, std::remove_reference_t<It>, true, Copies>&& made = {})
+      reading_by<held, std::remove_reference_t<It>, true, Copies, Window>&& made = {})
       : how_(&made) {
     made.kept = &given;
   }
@@ -258,7 +258,7 @@ class context_leaf {
   // Whatever the interface hands back, which is said where the interface is --
   // further down, after what a carrier is has been worked out.
   // Said below, where the handle it hands back is written out.
-  [[nodiscard]] constexpr folding_in<held> begin_fold() const;
+  [[nodiscard]] constexpr folding_in<held, Window> begin_fold() const;
   [[nodiscard]] constexpr auto begin_gather(std::string_view parameters) const {
     return how_->begin_gather(parameters);
   }
@@ -327,10 +327,10 @@ class context_shape {
   std::tuple<Parts...> parts_{};
 };
 
-template <class FieldType, std::size_t Copies, class It>
-struct readings_for<context_leaf<FieldType, Copies>, It> {
+template <class FieldType, std::size_t Copies, std::size_t Window, class It>
+struct readings_for<context_leaf<FieldType, Copies, Window>, It> {
   using type = reading_by<std::remove_cv_t<FieldType>,
-                          std::remove_reference_t<It>, false, Copies>;
+                          std::remove_reference_t<It>, false, Copies, Window>;
 };
 
 template <class It, class... Parts>
@@ -380,48 +380,48 @@ using carrier_place_for = typename decltype(carrier_place_kind<FieldType, K>()):
 
 // Which carrier a field wants: read whole, and it is a leaf; opening up into
 // places, and it is a shape over their carriers, worked out the same way.
-template <class FieldType, std::size_t Copies = 1,
+template <class FieldType, std::size_t Copies = 1, std::size_t Window = 0,
           bool Whole = (carrier_places<FieldType>() == 0)>
 struct carrier_of;
 
-template <class FieldType, std::size_t Copies>
-struct carrier_of<FieldType, Copies, true> {
-  using type = context_leaf<FieldType, Copies>;
+template <class FieldType, std::size_t Copies, std::size_t Window>
+struct carrier_of<FieldType, Copies, Window, true> {
+  using type = context_leaf<FieldType, Copies, Window>;
 };
 
-template <class FieldType, std::size_t Copies>
-struct carrier_of<FieldType, Copies, false> {
+template <class FieldType, std::size_t Copies, std::size_t Window>
+struct carrier_of<FieldType, Copies, Window, false> {
   template <std::size_t... K>
   static auto made(std::index_sequence<K...>)
       -> context_shape<typename carrier_of<carrier_place_for<FieldType, K>,
-                                           Copies>::type...>;
+                                           Copies, Window>::type...>;
   using type =
       decltype(made(std::make_index_sequence<carrier_places<FieldType>()>{}));
 };
 
- template <class FieldType, std::size_t Copies = 1>
+ template <class FieldType, std::size_t Copies = 1, std::size_t Window = 0>
 using carrier_for =
-    typename carrier_of<std::remove_cv_t<FieldType>, Copies>::type;
+    typename carrier_of<std::remove_cv_t<FieldType>, Copies, Window>::type;
 
-template <class Type, std::size_t Place, std::size_t Copies = 1>
+template <class Type, std::size_t Place, std::size_t Copies = 1, std::size_t Window = 0>
 [[nodiscard]] consteval auto context_place_kind() {
   if constexpr (carrier_places<Type>() == 0) {
     if constexpr (Place == 0) {
-      return std::type_identity<context_leaf<std::remove_cv_t<Type>, Copies>>{};
+      return std::type_identity<context_leaf<std::remove_cv_t<Type>, Copies, Window>>{};
     } else {
       return std::type_identity<no_place>{};
     }
   } else if constexpr (Place < carrier_places<Type>()) {
     return std::type_identity<
-        carrier_for<carrier_place_for<Type, Place>, Copies>>{};
+        carrier_for<carrier_place_for<Type, Place>, Copies, Window>>{};
   } else {
     return std::type_identity<no_place>{};
   }
 }
 
-template <class Type, std::size_t Place, std::size_t Copies = 1>
+template <class Type, std::size_t Place, std::size_t Copies = 1, std::size_t Window = 0>
 using context_place_of =
-    typename decltype(context_place_kind<Type, Place, Copies>())::type;
+    typename decltype(context_place_kind<Type, Place, Copies, Window>())::type;
 
 
 // The state a scanner that gathers begins with. A scanner told a context and a
@@ -467,16 +467,16 @@ using gather_state_for = decltype(gather_state_of<Held>());
 // the field is a shape, and nothing at all where it is read whole. Said in two
 // pieces rather than one conditional, because a leaf's own carrier is a reading
 // of that leaf -- naming it inside itself is a circle.
-template <class Held, class ContextType, std::size_t Copies = 1,
+template <class Held, class ContextType, std::size_t Copies = 1, std::size_t Window = 0,
           bool AShape = (carrier_places<std::remove_cv_t<Held>>() > 0)>
 struct readings_under {
   using type = scan::no_contexts;
 };
 
-template <class Held, class ContextType, std::size_t Copies>
-struct readings_under<Held, ContextType, Copies, true> {
+template <class Held, class ContextType, std::size_t Copies, std::size_t Window>
+struct readings_under<Held, ContextType, Copies, Window, true> {
   using type =
-      typename readings_for<carrier_for<std::remove_cv_t<Held>, Copies>,
+      typename readings_for<carrier_for<std::remove_cv_t<Held>, Copies, Window>,
                             ContextType>::type;
 };
 
@@ -536,9 +536,22 @@ template <class Held>
   }
 }
 
-template <class FieldType>
+template <class FieldType, std::size_t Window = 0>
 struct folding_in {
   using held = std::remove_cv_t<FieldType>;
+  // Whether the turns wait. A scanner says so where its state holds something
+  // it would rather make once; the walk then keeps one state and this keeps
+  // what happened until the machine stands in one reading.
+  static constexpr bool waits = scan::gathers_in_one_place<held>;
+  // What a turn is, said flatly: which group it was, what happened, and the
+  // character or the run it happened with.
+  struct turn {
+    std::uint16_t which = 0;
+    std::uint8_t what = 0;   // 0 opened, 1 pushed, 2 pushed a run, 3 closed,
+                             // 4 closed on a piece
+    char letter = '\0';
+    std::string_view run{};
+  };
   using answer = std::expected<held, failure_for<held>>;
   // A place in a braced list that was written `scan::default_context` carries
   // a leaf with nothing in it. The fold still runs, so the state is here
@@ -547,6 +560,13 @@ struct folding_in {
 
   reading_of<held>* how = nullptr;
   std::size_t slot = 0;
+  // As long as the machine can go without standing in one reading, which is
+  // worked out from it while the pattern is compiled. Nothing waits where the
+  // scanner did not ask for it.
+  [[no_unique_address]] std::conditional_t<
+      waits, std::array<turn, Window + 1>, std::array<turn, 0>> waiting_{};
+  [[no_unique_address]] std::conditional_t<waits, std::uint32_t, no_contexts>
+      count_{};
   alone_type alone{};
 
   // Made before there is a reading to be told about, which the walk does for
@@ -600,30 +620,67 @@ struct folding_in {
 
   template <std::size_t Which>
   constexpr void opened() {
+    if constexpr (waits) { wait_for({Which, 0, '\0', {}}); return; }
     if (how != nullptr) how->fold_opened(slot, Which);
     else open_one_group<held, Which>(alone);
   }
   template <std::size_t Which>
   constexpr void pushed(char letter) {
+    if constexpr (waits) { wait_for({Which, 1, letter, {}}); return; }
     if (how != nullptr) how->fold_pushed(slot, Which, letter);
     else push_one_group<held, Which>(alone, letter);
   }
   template <std::size_t Which>
   constexpr void pushed(std::string_view run) {
+    if constexpr (waits) { wait_for({Which, 2, '\0', run}); return; }
     if (how != nullptr) how->fold_pushed_run(slot, Which, run);
     else push_one_group<held, Which>(alone, run);
   }
   template <std::size_t Which>
   constexpr void closed() {
+    if constexpr (waits) { wait_for({Which, 3, '\0', {}}); return; }
     if (how != nullptr) how->fold_closed(slot, Which);
     else close_one_group<held, Which>(alone);
   }
   template <std::size_t Which>
   constexpr void closed(std::string_view text) {
+    if constexpr (waits) { wait_for({Which, 4, '\0', text}); return; }
     if (how != nullptr) how->fold_closed_on(slot, Which, text);
     else close_one_group<held, Which>(alone, text);
   }
+  // What happened, kept until it is certain. The queue is as long as the
+  // machine can go without standing in one reading, so it cannot run over
+  // unless the walk never settles -- which is what `turns_held_back` refuses
+  // at compile time.
+  constexpr void wait_for(turn one) {
+    if (count_ < waiting_.size()) waiting_[count_++] = one;
+  }
+
+  // Told, now that there is nobody left to disagree. The same hooks in the
+  // same order, said later.
+  constexpr void settle() {
+    if constexpr (waits) {
+      for (std::uint32_t at = 0; at < count_; ++at) {
+        const turn& one = waiting_[at];
+        tell_one(one);
+      }
+      count_ = 0;
+    }
+  }
+
+  constexpr void tell_one(const turn& one) {
+    if (how == nullptr) return;
+    switch (one.what) {
+      case 0: how->fold_opened(slot, one.which); break;
+      case 1: how->fold_pushed(slot, one.which, one.letter); break;
+      case 2: how->fold_pushed_run(slot, one.which, one.run); break;
+      case 3: how->fold_closed(slot, one.which); break;
+      default: how->fold_closed_on(slot, one.which, one.run); break;
+    }
+  }
+
   [[nodiscard]] constexpr answer finish() {
+    if constexpr (waits) settle();
     if (how != nullptr) return how->fold_finish(slot);
     if constexpr (scan::says_what_went_wrong_folding<held>) {
       return scan::scanner_told_finish_groups<held, scan::hands_a_failure_back>(
@@ -634,10 +691,10 @@ struct folding_in {
   }
 };
 
-template <class FieldType, std::size_t Copies>
-[[nodiscard]] constexpr folding_in<std::remove_cv_t<FieldType>>
-context_leaf<FieldType, Copies>::begin_fold() const {
-  return folding_in<held>(how_);
+template <class FieldType, std::size_t Copies, std::size_t Window>
+[[nodiscard]] constexpr folding_in<std::remove_cv_t<FieldType>, Window>
+context_leaf<FieldType, Copies, Window>::begin_fold() const {
+  return folding_in<held, Window>(how_);
 }
 
 // The implementation is written where the context still has its type, so it
@@ -646,7 +703,7 @@ context_leaf<FieldType, Copies>::begin_fold() const {
 // scanner that is told one may write in it. It is made at the place the context
 // is said, as a default argument, so it lives exactly as long as the call.
 template <class FieldType, class ContextType, bool ToldApart,
-          std::size_t Copies>
+          std::size_t Copies, std::size_t Window>
 struct reading_by final : reading_of<FieldType> {
   using held = std::remove_cv_t<FieldType>;
   static_assert(
@@ -661,7 +718,7 @@ struct reading_by final : reading_of<FieldType> {
   // live here because they have to outlive what they are wired into, and what
   // they are wired into is a state the walk carries about.
   [[no_unique_address]] typename readings_under<held, ContextType,
-                                                Copies>::type under_{};
+                                                Copies, Window>::type under_{};
 
   static constexpr bool by_groups =
       requires { scan::scanner<held>{}.begin_groups(); } ||
@@ -745,10 +802,21 @@ struct reading_by final : reading_of<FieldType> {
   //
   // The same states the walk holds inline where the contexts were not said in
   // braces. Nothing is kept here that is not kept there.
-  std::array<std::optional<fold_state>, folds ? Copies : 1> slots_{};
+  // One where the scanner asked for one, and one for every reading the walk
+  // stands in otherwise. Where the turns wait, nothing is written until the
+  // walk stands in one reading, so there is nothing for a second to hold.
+  static constexpr bool in_one_place = scan::gathers_in_one_place<held>;
+  static constexpr std::size_t slot_count =
+      !folds ? 1 : (in_one_place ? 1 : Copies);
+  std::array<std::optional<fold_state>, slot_count> slots_{};
 
   [[nodiscard]] constexpr std::size_t fold_begin() override {
-    if constexpr (folds) {
+    if constexpr (folds && in_one_place) {
+      // One state, begun once: every reading tells it the same turns, and only
+      // the one that is left tells it at all.
+      if (!slots_[0].has_value()) slots_[0] = begun_here(kept);
+      return 0;
+    } else if constexpr (folds) {
       const std::size_t slot = a_free_slot();
       slots_[slot] = begun_here(kept);
       return slot;
@@ -815,7 +883,9 @@ struct reading_by final : reading_of<FieldType> {
     }
   }
   [[nodiscard]] constexpr std::size_t fold_kept(std::size_t slot) override {
-    if constexpr (!folds) {
+    if constexpr (folds && in_one_place) {
+      return slot;
+    } else if constexpr (!folds) {
       return slot;
     } else {
       const std::size_t free = a_free_slot();
@@ -824,11 +894,15 @@ struct reading_by final : reading_of<FieldType> {
     }
   }
   constexpr void fold_back_to(std::size_t live, std::size_t kept_at) override {
-    if constexpr (folds) {
+    if constexpr (folds && in_one_place) {
+      static_cast<void>(live);
+      static_cast<void>(kept_at);
+    } else if constexpr (folds) {
       groups_go_back_to<held>(*slots_[live], *slots_[kept_at]);
     }
   }
   constexpr void fold_drop(std::size_t slot) override {
+    if constexpr (folds && in_one_place) { static_cast<void>(slot); return; }
     slots_[slot].reset();
   }
 
