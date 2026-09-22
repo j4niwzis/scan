@@ -16,7 +16,7 @@
 #include <variant>
 #include <vector>
 
- namespace scan::tre {
+namespace scan::tre {
 
 // A set of symbols as four words rather than two hundred and fifty-six bools.
 //
@@ -55,33 +55,33 @@ struct symbol_set {
 };
 
 using state_id = std::uint32_t;
-using tag_id = std::uint32_t;
-inline constexpr std::size_t unbounded =
+ using tag_id = std::uint32_t;
+ inline constexpr std::size_t unbounded =
     std::numeric_limits<std::size_t>::max();
-inline constexpr std::ptrdiff_t negative_tag = -1;
+ inline constexpr std::ptrdiff_t negative_tag = -1;
 
-class node;
+ class node;
 
 namespace ast {
 
-struct empty {};
-struct epsilon {};
-struct symbol {
+ struct empty {};
+ struct epsilon {};
+ struct symbol {
   char value = 0;
 };
-struct tag {
+ struct tag {
   tag_id id = 0;
 };
-struct character_class {
+ struct character_class {
   symbol_set symbols{};
 };
-struct alternative {
+ struct alternative {
   std::vector<node> branches;
 };
-struct concatenation {
+ struct concatenation {
   std::vector<node> elements;
 };
-struct repetition {
+ struct repetition {
   std::vector<node> element;
   std::size_t minimum = 0;
   std::size_t maximum = unbounded;
@@ -100,7 +100,7 @@ using node_variant =
 
 }  // namespace ast
 
-class node : public ast::node_variant {
+ class node : public ast::node_variant {
  public:
   using ast::node_variant::node_variant;
   using ast::node_variant::operator=;
@@ -112,7 +112,7 @@ class node : public ast::node_variant {
 // hand without moving the tags -- `(a){2}` is one group that took two turns
 // and `(a)(a)` is two groups -- so this is what says whether writing it out is
 // allowed at all.
-[[nodiscard]] constexpr bool marks_a_place(const node& one) {
+ [[nodiscard]] constexpr bool marks_a_place(const node& one) {
   return std::visit(
       [](const auto& value) -> bool {
         using kind = std::remove_cvref_t<decltype(value)>;
@@ -145,7 +145,7 @@ class node : public ast::node_variant {
 // same" costs a reading of some text.
 inline constexpr std::size_t most_copies = 32;
 
-[[nodiscard]] constexpr node plainly(const node& one);
+ [[nodiscard]] constexpr node plainly(const node& one);
 
 constexpr void append_plainly(std::vector<node>& into, const node& one) {
   const node made = plainly(one);
@@ -179,7 +179,7 @@ constexpr void append_plainly(std::vector<node>& into, const node& one) {
 // decides whether the groups a match already found are some type's values --
 // where saying "the same" wrongly is a wrong answer, and saying "not the
 // same" wrongly is one more reading of some text.
-[[nodiscard]] constexpr node plainly(const node& one) {
+ [[nodiscard]] constexpr node plainly(const node& one) {
   return std::visit(
       [](const auto& value) -> node {
         using kind = std::remove_cvref_t<decltype(value)>;
@@ -246,7 +246,7 @@ constexpr void append_plainly(std::vector<node>& into, const node& one) {
 // Tags are compared by their number, which means both sides have to have been
 // read with their own count starting from the same place. Two patterns read
 // on their own do.
-[[nodiscard]] constexpr bool same_tree(const node& left, const node& right);
+ [[nodiscard]] constexpr bool same_tree(const node& left, const node& right);
 
 [[nodiscard]] constexpr bool same_trees(const std::vector<node>& left,
                                         const std::vector<node>& right) {
@@ -257,7 +257,7 @@ constexpr void append_plainly(std::vector<node>& into, const node& one) {
   return true;
 }
 
-[[nodiscard]] constexpr bool same_tree(const node& left, const node& right) {
+ [[nodiscard]] constexpr bool same_tree(const node& left, const node& right) {
   if (left.index() != right.index()) return false;
   return std::visit(
       [&](const auto& one) -> bool {
@@ -285,41 +285,41 @@ constexpr void append_plainly(std::vector<node>& into, const node& one) {
       static_cast<const ast::node_variant&>(left));
 }
 
-[[nodiscard]] constexpr bool same_expression(const node& left,
+ [[nodiscard]] constexpr bool same_expression(const node& left,
                                              const node& right) {
   return same_tree(plainly(left), plainly(right));
 }
 
-[[nodiscard]] constexpr node empty() { return ast::empty{}; }
-[[nodiscard]] constexpr node epsilon() { return ast::epsilon{}; }
-[[nodiscard]] constexpr node symbol(char value) { return ast::symbol{value}; }
-[[nodiscard]] constexpr node tag(tag_id id) { return ast::tag{id}; }
-[[nodiscard]] constexpr node character_class(symbol_set symbols) {
+ [[nodiscard]] constexpr node empty() { return ast::empty{}; }
+ [[nodiscard]] constexpr node epsilon() { return ast::epsilon{}; }
+ [[nodiscard]] constexpr node symbol(char value) { return ast::symbol{value}; }
+ [[nodiscard]] constexpr node tag(tag_id id) { return ast::tag{id}; }
+ [[nodiscard]] constexpr node character_class(symbol_set symbols) {
   return ast::character_class{symbols};
 }
 
-[[nodiscard]] constexpr node character_class(
+ [[nodiscard]] constexpr node character_class(
     const std::array<bool, 256>& symbols) {
   return ast::character_class{symbol_set::from_bools(symbols)};
 }
-[[nodiscard]] constexpr node alt(std::vector<node> branches) {
+ [[nodiscard]] constexpr node alt(std::vector<node> branches) {
   return ast::alternative{std::move(branches)};
 }
-[[nodiscard]] constexpr node cat(std::vector<node> elements) {
+ [[nodiscard]] constexpr node cat(std::vector<node> elements) {
   return ast::concatenation{std::move(elements)};
 }
-[[nodiscard]] constexpr node repeat(node element, std::size_t minimum,
+ [[nodiscard]] constexpr node repeat(node element, std::size_t minimum,
                                     std::size_t maximum = unbounded,
                                     bool greedy = true) {
   return ast::repetition{{std::move(element)}, minimum, maximum, greedy};
 }
-[[nodiscard]] constexpr node star(node element, bool greedy = true) {
+ [[nodiscard]] constexpr node star(node element, bool greedy = true) {
   return repeat(std::move(element), 0, unbounded, greedy);
 }
-[[nodiscard]] constexpr node plus(node element, bool greedy = true) {
+ [[nodiscard]] constexpr node plus(node element, bool greedy = true) {
   return repeat(std::move(element), 1, unbounded, greedy);
 }
-[[nodiscard]] constexpr node optional(node element, bool greedy = true) {
+ [[nodiscard]] constexpr node optional(node element, bool greedy = true) {
   return repeat(std::move(element), 0, 1, greedy);
 }
 
@@ -330,7 +330,7 @@ enum class transition_kind : std::uint8_t {
   tag
 };
 
-struct transition {
+ struct transition {
   state_id target = 0;
   transition_kind kind = transition_kind::epsilon;
   char symbol = 0;
@@ -341,29 +341,29 @@ struct transition {
   std::uint32_t priority = 0;
 };
 
-struct tnfa {
+ struct tnfa {
   state_id initial = 0;
   state_id final = 0;
   std::size_t tag_count = 0;
   std::vector<std::vector<transition>> transitions;
 };
 
-[[nodiscard]] constexpr tnfa compile_tnfa(const node& expression);
+ [[nodiscard]] constexpr tnfa compile_tnfa(const node& expression);
 
-using tag_history = std::vector<std::ptrdiff_t>;
+ using tag_history = std::vector<std::ptrdiff_t>;
 
-struct match {
+ struct match {
   bool matched = false;
   std::vector<tag_history> tags;
 };
 
 // Runs an anchored, whole-input match with leftmost-greedy disambiguation.
-template <std::ranges::input_range RangeType>
+ template <std::ranges::input_range RangeType>
   requires std::same_as<std::ranges::range_value_t<RangeType>, char>
 [[nodiscard]] constexpr match simulate(const tnfa& automaton,
                                        RangeType&& input);
 
-template <std::size_t Extent>
+ template <std::size_t Extent>
 [[nodiscard]] constexpr match simulate(const tnfa& automaton,
                                        const char (&input)[Extent]) {
   return simulate(automaton, std::string_view(input, Extent - 1));
@@ -401,14 +401,14 @@ struct tag_values {
   [[nodiscard]] constexpr iterator end() const { return {this, size}; }
 };
 
-struct register_command {
+ struct register_command {
   std::size_t destination = 0;
   std::optional<std::size_t> source;
   // Values are appended in order; true means current input position.
   tag_values values;
 };
 
-struct tdfa_transition {
+ struct tdfa_transition {
   symbol_set symbols{};
   std::size_t target = 0;
   std::vector<register_command> commands;
@@ -425,7 +425,7 @@ struct tdfa_transition {
   bool groups_known = false;
 };
 
-struct tdfa_state {
+ struct tdfa_state {
   std::vector<state_id> nfa_states;
   std::vector<tdfa_transition> transitions;
   std::optional<std::size_t> accepting_slot;
@@ -459,7 +459,7 @@ struct tdfa_state {
   bool groups_known = false;
 };
 
-struct tdfa {
+ struct tdfa {
   std::size_t initial = 0;
   std::size_t tag_count = 0;
   std::size_t register_count = 0;
@@ -631,7 +631,7 @@ struct groups_inside {
   return said;
 }
 
-[[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
+ [[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
                                           bool cut_at_match = true);
 // The same, told which groups the answer is made of.
 //
@@ -639,14 +639,14 @@ struct groups_inside {
 // because that is what the tags say; the marks of the groups nobody will ask
 // about are taken out afterwards, so the determiniser never sees them and
 // never splits a state over where one of them was written.
-[[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
+ [[nodiscard]] constexpr tdfa compile_tdfa(const tnfa& automaton,
                                           bool cut_at_match,
                                           std::uint64_t keep);
 // Applies TDFA register liveness, dead-store elimination, copy cleanup, and
 // local transition normalization.
-[[nodiscard]] constexpr tdfa optimize_tdfa(tdfa automaton,
+ [[nodiscard]] constexpr tdfa optimize_tdfa(tdfa automaton,
                                             bool allocate_registers = true);
-[[nodiscard]] constexpr match simulate(const tdfa& automaton,
+ [[nodiscard]] constexpr match simulate(const tdfa& automaton,
                                        std::string_view input);
 
 }  // namespace scan::tre

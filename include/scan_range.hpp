@@ -17,9 +17,9 @@
 #include <utility>
 #include "scan_shape.hpp"
 
- namespace scan::detail {
+namespace scan::detail {
 
-template <class Type, fixed_string Format, std::size_t Extent, std::size_t... Index>
+ template <class Type, fixed_string Format, std::size_t Extent, std::size_t... Index>
 [[nodiscard]] constexpr Type convert(
     const std::array<std::string_view, Extent>& fields,
     std::index_sequence<Index...>) {
@@ -68,7 +68,7 @@ class reading_with {
 
  private:
   Reading what_;
-  scan::contexts_at_places<Contexts...> given_;
+  scan::contexts_said<Contexts...> given_;
 };
 
 // Naming what a reading is for, written once for every kind of subject.
@@ -115,7 +115,7 @@ struct names_its_output {
       }
     } else {
       return std::forward<Self>(self).template asked_for<Type>(
-          scan::contexts_at_places<Contexts...>(given...));
+          scan::contexts_from(std::forward<Contexts>(given)...));
     }
   }
 
@@ -402,7 +402,7 @@ class streaming_result : public names_its_output<Format> {
 
 }  // namespace scan::detail
 
- namespace scan {
+namespace scan {
 
 // Whether the type of the input promises a terminator past its last character.
 //
@@ -423,7 +423,7 @@ concept terminated_char_range =
      detail::literal_char_range<RangeType>);
 
 // What a scan of the head of an input hands back: the values, and what is left.
-template <class Type>
+ template <class Type>
 struct taken {
   Type value;
   std::string_view rest;
@@ -497,7 +497,8 @@ class prefix_scan {
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr std::expected<taken<Type>, detail::failure_for<Type>>
   try_take(Contexts&&... given) const {
-    return taken_with<Type>(scan::contexts_at_places<Contexts...>(given...));
+    return taken_with<Type>(
+        scan::contexts_from(std::forward<Contexts>(given)...));
   }
 
   template <class Type>
@@ -510,7 +511,7 @@ class prefix_scan {
     requires(sizeof...(Contexts) > 0)
   [[nodiscard]] constexpr taken<Type> take(Contexts&&... given) const {
     return or_thrown(
-        taken_with<Type>(scan::contexts_at_places<Contexts...>(given...)));
+        taken_with<Type>(scan::contexts_from(std::forward<Contexts>(given)...)));
   }
 
   template <class Type>
@@ -736,7 +737,7 @@ class each_stream_view {
 // reason.
 namespace experimental {
 
-template <class Type, fixed_string Format>
+ template <class Type, fixed_string Format>
 class reader {
  public:
   // False means the character was not taken and the machine has not moved:
@@ -900,8 +901,7 @@ class each_stream_scan {
     if constexpr (sizeof...(Contexts) == 0) {
       return each_stream_view<Type, Format, RangeType>(std::move(self.input_));
     } else {
-      using carrier =
-          scan::contexts_at_places<Contexts...>;
+      using carrier = scan::contexts_said<Contexts...>;
       return each_stream_view<Type, Format, RangeType, carrier>(
           std::move(self.input_), carrier(given...));
     }
@@ -971,7 +971,7 @@ struct each_closure : std::ranges::range_adaptor_closure<each_closure<Format>> {
   }
 };
 
-template <fixed_string Format>
+ template <fixed_string Format>
 inline constexpr each_closure<Format> each{};
 
 // What `each` over pieces hands back until somebody says what it reads into.
@@ -1077,7 +1077,7 @@ class each_pieces_view {
 };
 
 // The head of the input that the pattern takes, and what follows it.
-template <fixed_string Format, detail::contiguous_char_range RangeType>
+ template <fixed_string Format, detail::contiguous_char_range RangeType>
   requires(std::is_lvalue_reference_v<RangeType&&> || std::ranges::borrowed_range<RangeType>)
 [[nodiscard]] constexpr auto scan_prefix(RangeType&& input) {
   return prefix_scan<Format>(detail::characters_of(input));
@@ -1085,7 +1085,7 @@ template <fixed_string Format, detail::contiguous_char_range RangeType>
 
 // The same, for input that has to be read as it comes. Nothing is buffered and
 // nothing is looked at twice.
-template <fixed_string Format, std::ranges::input_range RangeType>
+ template <fixed_string Format, std::ranges::input_range RangeType>
   requires std::same_as<std::ranges::range_value_t<RangeType>, char> &&
            (!detail::contiguous_char_range<RangeType> ||
             (!std::is_lvalue_reference_v<RangeType&&> &&
@@ -1258,7 +1258,7 @@ struct scan_closure {
   }
 };
 
-template <fixed_string Format>
+ template <fixed_string Format>
 inline constexpr scan_closure<Format> scan{};
 
 template <class Type, fixed_string Format, std::ranges::input_range RangeType>

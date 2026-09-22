@@ -16,7 +16,7 @@
 #include "scan_tre.hpp"
 #include "scan_compiler.hpp"
 
- namespace scan::detail {
+namespace scan::detail {
 
 #if defined(_MSC_VER)
 #define SCAN_FORCE_INLINE __forceinline
@@ -33,7 +33,7 @@
 // address itself, and then nothing has to be added to it or taken from it --
 // neither when it is written nor when a field is cut out of it at the end. Both
 // are marks, and everything below is written for either.
-template <class Mark>
+ template <class Mark>
 inline constexpr Mark absent_mark = [] {
   if constexpr (std::is_pointer_v<Mark>) {
     return nullptr;
@@ -62,7 +62,7 @@ struct marks_tuple<Mark, std::index_sequence<Which...>> {
 // re2c has no such array. It writes `yyt1 = YYCURSOR` against a named local
 // and copies marks between locals, which is why what it emits keeps them in
 // machine registers. This is that, said in a type.
-template <class Mark, std::size_t Count>
+ template <class Mark, std::size_t Count>
 struct register_file {
   using storage_type =
       typename marks_tuple<Mark, std::make_index_sequence<Count>>::type;
@@ -112,7 +112,7 @@ struct register_file {
 // it comes, and the one that reads an automaton built at run time, keep theirs
 // in an array. Both are asked the same way here, so that a number out of the
 // data stays possible where it is unavoidable and impossible everywhere else.
-template <class FileType>
+ template <class FileType>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto slot_read(
     const FileType& registers, std::size_t which) {
   if constexpr (requires { registers.read(which); }) {
@@ -122,7 +122,7 @@ template <class FileType>
   }
 }
 
-template <class FileType, class Mark>
+ template <class FileType, class Mark>
 SCAN_FORCE_INLINE constexpr void slot_write(FileType& registers,
                                             std::size_t which, Mark value) {
   if constexpr (requires { registers.write(which, value); }) {
@@ -137,7 +137,7 @@ SCAN_FORCE_INLINE constexpr void slot_write(FileType& registers,
 // The walk that runs keeps its marks in a tuple, where the number has to be a
 // constant. The walk that reads an automaton built at run time keeps them in a
 // vector, where it cannot be. Both are asked the same way here.
-template <std::size_t Which, class FileType>
+ template <std::size_t Which, class FileType>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr auto mark_at(const FileType& registers) {
   if constexpr (requires { registers.template at<Which>(); }) {
     return registers.template at<Which>();
@@ -177,7 +177,7 @@ template <std::size_t Which, class FileType>
 // a tuple, each one costs a comparison with every slot it is not -- a hundred
 // of them before the first character, paid by every reading. On a long subject
 // that hides; on a short one it is most of the time.
-template <auto& Automaton, class Mark, class FileType>
+ template <auto& Automaton, class Mark, class FileType>
 SCAN_FORCE_INLINE constexpr void execute_initial(FileType& registers,
                                                  Mark here) {
   [&]<std::size_t... index>(std::index_sequence<index...>) {
@@ -205,7 +205,7 @@ SCAN_FORCE_INLINE constexpr void execute_initial(FileType& registers,
   }(std::make_index_sequence<Automaton.initialize.size()>{});
 }
 
-template <class Mark, class FileType, std::size_t CommandCount>
+ template <class Mark, class FileType, std::size_t CommandCount>
 SCAN_FORCE_INLINE constexpr void execute_commands(
     const std::array<packed_command, CommandCount>& commands,
     std::size_t count, FileType& registers, Mark here) {
@@ -276,7 +276,7 @@ SCAN_FORCE_INLINE constexpr void execute_commands(
 //
 // The reading is closed under copying: a register that feeds a live one is
 // live too, however many moves the copy takes to arrive.
-template <auto& Automaton, std::uint64_t TagsRead>
+ template <auto& Automaton, std::uint64_t TagsRead>
 inline constexpr auto registers_worth_writing = [] consteval {
   constexpr std::size_t count = Automaton.register_count;
   std::array<bool, count> live{};
@@ -373,7 +373,7 @@ SCAN_FORCE_INLINE constexpr void execute_static_final_commands(
 // part of an address, and the room here is for that: the class used to hold
 // eight and a state with more of them was left to be read a character at a
 // time, which is the one class in the benchmarks that most wanted the vectors.
-struct staying_class {
+ struct staying_class {
   std::array<unsigned char, 16> first{};
   std::array<unsigned char, 16> last{};
   std::size_t count = 0;
@@ -415,6 +415,11 @@ template <class LaneType, std::size_t... Index>
                                              std::index_sequence<Index...>) {
   return LaneType{(static_cast<void>(Index), value)...};
 }
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpsabi"
+#endif
 
 template <class LaneType>
 [[nodiscard]] constexpr LaneType spread_over(unsigned char value) {
@@ -538,7 +543,7 @@ SCAN_FORCE_INLINE void outside_of(LaneType letters,
 // Did any of them fall out of the class? Not which -- any. The comparison
 // collapses to one bit, and where the compiler can fold a vector down to a
 // scalar it does it in a couple of instructions.
-template <class LaneType>
+ template <class LaneType>
 [[nodiscard]] SCAN_FORCE_INLINE bool any_of(LaneType mask) {
 #if __has_builtin(__builtin_reduce_or)
   return __builtin_reduce_or(mask) != 0;
@@ -578,7 +583,7 @@ template <class LaneType>
 //
 // The same question the vectors ask of sixty-four at once, asked of one -- for
 // the head of a run, where there are not sixty-four to ask about yet.
-template <staying_class Klass>
+ template <staying_class Klass>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool inside_of(unsigned char letter) {
   bool belongs = false;
   for (std::size_t at = 0; at < Klass.count; ++at) {
@@ -587,7 +592,7 @@ template <staying_class Klass>
   return belongs;
 }
 
-template <staying_class Klass, bool InWords = true>
+ template <staying_class Klass, bool InWords = true>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr const char* skip_class(
     const char* cursor, const char* limit) {
   // Everything below reads several characters as one number and then asks which
@@ -649,7 +654,8 @@ template <staying_class Klass, bool InWords = true>
         lane head{}, tail{};
         __builtin_memcpy(&head, cursor, 32);
         __builtin_memcpy(&tail, cursor + 32, 32);
-        decltype(head < head) head_out{}, tail_out{};
+        decltype(std::declval<lane>() < std::declval<lane>()) head_out{},
+            tail_out{};
         outside_of<Klass>(head, head_out);
         outside_of<Klass>(tail, tail_out);
         if (any_of(head_out | tail_out)) {
@@ -848,7 +854,7 @@ template <auto& Automaton, std::size_t State, std::size_t Move>
 }
 
 // Which symbols make this move, for a move that a handful of runs make.
-template <auto& Automaton, std::size_t State, std::size_t Move>
+ template <auto& Automaton, std::size_t State, std::size_t Move>
 inline constexpr auto move_table = [] consteval {
   constexpr const auto& packed = Automaton.states[State];
   std::array<unsigned char, 256> made{};
@@ -976,7 +982,7 @@ template <auto& Automaton, std::size_t State, std::uint64_t TagsRead,
 // Where it does not, nothing a group is held in can change while the machine
 // stays here, so whether a group is being gathered is the same for every
 // character of the run and is worth asking once.
-template <auto& Automaton, std::size_t State>
+ template <auto& Automaton, std::size_t State>
 [[nodiscard]] consteval bool staying_writes() {
   const auto& packed = Automaton.states[State];
   for (std::size_t index = 0; index < packed.range_count; ++index) {
@@ -1033,7 +1039,7 @@ template <auto& Automaton>
 // row of thirty characters took the walk that reads sixty-four at a time,
 // asked three questions to find that it could not, and read them one at a
 // time in the end. Twice the time of the walk it should have taken.
-template <auto& Automaton>
+ template <auto& Automaton>
 [[nodiscard]] consteval std::size_t worth_reading_in_words() {
   constexpr std::size_t runs = runs_stepped_over<Automaton>();
   return 16 * (runs != 0 ? runs : 1);
@@ -1083,7 +1089,7 @@ template <auto& Automaton, std::size_t State>
 // fallback and what this library refuses to read a stream without. What ends
 // up here is at most that, because a walk that read further would have died
 // before it got here.
-template <class GathererType, class PiecesType, std::size_t Hold = 0>
+ template <class GathererType, class PiecesType, std::size_t Hold = 0>
 struct gathers_from_pieces : GathererType {
   PiecesType pieces;
   std::optional<std::ranges::iterator_t<PiecesType>> at;
@@ -1210,7 +1216,7 @@ struct gathers_from_pieces : GathererType {
 };
 
 // Nothing gathered: what the walk hands over goes nowhere and costs nothing.
-struct gathers_nothing {
+ struct gathers_nothing {
   template <std::size_t State, std::size_t Move, class RegistersType,
             class Mark>
   constexpr void moving(const RegistersType&, Mark) const {}
@@ -1229,7 +1235,7 @@ struct gathers_nothing {
 
 // A gatherer that keeps every character it is handed, which is what a match
 // over a subject read once hands back.
-template <class HeldType>
+ template <class HeldType>
 struct keeps_into {
   HeldType& held;
 
@@ -1252,7 +1258,7 @@ struct keeps_into {
 // stop at or a terminator to stop on, an answer of yes or no or of where the
 // longest match ended, tags or none, a gatherer or nobody, vectors or not, and
 // how far to write the chain of states out without calling.
-struct walk_shape {
+ struct walk_shape {
   // Step over a run in vectors. Wants characters in a row and nobody
   // gathering: what is stepped over is not read.
   bool in_words = false;
@@ -1298,7 +1304,7 @@ struct walk_shape {
 // cannot be copied -- and such a subject is never asked where the longest head
 // ended, because keeping the place would mean keeping the characters.
 // Where a walk that is not looking for a head would have kept the place.
-struct nothing_kept {};
+ struct nothing_kept {};
 
 // What the walk keeps of the place it liked best.
 //
@@ -1309,7 +1315,7 @@ struct nothing_kept {};
 // automaton has one: where every step out of a match lands in another match,
 // the registers at the end are the registers at the note and nothing is
 // copied.
-template <class CursorType, class KeptType = nothing_kept>
+ template <class CursorType, class KeptType = nothing_kept>
 struct walk_answer {
   bool matched = false;
   std::optional<CursorType> at{};
@@ -1374,6 +1380,17 @@ SCAN_FORCE_INLINE constexpr void keep_the_place(
 
 // The walk a constant evaluation takes, said before it is written: the
 // wrapper below is what chooses between it and the threaded one.
+// Said here because the walk below names it before it is written out, and a
+// name with template arguments of its own is not a dependent one: it has to
+// have been seen.
+template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
+          class CursorType, class SentinelType, std::size_t RegisterCount,
+          class Gatherer, class AnswerType>
+[[nodiscard]] bool run_threaded(
+    CursorType& __restrict cursor, SentinelType last, Mark& __restrict place,
+    register_file<Mark, RegisterCount>& __restrict registers,
+    Gatherer& __restrict into, AnswerType& __restrict best);
+
 template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
           class CursorType, class SentinelType, std::size_t RegisterCount,
           class Gatherer, class AnswerType>
@@ -1386,7 +1403,7 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry, class Mark,
 //
 // Everything above passes a chain along; a caller outside has none, and what
 // it wants back is whether the reading was a match.
-template <auto& Automaton, walk_shape Shape, std::size_t State,
+ template <auto& Automaton, walk_shape Shape, std::size_t State,
           class Mark,
           class CursorType, class SentinelType, std::size_t RegisterCount,
           class Gatherer, class AnswerType>
@@ -1485,7 +1502,7 @@ template <auto& Automaton, walk_shape Shape, std::size_t State,
 #endif
 
 // How many states the machine has, asked of the machine and not of a caller.
-template <auto& Automaton>
+ template <auto& Automaton>
 inline constexpr std::size_t states_in =
     std::tuple_size_v<std::remove_cvref_t<decltype(Automaton.states)>>;
 
@@ -2527,7 +2544,7 @@ scan_over:
 // compiling takes the written-out walk and is handed the state it works on in
 // the ordinary way -- there is no stack to keep it off. Only the walk that
 // runs owns what it reads into.
-template <auto& Automaton, walk_shape Shape, std::size_t Entry,
+ template <auto& Automaton, walk_shape Shape, std::size_t Entry,
           class Mark,
           bool PointsAtSubject, class CursorType, class SentinelType,
           std::size_t RegisterCount, class Gatherer, class AnswerType,
@@ -2584,7 +2601,7 @@ template <auto& Automaton, walk_shape Shape, std::size_t Entry,
 }
 
 // Walking characters in a row to a terminator, gathering nothing.
-template <auto& Automaton, unsigned char Terminator, bool InWords,
+ template <auto& Automaton, unsigned char Terminator, bool InWords,
           std::size_t State, std::size_t RegisterCount>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_to_terminator(
     const char* cursor, const char* end,
@@ -2616,7 +2633,7 @@ template <auto& Automaton, unsigned char Terminator, bool InWords,
 // The format `{},{}` spends the whole of its first field in such a cycle and
 // still cannot read one character past a match: from the end there is no way
 // back into it.
-template <auto& Automaton>
+ template <auto& Automaton>
 [[nodiscard]] consteval auto barren_walks() {
   constexpr std::size_t state_count =
       std::tuple_size_v<std::remove_cvref_t<decltype(Automaton.states)>>;
@@ -2679,7 +2696,7 @@ template <auto& Automaton>
 // match and nothing was ever read past one. For `abc|abd` it is two. Where a
 // final state can walk into a cycle with no match along it, there is no
 // number.
-template <auto& Automaton>
+ template <auto& Automaton>
 [[nodiscard]] consteval std::size_t walk_past_a_match() {
   constexpr auto walks = barren_walks<Automaton>();
   std::size_t window = 0;
@@ -2700,7 +2717,7 @@ template <auto& Automaton>
 // one character later needs them. For `\s+` it is zero: a space is already a
 // whole match, and anything else dies before it is taken. For `ab` it is one.
 // For `a+b` there is no such number, and that is the pattern this refuses.
-template <auto& Automaton>
+ template <auto& Automaton>
 [[nodiscard]] consteval std::size_t walk_from_the_start() {
   constexpr auto walks = barren_walks<Automaton>();
   if (walks.forever[Automaton.initial]) {
@@ -2712,7 +2729,7 @@ template <auto& Automaton>
 
 
 
-template <auto& Automaton, std::size_t State, std::size_t RegisterCount>
+ template <auto& Automaton, std::size_t State, std::size_t RegisterCount>
 [[nodiscard]] constexpr const char* run_head(
     const char* cursor, const char* end,
     register_file<const char*, RegisterCount>& registers) {
@@ -2728,7 +2745,7 @@ template <auto& Automaton, std::size_t State, std::size_t RegisterCount>
 
 // Walking characters that lie in a row, gathering nothing: the shape almost
 // every caller wants, said once.
-template <auto& Automaton, bool InWords, std::size_t State,
+ template <auto& Automaton, bool InWords, std::size_t State,
           std::size_t RegisterCount>
 [[nodiscard]] SCAN_FORCE_INLINE constexpr bool run_from_here(
     const char* cursor, const char* end,
@@ -2749,7 +2766,7 @@ template <auto& Automaton, bool InWords, std::size_t State,
 // so the loop carries one comparison per character instead of two. The class
 // is tested first and the terminator afterwards -- it can never keep the
 // automaton where it is, so asking about it first would only add a branch.
-template <auto& Automaton, unsigned char Sentinel>
+ template <auto& Automaton, unsigned char Sentinel>
 [[nodiscard]] consteval bool is_safe_tagged_sentinel() {
   for (const auto& state : Automaton.states) {
     for (std::size_t index = 0; index < state.range_count; ++index) {
@@ -2775,7 +2792,7 @@ template <auto& Automaton, unsigned char Sentinel>
 // step that led here; unreachable states start out claiming everything, and
 // the answer falls to a fixed point. What every accepting state agrees on --
 // its own closing operations included -- is what needs no test.
-template <auto& Automaton>
+ template <auto& Automaton>
 [[nodiscard]] consteval auto tags_always_written() {
   constexpr std::size_t tags = Automaton.tag_count;
   constexpr std::size_t count = Automaton.states.size();
@@ -2893,7 +2910,7 @@ inline void execute_runtime_commands(
   }
 }
 
-[[nodiscard]] inline bool run_tagged_runtime(const scan::tre::tdfa& automaton,
+ [[nodiscard]] inline bool run_tagged_runtime(const scan::tre::tdfa& automaton,
                                              const char* cursor,
                                              const char* end,
                                              std::vector<const char*>& registers) {
@@ -2923,7 +2940,7 @@ inline void execute_runtime_commands(
 }
 
 // The longest head of the input the automaton accepts, or nothing.
-[[nodiscard]] inline const char* run_prefix_runtime(
+ [[nodiscard]] inline const char* run_prefix_runtime(
     const scan::tre::tdfa& automaton, const char* cursor, const char* end) {
   std::size_t state = automaton.initial;
   const char* best =
@@ -2948,6 +2965,10 @@ inline void execute_runtime_commands(
 
 
 #undef SCAN_FORCE_INLINE
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 }  // namespace scan::detail
 

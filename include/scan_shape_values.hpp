@@ -31,8 +31,8 @@
 #define SCAN_FORCE_INLINE inline
 #endif
 
- namespace scan::detail {
-template <class Type, fixed_string Format,
+namespace scan::detail {
+ template <class Type, fixed_string Format,
           class CarrierType = scan::default_context_t>
 struct shape_turns {
   using held = std::remove_cv_t<Type>;
@@ -59,7 +59,7 @@ struct shape_turns {
   [[no_unique_address]] CarrierType told{};
 };
 
-template <class ShapeType>
+ template <class ShapeType>
 struct gathered_by_a_fold {
   ShapeType& state;
 
@@ -100,7 +100,7 @@ inline constexpr std::size_t shape_place_inside =
 // One character, to the place it fell in -- or to the type standing at that
 // place, where the group is one of that type's own. A list's own group holds no
 // characters: what is inside it are the places of one turn, and they take them.
-template <class Type, fixed_string Format, std::size_t Group, class ShapeType>
+ template <class Type, fixed_string Format, std::size_t Group, class ShapeType>
 constexpr void push_shape_place(ShapeType& state, char letter) {
   using held = std::remove_cv_t<Type>;
   constexpr std::size_t place = shape_place_of<held, Group>;
@@ -124,7 +124,7 @@ constexpr void push_shape_place(ShapeType& state, char letter) {
 // A place opened. Said so that a choice can be asked which branch ran and a
 // list whether a turn is going -- and handed on where the group belongs to the
 // type standing at that place.
-template <class Type, fixed_string Format, std::size_t Group, class ShapeType>
+ template <class Type, fixed_string Format, std::size_t Group, class ShapeType>
 constexpr void open_shape_place(ShapeType& state) {
   using held = std::remove_cv_t<Type>;
   constexpr std::size_t place = shape_place_of<held, Group>;
@@ -141,7 +141,7 @@ constexpr void open_shape_place(ShapeType& state) {
 // A place closed. Where it is a list, that is one turn: the element is put
 // together out of the places inside it, added to the list, and those places
 // begin again for the turn that may follow.
-template <class Type, fixed_string Format, std::size_t Group,
+ template <class Type, fixed_string Format, std::size_t Group,
           class FailureType, class ShapeType>
 constexpr void close_shape_place(ShapeType& state,
                                  std::optional<FailureType>& failed) {
@@ -193,7 +193,7 @@ constexpr void close_shape_place(ShapeType& state,
 // the reading is anchored by default -- the walks below a match are kept, and
 // the answer is the first still accepting when the feeding stops. A prefix
 // read off a stream asks for the other policy, and stops where the match ends.
-template <class Type, fixed_string Format, bool Cut = true,
+ template <class Type, fixed_string Format, bool Cut = true,
           class FailureType = failure_for<Type>>
 class stream_state {
  private:
@@ -366,7 +366,7 @@ class stream_state {
 // find that out on every character is what a machine that does not know where
 // it stands has to do; where the state is known, the set is known, and this is
 // it.
-template <auto& Automaton, std::size_t State, std::size_t Group>
+ template <auto& Automaton, std::size_t State, std::size_t Group>
 inline constexpr auto gathered_at = [] consteval {
   constexpr const auto& packed = Automaton.states[State];
   struct answer {
@@ -415,7 +415,7 @@ template <class ColdType, class AllType, std::size_t... Which>
   }()...);
 }
 
-template <class Type, fixed_string Format, class MarkType, class ColdType,
+ template <class Type, fixed_string Format, class MarkType, class ColdType,
           class CarrierType>
 [[nodiscard]] constexpr ColdType made_cold_at_places(const CarrierType& told) {
   auto all = make_slots<Type, Format, MarkType, CarrierType>(told);
@@ -444,7 +444,7 @@ template <class ColdType, class CarrierType>
 // knows where it stands. The work each character does is what it was: apply
 // what the move writes to the gatherings, and give the character to the fields
 // that are open.
-template <class Type, fixed_string Format, auto& Automaton,
+ template <class Type, fixed_string Format, auto& Automaton,
           bool Pointable = false, class MarkKind = std::ptrdiff_t,
           class CarrierType = scan::default_context_t>
 class field_gatherer {
