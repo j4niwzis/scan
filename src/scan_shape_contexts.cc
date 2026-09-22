@@ -205,7 +205,19 @@ class context_leaf {
   static constexpr bool told_apart = false;
 
   constexpr context_leaf() = default;
-  constexpr context_leaf(scan::default_context_t) {}
+  constexpr context_leaf(scan::default_context_t)
+    requires(!scan::gathers_in_one_place<held>)
+  {}
+
+  // Told nothing, and still given somewhere to keep one state. The reading is
+  // made here, as a default argument, so it stands for the caller's own full
+  // expression -- the same way a reading made for a context said in braces
+  // does -- and it is told nothing, which is how the scanner is begun.
+  constexpr context_leaf(
+      scan::default_context_t,
+      reading_by<held, scan::default_context_t, true, Copies, Window>&& made = {})
+    requires scan::gathers_in_one_place<held>
+      : how_(&made) {}
 
   // The context keeps whatever it was said as: a named thing stays that named
   // thing, a temporary lives to the end of the expression, and a const one
@@ -364,7 +376,7 @@ template <class FieldType, std::size_t K>
   }
 }
 
-template <class FieldType, std::size_t K>
+export template <class FieldType, std::size_t K>
 using carrier_place_for = typename decltype(carrier_place_kind<FieldType, K>())::type;
 
 // Which carrier a field wants: read whole, and it is a leaf; opening up into
@@ -810,7 +822,18 @@ struct reading_by final : reading_of<FieldType> {
   // templates on that type and its state may be of a piece with it. None of
   // that crosses the door: what the walk carries is a slot number.
   [[nodiscard]] static constexpr auto begun_here(ContextType* told) {
-    if constexpr (requires { scan::scanner<held>{}.begin_groups(*told); }) {
+    if constexpr (std::same_as<ContextType, scan::default_context_t>) {
+      // Told nothing, and never asked to look at what it was not given: a
+      // reading is kept here even where nothing was said, because a scanner
+      // that asks to be kept in one place needs its one state to live
+      // somewhere that is not a register of the walk.
+      static_cast<void>(told);
+      if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
+        return scan::scanner<held>{}.begin_groups();
+      } else {
+        return scan::no_contexts{};
+      }
+    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(*told); }) {
       return scan::scanner<held>{}.begin_groups(*told);
     } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
       return scan::scanner<held>{}.begin_groups();

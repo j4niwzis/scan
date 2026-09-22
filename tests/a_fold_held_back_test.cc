@@ -90,20 +90,17 @@ TEST(AFoldHeldBack, ItReadsWhatTheOtherReads) {
   EXPECT_EQ(got.right.second, "ef");
 }
 
-TEST(AFoldHeldBack, TheShortestOneIsReadTheSame) {
-  const room here{1};
-  const room there{2};
-  const both_ways got =
-      scan::scan<"{} {}">("ab cd"sv).of<both_ways>({here, there});
+// Told nothing at all, which is the road most callers are on: the one state
+// still has somewhere to live, because one is made for it where the reading is
+// asked for.
+TEST(AFoldHeldBack, ToldNothingItIsReadTheSame) {
+  const both_ways got = scan::scan<"{} {}">("ab cd"sv).of<both_ways>();
   EXPECT_EQ(got.right.first, "c");
   EXPECT_EQ(got.right.second, "d");
 }
 
-TEST(AFoldHeldBack, AndALongerOne) {
-  const room here{1};
-  const room there{2};
-  const both_ways got =
-      scan::scan<"{} {}">("abcdef ghijkl"sv).of<both_ways>({here, there});
+TEST(AFoldHeldBack, AndALongerOneToldNothing) {
+  const both_ways got = scan::scan<"{} {}">("abcdef ghijkl"sv).of<both_ways>();
   EXPECT_EQ(got.right.first, "g");
   EXPECT_EQ(got.right.second, "hijkl");
 }
