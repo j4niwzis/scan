@@ -53,10 +53,7 @@ struct scan::scanner<tagged> {
   static state<scan::default_context_t> begin_groups() { return {}; }
 
   template <class Told>
-    requires requires(const Told& one) {
-      one.say(std::string{});
-      { one.mark } -> std::convertible_to<int>;
-    }
+    requires std::same_as<Told, room> || std::same_as<Told, depot>
   static state<Told> begin_groups(const Told& told) {
     told.say("a name begins");
     return {{}, told.mark, &told};
@@ -74,7 +71,7 @@ struct scan::scanner<tagged> {
 
   template <class Told>
   static void closed_group(state<Told>& one, scan::group_at<0>) {
-    if constexpr (requires(const Told& told) { told.say(std::string{}); }) {
+    if constexpr (std::same_as<Told, room> || std::same_as<Told, depot>) {
       if (one.where != nullptr) one.where->say("a name: " + one.text);
     }
   }

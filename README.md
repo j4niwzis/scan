@@ -428,6 +428,10 @@ its groups as they go is told its context where its state begins, and every
 hook may be a template on what it was told -- the state included:
 
 ```cpp
+// Two contexts of the caller's, with nothing in common but what they answer.
+struct room  { int mark; std::vector<std::string>* said; void say(std::string) const; };
+struct depot { int mark; std::vector<std::string>* said; void say(std::string) const; };
+
 template <> struct scan::scanner<tagged> {
   static constexpr std::string_view pattern() { return "([a-z]+)"; }
 
@@ -440,10 +444,7 @@ template <> struct scan::scanner<tagged> {
   // library asks of it, including the ones it asks to work out whether a
   // context reaches this place at all.
   template <class Told>
-    requires requires(const Told& one) {
-      one.say(std::string{});
-      { one.mark } -> std::convertible_to<int>;
-    }
+    requires std::same_as<Told, room> || std::same_as<Told, depot>
   static state<Told> begin_groups(const Told& told) {
     told.say("a name begins");
     return {{}, told.mark, &told};
@@ -465,6 +466,9 @@ template <> struct scan::scanner<tagged> {
 
 struct pair { tagged left; tagged right; };
 
+const room here{7, &said};
+const depot there{3, &said};
+
 const pair got = scan::scan<"{} {}">(text).of<pair>(here, there);    // two kinds
 const pair same = scan::scan<"{} {}">(text).of<pair>({here, there}); // and in braces
 ```
@@ -480,53 +484,6 @@ and the whole reading happens inside that call.
 
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
-
-**A state may be a template on what it was told**, and the hooks name the
-caller's own type -- in braces as well as without them. Nothing of this library
-is in the signature:
-
-```cpp
-struct arena {
-  std::pmr::memory_resource* where = nullptr;
-  std::pmr::memory_resource* resource() const { return where; }
-};
-
-struct numbers { std::pmr::vector<int> values; };
-struct both { numbers left; numbers right; };
-
-template <>
-struct scan::scanner<numbers> {
-  static constexpr std::string_view pattern() { return "([0-9]+)(?:,([0-9]+))*"; }
-
-  template <class Told>
-  struct state { std::pmr::vector<int> values; int running = 0; };
-
-  static state<scan::default_context_t> begin_groups() { return {}; }
-
-  template <class Told>
-    requires requires(const Told& one) { one.resource(); }
-  static state<Told> begin_groups(const Told& told) {
-    return {std::pmr::vector<int>(told.resource()), 0};
-  }
-
-  // The group's number as a plain index: one hook for both of them.
-  template <class Told>
-  static void push_group(state<Told>& one, std::size_t, char digit) {
-    one.running = one.running * 10 + (digit - '0');
-  }
-  template <class Told>
-  static void closed_group(state<Told>& one, std::size_t) {
-    one.values.push_back(one.running);
-    one.running = 0;
-  }
-  template <class Told>
-  static numbers finish_groups(state<Told> one) { return {std::move(one.values)}; }
-};
-
-std::pmr::monotonic_buffer_resource bytes, other;
-scan::scan<"{} {}">(text).of<both>(arena{&bytes});                   // one for both
-scan::scan<"{} {}">(text).of<both>({arena{&bytes}, arena{&other}});  // one a place
-```
 
 A braced list deduces nothing, so a place told that way reaches its scanner
 through an interface, and an interface hands back one type. The state is not
