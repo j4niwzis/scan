@@ -104,6 +104,26 @@ inline constexpr std::size_t copies_of_a_reading =
 // How long a turn is held back where a fold is kept in one place: the longest
 // the machine can go without standing in one reading. Nothing waits at all
 // where the walk always stands in one.
+// Whether anything read under here asks to be kept in one place.
+//
+// Asked of the places rather than of the whole: a shape keeps nothing itself,
+// and what asks is the thing at one of its places, or something at one of
+// theirs.
+template <class Type>
+[[nodiscard]] constexpr bool anything_is_kept_in_one_place() {
+  using held = std::remove_cv_t<Type>;
+  if constexpr (scan::gathers_in_one_place<held>) {
+    return true;
+  } else if constexpr (carrier_places<held>() == 0) {
+    return false;
+  } else {
+    return [&]<std::size_t... Place>(std::index_sequence<Place...>) {
+      return (false || ... ||
+              anything_is_kept_in_one_place<carrier_place_for<held, Place>>());
+    }(std::make_index_sequence<carrier_places<held>()>{});
+  }
+}
+
 template <class Type, fixed_string Format>
 inline constexpr std::size_t turns_a_reading_holds_back =
     detail::turns_held_back<detail::packed_automaton<Type, Format>>();
@@ -179,11 +199,27 @@ class borrowed_result : public names_its_output<Format> {
   template <class Type, class CarrierType = scan::no_contexts>
   [[nodiscard]] constexpr std::expected<Type, failure_for<Type>> read(
       const CarrierType& given = CarrierType{}) const {
+    // Nothing was said, and something read under here asks to be kept in one
+    // place. That one state has to live somewhere which is not a register of
+    // the walk, and a carrier is that somewhere -- so one is made here, told
+    // nothing, standing in this very expression, which is the one the walk it
+    // is handed to runs inside of.
+    if constexpr (std::same_as<CarrierType, scan::no_contexts> &&
+                  anything_is_kept_in_one_place<Type>()) {
+      using made_for_it =
+          carrier_for<Type, copies_of_a_reading<Type, Format>,
+                      turns_a_reading_holds_back<Type, Format>>;
+      return [&]<std::size_t... Place>(std::index_sequence<Place...>) {
+        return this->template read<Type, made_for_it>(
+            made_for_it{((void)Place, scan::default_context_t{})...});
+      }(std::make_index_sequence<carrier_places<Type>() == 0
+                                     ? std::size_t{1}
+                                     : carrier_places<Type>()>{});
+    } else if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
     // A list or a fold is read by the machine that gathers as it goes, even
     // where the subject lies in a row and could be pointed at: what either of
     // them is made of are the turns, and the positions left behind hold the
     // last turn and nothing before it.
-    if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
       // A reading that gathers as it goes keeps its fields' states for the
       // whole walk, and in braces the type of a context stops at the door. The
       // state still has somewhere to live: the carrier holds it behind the
@@ -230,7 +266,23 @@ class borrowed_result : public names_its_output<Format> {
   template <class Type, class CarrierType = scan::no_contexts>
   [[nodiscard]] constexpr Type read_or_throw(
       const CarrierType& given = CarrierType{}) const {
-    if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
+    // Nothing was said, and something read under here asks to be kept in one
+    // place. That one state has to live somewhere which is not a register of
+    // the walk, and a carrier is that somewhere -- so one is made here, told
+    // nothing, standing in this very expression, which is the one the walk it
+    // is handed to runs inside of.
+    if constexpr (std::same_as<CarrierType, scan::no_contexts> &&
+                  anything_is_kept_in_one_place<Type>()) {
+      using made_for_it =
+          carrier_for<Type, copies_of_a_reading<Type, Format>,
+                      turns_a_reading_holds_back<Type, Format>>;
+      return [&]<std::size_t... Place>(std::index_sequence<Place...>) {
+        return this->template read_or_throw<Type, made_for_it>(
+            made_for_it{((void)Place, scan::default_context_t{})...});
+      }(std::make_index_sequence<carrier_places<Type>() == 0
+                                     ? std::size_t{1}
+                                     : carrier_places<Type>()>{});
+    } else if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
       // Braces here too: the state lives in the carrier, not in this call.
       return or_thrown(
           detail::scan_stream<Type, Format, Walk, CarrierType>(input_, given));

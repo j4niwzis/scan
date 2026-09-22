@@ -18,6 +18,7 @@
 #include <limits>
 #include <memory_resource>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
 #include <tuple>
@@ -209,6 +210,37 @@ struct readings_for;
 // -- and the reading that knows it is made there too, as a default argument, so
 // it is alive for as long as the expression that said it. What crosses the door
 // is a pointer to the interface, and nothing here ever names a context type.
+// Whether a scanner takes a context of this kind at all. Asked of the three
+// doors a scanner can open it at, because a type that takes one takes it at
+// whichever of them it is read through.
+template <class Held, class It>
+concept takes_one_like = requires(const It& told, std::string_view text) {
+  scan::scanner<Held>{}.parse(text, told);
+} || requires(const It& told, std::string_view text) {
+  scan::scanner<Held>{}.begin(text, told);
+} || requires(const It& told) { scan::scanner<Held>{}.begin_groups(told); };
+
+// The thing a row is a row of, where it is a row at all.
+template <class Field>
+struct element_of_a_row {
+  using type = void;
+};
+template <class Field>
+  requires requires { typename std::ranges::range_value_t<std::remove_cv_t<Field>>; }
+struct element_of_a_row<Field> {
+  using type = std::remove_cvref_t<std::ranges::range_value_t<std::remove_cv_t<Field>>>;
+};
+
+// A leaf keeps a reading of its own field, and the interface a reading is, is
+// written for one field. An element of a row is not the field that holds it,
+// so a row whose elements take what the row was told keeps a second reading
+// for them -- otherwise what reached an element was the row's own interface,
+// which its scanner does not know and quietly reads without.
+template <class Field, class It>
+concept a_row_whose_elements_are_told =
+    !std::same_as<typename element_of_a_row<Field>::type, void> &&
+    takes_one_like<typename element_of_a_row<Field>::type, It>;
+
  template <class FieldType, std::size_t Copies = 1, std::size_t Window = 0>
 class context_leaf {
  public:
@@ -216,8 +248,39 @@ class context_leaf {
   using answer = std::expected<held, failure_for<held>>;
   static constexpr bool told_apart = false;
 
+ private:
+  // Nothing at all where the elements are not told, and it takes up no room.
+  struct no_reading {
+    void* kept = nullptr;
+  };
+  template <class It>
+  using reading_for_an_element = std::conditional_t<
+      a_row_whose_elements_are_told<held, It>,
+      reading_by<typename element_of_a_row<held>::type, It, true, Copies, Window>,
+      no_reading>;
+
+  // Where the field is no row at all there is no element to keep a reading
+  // for, and this stands as a pointer to the field's own kind: never set,
+  // never read, and naming a type that is certainly a type.
+  using element_kind =
+      std::conditional_t<std::same_as<typename element_of_a_row<held>::type, void>,
+                         held, typename element_of_a_row<held>::type>;
+
+ public:
   constexpr context_leaf() = default;
-  constexpr context_leaf(scan::default_context_t) {}
+  constexpr context_leaf(scan::default_context_t)
+    requires(!scan::gathers_in_one_place<held>)
+  {}
+
+  // Told nothing, and still given somewhere to keep one state. The reading is
+  // made here, as a default argument, so it stands for the caller's own full
+  // expression -- the same way a reading made for a context said in braces
+  // does -- and it is told nothing, which is how the scanner is begun.
+  constexpr context_leaf(
+      scan::default_context_t,
+      reading_by<held, scan::default_context_t, true, Copies, Window>&& made = {})
+    requires scan::gathers_in_one_place<held>
+      : how_(&made) {}
 
   // The context keeps whatever it was said as: a named thing stays that named
   // thing, a temporary lives to the end of the expression, and a const one
@@ -229,17 +292,31 @@ class context_leaf {
              !std::same_as<std::remove_cvref_t<It>, no_place>)
   constexpr context_leaf(
       It&& given,
-      reading_by<held, std::remove_reference_t<It>, true, Copies, Window>&& made = {})
+      reading_by<held, std::remove_reference_t<It>, true, Copies, Window>&& made = {},
+      reading_for_an_element<std::remove_reference_t<It>>&& each = {})
       : how_(&made) {
     made.kept = &given;
+    if constexpr (a_row_whose_elements_are_told<held, std::remove_reference_t<It>>) {
+      each.kept = &given;
+      each_ = &each;
+    } else {
+      static_cast<void>(each);
+    }
   }
 
   // The same leaf, told a context that was said for the shape above it.
   template <class Store, class It>
   [[nodiscard]] static constexpr context_leaf wire(Store& made, It&& given) {
-    made.kept = &given;
     context_leaf done;
-    done.how_ = &made;
+    if constexpr (requires { made.whole; made.each; }) {
+      made.whole.kept = &given;
+      made.each.kept = &given;
+      done.how_ = &made.whole;
+      done.each_ = &made.each;
+    } else {
+      made.kept = &given;
+      done.how_ = &made;
+    }
     return done;
   }
 
@@ -256,6 +333,23 @@ class context_leaf {
   [[nodiscard]] constexpr context_leaf leaf() const { return *this; }
 
   [[nodiscard]] constexpr bool told() const { return how_ != nullptr; }
+
+  // The leaf an element of this row is told through, where there is one. Said
+  // as a leaf of its own kind, so everything below reads it the way it reads
+  // any other leaf.
+  [[nodiscard]] constexpr auto each() const
+    requires(!std::same_as<typename element_of_a_row<held>::type, void>)
+  {
+    using element = typename element_of_a_row<held>::type;
+    return context_leaf<element, Copies, Window>::from_reading(each_);
+  }
+
+  [[nodiscard]] static constexpr context_leaf from_reading(
+      reading_of<held>* how) {
+    context_leaf done;
+    done.how_ = how;
+    return done;
+  }
   // Whatever the interface hands back, which is said where the interface is --
   // further down, after what a carrier is has been worked out.
   // Said below, where the handle it hands back is written out.
@@ -277,6 +371,7 @@ class context_leaf {
 
  private:
   reading_of<held>* how_ = nullptr;
+  reading_of<element_kind>* each_ = nullptr;
 };
 
  template <class... Parts>
@@ -334,6 +429,24 @@ struct readings_for<context_leaf<FieldType, Copies, Window>, It> {
                           std::remove_reference_t<It>, false, Copies, Window>;
 };
 
+// A row whose elements are read with what the row was told keeps two: one
+// written for the row, and one written for an element. An element told
+// through the row's own would be handed an interface its scanner has never
+// heard of, and would be read as though nobody had said anything.
+template <class FieldType, std::size_t Copies, std::size_t Window, class It>
+  requires a_row_whose_elements_are_told<std::remove_cv_t<FieldType>,
+                                         std::remove_reference_t<It>>
+struct readings_for<context_leaf<FieldType, Copies, Window>, It> {
+  struct type {
+    reading_by<std::remove_cv_t<FieldType>, std::remove_reference_t<It>, false,
+               Copies, Window>
+        whole{};
+    reading_by<typename element_of_a_row<std::remove_cv_t<FieldType>>::type,
+               std::remove_reference_t<It>, false, Copies, Window>
+        each{};
+  };
+};
+
 template <class It, class... Parts>
 struct readings_for<context_shape<Parts...>, It> {
   using type = std::tuple<typename readings_for<Parts, It>::type...>;
@@ -376,7 +489,7 @@ template <class FieldType, std::size_t K>
   }
 }
 
-template <class FieldType, std::size_t K>
+ template <class FieldType, std::size_t K>
 using carrier_place_for = typename decltype(carrier_place_kind<FieldType, K>())::type;
 
 // Which carrier a field wants: read whole, and it is a leaf; opening up into
@@ -576,8 +689,17 @@ struct folding_in {
   // As long as the machine can go without standing in one reading, which is
   // worked out from it while the pattern is compiled. Nothing waits where the
   // scanner did not ask for it.
+  // Room for what is held, counted in what is held rather than in how far the
+  // walk goes: the window is a number of characters, and one character can
+  // open a group, put itself in it and close it again -- for every group this
+  // leaf opens. Sized short, the queue would drop the end of what it was told
+  // and say nothing about it.
+  static constexpr std::size_t groups_here =
+      groups_a_leaf_opens<held>() == 0 ? 1 : groups_a_leaf_opens<held>();
+  static constexpr std::size_t room_for_turns =
+      waits ? 3 * groups_here * (Window + 1) + 1 : 0;
   [[no_unique_address]] std::conditional_t<
-      waits, std::array<turn, Window + 1>, std::array<turn, 0>> waiting_{};
+      waits, std::array<turn, room_for_turns>, std::array<turn, 0>> waiting_{};
   [[no_unique_address]] std::conditional_t<waits, std::uint32_t, no_contexts>
       count_{};
   alone_type alone{};
@@ -813,7 +935,18 @@ struct reading_by final : reading_of<FieldType> {
   // templates on that type and its state may be of a piece with it. None of
   // that crosses the door: what the walk carries is a slot number.
   [[nodiscard]] static constexpr auto begun_here(ContextType* told) {
-    if constexpr (requires { scan::scanner<held>{}.begin_groups(*told); }) {
+    if constexpr (std::same_as<ContextType, scan::default_context_t>) {
+      // Told nothing, and never asked to look at what it was not given: a
+      // reading is kept here even where nothing was said, because a scanner
+      // that asks to be kept in one place needs its one state to live
+      // somewhere that is not a register of the walk.
+      static_cast<void>(told);
+      if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
+        return scan::scanner<held>{}.begin_groups();
+      } else {
+        return scan::no_contexts{};
+      }
+    } else if constexpr (requires { scan::scanner<held>{}.begin_groups(*told); }) {
       return scan::scanner<held>{}.begin_groups(*told);
     } else if constexpr (requires { scan::scanner<held>{}.begin_groups(); }) {
       return scan::scanner<held>{}.begin_groups();
@@ -1079,6 +1212,19 @@ struct reading_by final : reading_of<FieldType> {
   // a scanner with no gathering of its own begins nothing, and the branches
   // below must all agree on one return type.
   if constexpr (requires {
+                  told.each();
+                  requires std::same_as<
+                      decltype(told.each().begin_gather(parameters)),
+                      decltype(scanner_begin<Held>(parameters))>;
+                }) {
+    // A row told in braces, and what is begun here is one of its elements. The
+    // interface a reading is, is written for one field, and the row's own does
+    // not begin an element -- the one kept beside it does. Asked by whether
+    // what it begins is the very thing this call hands back, so a row whose
+    // elements are read some other way never comes down here.
+    if (told.each().told()) return told.each().begin_gather(parameters);
+    return scanner_begin<Held>(parameters);
+  } else if constexpr (requires {
                   told.told();
                   told.begin_gather(parameters);
                   requires std::same_as<decltype(told.begin_gather(parameters)),
@@ -1135,6 +1281,21 @@ struct reading_by final : reading_of<FieldType> {
   } else {
     static_cast<void>(given);
     return scan::scanner<Held>{}.begin_groups();
+  }
+}
+
+// The context an element of a row is told.
+//
+// Handed a plain context, a row hands the same one down -- an element is read
+// with what the row was told. Told through an interface, the row's own is
+// written for the row, and an element is told through the one kept beside it.
+ template <class Type, std::size_t Group, class Carrier>
+[[nodiscard]] constexpr decltype(auto) element_context_at(Carrier&& given) {
+  decltype(auto) mine = context_at_group<Type, Group>(std::forward<Carrier>(given));
+  if constexpr (requires { mine.each(); }) {
+    return mine.each();
+  } else {
+    return static_cast<decltype(mine)>(mine);
   }
 }
 

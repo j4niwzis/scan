@@ -237,6 +237,24 @@ using gathering_kinds_of =
 using register_state =
     typename gathering_kinds_of<Type, Format, MarkType, CarrierType>::as_a_tuple;
 
+// The mark a gathering was made with, asked of the gathering itself.
+//
+// A fold keeps where its turns are told apart by, and the walk is handed the
+// slots already made -- so beginning one again has to begin it as the very
+// kind of thing that is standing there. Asked of the type rather than assumed
+// to be the default, which is what it is for everything that keeps no mark.
+template <class Gathering>
+struct mark_of_gathering {
+  using type = std::ptrdiff_t;
+};
+template <class Held, class MarkType, bool Repeats, class CarrierType,
+          std::size_t Place>
+struct mark_of_gathering<fold_of<Held, MarkType, Repeats, CarrierType, Place>> {
+  using type = MarkType;
+};
+template <class Gathering>
+using mark_of = typename mark_of_gathering<std::remove_cvref_t<Gathering>>::type;
+
 // Which slot of it a group is gathered in.
  template <class Type, fixed_string Format, std::size_t Group,
           class MarkType = std::ptrdiff_t,
@@ -735,12 +753,13 @@ constexpr void advance_scanner(
               fold.here = std::remove_cvref_t<decltype(fold.here)>(
                   context_at_group<Type, Group>(told));
             } else {
+              auto& into = std::get<gathering_slot<Type, Format, Group>>(
+                  states[command.destination]);
               begin_gathering_at(
-                  std::get<gathering_slot<Type, Format, Group>>(
-                      states[command.destination]),
-                  gathering_of<Type, Format, Group>::begin(
-                      spread.parameters[Group].view(),
-                      context_at_group<Type, Group>(told)));
+                  into,
+                  gathering_of<Type, Format, Group, mark_of<decltype(into)>>::
+                      begin(spread.parameters[Group].view(),
+                            context_at_group<Type, Group>(told)));
             }
           } else if (tag == closing && slot_read(registers, command.destination) != position &&
                      command.source != packed_command::no_source &&
@@ -1198,7 +1217,7 @@ constexpr void collect_element(
       auto one = finish_value<Type, element, Group, false, FailureType>(
           by_the_registers<Type, Format>(packed.readings[reading], states,
                                          registers),
-          text, context_at_group<Type, list_group>(told));
+          text, element_context_at<Type, list_group>(told));
       if (!one) {
         if (!failed) failed = std::move(one).error();
         continue;

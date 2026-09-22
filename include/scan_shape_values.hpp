@@ -166,7 +166,7 @@ constexpr void close_shape_place(ShapeType& state,
       } else {
         return finish_value<held, element, place + 1, false, FailureType>(
             gathered_by_a_fold<ShapeType>{state}, nullptr,
-            context_at_group<held, Group>(state.told));
+            element_context_at<held, Group>(state.told));
       }
     }();
     if (!one) {
