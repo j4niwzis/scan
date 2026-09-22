@@ -442,11 +442,9 @@ template <> struct scan::scanner<tagged> {
 **What the caller owns is held as its address; what was made at the call is
 moved in and held.** `with(…)` deduces the same two kinds as `of<T>(…)`.
 
-**A state may be a template on what it was told.** A place said in braces
-carries its context behind an interface, so what reaches the hooks there is the
-carrier and not the caller's own type. A state that is a template takes
-whichever of the two it was handed, and `scan::detail::resource_of` answers the same
-for both:
+**A state may be a template on what it was told**, and the hooks name the
+caller's own type -- in braces as well as without them. Nothing of this library
+is in the signature:
 
 ```cpp
 struct arena {
@@ -467,9 +465,9 @@ struct scan::scanner<numbers> {
   static state<scan::default_context_t> begin_groups() { return {}; }
 
   template <class Told>
-    requires(!std::same_as<std::remove_cvref_t<Told>, scan::default_context_t>)
+    requires requires(const Told& one) { one.resource(); }
   static state<Told> begin_groups(const Told& told) {
-    return {std::pmr::vector<int>(scan::detail::resource_of(told)), 0};
+    return {std::pmr::vector<int>(told.resource()), 0};
   }
 
   // The group's number as a plain index: one hook for both of them.
@@ -491,17 +489,14 @@ scan::scan<"{} {}">(text).of<both>(arena{&bytes});                   // one for 
 scan::scan<"{} {}">(text).of<both>({arena{&bytes}, arena{&other}});  // one a place
 ```
 
-Why the carrier and not the caller's own type: **the gatherings a walk carries
-are typed by the type and the format, before any context exists.** Twenty-six
-slot types in the walk are named that way -- `gathering_slot<Type, Format,
-Group>` and its like -- because the machine is written out once and then used
-with whatever it is later told. So what a fold keeps may be *told* the context
-and may not be *of* it: one shape, one state, and the carrier is the one type
-every context arrives as. A scanner that would keep a different state for the
-context it was told than for none is told so where it is compiled, rather than
-gathering into a state the walk has no slot for.
+A braced list deduces nothing, so a place told that way reaches its scanner
+through an interface, and an interface hands back one type. The state is not
+that one type: it stays in the reading, where the context still has a type, and
+what the walk carries is a slot in it. A reading dividing takes a slot of its
+own -- which is what `keep_groups` is for -- and a reading that dies gives one
+back.
 
-A scanner that still cannot be written against an erased context says
+A scanner that still cannot be written against a context said in braces says
 `static constexpr bool takes_its_context_deduced = true;`, and a braced list
 that would reach it is refused where it is written.
 
