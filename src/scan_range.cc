@@ -171,13 +171,10 @@ class borrowed_result : public names_its_output<Format> {
     // last turn and nothing before it.
     if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
       // A reading that gathers as it goes keeps its fields' states for the
-      // whole walk, so the type of a state has to be known -- and it is,
-      // wherever the contexts were written as they stand. In braces the type of
-      // a context is forgotten at the door, and a state whose type is forgotten
-      // has nowhere to live.
-      static_assert(!requires { given.leaf().told(); },
-                    "a fold or a list is told its context without braces: "
-                    "scan<f>(text).of<T>(context), not .of<T>({context})");
+      // whole walk, and in braces the type of a context stops at the door. The
+      // state still has somewhere to live: the carrier holds it behind the
+      // interface that knows the field, and the carrier is made in the
+      // caller's own full expression, so it outlives the walk that tells it.
       return detail::scan_stream<Type, Format, Walk, CarrierType>(input_, given);
     } else {
       // A group that took no part is an error, unless somewhere in this output
@@ -220,9 +217,7 @@ class borrowed_result : public names_its_output<Format> {
   [[nodiscard]] constexpr Type read_or_throw(
       const CarrierType& given = CarrierType{}) const {
     if constexpr (holds_a_range<Type>() || holds_a_fold<Type>()) {
-      static_assert(!requires { given.leaf().told(); },
-                    "a fold or a list is told its context without braces: "
-                    "scan<f>(text).of<T>(context), not .of<T>({context})");
+      // Braces here too: the state lives in the carrier, not in this call.
       return or_thrown(
           detail::scan_stream<Type, Format, Walk, CarrierType>(input_, given));
     } else {

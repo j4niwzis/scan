@@ -18,6 +18,13 @@ namespace {
 
 using namespace std::string_view_literals;
 
+// A context of the caller's, so that the places are told in braces and the
+// fold is reached through the interface that carries one.
+struct arena {
+  std::pmr::memory_resource* where = nullptr;
+  std::pmr::memory_resource* resource() const { return where; }
+};
+
 struct as_they_go {
   std::vector<int> values;
 };
@@ -29,6 +36,13 @@ struct in_one_place {
 struct both_ways {
   as_they_go left;
   in_one_place right;
+};
+
+// A context of the caller's, so that the places are told in braces: that is
+// the road where a fold is kept behind an interface, and where holding the
+// turns back has something to hold them in.
+struct room {
+  int mark = 0;
 };
 
 }  // namespace
@@ -79,20 +93,36 @@ struct scan::scanner<in_one_place> {
 namespace {
 
 TEST(AFoldKeptInOnePlace, ItReadsWhatTheOtherReads) {
-  const both_ways got = scan::scan<"{} {}">("1,2,3 4,5,6"sv).of<both_ways>();
+  const room here{1};
+  const room there{2};
+  const both_ways got =
+      scan::scan<"{} {}">("1,2,3 4,5,6"sv).of<both_ways>({here, there});
   EXPECT_EQ(got.left.values, (std::vector<int>{1, 2, 3}));
   EXPECT_EQ(got.right.values, (std::vector<int>{4, 5, 6}));
 }
 
 TEST(AFoldKeptInOnePlace, OneTurnIsReadTheSame) {
-  const both_ways got = scan::scan<"{} {}">("7 8"sv).of<both_ways>();
+  const room here{1};
+  const room there{2};
+  const both_ways got =
+      scan::scan<"{} {}">("7 8"sv).of<both_ways>({here, there});
   EXPECT_EQ(got.left.values, (std::vector<int>{7}));
   EXPECT_EQ(got.right.values, (std::vector<int>{8}));
 }
 
+TEST(AFoldKeptInOnePlace, ToldInBracesItReadsTheSame) {
+  std::pmr::monotonic_buffer_resource bytes;
+  const both_ways got = scan::scan<"{} {}">("1,2,3 4,5,6"sv)
+                            .of<both_ways>({arena{&bytes}, arena{&bytes}});
+  EXPECT_EQ(got.left.values, (std::vector<int>{1, 2, 3}));
+  EXPECT_EQ(got.right.values, (std::vector<int>{4, 5, 6}));
+}
+
 TEST(AFoldKeptInOnePlace, AndALongerOne) {
-  const both_ways got =
-      scan::scan<"{} {}">("10,20,30,40 50,60,70,80"sv).of<both_ways>();
+  const room here{1};
+  const room there{2};
+  const both_ways got = scan::scan<"{} {}">("10,20,30,40 50,60,70,80"sv)
+                            .of<both_ways>({here, there});
   EXPECT_EQ(got.left.values, (std::vector<int>{10, 20, 30, 40}));
   EXPECT_EQ(got.right.values, (std::vector<int>{50, 60, 70, 80}));
 }

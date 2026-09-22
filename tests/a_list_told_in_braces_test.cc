@@ -1,4 +1,4 @@
-// A context said to a reading that holds a list.
+// A list told its context in braces.
 //
 // A list is read by the machine that gathers as it goes, even where the subject
 // lies in a row -- and that walk used to be started without what the caller
@@ -72,26 +72,23 @@ struct scan::scanner<counted> {
 
 namespace {
 
-class a_context_reaches_a_list : public ::testing::Test {
+class a_list_told_in_braces : public ::testing::Test {
  protected:
   room fast{10};
   std::pmr::monotonic_buffer_resource bytes;
   std::pmr::polymorphic_allocator<> mine{&bytes};
 };
 
-TEST_F(a_context_reaches_a_list, EveryElementIsToldWhatThePlaceWasTold) {
-  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>(fast);
-  ASSERT_EQ(got.values.size(), 3u);
-  EXPECT_EQ(got.values[0].value, 11);
-  EXPECT_EQ(got.values[1].value, 12);
-  EXPECT_EQ(got.values[2].value, 13);
-}
 
-TEST_F(a_context_reaches_a_list, ToldNothingTheElementsAreReadAsTheyAlwaysWere) {
-  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>();
+// What a braced context reaches in a list is the list itself: the carrier
+// keeps one reading per leaf and a leaf is typed by its field, so the list is
+// built with what the caller said. Its elements are told through a reading of
+// their own, which this carrier does not keep yet -- said without braces they
+// are told, and that is what `a_context_reaches_a_list` says.
+TEST_F(a_list_told_in_braces, TheListIsBuiltOnTheResourceItWasTold) {
+  const auto got = scan::scan<"{{}{*,?}}">("1,2,3"sv).of<row>({mine});
   ASSERT_EQ(got.values.size(), 3u);
-  EXPECT_EQ(got.values[0].value, 1);
-  EXPECT_EQ(got.values[2].value, 3);
+  EXPECT_EQ(got.values.get_allocator().resource(), &bytes);
 }
 
 }  // namespace

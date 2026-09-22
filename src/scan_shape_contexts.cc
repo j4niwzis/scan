@@ -531,7 +531,19 @@ struct folding_in {
   // Whether the turns wait. A scanner says so where its state holds something
   // it would rather make once; the walk then keeps one state and this keeps
   // what happened until the machine stands in one reading.
-  static constexpr bool waits = scan::gathers_in_one_place<held>;
+  // Nothing waits where the machine never has to hold anything back: a window
+  // of nothing is the machine saying that every move of it says what its
+  // character lies inside, and then every reading would tell the one state the
+  // same turns anyway. The turns go straight through, as they happen, into the
+  // one state the carrier keeps.
+  static constexpr bool waits = scan::gathers_in_one_place<held> && Window != 0;
+  // Refused where the turns would be held for ever: an expression that can go
+  // round without ever standing in one reading has no window, and a queue that
+  // is never told is a fold that silently reads nothing.
+  static_assert(!waits || Window != std::numeric_limits<std::size_t>::max(),
+                "this scanner says gathers_in_one_place, and this expression "
+                "can read on for ever without the machine ever standing in one "
+                "reading -- the turns held back would never be told");
   // What a turn is, said flatly: which group it was, what happened, and the
   // character or the run it happened with.
   struct turn {
@@ -569,15 +581,24 @@ struct folding_in {
       alone = begun_alone<held>();
     }
   }
+  // The turns held back travel with the handle. A reading that divides is two
+  // readings that were told the same things, and a copy that left them behind
+  // would be a reading that had been told nothing.
   constexpr folding_in(const folding_in& other)
       : how(other.how),
         slot(other.how == nullptr ? 0 : other.how->fold_kept(other.slot)),
+        waiting_(other.waiting_),
+        count_(other.count_),
         alone(other.how == nullptr ? kept_groups<held>(other.alone)
                                    : alone_type{}) {}
   constexpr folding_in& operator=(const folding_in& other) {
     if (this == &other) return *this;
     if (how != nullptr && other.how != nullptr) {
       how->fold_back_to(slot, other.slot);
+      // Put back as it stands: what this one was holding was a reading that is
+      // being written over, and what it holds now is the other one's.
+      waiting_ = other.waiting_;
+      count_ = other.count_;
       return *this;
     }
     if (how != nullptr) how->fold_drop(slot);
@@ -588,18 +609,27 @@ struct folding_in {
       slot = 0;
       groups_go_back_to<held>(alone, other.alone);
     }
+    waiting_ = other.waiting_;
+    count_ = other.count_;
     return *this;
   }
   constexpr folding_in(folding_in&& other) noexcept
-      : how(other.how), slot(other.slot) {
+      : how(other.how),
+        slot(other.slot),
+        waiting_(other.waiting_),
+        count_(other.count_) {
     other.how = nullptr;
+    if constexpr (waits) other.count_ = 0;
   }
   constexpr folding_in& operator=(folding_in&& other) noexcept {
     if (this != &other) {
       if (how != nullptr) how->fold_drop(slot);
       how = other.how;
       slot = other.slot;
+      waiting_ = other.waiting_;
+      count_ = other.count_;
       other.how = nullptr;
+      if constexpr (waits) other.count_ = 0;
     }
     return *this;
   }
@@ -655,6 +685,13 @@ struct folding_in {
       }
       count_ = 0;
     }
+  }
+
+  // Told nothing and cleared: the reading this handle stands for was told the
+  // same turns as the one that was settled, so telling them again would say
+  // everything twice.
+  constexpr void forget() {
+    if constexpr (waits) count_ = 0;
   }
 
   constexpr void tell_one(const turn& one) {

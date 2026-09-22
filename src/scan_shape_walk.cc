@@ -492,15 +492,53 @@ template <class StatesType, std::size_t CommandCount>
 // Reached the way the turns were: through the slot the group gathers in, and
 // the two turns a gathering keeps. A fold that did not ask to wait has no
 // `settle` and this is nothing at all.
+// Whether what a fold held back may be told here.
+//
+// Two ways to be sure, and either will do. Standing in one reading there is
+// nobody left to disagree with what has been read. Standing anywhere whose
+// every move says what its character lies inside, the readings do not disagree
+// either: whichever one goes on would tell the fold the same turns.
+export template <auto& Automaton>
+[[nodiscard]] constexpr bool turns_may_be_told(std::size_t state) {
+  const auto& here = Automaton.states[state];
+  if (here.reading_count == 1) return true;
+  for (std::size_t move = 0; move < here.range_count; ++move) {
+    if (!here.ranges[move].groups_known) return false;
+  }
+  return true;
+}
+
 export template <std::size_t Group, class Type, fixed_string Format,
-          class StatesType>
-constexpr void settle_one_fold(StatesType& states) {
-  for (auto& one : states) {
-    auto& fold = std::get<gathering_slot<Type, Format, Group>>(one);
-    if constexpr (requires { fold.here.state.settle(); }) {
-      fold.here.state.settle();
-      if constexpr (requires { fold.going.state.settle(); }) {
-        fold.going.state.settle();
+          auto& Automaton, class StatesType>
+constexpr void settle_one_fold(std::size_t state, StatesType& states) {
+  const auto& packed = Automaton.states[state];
+  // Standing in one reading, reading zero is that reading, and the register it
+  // names for this group is where the turns held back are held. Telling every
+  // register instead would tell the one state the same turns again for every
+  // reading that died along the way.
+  const std::uint32_t at = packed.readings[0][Group * 2];
+  // Asked of the row itself rather than of the machine: where a fold is kept
+  // in the walk there are no registers at all, and that row has no elements to
+  // ask for. A group not open in this reading names no register either.
+  if (at >= states.size()) return;
+  auto& fold = std::get<gathering_slot<Type, Format, Group>>(states[at]);
+  if constexpr (requires { fold.here.state.settle(); }) {
+    // The turn that ended is told before the turn going on. There is one state
+    // to hear both, so the order they are told in is the order they happened.
+    if constexpr (requires { fold.going.state.settle(); }) {
+      if (fold.has_going) fold.going.state.settle();
+    }
+    fold.here.state.settle();
+    // What the other readings held was the same, told to them by the same
+    // moves -- there is one state and it has heard it. Forgotten rather than
+    // told again, or every reading that ever divided would say it twice.
+    for (std::size_t reading = 1; reading < packed.reading_count; ++reading) {
+      const std::uint32_t other = packed.readings[reading][Group * 2];
+      if (other >= states.size() || other == at) continue;
+      auto& theirs = std::get<gathering_slot<Type, Format, Group>>(states[other]);
+      theirs.here.state.forget();
+      if constexpr (requires { theirs.going.state.forget(); }) {
+        theirs.going.state.forget();
       }
     }
   }
@@ -1291,8 +1329,11 @@ constexpr void advance_scanners(
   // with what has been read, so a fold that held its turns back is told them
   // now. A fold that did not ask to wait has nothing waiting and says so while
   // this is compiled.
-  if (Automaton.states[state].readings.size() == 1) {
-    (settle_one_fold<Group, Type, Format>(states), ...);
+  // `readings` is an array sized once for every state, so its size is the room
+  // there is for readings and not the number this state stands in. What says
+  // there is nobody left to disagree is `reading_count`.
+  if (turns_may_be_told<Automaton>(state)) {
+    (settle_one_fold<Group, Type, Format, Automaton>(state, states), ...);
   }
 }
 
