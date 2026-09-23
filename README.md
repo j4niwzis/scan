@@ -417,8 +417,9 @@ const pair got = scan::scan<"{} {}">(text).with(fast);           // before the t
   deep as the shape goes -- the branches of a sum, the places of a type that
   says its own format. `parts` is deduced where braces are erased; see
   [what braces cost](#what-braces-cost).
-* A fold or a list is told **without** braces: one value of many turns, not a
-  shape of parts.
+* A fold or a list may be told either way. Said in braces, its state lives in
+  the reading rather than in the walk, and a row whose elements are read with
+  what the row was told keeps a reading for them as well.
 * `with(…)` says it before the output type is named.
 
 A context reaches exactly the call that makes a value -- `parse`,
