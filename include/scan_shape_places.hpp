@@ -373,6 +373,15 @@ template <class Type>
     return true;
   } else if constexpr (says_it_reads_its_groups<Type>) {
     return says_a_list_inside<Type>();
+  } else if constexpr (requires {
+                         scan::scanner<std::remove_cv_t<Type>>{}.begin_groups();
+                       }) {
+    // A leaf that folds its own groups is told its turns as they happen, and a
+    // shape holding one has to be read the same way. Handed its groups once
+    // the match is over, such a leaf could be told no more than the last turn
+    // of a group that repeats, and a leaf that took no turns at all leaves
+    // groups that took no part -- which the shape would take for a failure.
+    return true;
   } else if constexpr (a_choice_by_itself<Type>) {
     return []<std::size_t... which>(std::index_sequence<which...>) {
       return (false || ... ||
