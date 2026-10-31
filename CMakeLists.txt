@@ -134,7 +134,7 @@ if(NOT COMMAND cme_declare_port AND NOT CMAKE_PROJECT_TOP_LEVEL_INCLUDES)
       ${CMAKE_CURRENT_LIST_DIR}/cmake/get_cme.cmake)
 endif()
 
-project(scan VERSION 0.1.0 LANGUAGES CXX)
+project(scan VERSION 0.1.1 LANGUAGES CXX)
 
 if(PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
   message(FATAL_ERROR "In-source builds not allowed.")
